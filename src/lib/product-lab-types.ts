@@ -55,6 +55,7 @@ export type CostingSummary = {
 export type CostingEntry = {
   id: string;
   productId: string;
+  brandName: string;
   ingredientName: string;
   quantityUsed: number;
   unit: string;
