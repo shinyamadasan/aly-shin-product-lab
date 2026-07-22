@@ -825,6 +825,30 @@ function formatBatchFormula(formula: BatchFormulaRow[]) {
     .join("\n");
 }
 
+function csvValue(value: string | number) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: Array<Array<string | number>>) {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  const csv = [headers, ...rows].map((row) => row.map(csvValue).join(",")).join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function printPage() {
+  if (typeof window !== "undefined") {
+    window.print();
+  }
+}
+
 function ProductDetailPage({ labState }: { labState: LabState }) {
   const [selectedProductId, setSelectedProductId] = useState(products[0].id);
   const product = products.find((item) => item.id === selectedProductId) ?? products[0];
@@ -991,6 +1015,26 @@ function BatchHistoryPage({
     setCopiedBatchId(batchId);
   }
 
+  function downloadBatches() {
+    downloadCsv(
+      "proof-batches.csv",
+      ["Product", "Batch", "Date", "Decision", "Formula", "Taste notes", "Texture notes", "Issue", "Next test", "Sellable", "Rejects"],
+      labState.batches.map((batch) => [
+        productName(batch.productId),
+        batch.batchVersion,
+        batch.dateMade,
+        batch.launchDecision,
+        formatBatchFormula(parseBatchIngredients(batch.ingredientsNotes)),
+        batch.tasteNotes,
+        batch.textureNotes,
+        batch.wentWrong,
+        batch.improveNext,
+        batch.usablePieces,
+        batch.imperfectPieces,
+      ]),
+    );
+  }
+
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
@@ -1001,7 +1045,13 @@ function BatchHistoryPage({
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Experiment History</p>
-          <h3 className="mt-1 text-xl font-semibold">Proof batch records</h3>
+          <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <h3 className="text-xl font-semibold">Proof batch records</h3>
+            <div className="flex flex-wrap gap-2">
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={printPage} type="button">Print</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadBatches} type="button">Download CSV</button>
+            </div>
+          </div>
           <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Review formulas, adjustments, issues, and next tests. Create new experiments from Proof Day.</p>
         </div>
         <div className="divide-y divide-[#f0e4d8]">
@@ -1737,6 +1787,25 @@ function SuppliesPage({
   const supplierOptions = getUniqueSupplyValues(labState.supplies, "supplierName");
   const unitOptions = getUniqueSupplyValues(labState.supplies, "unit");
 
+  function downloadSupplies() {
+    downloadCsv(
+      "supplies.csv",
+      ["Brand", "Ingredient", "Supplier", "Date bought", "Pack qty", "Unit", "Total PHP", "Unit cost", "Quality", "Notes"],
+      labState.supplies.map((supply) => [
+        supply.brandName,
+        supply.ingredientName,
+        supply.supplierName,
+        supply.purchaseDate,
+        supply.packQuantity,
+        supply.unit,
+        supply.totalCost,
+        supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0,
+        supply.qualityRating,
+        supply.notes,
+      ]),
+    );
+  }
+
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
       <FormPanel title={supply ? "Edit supply purchase" : "Log supply purchase"} icon={<PackageCheck size={18} />}>
@@ -1777,7 +1846,13 @@ function SuppliesPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2">
         <div className="border-b border-[#eaded2] p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Purchase Log</p>
-          <h3 className="mt-1 text-xl font-semibold">Saved supplies</h3>
+          <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <h3 className="text-xl font-semibold">Saved supplies</h3>
+            <div className="flex flex-wrap gap-2">
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={printPage} type="button">Print</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadSupplies} type="button">Download CSV</button>
+            </div>
+          </div>
         </div>
         <div className="divide-y divide-[#f0e4d8]">
           {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No supplies logged yet.</p> : null}
@@ -1959,6 +2034,27 @@ function CostingForm({
     );
   }
 
+  function downloadCosting() {
+    const filename = `${productName(selectedProductId).toLowerCase().replaceAll(" ", "-")}-costing.csv`;
+    downloadCsv(
+      filename,
+      ["Section", "Name", "Qty", "Unit", "PHP", "Note"],
+      [
+        ...ingredientRows.map((row) => ["Ingredient", `${row.brandName ? `${row.brandName} ` : ""}${row.ingredientName}`, row.quantityUsed, row.unit, row.cost, row.supplierNote]),
+        ["Packaging", "Packaging", "", "", packagingCost, ""],
+        ["Labor", "Labor", "", "", laborEstimate, "Pay for mixing, baking/cooking, cooling, packing, cleaning, and admin time"],
+        ...utilityRows.map((row) => ["Utility", row.name, "", "", row.cost, row.note]),
+        ["Waste", "Waste allowance", "", "", wasteAllowance, ""],
+        ["Summary", "Batch cost", "", "", totalBatchCost, ""],
+        ["Summary", "Yield", costingYield, "pieces/units", "", ""],
+        ["Summary", "Cost per piece", "", "", costPerPiece, ""],
+        ["Summary", "Selling price", "", "", suggestedPrice, ""],
+        ["Summary", "Gross profit per unit", "", "", grossProfit, ""],
+        ["Summary", "Margin %", "", "", margin.toFixed(1), ""],
+      ],
+    );
+  }
+
   return (
     <FormPanel title={costing ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
       {appliedMessage ? <MessageBox message={appliedMessage} tone={appliedMessageTone} /> : null}
@@ -1975,6 +2071,8 @@ function CostingForm({
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={printPage} type="button">Print</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadCosting} type="button">Download CSV</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
             </div>
           </div>
@@ -2039,7 +2137,7 @@ function CostingForm({
           helper={latestBatch?.usablePieces ? `Latest proof batch has ${latestBatch.usablePieces} sellable pieces. Override only if this costing uses a different yield.` : "Enter expected sellable pieces/units before trusting cost per piece."}
         />
         <div className="grid gap-3 sm:grid-cols-3">
-          <Input name="laborEstimate" label="Labor estimate" type="number" step="0.01" value={laborEstimate || ""} onChange={(event) => setLaborEstimate(Number(event.target.value || 0))} helper="Peso value of time spent mixing, baking, cooling, cutting, packing, and cleaning." />
+          <Input name="laborEstimate" label="Labor cost / owner's wage" type="number" step="0.01" value={laborEstimate || ""} onChange={(event) => setLaborEstimate(Number(event.target.value || 0))} helper="Not profit. This pays the person doing the work, even if that person is you." />
           <Input name="wasteAllowance" label="Waste allowance" type="number" step="0.01" value={wasteAllowance || ""} onChange={(event) => setWasteAllowance(Number(event.target.value || 0))} helper="Allowance for broken pieces, test cuts, spills, rejects, or spoilage." />
         </div>
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
@@ -2117,7 +2215,7 @@ function CostingGuide() {
           <li><strong>Vague units:</strong> tsp, tbsp, and cup can match g/ml supply prices when the ingredient has a known density. Gram conversions are estimates.</li>
           <li><strong>Packaging:</strong> box, cup, bottle, label, bag, seal, and insert.</li>
           <li><strong>Utilities:</strong> add only meaningful costs for this test.</li>
-          <li><strong>Labor:</strong> mixing, baking, cooling, packing, cleaning.</li>
+          <li><strong>Labor:</strong> owner&apos;s wage for mixing, baking/cooking, cooling, packing, cleaning, and admin time. Profit comes after labor is paid.</li>
         </ul>
       </div>
     </Panel>
