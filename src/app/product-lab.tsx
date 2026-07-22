@@ -739,6 +739,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 }
 
 type BatchFormulaRow = {
+  brand: string;
   ingredient: string;
   previousQuantity?: number;
   quantity: number;
@@ -753,12 +754,13 @@ function buildBatchIngredientsNotes(formData: FormData) {
     .filter(Boolean);
   const rows = rowIds
     .map((rowId) => ({
+      brand: String(formData.get(`batchBrand-${rowId}`) || "").trim(),
       ingredient: String(formData.get(`batchIngredient-${rowId}`) || "").trim(),
       quantity: Number(formData.get(`batchQuantity-${rowId}`) || 0),
       unit: String(formData.get(`batchUnit-${rowId}`) || "").trim(),
       change: String(formData.get(`batchChange-${rowId}`) || "").trim(),
     }))
-    .filter((row) => row.ingredient || row.quantity > 0 || row.change);
+    .filter((row) => row.brand || row.ingredient || row.quantity > 0 || row.change);
 
   return JSON.stringify(rows);
 }
@@ -773,7 +775,7 @@ function parseBatchIngredients(notes: string): BatchFormulaRow[] {
     if (!Array.isArray(parsed)) {
       return [];
     }
-    return parsed.map((row) => ({ ...row, rowId: crypto.randomUUID() }));
+    return parsed.map((row) => ({ ...row, brand: row.brand ?? "", rowId: crypto.randomUUID() }));
   } catch {
     return [];
   }
@@ -804,7 +806,7 @@ function getFormulaAdjustment(row: BatchFormulaRow) {
 function buildFormulaRowsFromPreviousBatch(previousBatch: ProductBatch | undefined) {
   const previousRows = parseBatchIngredients(previousBatch?.ingredientsNotes ?? "");
   if (previousRows.length === 0) {
-    return [{ change: "", ingredient: "", previousQuantity: undefined, quantity: 0, rowId: crypto.randomUUID(), unit: "" }];
+    return [{ brand: "", change: "", ingredient: "", previousQuantity: undefined, quantity: 0, rowId: crypto.randomUUID(), unit: "" }];
   }
 
   return previousRows.map((row) => ({
@@ -818,7 +820,7 @@ function buildFormulaRowsFromPreviousBatch(previousBatch: ProductBatch | undefin
 function formatBatchFormula(formula: BatchFormulaRow[]) {
   return formula
     .filter((row) => row.ingredient.trim())
-    .map((row) => `${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}`.trim())
+    .map((row) => `${row.brand ? `${row.brand.trim()} ` : ""}${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}`.trim())
     .join("\n");
 }
 
@@ -1019,7 +1021,7 @@ function BatchHistoryPage({
                   </div>
                 </div>
                 <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                  <DetailCard title="Formula" lines={formula.length ? formula.map((row) => `${row.ingredient || "Ingredient"}: ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` / ${row.change}` : ""}`) : ["No formula rows saved"]} />
+                  <DetailCard title="Formula" lines={formula.length ? formula.map((row) => `${row.brand ? `${row.brand} ` : ""}${row.ingredient || "Ingredient"}: ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` / ${row.change}` : ""}`) : ["No formula rows saved"]} />
                   <DetailCard title="Learning" lines={[batch.tasteNotes || "No process/quality notes", batch.wentWrong ? `Issue: ${batch.wentWrong}` : "Issue: none logged", batch.improveNext ? `Next: ${batch.improveNext}` : "Next: not set"]} />
                 </div>
               </article>
@@ -1272,6 +1274,7 @@ function BatchForm({
   supplies: SupplyEntry[];
 }) {
   const [selectedProductId, setSelectedProductId] = useState(batch?.productId ?? products[0].id);
+  const brandOptions = getUniqueSupplyValues(supplies, "brandName");
   const ingredientOptions = getUniqueSupplyValues(supplies, "ingredientName");
   const unitOptions = getUniqueSupplyValues(supplies, "unit");
   const [formulaRows, setFormulaRows] = useState<BatchFormulaRow[]>(() => {
@@ -1284,7 +1287,7 @@ function BatchForm({
   });
 
   function addFormulaRow() {
-    setFormulaRows((current) => [...current, { change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), unit: "" }]);
+    setFormulaRows((current) => [...current, { brand: "", change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), unit: "" }]);
   }
 
   function changeProduct(productId: string) {
@@ -1324,7 +1327,8 @@ function BatchForm({
           </div>
           <div className="mt-3 grid gap-3">
             {formulaRows.map((row, index) => (
-              <div className="grid gap-2 lg:grid-cols-[1fr_100px_80px_150px_170px_70px]" key={row.rowId}>
+              <div className="grid gap-2 lg:grid-cols-[1fr_1fr_100px_80px_150px_170px_70px]" key={row.rowId}>
+                <SupplyValuePicker name={`batchBrand-${row.rowId}`} label="Brand" options={brandOptions} placeholder="Beryl's" value={row.brand} onValueChange={(value) => updateFormulaRow(row.rowId, { brand: value })} />
                 <SupplyValuePicker name={`batchIngredient-${row.rowId}`} label={`Ingredient ${index + 1}`} options={ingredientOptions} placeholder="Cocoa powder" value={row.ingredient} onValueChange={(value) => updateFormulaRow(row.rowId, { ingredient: value })} />
                 <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" value={row.quantity || ""} onChange={(event) => updateFormulaRow(row.rowId, { quantity: Number(event.target.value || 0) })} />
                 <SupplyValuePicker name={`batchUnit-${row.rowId}`} label="Unit" options={unitOptions} placeholder="g" value={row.unit} onValueChange={(value) => updateFormulaRow(row.rowId, { unit: value })} />
@@ -1433,9 +1437,12 @@ function normalizeSupplyText(value: string) {
   return value.trim().toLowerCase();
 }
 
-function getMatchingSupplies(supplies: SupplyEntry[], ingredientName: string, unit: string) {
+function getMatchingSupplies(supplies: SupplyEntry[], brandName: string, ingredientName: string, unit: string) {
   return supplies
-    .filter((supply) => normalizeSupplyText(supply.ingredientName) === normalizeSupplyText(ingredientName) && normalizeSupplyText(supply.unit) === normalizeSupplyText(unit))
+    .filter((supply) => {
+      const brandMatches = !brandName.trim() || normalizeSupplyText(supply.brandName) === normalizeSupplyText(brandName);
+      return brandMatches && normalizeSupplyText(supply.ingredientName) === normalizeSupplyText(ingredientName) && normalizeSupplyText(supply.unit) === normalizeSupplyText(unit);
+    })
     .sort((a, b) => {
       const aUnitCost = a.packQuantity > 0 ? a.totalCost / a.packQuantity : Number.MAX_SAFE_INTEGER;
       const bUnitCost = b.packQuantity > 0 ? b.totalCost / b.packQuantity : Number.MAX_SAFE_INTEGER;
@@ -1702,9 +1709,9 @@ function CostingForm({
         id: "",
         ingredientName: row.ingredient,
         productId: selectedProductId,
-        quantityUsed: 0,
+        quantityUsed: row.quantity,
         rowId: crypto.randomUUID(),
-        supplierNote: row.change,
+        supplierNote: [row.brand ? `Brand: ${row.brand}` : "", row.change].filter(Boolean).join(" / "),
         unit: row.unit,
       }));
 
@@ -1720,7 +1727,7 @@ function CostingForm({
           ? {
               ...row,
               cost: Number(getSupplyUsedCost(supply, row.quantityUsed).toFixed(2)),
-              supplierNote: `${supply.supplierName} / ${supply.purchaseDate} / quality ${supply.qualityRating || 0}/5`,
+              supplierNote: `${supply.brandName ? `Brand: ${supply.brandName} / ` : ""}${supply.supplierName} / ${supply.purchaseDate} / quality ${supply.qualityRating || 0}/5`,
             }
           : row,
       ),
@@ -1748,15 +1755,16 @@ function CostingForm({
           </div>
           <div className="mt-3 grid gap-3">
             {ingredientRows.map((row, index) => {
-              const matches = getMatchingSupplies(supplies, row.ingredientName, row.unit).slice(0, 3);
+              const brandFromNote = row.supplierNote.match(/Brand: ([^/]+)/)?.[1]?.trim() ?? "";
+              const matches = getMatchingSupplies(supplies, brandFromNote, row.ingredientName, row.unit).slice(0, 3);
               return (
                 <div className="rounded-md border border-[#ead9c8] bg-white p-3" key={row.rowId}>
                   <div className="grid gap-2 lg:grid-cols-[1fr_90px_80px_110px_1fr_70px]">
                     <input name={`ingredientId-${row.rowId}`} type="hidden" value={row.id} />
                     <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
-                    <Input name={`quantityUsed-${row.rowId}`} label="Qty used" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
+                    <Input name={`quantityUsed-${row.rowId}`} label="Formula qty" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
                     <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
-                    <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="85" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
+                    <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="Use price" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
                     <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Based on latest supply price / estimated" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
                     <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
                   </div>
