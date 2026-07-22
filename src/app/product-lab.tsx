@@ -686,7 +686,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
-              <BatchForm batch={editingBatch} batches={labState.batches} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} />
+              <BatchForm batch={editingBatch} batches={labState.batches} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} supplies={labState.supplies} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
                 <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
@@ -993,7 +993,7 @@ function BatchHistoryPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
-            <BatchForm batch={batch} batches={labState.batches} cancelEdit={cancelEdit} saveBatch={saveBatch} />
+            <BatchForm batch={batch} batches={labState.batches} cancelEdit={cancelEdit} saveBatch={saveBatch} supplies={labState.supplies} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -1263,13 +1263,17 @@ function BatchForm({
   batches,
   cancelEdit,
   saveBatch,
+  supplies,
 }: {
   batch: ProductBatch | null;
   batches: ProductBatch[];
   cancelEdit: () => void;
   saveBatch: (formData: FormData) => void;
+  supplies: SupplyEntry[];
 }) {
   const [selectedProductId, setSelectedProductId] = useState(batch?.productId ?? products[0].id);
+  const ingredientOptions = getUniqueSupplyValues(supplies, "ingredientName");
+  const unitOptions = getUniqueSupplyValues(supplies, "unit");
   const [formulaRows, setFormulaRows] = useState<BatchFormulaRow[]>(() => {
     const savedRows = parseBatchIngredients(batch?.ingredientsNotes ?? "");
     if (savedRows.length > 0) {
@@ -1321,9 +1325,9 @@ function BatchForm({
           <div className="mt-3 grid gap-3">
             {formulaRows.map((row, index) => (
               <div className="grid gap-2 lg:grid-cols-[1fr_100px_80px_150px_170px_70px]" key={row.rowId}>
-                <Input name={`batchIngredient-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Cocoa powder" value={row.ingredient} onChange={(event) => updateFormulaRow(row.rowId, { ingredient: event.target.value })} />
+                <SupplyValuePicker name={`batchIngredient-${row.rowId}`} label={`Ingredient ${index + 1}`} options={ingredientOptions} placeholder="Cocoa powder" value={row.ingredient} onValueChange={(value) => updateFormulaRow(row.rowId, { ingredient: value })} />
                 <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" value={row.quantity || ""} onChange={(event) => updateFormulaRow(row.rowId, { quantity: Number(event.target.value || 0) })} />
-                <Input name={`batchUnit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => updateFormulaRow(row.rowId, { unit: event.target.value })} />
+                <SupplyValuePicker name={`batchUnit-${row.rowId}`} label="Unit" options={unitOptions} placeholder="g" value={row.unit} onValueChange={(value) => updateFormulaRow(row.rowId, { unit: value })} />
                 <div className="grid gap-1 text-sm font-medium">
                   Previous
                   <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{row.previousQuantity === undefined ? "No previous" : `${row.previousQuantity || 0}${row.unit ? ` ${row.unit}` : ""}`}</p>
@@ -1447,19 +1451,21 @@ function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number) {
   return (supply.totalCost / supply.packQuantity) * quantityUsed;
 }
 
-function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "supplierName" | "unit") {
+function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingredientName" | "supplierName" | "unit") {
   return Array.from(new Set(supplies.map((supply) => supply[key].trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
 function SupplyValuePicker({
   label,
   name,
+  onValueChange,
   options,
   placeholder,
   value,
 }: {
   label: string;
   name: string;
+  onValueChange?: (value: string) => void;
   options: string[];
   placeholder: string;
   value?: string;
@@ -1479,6 +1485,7 @@ function SupplyValuePicker({
           onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
           onChange={(event) => {
             setInputValue(event.target.value);
+            onValueChange?.(event.target.value);
             setIsOpen(true);
           }}
           onFocus={() => setIsOpen(true)}
@@ -1505,6 +1512,7 @@ function SupplyValuePicker({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
                 setInputValue(option);
+                onValueChange?.(option);
                 setIsOpen(false);
               }}
               type="button"
