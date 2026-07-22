@@ -1,4 +1,4 @@
-import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, TastingFeedback } from "./product-lab-types";
+import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -7,6 +7,7 @@ export type LabView =
   | "proof-day"
   | "batches"
   | "costing"
+  | "supplies"
   | "tasting"
   | "journal"
   | "admin"
@@ -21,6 +22,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Proof Day", href: "/proof-day", view: "proof-day" },
   { label: "Proof Batches", href: "/batches", view: "batches" },
   { label: "Costing", href: "/costing", view: "costing" },
+  { label: "Supplies", href: "/supplies", view: "supplies" },
   { label: "Tasting", href: "/tasting", view: "tasting" },
   { label: "Content Journal", href: "/journal", view: "journal" },
   { label: "Product Admin", href: "/admin", view: "admin" },
@@ -35,6 +37,7 @@ export type LabState = {
   batches: ProductBatch[];
   costingEntries: CostingEntry[];
   costings: CostingSummary[];
+  supplies: SupplyEntry[];
   tastings: TastingFeedback[];
   journal: ContentJournalEntry[];
 };
@@ -43,6 +46,7 @@ export const emptyState: LabState = {
   batches: [],
   costingEntries: [],
   costings: [],
+  supplies: [],
   tastings: [],
   journal: [],
 };

@@ -62,6 +62,18 @@ export type CostingEntry = {
   supplierNote: string;
 };
 
+export type SupplyEntry = {
+  id: string;
+  ingredientName: string;
+  supplierName: string;
+  purchaseDate: string;
+  packQuantity: number;
+  unit: string;
+  totalCost: number;
+  qualityRating: number;
+  notes: string;
+};
+
 export type TastingFeedback = {
   id: string;
   productId: string;

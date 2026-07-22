@@ -9,6 +9,7 @@ const titles = {
   "proof-day": "Proof day mode",
   batches: "Product proof batches",
   costing: "Costing and pricing",
+  supplies: "Supplies and supplier prices",
   tasting: "Tasting feedback",
   journal: "Content journal",
   admin: "Product admin",

@@ -74,6 +74,20 @@ create table if not exists costing_summaries (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists supply_entries (
+  id uuid primary key default gen_random_uuid(),
+  ingredient_name text not null,
+  supplier_name text not null,
+  purchase_date date not null default current_date,
+  pack_quantity numeric not null default 0,
+  unit text,
+  total_cost numeric not null default 0,
+  quality_rating numeric not null default 0,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists tasting_feedback (
   id uuid primary key default gen_random_uuid(),
   product_id text not null references products(id) on delete cascade,
@@ -113,6 +127,7 @@ alter table product_batches enable row level security;
 alter table batch_photos enable row level security;
 alter table costing_entries enable row level security;
 alter table costing_summaries enable row level security;
+alter table supply_entries enable row level security;
 alter table tasting_feedback enable row level security;
 alter table content_journal enable row level security;
 
@@ -122,6 +137,7 @@ drop policy if exists "Authenticated users can manage product batches" on produc
 drop policy if exists "Authenticated users can manage batch photos" on batch_photos;
 drop policy if exists "Authenticated users can manage costing entries" on costing_entries;
 drop policy if exists "Authenticated users can manage costing summaries" on costing_summaries;
+drop policy if exists "Authenticated users can manage supply entries" on supply_entries;
 drop policy if exists "Authenticated users can manage tasting feedback" on tasting_feedback;
 drop policy if exists "Authenticated users can manage content journal" on content_journal;
 
@@ -156,6 +172,12 @@ create policy "Authenticated users can manage costing entries"
 
 create policy "Authenticated users can manage costing summaries"
   on costing_summaries for all
+  to authenticated
+  using (true)
+  with check (true);
+
+create policy "Authenticated users can manage supply entries"
+  on supply_entries for all
   to authenticated
   using (true)
   with check (true);

@@ -19,7 +19,7 @@ import {
 import { products, readinessRules, recentJournal } from "@/lib/sample-data";
 import { getProductPriority, getProductStats, getReadinessScore } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, TastingFeedback } from "@/lib/product-lab-types";
+import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -34,7 +34,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     }
 
     const saved = window.localStorage.getItem(storageKey);
-    return saved ? (JSON.parse(saved) as LabState) : emptyState;
+    return saved ? { ...emptyState, ...(JSON.parse(saved) as LabState) } : emptyState;
   });
   const [session, setSession] = useState<Session | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(isSupabaseConfigured);
@@ -83,19 +83,22 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       return;
     }
 
-    const [batchResult, costingEntryResult, costingResult, tastingResult, journalResult] = await Promise.all([
+    const [batchResult, costingEntryResult, costingResult, supplyResult, tastingResult, journalResult] = await Promise.all([
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_summaries").select("*").order("created_at", { ascending: false }),
+      supabase.from("supply_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
       supabase.from("content_journal").select("*").order("created_at", { ascending: false }),
     ]);
 
-    if (batchResult.error || costingEntryResult.error || costingResult.error || tastingResult.error || journalResult.error) {
+    const supplyMissing = supplyResult.error?.message.includes("supply_entries");
+    if (batchResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || tastingResult.error || journalResult.error) {
       const error =
         batchResult.error?.message ||
         costingEntryResult.error?.message ||
         costingResult.error?.message ||
+        supplyResult.error?.message ||
         tastingResult.error?.message ||
         journalResult.error?.message;
       setMessage(`Could not load Supabase data: ${error}`);
@@ -144,6 +147,17 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         coffeeEquipmentCost: Number(row.coffee_equipment_cost ?? 0),
         wasteAllowance: Number(row.waste_allowance ?? 0),
         suggestedPrice: Number(row.suggested_price ?? 0),
+        notes: row.notes ?? "",
+      })),
+      supplies: supplyMissing ? [] : (supplyResult.data ?? []).map((row) => ({
+        id: row.id,
+        ingredientName: row.ingredient_name,
+        supplierName: row.supplier_name,
+        purchaseDate: row.purchase_date,
+        packQuantity: Number(row.pack_quantity ?? 0),
+        unit: row.unit ?? "",
+        totalCost: Number(row.total_cost ?? 0),
+        qualityRating: Number(row.quality_rating ?? 0),
         notes: row.notes ?? "",
       })),
       tastings: (tastingResult.data ?? []).map((row) => ({
@@ -324,10 +338,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       },
       { coffeeEquipmentCost: 0, gasCost: 0, ovenElectricCost: 0, refrigerationCost: 0, waterCost: 0 },
     );
-    const latestFormula = parseBatchIngredients(labState.batches.find((batch) => batch.productId === productId)?.ingredientsNotes ?? "");
-    const ingredientCost = latestFormula.length > 0
-      ? ingredientRows.reduce((total, row) => total + getUsedIngredientCost(row, latestFormula), 0)
-      : ingredientRows.reduce((total, row) => total + row.cost, 0);
+    const ingredientCost = ingredientRows.reduce((total, row) => total + row.cost, 0);
     const utilityNotes = utilityRows.length
       ? `Utilities: ${utilityRows.map((row) => `${row.name || "Unnamed"} ${row.cost}${row.note ? ` (${row.note})` : ""}`).join("; ")}`
       : "";
@@ -442,6 +453,65 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       setEditingCosting(null);
     }
     setMessage("Costing deleted locally.");
+    setMessageTone("good");
+  }
+
+  async function saveSupply(formData: FormData) {
+    const supplyId = String(formData.get("id") || "");
+    const supply: SupplyEntry = {
+      id: supplyId || crypto.randomUUID(),
+      ingredientName: String(formData.get("ingredientName") || "").trim(),
+      supplierName: String(formData.get("supplierName") || "").trim(),
+      purchaseDate: String(formData.get("purchaseDate") || today),
+      packQuantity: Number(formData.get("packQuantity") || 0),
+      unit: String(formData.get("unit") || "").trim(),
+      totalCost: Number(formData.get("totalCost") || 0),
+      qualityRating: Number(formData.get("qualityRating") || 0),
+      notes: String(formData.get("notes") || "").trim(),
+    };
+
+    if (supabase && session) {
+      const payload = {
+        ingredient_name: supply.ingredientName,
+        supplier_name: supply.supplierName,
+        purchase_date: supply.purchaseDate,
+        pack_quantity: supply.packQuantity,
+        unit: supply.unit,
+        total_cost: supply.totalCost,
+        quality_rating: supply.qualityRating,
+        notes: supply.notes,
+      };
+      const query = supplyId
+        ? supabase.from("supply_entries").update(payload).eq("id", supplyId)
+        : supabase.from("supply_entries").insert(payload);
+      const { error } = await query;
+      setMessage(error ? `Supply save failed. Run the supplies SQL first if this is your first time: ${error.message}` : "Supply saved.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        await loadSupabaseData();
+      }
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      supplies: supplyId ? current.supplies.map((entry) => (entry.id === supplyId ? supply : entry)) : [supply, ...current.supplies],
+    }));
+    setMessage("Supply saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteSupply(supplyId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("supply_entries").delete().eq("id", supplyId);
+      setMessage(error ? `Supply delete failed: ${error.message}` : "Supply deleted.");
+      setMessageTone(error ? "bad" : "good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({ ...current, supplies: current.supplies.filter((entry) => entry.id !== supplyId) }));
+    setMessage("Supply deleted locally.");
     setMessageTone("good");
   }
 
@@ -621,6 +691,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
+          {view === "supplies" ? <SuppliesPage deleteSupply={deleteSupply} labState={labState} saveSupply={saveSupply} /> : null}
+
           {view === "tasting" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="tasting">
               <TastingForm cancelEdit={() => setEditingTasting(null)} saveTasting={saveTasting} tasting={editingTasting} />
@@ -731,19 +803,6 @@ function formatBatchFormula(formula: BatchFormulaRow[]) {
     .filter((row) => row.ingredient.trim())
     .map((row) => `${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}`.trim())
     .join("\n");
-}
-
-function findFormulaIngredient(formula: BatchFormulaRow[], ingredientName: string, unit: string) {
-  return formula.find((row) => row.ingredient.trim().toLowerCase() === ingredientName.trim().toLowerCase() && row.unit.trim().toLowerCase() === unit.trim().toLowerCase());
-}
-
-function getUsedIngredientCost(entry: CostingEntry, formula: BatchFormulaRow[]) {
-  const formulaRow = findFormulaIngredient(formula, entry.ingredientName, entry.unit);
-  if (!formulaRow || entry.quantityUsed <= 0 || entry.cost <= 0) {
-    return 0;
-  }
-
-  return (entry.cost / entry.quantityUsed) * formulaRow.quantity;
 }
 
 function ProductDetailPage({ labState }: { labState: LabState }) {
@@ -1349,6 +1408,74 @@ function ProofDayChecklist() {
 type CostingIngredientRow = CostingEntry & { rowId: string };
 type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
 
+function SuppliesPage({
+  deleteSupply,
+  labState,
+  saveSupply,
+}: {
+  deleteSupply: (supplyId: string) => void;
+  labState: LabState;
+  saveSupply: (formData: FormData) => void;
+}) {
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
+      <FormPanel title="Log supply purchase" icon={<PackageCheck size={18} />}>
+        <form action={saveSupply} className="grid gap-3">
+          <input name="id" type="hidden" value="" />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" />
+            <Input name="supplierName" label="Supplier" placeholder="SM / Shopee / local baking store" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <Input name="purchaseDate" label="Date bought" type="date" defaultValue={today} />
+            <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" />
+            <Input name="unit" label="Unit" placeholder="g" />
+            <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" />
+          </div>
+          <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
+          <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." />
+          <Button>Save supply</Button>
+        </form>
+      </FormPanel>
+
+      <Panel title="Supplier Comparison" icon={<Sparkles size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          <p>Use this page only for actual purchases. Costing should use this information later, but this page is the source of truth for supplier prices and quality.</p>
+          <p><strong>Example:</strong> Cocoa powder, Supplier A, 1000g, PHP 100, quality 4/5.</p>
+        </div>
+      </Panel>
+
+      <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2">
+        <div className="border-b border-[#eaded2] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Purchase Log</p>
+          <h3 className="mt-1 text-xl font-semibold">Saved supplies</h3>
+        </div>
+        <div className="divide-y divide-[#f0e4d8]">
+          {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No supplies logged yet.</p> : null}
+          {labState.supplies.map((supply) => {
+            const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
+            return (
+              <article className="grid gap-3 p-5 md:grid-cols-[1fr_220px_90px]" key={supply.id}>
+                <div>
+                  <h4 className="font-semibold">{supply.ingredientName}</h4>
+                  <p className="mt-1 text-sm text-[#6f5a4c]">{supply.supplierName} / {supply.purchaseDate}</p>
+                  <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{supply.notes || "No quality notes."}</p>
+                </div>
+                <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm leading-6 text-[#5f4a3d]">
+                  <p>{supply.packQuantity}{supply.unit ? ` ${supply.unit}` : ""} / PHP {supply.totalCost.toFixed(2)}</p>
+                  <p>Unit cost: PHP {unitCost.toFixed(4)} per {supply.unit || "unit"}</p>
+                  <p>Quality: {supply.qualityRating || 0}/5</p>
+                </div>
+                <button className="h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${supply.ingredientName} from ${supply.supplierName}?`) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function CostingForm({
   cancelEdit,
   batches,
@@ -1392,9 +1519,7 @@ function CostingForm({
   const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
   const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
-  const ingredientTotal = latestFormula.length > 0
-    ? ingredientRows.reduce((total, row) => total + getUsedIngredientCost(row, latestFormula), 0)
-    : ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const sellablePieces = latestBatch?.usablePieces ?? 0;
   const totalBatchCost = ingredientTotal + utilityTotal + packagingCost + laborEstimate + wasteAllowance;
   const costPerPiece = sellablePieces > 0 ? totalBatchCost / sellablePieces : 0;
@@ -1438,8 +1563,8 @@ function CostingForm({
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-sm font-semibold">Supplier ingredient prices</p>
-              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Enter the supplier pack you bought. The app calculates used cost from the latest proof formula.</p>
+              <p className="text-sm font-semibold">Ingredients used</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Cost the quantity used in this product batch. Use Supplies for purchase prices and supplier comparison.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
@@ -1448,22 +1573,18 @@ function CostingForm({
           </div>
           <div className="mt-3 grid gap-3">
             {ingredientRows.map((row, index) => (
-              <div className="grid gap-2 lg:grid-cols-[1fr_100px_80px_110px_130px_1fr_70px]" key={row.rowId}>
+              <div className="grid gap-2 lg:grid-cols-[1fr_90px_80px_110px_1fr_70px]" key={row.rowId}>
                 <input name={`ingredientId-${row.rowId}`} type="hidden" value={row.id} />
-                <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Cocoa powder" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
-                <Input name={`quantityUsed-${row.rowId}`} label="Pack qty" type="number" step="0.01" placeholder="1000" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
+                <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
+                <Input name={`quantityUsed-${row.rowId}`} label="Qty used" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
                 <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
-                <Input name={`ingredientCost-${row.rowId}`} label="Pack PHP" type="number" step="0.01" placeholder="100" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
-                <div className="grid gap-1 text-sm font-medium">
-                  Used cost
-                  <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">PHP {getUsedIngredientCost(row, latestFormula).toFixed(2)}</p>
-                </div>
-                <Input name={`supplierNote-${row.rowId}`} label="Supplier/quality" placeholder="SM / darker cocoa / better aroma" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
+                <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="85" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
+                <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Based on latest supply price / estimated" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
                 <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
               </div>
             ))}
           </div>
-          <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient used total from latest proof formula: PHP {ingredientTotal.toFixed(2)}</p>
+          <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient total: PHP {ingredientTotal.toFixed(2)}</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="packagingCost" label="Packaging cost per batch/unit" type="number" step="0.01" value={packagingCost || ""} onChange={(event) => setPackagingCost(Number(event.target.value || 0))} helper="Boxes, cups, bottles, labels, stickers, bags, seals." />
@@ -1522,9 +1643,9 @@ function CostingGuide() {
   return (
     <Panel title="Costing Rules" icon={<Sparkles size={18} />}>
       <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-        <p>Cost the latest proof formula using real supplier pack prices. Do not average guesses across different recipes.</p>
+        <p>Cost one real product batch. Do not average guesses across different recipes.</p>
         <ul className="space-y-2">
-          <li><strong>Ingredients:</strong> enter supplier pack quantity and pack price. Used cost is calculated from the proof formula.</li>
+          <li><strong>Ingredients:</strong> enter the quantity used and the peso cost of that used amount.</li>
           <li><strong>Packaging:</strong> box, cup, bottle, label, bag, seal, and insert.</li>
           <li><strong>Utilities:</strong> add only meaningful costs for this test.</li>
           <li><strong>Labor:</strong> mixing, baking, cooling, packing, cleaning.</li>
