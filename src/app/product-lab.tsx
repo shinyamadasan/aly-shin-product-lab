@@ -40,6 +40,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [isAuthLoading, setIsAuthLoading] = useState(isSupabaseConfigured);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
+  const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingTasting, setEditingTasting] = useState<TastingFeedback | null>(null);
@@ -93,6 +94,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     ]);
 
     const supplyMissing = supplyResult.error?.message.includes("supply_entries");
+    setIsSuppliesTableMissing(Boolean(supplyMissing));
     if (batchResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || tastingResult.error || journalResult.error) {
       const error =
         batchResult.error?.message ||
@@ -487,6 +489,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       const { error } = await query;
       setMessage(error ? `Supply save failed. Run the supplies SQL first if this is your first time: ${error.message}` : "Supply saved.");
       setMessageTone(error ? "bad" : "good");
+      setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries")));
       if (!error) {
         await loadSupabaseData();
       }
@@ -656,6 +659,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
   return (
     <AppShell view={view}>
+          {message && view !== "dashboard" ? <MessageBox message={message} tone={messageTone} /> : null}
           {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
 
           {view === "products" ? (
@@ -691,7 +695,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
-          {view === "supplies" ? <SuppliesPage deleteSupply={deleteSupply} labState={labState} saveSupply={saveSupply} /> : null}
+          {view === "supplies" ? <SuppliesPage deleteSupply={deleteSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} /> : null}
 
           {view === "tasting" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="tasting">
@@ -1432,16 +1436,23 @@ function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number) {
 
 function SuppliesPage({
   deleteSupply,
+  isSuppliesTableMissing,
   labState,
   saveSupply,
 }: {
   deleteSupply: (supplyId: string) => void;
+  isSuppliesTableMissing: boolean;
   labState: LabState;
   saveSupply: (formData: FormData) => void;
 }) {
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
       <FormPanel title="Log supply purchase" icon={<PackageCheck size={18} />}>
+        {isSuppliesTableMissing ? (
+          <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
+            Supplies table is not created in Supabase yet. Run <strong>supabase-add-supplies.sql</strong> once, then save again.
+          </div>
+        ) : null}
         <form action={saveSupply} className="grid gap-3">
           <input name="id" type="hidden" value="" />
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1539,6 +1550,7 @@ function CostingForm({
   const [laborEstimate, setLaborEstimate] = useState(costing?.laborEstimate ?? 0);
   const [wasteAllowance, setWasteAllowance] = useState(costing?.wasteAllowance ?? 0);
   const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
+  const [appliedSupplyRowId, setAppliedSupplyRowId] = useState("");
 
   const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
@@ -1589,6 +1601,7 @@ function CostingForm({
           : row,
       ),
     );
+    setAppliedSupplyRowId(rowId);
   }
 
   return (
@@ -1637,7 +1650,7 @@ function CostingForm({
                               <p>PHP {unitCost.toFixed(4)} / {supply.unit || "unit"} · quality {supply.qualityRating || 0}/5</p>
                             </div>
                             <p className="self-center font-semibold">Used: PHP {usedCost.toFixed(2)}</p>
-                            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => applySupplyPrice(row.rowId, supply)} type="button">Use price</button>
+                            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => applySupplyPrice(row.rowId, supply)} type="button">{appliedSupplyRowId === row.rowId ? "Applied" : "Use price"}</button>
                           </div>
                         );
                       })}
