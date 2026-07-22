@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import type { Dispatch, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
@@ -308,6 +309,18 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const utilityRowIds = String(formData.get("utilityRowIds") || "")
       .split(",")
       .filter(Boolean);
+    const packagingRowIds = String(formData.get("packagingRowIds") || "")
+      .split(",")
+      .filter(Boolean);
+    const overheadRowIds = String(formData.get("overheadRowIds") || "")
+      .split(",")
+      .filter(Boolean);
+    const equipmentRowIds = String(formData.get("equipmentRowIds") || "")
+      .split(",")
+      .filter(Boolean);
+    const wasteRowIds = String(formData.get("wasteRowIds") || "")
+      .split(",")
+      .filter(Boolean);
     const ingredientRows: CostingEntry[] = ingredientRowIds
       .map((rowId) => {
         const brandName = String(formData.get(`ingredientBrand-${rowId}`) || "").trim();
@@ -349,25 +362,65 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       { coffeeEquipmentCost: 0, gasCost: 0, ovenElectricCost: 0, refrigerationCost: 0, waterCost: 0 },
     );
     const ingredientCost = ingredientRows.reduce((total, row) => total + row.cost, 0);
+    const packagingRows = packagingRowIds.map((rowId) => ({
+      cost: Number(formData.get(`packagingCost-${rowId}`) || 0),
+      name: String(formData.get(`packagingName-${rowId}`) || "").trim(),
+      note: String(formData.get(`packagingNote-${rowId}`) || "").trim(),
+      rowId,
+    }));
+    const overheadRows = overheadRowIds.map((rowId) => ({
+      cost: Number(formData.get(`overheadCost-${rowId}`) || 0),
+      name: String(formData.get(`overheadName-${rowId}`) || "").trim(),
+      note: String(formData.get(`overheadNote-${rowId}`) || "").trim(),
+      rowId,
+    }));
+    const equipmentRows = equipmentRowIds.map((rowId) => ({
+      cost: Number(formData.get(`equipmentCost-${rowId}`) || 0),
+      name: String(formData.get(`equipmentName-${rowId}`) || "").trim(),
+      note: String(formData.get(`equipmentNote-${rowId}`) || "").trim(),
+      rowId,
+    }));
+    const wasteRows = wasteRowIds.map((rowId) => ({
+      cost: Number(formData.get(`wasteCost-${rowId}`) || 0),
+      name: String(formData.get(`wasteName-${rowId}`) || "").trim(),
+      note: String(formData.get(`wasteNote-${rowId}`) || "").trim(),
+      rowId,
+    }));
+    const laborDetail: CostingLaborDetail = {
+      activeRate: Number(formData.get("activeLaborRate") || 0),
+      cleaningMinutes: Number(formData.get("cleaningMinutes") || 0),
+      cookingMinutes: Number(formData.get("cookingMinutes") || 0),
+      coolingMinutes: Number(formData.get("coolingMinutes") || 0),
+      packagingMinutes: Number(formData.get("packagingMinutes") || 0),
+      prepMinutes: Number(formData.get("prepMinutes") || 0),
+    };
+    const activeLaborMinutes = laborDetail.prepMinutes + laborDetail.packagingMinutes + laborDetail.cleaningMinutes;
+    const laborEstimate = (activeLaborMinutes / 60) * laborDetail.activeRate;
+    const packagingCost = packagingRows.reduce((total, row) => total + row.cost, 0);
+    const overheadCost = overheadRows.reduce((total, row) => total + row.cost, 0);
+    const equipmentCost = equipmentRows.reduce((total, row) => total + row.cost, 0);
+    const wasteAllowance = wasteRows.reduce((total, row) => total + row.cost, 0);
+    const targetFoodCost = Number(formData.get("targetFoodCost") || 0.35);
     const utilityNotes = utilityRows.length
       ? `Utilities: ${utilityRows.map((row) => `${row.name || "Unnamed"} ${row.cost}${row.note ? ` (${row.note})` : ""}`).join("; ")}`
       : "";
     const yieldNotes = Number(formData.get("costingYield") || 0) > 0 ? `Costing yield: ${Number(formData.get("costingYield") || 0)}` : "";
     const baseNotes = getCostingBaseNotes(String(formData.get("notes") || "").trim());
+    const structuredNotes = buildCostingStructuredDetail({ equipmentRows, laborDetail, overheadRows, packagingRows, targetFoodCost, wasteRows });
     const costing: CostingSummary = {
       id: costingId || crypto.randomUUID(),
       productId,
       ingredientCost,
-      packagingCost: Number(formData.get("packagingCost") || 0),
-      laborEstimate: Number(formData.get("laborEstimate") || 0),
+      packagingCost,
+      laborEstimate,
       waterCost: utilityBuckets.waterCost,
       gasCost: utilityBuckets.gasCost,
       ovenElectricCost: utilityBuckets.ovenElectricCost,
-      refrigerationCost: utilityBuckets.refrigerationCost,
+      refrigerationCost: utilityBuckets.refrigerationCost + overheadCost,
       coffeeEquipmentCost: utilityBuckets.coffeeEquipmentCost,
-      wasteAllowance: Number(formData.get("wasteAllowance") || 0),
+      wasteAllowance: wasteAllowance + equipmentCost,
       suggestedPrice: Number(formData.get("suggestedPrice") || 0),
-      notes: [baseNotes, yieldNotes, utilityNotes].filter(Boolean).join("\n"),
+      notes: [baseNotes, yieldNotes, utilityNotes, structuredNotes].filter(Boolean).join("\n"),
     };
     if (supabase && session) {
       const { error: deleteError } = await supabase.from("costing_entries").delete().eq("product_id", productId);
@@ -1553,6 +1606,20 @@ function ProofDayChecklist() {
 
 type CostingIngredientRow = CostingEntry & { brandName: string; isManualCost?: boolean; rowId: string };
 type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
+type CostingNamedCostRow = { cost: number; name: string; note: string; rowId: string };
+type CostingLaborDetail = {
+  activeRate: number;
+  cleaningMinutes: number;
+  cookingMinutes: number;
+  coolingMinutes: number;
+  packagingMinutes: number;
+  prepMinutes: number;
+};
+
+const defaultPackagingComponents = ["Box", "Sticker", "Cup", "Lid", "Sleeve", "Label", "Bag", "Napkin", "Tape"];
+const defaultOverheadRows = ["Rent", "Internet", "POS Subscription", "Cleaning Supplies", "Equipment Maintenance", "Business Permits", "Accounting", "Miscellaneous"];
+const defaultEquipmentRows = ["Mixer", "Oven", "Scale", "Coffee Grinder", "Espresso Machine", "Cooling Rack"];
+const defaultWasteRows = ["Ingredient Waste", "Production Waste", "Packaging Waste", "Unsold Inventory", "Spoilage", "Returned Products"];
 
 function normalizeSupplyText(value: string) {
   return value.trim().toLowerCase();
@@ -1690,9 +1757,66 @@ function getCostingYieldFromNotes(notes: string) {
 function getCostingBaseNotes(notes: string) {
   return notes
     .split("\n")
-    .filter((line) => !line.startsWith("Costing yield:") && !line.startsWith("Utilities:"))
+    .filter((line) => !line.startsWith("Costing yield:") && !line.startsWith("Utilities:") && !line.startsWith("Professional costing detail:"))
     .join("\n")
     .trim();
+}
+
+function getCostingStructuredDetail(notes: string) {
+  const rawJson = notes.match(/^Professional costing detail: (.+)$/m)?.[1];
+  if (!rawJson) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawJson) as {
+      equipmentRows?: CostingNamedCostRow[];
+      laborDetail?: CostingLaborDetail;
+      overheadRows?: CostingNamedCostRow[];
+      packagingRows?: CostingNamedCostRow[];
+      targetFoodCost?: number;
+      wasteRows?: CostingNamedCostRow[];
+    };
+  } catch {
+    return null;
+  }
+}
+
+function compactNamedCostRows(rows: CostingNamedCostRow[]) {
+  return rows
+    .map((row) => ({ cost: Number(row.cost || 0), name: row.name.trim(), note: row.note.trim(), rowId: row.rowId }))
+    .filter((row) => row.name || row.cost > 0 || row.note);
+}
+
+function buildCostingStructuredDetail(detail: {
+  equipmentRows: CostingNamedCostRow[];
+  laborDetail: CostingLaborDetail;
+  overheadRows: CostingNamedCostRow[];
+  packagingRows: CostingNamedCostRow[];
+  targetFoodCost: number;
+  wasteRows: CostingNamedCostRow[];
+}) {
+  return `Professional costing detail: ${JSON.stringify({
+    equipmentRows: compactNamedCostRows(detail.equipmentRows),
+    laborDetail: detail.laborDetail,
+    overheadRows: compactNamedCostRows(detail.overheadRows),
+    packagingRows: compactNamedCostRows(detail.packagingRows),
+    targetFoodCost: detail.targetFoodCost,
+    wasteRows: compactNamedCostRows(detail.wasteRows),
+  })}`;
+}
+
+function buildNamedCostRows(names: string[], savedRows?: CostingNamedCostRow[], fallbackCost = 0) {
+  if (savedRows?.length) {
+    return savedRows.map((row) => ({ ...row, rowId: row.rowId || crypto.randomUUID() }));
+  }
+
+  return names.map((name, index) => ({
+    cost: index === 0 ? fallbackCost : 0,
+    name,
+    note: "",
+    rowId: crypto.randomUUID(),
+  }));
 }
 
 function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingredientName" | "supplierName" | "unit") {
@@ -2056,22 +2180,45 @@ function CostingForm({
 
     return rows.length > 0 ? rows : [{ cost: 0, name: "", note: "", rowId: crypto.randomUUID() }];
   });
-  const [packagingCost, setPackagingCost] = useState(costing?.packagingCost ?? 0);
-  const [laborEstimate, setLaborEstimate] = useState(costing?.laborEstimate ?? 0);
-  const [wasteAllowance, setWasteAllowance] = useState(costing?.wasteAllowance ?? 0);
+  const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
+  const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
+  const [packagingRows, setPackagingRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultPackagingComponents, structuredDetail?.packagingRows, costing?.packagingCost ?? 0));
+  const [overheadRows, setOverheadRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultOverheadRows, structuredDetail?.overheadRows));
+  const [equipmentRows, setEquipmentRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultEquipmentRows, structuredDetail?.equipmentRows));
+  const [wasteRows, setWasteRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultWasteRows, structuredDetail?.wasteRows, costing?.wasteAllowance ?? 0));
+  const [laborDetail, setLaborDetail] = useState<CostingLaborDetail>(() => structuredDetail?.laborDetail ?? {
+    activeRate: 120,
+    cleaningMinutes: 0,
+    cookingMinutes: latestBatch?.bakeTimeMinutes ?? 0,
+    coolingMinutes: latestBatch?.coolingTimeMinutes ?? 0,
+    packagingMinutes: 0,
+    prepMinutes: latestBatch?.prepTimeMinutes ?? 0,
+  });
   const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
+  const [targetFoodCost, setTargetFoodCost] = useState(structuredDetail?.targetFoodCost ?? 0.35);
   const [localMessage, setLocalMessage] = useState("");
   const [localMessageTone, setLocalMessageTone] = useState<"good" | "bad" | "info">("info");
 
   const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
-  const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
   const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || latestBatch?.usablePieces || 0);
-  const totalBatchCost = ingredientTotal + utilityTotal + packagingCost + laborEstimate + wasteAllowance;
+  const packagingCost = packagingRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const overheadCost = overheadRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const equipmentCost = equipmentRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const wasteAllowance = wasteRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const activeLaborMinutes = laborDetail.prepMinutes + laborDetail.packagingMinutes + laborDetail.cleaningMinutes;
+  const passiveMinutes = laborDetail.cookingMinutes + laborDetail.coolingMinutes;
+  const laborEstimate = (activeLaborMinutes / 60) * laborDetail.activeRate;
+  const directCost = ingredientTotal + packagingCost + laborEstimate + utilityTotal + wasteAllowance;
+  const indirectCost = overheadCost + equipmentCost;
+  const totalBatchCost = directCost + indirectCost;
   const costPerPiece = costingYield > 0 ? totalBatchCost / costingYield : 0;
   const grossProfit = suggestedPrice - costPerPiece;
   const margin = suggestedPrice > 0 ? (grossProfit / suggestedPrice) * 100 : 0;
+  const foodCostPercent = suggestedPrice > 0 ? (costPerPiece / suggestedPrice) * 100 : 0;
+  const markup = costPerPiece > 0 ? ((suggestedPrice - costPerPiece) / costPerPiece) * 100 : 0;
+  const suggestedTargetPrice = targetFoodCost > 0 ? costPerPiece / targetFoodCost : 0;
   const appliedMessage = message || localMessage;
   const appliedMessageTone = message ? messageTone : localMessageTone;
 
@@ -2091,6 +2238,16 @@ function CostingForm({
     setUtilityRows((current) => [...current, { cost: 0, name: "", note: "", rowId: crypto.randomUUID() }]);
     setLocalMessage("Utility row added.");
     setLocalMessageTone("good");
+  }
+
+  function addNamedCostRow(setRows: Dispatch<SetStateAction<CostingNamedCostRow[]>>, name: string) {
+    setRows((current) => [...current, { cost: 0, name, note: "", rowId: crypto.randomUUID() }]);
+    setLocalMessage(`${name} row added.`);
+    setLocalMessageTone("good");
+  }
+
+  function updateNamedCostRow(setRows: Dispatch<SetStateAction<CostingNamedCostRow[]>>, rowId: string, changes: Partial<CostingNamedCostRow>) {
+    setRows((current) => current.map((row) => (row.rowId === rowId ? { ...row, ...changes } : row)));
   }
 
   function importLatestFormula() {
@@ -2179,6 +2336,10 @@ function CostingForm({
         <input name="id" type="hidden" value={costing?.id ?? ""} />
         <input name="ingredientRowIds" type="hidden" value={ingredientRows.map((row) => row.rowId).join(",")} />
         <input name="utilityRowIds" type="hidden" value={utilityRows.map((row) => row.rowId).join(",")} />
+        <input name="packagingRowIds" type="hidden" value={packagingRows.map((row) => row.rowId).join(",")} />
+        <input name="overheadRowIds" type="hidden" value={overheadRows.map((row) => row.rowId).join(",")} />
+        <input name="equipmentRowIds" type="hidden" value={equipmentRows.map((row) => row.rowId).join(",")} />
+        <input name="wasteRowIds" type="hidden" value={wasteRows.map((row) => row.rowId).join(",")} />
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -2240,10 +2401,7 @@ function CostingForm({
           </div>
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient total: PHP {ingredientTotal.toFixed(2)}</p>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Input name="packagingCost" label="Packaging cost per batch/unit" type="number" step="0.01" value={packagingCost || ""} onChange={(event) => setPackagingCost(Number(event.target.value || 0))} helper="Boxes, cups, bottles, labels, stickers, bags, seals." />
-          <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
-        </div>
+        <NamedCostSection addLabel="Add packaging" namePrefix="packaging" onAdd={() => addNamedCostRow(setPackagingRows, "Packaging")} rows={packagingRows} setRows={setPackagingRows} title="Packaging components" total={packagingCost} updateNamedCostRow={updateNamedCostRow} />
         <Input
           name="costingYield"
           label="Batch yield used for costing"
@@ -2253,9 +2411,22 @@ function CostingForm({
           onChange={(event) => setCostingYield(Number(event.target.value || 0))}
           helper={latestBatch?.usablePieces ? `Latest proof batch has ${latestBatch.usablePieces} sellable pieces. Override only if this costing uses a different yield.` : "Enter expected sellable pieces/units before trusting cost per piece."}
         />
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Input name="laborEstimate" label="Labor cost / owner's wage" type="number" step="0.01" value={laborEstimate || ""} onChange={(event) => setLaborEstimate(Number(event.target.value || 0))} helper="Not profit. This pays the person doing the work, even if that person is you." />
-          <Input name="wasteAllowance" label="Waste allowance" type="number" step="0.01" value={wasteAllowance || ""} onChange={(event) => setWasteAllowance(Number(event.target.value || 0))} helper="Allowance for broken pieces, test cuts, spills, rejects, or spoilage." />
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <p className="text-sm font-semibold">Labor timing</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Active labor is paid work. Cooking and cooling are tracked separately as passive time.</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <Input name="prepMinutes" label="Preparation min" type="number" step="1" value={laborDetail.prepMinutes || ""} onChange={(event) => setLaborDetail((current) => ({ ...current, prepMinutes: Number(event.target.value || 0) }))} />
+            <Input name="cookingMinutes" label="Cooking min" type="number" step="1" value={laborDetail.cookingMinutes || ""} onChange={(event) => setLaborDetail((current) => ({ ...current, cookingMinutes: Number(event.target.value || 0) }))} />
+            <Input name="coolingMinutes" label="Cooling min" type="number" step="1" value={laborDetail.coolingMinutes || ""} onChange={(event) => setLaborDetail((current) => ({ ...current, coolingMinutes: Number(event.target.value || 0) }))} />
+            <Input name="packagingMinutes" label="Packaging min" type="number" step="1" value={laborDetail.packagingMinutes || ""} onChange={(event) => setLaborDetail((current) => ({ ...current, packagingMinutes: Number(event.target.value || 0) }))} />
+            <Input name="cleaningMinutes" label="Cleaning min" type="number" step="1" value={laborDetail.cleaningMinutes || ""} onChange={(event) => setLaborDetail((current) => ({ ...current, cleaningMinutes: Number(event.target.value || 0) }))} />
+            <Input name="activeLaborRate" label="Active labor PHP/hr" type="number" step="0.01" value={laborDetail.activeRate || ""} onChange={(event) => setLaborDetail((current) => ({ ...current, activeRate: Number(event.target.value || 0) }))} />
+          </div>
+          <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-3">
+            <CostingBreakdown label="Active minutes" value={activeLaborMinutes} isCurrency={false} />
+            <CostingBreakdown label="Passive minutes" value={passiveMinutes} isCurrency={false} />
+            <CostingBreakdown label="Labor cost" value={laborEstimate} />
+          </div>
         </div>
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -2281,18 +2452,32 @@ function CostingForm({
           </div>
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Utility total: PHP {utilityTotal.toFixed(2)}</p>
         </div>
+        <NamedCostSection addLabel="Add overhead" namePrefix="overhead" onAdd={() => addNamedCostRow(setOverheadRows, "Overhead")} rows={overheadRows} setRows={setOverheadRows} title="Overhead allocation" total={overheadCost} updateNamedCostRow={updateNamedCostRow} />
+        <NamedCostSection addLabel="Add equipment" namePrefix="equipment" onAdd={() => addNamedCostRow(setEquipmentRows, "Equipment")} rows={equipmentRows} setRows={setEquipmentRows} title="Equipment depreciation per batch" total={equipmentCost} updateNamedCostRow={updateNamedCostRow} />
+        <NamedCostSection addLabel="Add waste" namePrefix="waste" onAdd={() => addNamedCostRow(setWasteRows, "Waste")} rows={wasteRows} setRows={setWasteRows} title="Waste and loss" total={wasteAllowance} updateNamedCostRow={updateNamedCostRow} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
+          <Input name="targetFoodCost" label="Target food cost %" type="number" step="0.01" value={targetFoodCost || ""} onChange={(event) => setTargetFoodCost(Number(event.target.value || 0))} helper="Use 0.35 for 35%. Suggested target price updates below." />
+        </div>
         <div className="grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
           <CostingMetric label="Batch cost" value={`PHP ${totalBatchCost.toFixed(2)}`} />
           <CostingMetric label="Cost per piece" value={costingYield > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need yield"} />
           <CostingMetric label="Gross profit/unit" value={costingYield > 0 ? `PHP ${grossProfit.toFixed(2)}` : "Need yield"} />
-          <CostingMetric label="Margin" value={costingYield > 0 ? `${margin.toFixed(1)}%` : "Need yield"} />
+          <CostingMetric label="Food cost" value={costingYield > 0 ? `${foodCostPercent.toFixed(1)}%` : "Need yield"} />
+          <CostingMetric label="Gross margin" value={costingYield > 0 ? `${margin.toFixed(1)}%` : "Need yield"} />
+          <CostingMetric label="Markup" value={costingYield > 0 ? `${markup.toFixed(1)}%` : "Need yield"} />
+          <CostingMetric label="Break-even" value={costingYield > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need yield"} />
+          <CostingMetric label="Target price" value={costingYield > 0 ? `PHP ${suggestedTargetPrice.toFixed(2)}` : "Need yield"} />
         </div>
-        <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-5">
+        <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-4">
           <CostingBreakdown label="Ingredients" value={ingredientTotal} />
           <CostingBreakdown label="Packaging" value={packagingCost} />
           <CostingBreakdown label="Labor" value={laborEstimate} />
           <CostingBreakdown label="Utilities" value={utilityTotal} />
           <CostingBreakdown label="Waste" value={wasteAllowance} />
+          <CostingBreakdown label="Direct cost" value={directCost} />
+          <CostingBreakdown label="Indirect cost" value={indirectCost} />
+          <CostingBreakdown label="Total cost" value={totalBatchCost} />
         </div>
         <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={getCostingBaseNotes(costing?.notes ?? "")} />
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -2404,11 +2589,54 @@ function CostingMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CostingBreakdown({ label, value }: { label: string; value: number }) {
+function NamedCostSection({
+  addLabel,
+  namePrefix,
+  onAdd,
+  rows,
+  setRows,
+  title,
+  total,
+  updateNamedCostRow,
+}: {
+  addLabel: string;
+  namePrefix: string;
+  onAdd: () => void;
+  rows: CostingNamedCostRow[];
+  setRows: Dispatch<SetStateAction<CostingNamedCostRow[]>>;
+  title: string;
+  total: number;
+  updateNamedCostRow: (setRows: Dispatch<SetStateAction<CostingNamedCostRow[]>>, rowId: string, changes: Partial<CostingNamedCostRow>) => void;
+}) {
+  return (
+    <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold">{title}</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Use per-batch costs so the dashboard stays comparable across products.</p>
+        </div>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onAdd} type="button">{addLabel}</button>
+      </div>
+      <div className="mt-3 grid gap-2">
+        {rows.map((row) => (
+          <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_70px]" key={row.rowId}>
+            <Input name={`${namePrefix}Name-${row.rowId}`} label="Name" value={row.name} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { name: event.target.value })} />
+            <Input name={`${namePrefix}Cost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" value={row.cost || ""} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { cost: Number(event.target.value || 0) })} />
+            <Input name={`${namePrefix}Note-${row.rowId}`} label="Note" value={row.note} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { note: event.target.value })} />
+            <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Total: PHP {total.toFixed(2)}</p>
+    </div>
+  );
+}
+
+function CostingBreakdown({ isCurrency = true, label, value }: { isCurrency?: boolean; label: string; value: number }) {
   return (
     <div>
       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{label}</p>
-      <p className="mt-1 font-semibold">PHP {Number(value || 0).toFixed(2)}</p>
+      <p className="mt-1 font-semibold">{isCurrency ? `PHP ${Number(value || 0).toFixed(2)}` : Number(value || 0).toFixed(0)}</p>
     </div>
   );
 }
