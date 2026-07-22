@@ -7,7 +7,7 @@ export function getEquipmentTotals(equipment: EquipmentEntry) {
   const lifetimeBatches = annualBatches * equipment.usefulLifeYears;
 
   if (equipment.calculationMode === "replacement-reserve") {
-    const perBatch = lifetimeBatches > 0 ? equipment.purchasePrice / lifetimeBatches : 0;
+    const perBatch = equipment.batchesPerUnit > 0 ? equipment.purchasePrice / equipment.batchesPerUnit : 0;
     return {
       annualBatches,
       lifetimeBatches,

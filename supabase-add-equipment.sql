@@ -9,12 +9,16 @@ create table if not exists equipment (
   useful_life_years numeric not null default 5,
   batches_per_week numeric not null default 4,
   annual_maintenance_percent numeric not null default 3,
+  batches_per_unit numeric not null default 0,
   calculation_mode text not null default 'depreciation',
   notes text,
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table equipment
+  add column if not exists batches_per_unit numeric not null default 0;
 
 alter table equipment enable row level security;
 

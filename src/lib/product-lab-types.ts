@@ -113,6 +113,7 @@ export type EquipmentEntry = {
   usefulLifeYears: number;
   batchesPerWeek: number;
   annualMaintenancePercent: number;
+  batchesPerUnit: number;
   calculationMode: EquipmentCalculationMode;
   notes: string;
   isActive: boolean;
