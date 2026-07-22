@@ -23,8 +23,9 @@ import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, T
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
-import { MediaChecklist, ProductSelect } from "@/components/product-controls";
+import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
+import { getCostingTotals } from "@/lib/costing";
 
 export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [labState, setLabState] = useState<LabState>(() => {
@@ -588,6 +589,18 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
+          {view === "product-detail" ? <ProductDetailPage labState={labState} /> : null}
+
+          {view === "proof-day" ? (
+            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
+              <BatchForm batch={editingBatch} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} />
+              <div className="space-y-5">
+                <ProofDayModeGuide />
+                <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
+              </div>
+            </section>
+          ) : null}
+
           {view === "batches" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day">
               <BatchForm batch={editingBatch} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} />
@@ -625,7 +638,189 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
               </div>
             </section>
           ) : null}
+
+          {view === "admin" ? <ProductAdminPage labState={labState} /> : null}
+
+          {view === "launch" ? <LaunchOfferBuilder labState={labState} /> : null}
+
+          {view === "content-studio" ? <ContentStudio labState={labState} /> : null}
     </AppShell>
+  );
+}
+
+function ProductDetailPage({ labState }: { labState: LabState }) {
+  const [selectedProductId, setSelectedProductId] = useState(products[0].id);
+  const product = products.find((item) => item.id === selectedProductId) ?? products[0];
+  const batches = labState.batches.filter((batch) => batch.productId === product.id);
+  const latestBatch = batches[0];
+  const costing = labState.costings.find((entry) => entry.productId === product.id);
+  const tastings = labState.tastings.filter((entry) => entry.productId === product.id);
+  const journal = labState.journal.filter((entry) => entry.productId === product.id);
+  const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+  const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
+  const averageRating = stats.averageRating ? stats.averageRating.toFixed(1) : "None";
+  const costingTotals = costing ? getCostingTotals(costing) : null;
+
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white">
+        <div className="border-b border-[#eaded2] p-5">
+          <label className="grid max-w-sm gap-1 text-sm font-medium">
+            Product
+            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" value={selectedProductId} onChange={(event) => setSelectedProductId(event.target.value)}>
+              {products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          <h3 className="mt-4 text-2xl font-semibold">{product.name}</h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">{product.description}</p>
+        </div>
+        <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard icon={<FlaskConical size={20} />} label="Batches" value={batches.length} detail={latestBatch ? latestBatch.launchDecision : "No proof yet"} />
+          <MetricCard icon={<Sparkles size={20} />} label="Batch cost" value={costingTotals ? Math.round(costingTotals.totalBatchCost) : 0} detail={costing ? "PHP total" : "No costing"} />
+          <MetricCard icon={<Star size={20} />} label="Tastings" value={tastings.length} detail={`Avg: ${averageRating}`} />
+          <MetricCard icon={<NotebookPen size={20} />} label="Content" value={journal.length} detail="Journal entries" />
+        </div>
+        <div className="grid gap-4 p-5 pt-0 xl:grid-cols-2">
+          <DetailCard title="Latest Proof" lines={[latestBatch?.batchVersion ?? "No proof batch saved", latestBatch?.wentWrong ? `Issue: ${latestBatch.wentWrong}` : "Issue: not logged", latestBatch?.improveNext ? `Next: ${latestBatch.improveNext}` : "Next: not set"]} />
+          <DetailCard title="Costing" lines={[costingTotals ? `Batch cost: PHP ${costingTotals.totalBatchCost.toFixed(2)}` : "No costing saved", costing ? `Selling price: PHP ${costing.suggestedPrice}` : "Price not set", costingTotals ? `Utilities: PHP ${costingTotals.utilityTotal.toFixed(2)}` : "Utilities not set"]} />
+          <DetailCard title="Tasting Signals" lines={[`Feedback count: ${tastings.length}`, `Average rating: ${averageRating}`, tastings[0]?.improve ? `Latest improvement: ${tastings[0].improve}` : "No improvement signal yet"]} />
+          <DetailCard title="Content Signals" lines={[journal[0]?.postIdeas ? `Best use: ${journal[0].postIdeas}` : "No content angle yet", journal[0]?.mediaCaptured ? `Captured: ${journal[0].mediaCaptured}` : "No media logged", journal[0]?.nextAction ? `Next: ${journal[0].nextAction}` : "No next content action"]} />
+        </div>
+      </div>
+      <Panel title="Next Action" icon={<ClipboardCheck size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          <p>Readiness: {readiness.percent}%</p>
+          <p>{latestBatch?.improveNext || "Create or complete the next proof batch before making a launch decision."}</p>
+          <a className="inline-flex rounded-md bg-[#8f5632] px-3 py-2 text-sm font-semibold text-white" href="/proof-day">Open Proof Day</a>
+        </div>
+      </Panel>
+    </section>
+  );
+}
+
+function DetailCard({ lines, title }: { lines: string[]; title: string }) {
+  return (
+    <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-4">
+      <h4 className="font-semibold">{title}</h4>
+      <div className="mt-3 space-y-2 text-sm leading-6 text-[#5f4a3d]">
+        {lines.map((line) => <p key={line}>{line}</p>)}
+      </div>
+    </div>
+  );
+}
+
+function ProofDayModeGuide() {
+  return (
+    <Panel title="Proof Day Mode" icon={<CheckCircle2 size={18} />}>
+      <div className="space-y-4 text-sm leading-6 text-[#5f4a3d]">
+        <p>Use this page during the actual kitchen session. Save the batch record first, then save the content capture while the details are fresh.</p>
+        <ProofDayChecklist />
+      </div>
+    </Panel>
+  );
+}
+
+function ProductAdminPage({ labState }: { labState: LabState }) {
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white">
+        <div className="border-b border-[#eaded2] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Backend Control</p>
+          <h3 className="mt-1 text-xl font-semibold">Product Admin Board</h3>
+          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Use this as your backend checklist for what each product needs before your wife spends more kitchen time.</p>
+        </div>
+        <div className="divide-y divide-[#f0e4d8]">
+          {products.map((product) => {
+            const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+            return (
+              <article className="grid gap-3 p-4 md:grid-cols-[1fr_240px]" key={product.id}>
+                <div>
+                  <h4 className="font-semibold">{product.name}</h4>
+                  <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">{product.description}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <StatusPill label={`${stats.proofBatches} proof`} done={stats.proofBatches > 0} />
+                    <StatusPill label="Costing" done={stats.costingDone} />
+                    <StatusPill label={`${stats.tastingCount}/5 tastings`} done={stats.tastingCount >= 5} />
+                  </div>
+                </div>
+                <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm leading-6 text-[#5f4a3d]">
+                  <p className="font-semibold">Admin decision</p>
+                  <p>{stats.proofBatches === 0 ? "Needs first proof batch" : `Latest: ${stats.latestDecision}`}</p>
+                  <p>{product.category === "Coffee" ? "Keep as later add-on test." : "Eligible for proof cycle."}</p>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+      <Panel title="Admin Limits" icon={<ShieldAlert size={18} />}>
+        <p className="text-sm leading-6 text-[#5f4a3d]">This board controls priorities for now. Full product create/edit should be a dedicated database change later, because products are still seeded from the app and Supabase together.</p>
+      </Panel>
+    </section>
+  );
+}
+
+function LaunchOfferBuilder({ labState }: { labState: LabState }) {
+  const candidates = products.filter((product) => {
+    const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+    return stats.proofBatches > 0 && stats.costingDone;
+  });
+
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+      <FormPanel title="Launch offer draft" icon={<PackageCheck size={18} />}>
+        <form className="grid gap-3">
+          <Input label="Offer name" placeholder="Aly & Shin First Weekend Box" />
+          <Select label="Hero product" options={candidates.length ? candidates.map((product) => product.name) : ["No costed proof product yet"]} />
+          <Input label="Target launch date" type="date" />
+          <Input label="Order cutoff" placeholder="Friday 6 PM" />
+          <Textarea label="Pickup/delivery rules" placeholder="Pickup only / limited delivery / delivery fee / delivery window." />
+          <Textarea label="Storage and serving instructions" placeholder="Keep chilled, stir before drinking, add ice after delivery, consume within..." />
+          <Textarea label="Bundle idea" placeholder="Example: Brownie box + optional bottled latte add-on." />
+        </form>
+      </FormPanel>
+      <Panel title="Ready Inputs" icon={<ClipboardCheck size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          {candidates.length === 0 ? <p>No product has both proof and costing yet.</p> : null}
+          {candidates.map((product) => <p key={product.id}>{product.name}: proof + costing exist.</p>)}
+        </div>
+      </Panel>
+    </section>
+  );
+}
+
+function ContentStudio({ labState }: { labState: LabState }) {
+  const latest = labState.journal[0];
+  const product = latest ? productName(latest.productId) : "Selected product";
+  const angle = latest?.postIdeas || "product proof";
+  const lesson = latest?.lessonLearned || "Show what changed and what you learned from the test.";
+  const next = latest?.nextAction || "Pick the strongest clip and draft one simple post.";
+
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Repurpose Real Proof</p>
+        <h3 className="mt-1 text-xl font-semibold">Content Draft From Latest Journal</h3>
+        <div className="mt-5 grid gap-4 xl:grid-cols-3">
+          <DetailCard title="Reel" lines={[`Hook: Testing ${product} again today.`, `Middle: ${lesson}`, `Close: ${next}`]} />
+          <DetailCard title="Carousel" lines={[`Slide 1: ${product} test`, `Slide 2: What changed`, `Slide 3: Texture/result`, `Slide 4: What we fix next`, `Slide 5: Follow the proof process`]} />
+          <DetailCard title="Caption" lines={[`Today we tested ${product}.`, lesson, `Next step: ${next}`, `Angle: ${angle}`]} />
+        </div>
+      </div>
+      <Panel title="Source Journal" icon={<NotebookPen size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          {latest ? (
+            <>
+              <p>{product}</p>
+              <p>Captured: {latest.mediaCaptured || "No media logged"}</p>
+              <p>Use: {angle}</p>
+            </>
+          ) : (
+            <p>No journal entries yet. Save a real content capture first.</p>
+          )}
+        </div>
+      </Panel>
+    </section>
   );
 }
 

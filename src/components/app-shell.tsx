@@ -5,10 +5,15 @@ import { navItems, type LabView } from "@/lib/lab-state";
 const titles = {
   dashboard: "Product proof command center",
   products: "Products and launch readiness",
+  "product-detail": "Product detail",
+  "proof-day": "Proof day mode",
   batches: "Product proof batches",
   costing: "Costing and pricing",
   tasting: "Tasting feedback",
   journal: "Content journal",
+  admin: "Product admin",
+  launch: "Launch offer builder",
+  "content-studio": "Content studio",
 };
 
 export function AppShell({ children, view }: { children: React.ReactNode; view: LabView }) {

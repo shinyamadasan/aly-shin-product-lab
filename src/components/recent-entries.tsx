@@ -120,7 +120,7 @@ function RecentList({
               {item.onEdit || item.onDelete ? (
                 <div className="flex shrink-0 gap-2">
                   {item.onEdit ? <button className="text-xs font-semibold text-[#8f5632] underline" onClick={item.onEdit} type="button">Edit</button> : null}
-                  {item.onDelete ? <button className="text-xs font-semibold text-[#8a3827] underline" onClick={item.onDelete} type="button">Delete</button> : null}
+                  {item.onDelete ? <button className="text-xs font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${item.title}?`) ? item.onDelete?.() : undefined} type="button">Delete</button> : null}
                 </div>
               ) : null}
             </div>
