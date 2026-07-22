@@ -81,3 +81,18 @@ Build first:
 - Launch readiness dashboard
 
 Do not build public ordering yet.
+# Aly & Shin Product Lab
+
+## Internal CLI
+
+Use the lab CLI to verify app workflows without clicking through the UI every time:
+
+```bash
+npm run lab -- help
+npm run lab -- validate-schema
+npm run lab -- audit-costing
+npm run lab -- test-proof-to-costing
+npm run lab -- context
+```
+
+The CLI is intentionally small. It should grow when a workflow needs repeatable verification, especially costing, proof batch formula transfer, Supabase schema checks, and launch readiness audits.

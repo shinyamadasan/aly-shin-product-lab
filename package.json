@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "lab": "node scripts/lab-cli.mjs",
     "start": "next start",
     "lint": "eslint"
   },
