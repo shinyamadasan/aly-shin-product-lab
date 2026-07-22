@@ -1464,7 +1464,11 @@ function SupplyValuePicker({
   value?: string;
 }) {
   const [selectedValue, setSelectedValue] = useState(value && options.includes(value) ? value : value ? "__new" : "");
-  const showCustomInput = selectedValue === "__new" || options.length === 0;
+  const showCustomInput = selectedValue === "__new";
+
+  if (options.length === 0) {
+    return <Input name={name} label={label} placeholder={placeholder} defaultValue={value} />;
+  }
 
   return (
     <div className="grid gap-2">
