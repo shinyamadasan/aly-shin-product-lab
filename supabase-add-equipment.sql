@@ -45,3 +45,7 @@ where not exists (select 1 from equipment where brand = 'La Germania' and model 
 insert into equipment (name, brand, model, purchase_price, residual_value_percent, useful_life_years, batches_per_week, annual_maintenance_percent, calculation_mode, is_active)
 select 'Stand Mixer', 'Hanabishi', 'HPSTMIX50', 6500, 10, 5, 4, 3, 'depreciation', true
 where not exists (select 1 from equipment where brand = 'Hanabishi' and model = 'HPSTMIX50');
+
+insert into equipment (name, brand, model, purchase_price, batches_per_unit, tank_size_kg, burn_rate_kg_per_hour, calculation_mode, is_active)
+select '11kg LPG Tank', '', '', 950, 0, 11, 0.20, 'gas-burn-rate', true
+where not exists (select 1 from equipment where name = '11kg LPG Tank' and calculation_mode = 'gas-burn-rate');
