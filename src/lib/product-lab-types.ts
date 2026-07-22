@@ -22,6 +22,7 @@ export type ProductBatch = {
   productId: string;
   batchVersion: string;
   dateMade: string;
+  ingredientsNotes: string;
   prepTimeMinutes: number;
   bakeTimeMinutes: number;
   coolingTimeMinutes: number;

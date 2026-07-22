@@ -109,6 +109,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         productId: row.product_id,
         batchVersion: row.batch_version,
         dateMade: row.date_made,
+        ingredientsNotes: row.ingredients_notes ?? "",
         prepTimeMinutes: row.prep_time_minutes ?? 0,
         bakeTimeMinutes: row.bake_time_minutes ?? 0,
         coolingTimeMinutes: row.cooling_time_minutes ?? 0,
@@ -207,6 +208,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       productId: String(formData.get("productId")),
       batchVersion: String(formData.get("batchVersion") || "V1"),
       dateMade: String(formData.get("dateMade") || today),
+      ingredientsNotes: buildBatchIngredientsNotes(formData),
       prepTimeMinutes: Number(formData.get("prepTimeMinutes") || 0),
       bakeTimeMinutes: Number(formData.get("bakeTimeMinutes") || 0),
       coolingTimeMinutes: Number(formData.get("coolingTimeMinutes") || 0),
@@ -224,6 +226,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         product_id: batch.productId,
         batch_version: batch.batchVersion,
         date_made: batch.dateMade,
+        ingredients_notes: batch.ingredientsNotes,
         prep_time_minutes: batch.prepTimeMinutes,
         bake_time_minutes: batch.bakeTimeMinutes,
         cooling_time_minutes: batch.coolingTimeMinutes,
@@ -602,14 +605,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           ) : null}
 
           {view === "batches" ? (
-            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day">
-              <BatchForm batch={editingBatch} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} />
-              <div className="space-y-5">
-                <ProofDayChecklist />
-                <ProofBatchGuide />
-                <RecentEntries deleteBatch={deleteBatch} editBatch={setEditingBatch} labState={labState} only="batches" />
-              </div>
-            </section>
+            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} />
           ) : null}
 
           {view === "costing" ? (
@@ -646,6 +642,46 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           {view === "content-studio" ? <ContentStudio labState={labState} /> : null}
     </AppShell>
   );
+}
+
+type BatchFormulaRow = {
+  ingredient: string;
+  quantity: number;
+  unit: string;
+  change: string;
+  rowId: string;
+};
+
+function buildBatchIngredientsNotes(formData: FormData) {
+  const rowIds = String(formData.get("batchIngredientRowIds") || "")
+    .split(",")
+    .filter(Boolean);
+  const rows = rowIds
+    .map((rowId) => ({
+      ingredient: String(formData.get(`batchIngredient-${rowId}`) || "").trim(),
+      quantity: Number(formData.get(`batchQuantity-${rowId}`) || 0),
+      unit: String(formData.get(`batchUnit-${rowId}`) || "").trim(),
+      change: String(formData.get(`batchChange-${rowId}`) || "").trim(),
+    }))
+    .filter((row) => row.ingredient || row.quantity > 0 || row.change);
+
+  return JSON.stringify(rows);
+}
+
+function parseBatchIngredients(notes: string): BatchFormulaRow[] {
+  if (!notes) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(notes) as Array<Omit<BatchFormulaRow, "rowId">>;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map((row) => ({ ...row, rowId: crypto.randomUUID() }));
+  } catch {
+    return [];
+  }
 }
 
 function ProductDetailPage({ labState }: { labState: LabState }) {
@@ -715,8 +751,73 @@ function ProofDayModeGuide() {
       <div className="space-y-4 text-sm leading-6 text-[#5f4a3d]">
         <p>Use this page during the actual kitchen session. Save the batch record first, then save the content capture while the details are fresh.</p>
         <ProofDayChecklist />
+        <ProofBatchGuide />
       </div>
     </Panel>
+  );
+}
+
+function BatchHistoryPage({
+  batch,
+  cancelEdit,
+  deleteBatch,
+  editBatch,
+  labState,
+  saveBatch,
+}: {
+  batch: ProductBatch | null;
+  cancelEdit: () => void;
+  deleteBatch: (batchId: string) => void;
+  editBatch: (batch: ProductBatch) => void;
+  labState: LabState;
+  saveBatch: (formData: FormData) => void;
+}) {
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white">
+        {batch ? (
+          <div className="border-b border-[#eaded2] p-5">
+            <BatchForm batch={batch} cancelEdit={cancelEdit} saveBatch={saveBatch} />
+          </div>
+        ) : null}
+        <div className="border-b border-[#eaded2] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Experiment History</p>
+          <h3 className="mt-1 text-xl font-semibold">Proof batch records</h3>
+          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Review formulas, adjustments, issues, and next tests. Create new experiments from Proof Day.</p>
+        </div>
+        <div className="divide-y divide-[#f0e4d8]">
+          {labState.batches.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No proof batches yet.</p> : null}
+          {labState.batches.map((batch) => {
+            const formula = parseBatchIngredients(batch.ingredientsNotes);
+            return (
+              <article className="p-5" key={batch.id}>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h4 className="font-semibold">{productName(batch.productId)} {batch.batchVersion}</h4>
+                    <p className="mt-1 text-sm text-[#6f5a4c]">{batch.dateMade} / {batch.launchDecision}</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => editBatch(batch)} type="button">Edit</button>
+                    <button className="text-sm font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${batch.batchVersion}?`) ? deleteBatch(batch.id) : undefined} type="button">Delete</button>
+                  </div>
+                </div>
+                <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                  <DetailCard title="Formula" lines={formula.length ? formula.map((row) => `${row.ingredient || "Ingredient"}: ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` / ${row.change}` : ""}`) : ["No formula rows saved"]} />
+                  <DetailCard title="Learning" lines={[batch.tasteNotes || "No process/quality notes", batch.wentWrong ? `Issue: ${batch.wentWrong}` : "Issue: none logged", batch.improveNext ? `Next: ${batch.improveNext}` : "Next: not set"]} />
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+      <Panel title="Page Split" icon={<ClipboardCheck size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          <p><strong>Proof Day:</strong> record today&apos;s live experiment.</p>
+          <p><strong>Batches:</strong> review and compare past experiments.</p>
+          <a className="inline-flex rounded-md bg-[#8f5632] px-3 py-2 text-sm font-semibold text-white" href="/proof-day">Start Proof Day</a>
+        </div>
+      </Panel>
+    </section>
   );
 }
 
@@ -949,10 +1050,20 @@ function BatchForm({
   cancelEdit: () => void;
   saveBatch: (formData: FormData) => void;
 }) {
+  const [formulaRows, setFormulaRows] = useState<BatchFormulaRow[]>(() => {
+    const savedRows = parseBatchIngredients(batch?.ingredientsNotes ?? "");
+    return savedRows.length > 0 ? savedRows : [{ change: "", ingredient: "", quantity: 0, rowId: crypto.randomUUID(), unit: "" }];
+  });
+
+  function addFormulaRow() {
+    setFormulaRows((current) => [...current, { change: "", ingredient: "", quantity: 0, rowId: crypto.randomUUID(), unit: "" }]);
+  }
+
   return (
     <FormPanel title={batch ? "Edit proof batch" : "Proof batch record"} icon={<FlaskConical size={18} />}>
       <form action={saveBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
         <input name="id" type="hidden" value={batch?.id ?? ""} />
+        <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
         <ProductSelect selectedProductId={batch?.productId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
@@ -960,10 +1071,30 @@ function BatchForm({
         </div>
         <Textarea
           name="tasteNotes"
-          label="Test change and quality result"
+          label="Process change and quality result"
           defaultValue={batch?.tasteNotes}
           placeholder="Changed bake time from 28 to 25 min. Taste: less dry, chocolate stronger, top still clean."
         />
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold">Formula / ingredients tested</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Record the actual formula. Use change notes for +10g sugar, less butter, new cocoa, etc.</p>
+            </div>
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addFormulaRow} type="button">Add ingredient</button>
+          </div>
+          <div className="mt-3 grid gap-3">
+            {formulaRows.map((row, index) => (
+              <div className="grid gap-2 lg:grid-cols-[1fr_100px_80px_1fr_70px]" key={row.rowId}>
+                <Input name={`batchIngredient-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Cocoa powder" defaultValue={row.ingredient} />
+                <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" defaultValue={row.quantity || undefined} />
+                <Input name={`batchUnit-${row.rowId}`} label="Unit" placeholder="g" defaultValue={row.unit} />
+                <Input name={`batchChange-${row.rowId}`} label="Adjustment" placeholder="+10g vs V1 / new brand / reduced" defaultValue={row.change} />
+                <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setFormulaRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="grid gap-3 sm:grid-cols-3">
           <Input name="prepTimeMinutes" label="Prep minutes" type="number" placeholder="35" defaultValue={batch?.prepTimeMinutes || undefined} />
           <Input name="bakeTimeMinutes" label="Cook/bake minutes" type="number" placeholder="25" defaultValue={batch?.bakeTimeMinutes || undefined} />
