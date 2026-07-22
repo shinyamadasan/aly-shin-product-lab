@@ -596,7 +596,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
-              <BatchForm batch={editingBatch} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} />
+              <BatchForm batch={editingBatch} batches={labState.batches} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
                 <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
@@ -646,6 +646,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
 type BatchFormulaRow = {
   ingredient: string;
+  previousQuantity?: number;
   quantity: number;
   unit: string;
   change: string;
@@ -682,6 +683,42 @@ function parseBatchIngredients(notes: string): BatchFormulaRow[] {
   } catch {
     return [];
   }
+}
+
+function getFormulaAdjustment(row: BatchFormulaRow) {
+  if (row.previousQuantity === undefined) {
+    return row.change;
+  }
+
+  if (!row.ingredient.trim()) {
+    return "";
+  }
+
+  if (row.previousQuantity === 0 && row.quantity > 0) {
+    return "New ingredient";
+  }
+
+  const difference = row.quantity - row.previousQuantity;
+  if (difference === 0) {
+    return "Same as previous";
+  }
+
+  const sign = difference > 0 ? "+" : "";
+  return `${sign}${difference}${row.unit ? ` ${row.unit}` : ""} vs previous`;
+}
+
+function buildFormulaRowsFromPreviousBatch(previousBatch: ProductBatch | undefined) {
+  const previousRows = parseBatchIngredients(previousBatch?.ingredientsNotes ?? "");
+  if (previousRows.length === 0) {
+    return [{ change: "", ingredient: "", previousQuantity: undefined, quantity: 0, rowId: crypto.randomUUID(), unit: "" }];
+  }
+
+  return previousRows.map((row) => ({
+    ...row,
+    change: "",
+    previousQuantity: row.quantity,
+    rowId: crypto.randomUUID(),
+  }));
 }
 
 function formatBatchFormula(formula: BatchFormulaRow[]) {
@@ -796,7 +833,7 @@ function BatchHistoryPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
-            <BatchForm batch={batch} cancelEdit={cancelEdit} saveBatch={saveBatch} />
+            <BatchForm batch={batch} batches={labState.batches} cancelEdit={cancelEdit} saveBatch={saveBatch} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -1063,20 +1100,38 @@ function DecisionSidebar() {
 
 function BatchForm({
   batch,
+  batches,
   cancelEdit,
   saveBatch,
 }: {
   batch: ProductBatch | null;
+  batches: ProductBatch[];
   cancelEdit: () => void;
   saveBatch: (formData: FormData) => void;
 }) {
+  const [selectedProductId, setSelectedProductId] = useState(batch?.productId ?? products[0].id);
   const [formulaRows, setFormulaRows] = useState<BatchFormulaRow[]>(() => {
     const savedRows = parseBatchIngredients(batch?.ingredientsNotes ?? "");
-    return savedRows.length > 0 ? savedRows : [{ change: "", ingredient: "", quantity: 0, rowId: crypto.randomUUID(), unit: "" }];
+    if (savedRows.length > 0) {
+      return savedRows;
+    }
+
+    return buildFormulaRowsFromPreviousBatch(batches.find((item) => item.productId === (batch?.productId ?? products[0].id)));
   });
 
   function addFormulaRow() {
-    setFormulaRows((current) => [...current, { change: "", ingredient: "", quantity: 0, rowId: crypto.randomUUID(), unit: "" }]);
+    setFormulaRows((current) => [...current, { change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), unit: "" }]);
+  }
+
+  function changeProduct(productId: string) {
+    setSelectedProductId(productId);
+    if (!batch) {
+      setFormulaRows(buildFormulaRowsFromPreviousBatch(batches.find((item) => item.productId === productId)));
+    }
+  }
+
+  function updateFormulaRow(rowId: string, changes: Partial<BatchFormulaRow>) {
+    setFormulaRows((current) => current.map((row) => row.rowId === rowId ? { ...row, ...changes } : row));
   }
 
   return (
@@ -1084,7 +1139,7 @@ function BatchForm({
       <form action={saveBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
         <input name="id" type="hidden" value={batch?.id ?? ""} />
         <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
-        <ProductSelect selectedProductId={batch?.productId} />
+        <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
           <Input name="dateMade" label="Date made" type="date" defaultValue={batch?.dateMade ?? today} />
@@ -1105,11 +1160,19 @@ function BatchForm({
           </div>
           <div className="mt-3 grid gap-3">
             {formulaRows.map((row, index) => (
-              <div className="grid gap-2 lg:grid-cols-[1fr_100px_80px_1fr_70px]" key={row.rowId}>
-                <Input name={`batchIngredient-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Cocoa powder" defaultValue={row.ingredient} />
-                <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" defaultValue={row.quantity || undefined} />
-                <Input name={`batchUnit-${row.rowId}`} label="Unit" placeholder="g" defaultValue={row.unit} />
-                <Input name={`batchChange-${row.rowId}`} label="Adjustment" placeholder="+10g vs V1 / new brand / reduced" defaultValue={row.change} />
+              <div className="grid gap-2 lg:grid-cols-[1fr_100px_80px_150px_170px_70px]" key={row.rowId}>
+                <Input name={`batchIngredient-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Cocoa powder" value={row.ingredient} onChange={(event) => updateFormulaRow(row.rowId, { ingredient: event.target.value })} />
+                <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" value={row.quantity || ""} onChange={(event) => updateFormulaRow(row.rowId, { quantity: Number(event.target.value || 0) })} />
+                <Input name={`batchUnit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => updateFormulaRow(row.rowId, { unit: event.target.value })} />
+                <div className="grid gap-1 text-sm font-medium">
+                  Previous
+                  <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{row.previousQuantity === undefined ? "No previous" : `${row.previousQuantity || 0}${row.unit ? ` ${row.unit}` : ""}`}</p>
+                </div>
+                <div className="grid gap-1 text-sm font-medium">
+                  Auto adjustment
+                  <input name={`batchChange-${row.rowId}`} type="hidden" value={getFormulaAdjustment(row)} />
+                  <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{getFormulaAdjustment(row) || "No change yet"}</p>
+                </div>
                 <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setFormulaRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
               </div>
             ))}
