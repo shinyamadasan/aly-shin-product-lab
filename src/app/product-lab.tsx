@@ -8,6 +8,7 @@ import {
   BookOpenText,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   ClipboardCheck,
   FlaskConical,
   NotebookPen,
@@ -1486,12 +1487,12 @@ function SupplyValuePicker({
         />
         <button
           aria-label={`Show saved ${label.toLowerCase()} options`}
-          className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[#6f5a4c]"
+          className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-md border-l border-[#ead9c8] bg-[#fffaf3] text-[#6f5a4c] hover:bg-[#f5eadf]"
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => setIsOpen((current) => !current)}
           type="button"
         >
-          v
+          <ChevronDown size={16} />
         </button>
       </div>
       {isOpen ? (
