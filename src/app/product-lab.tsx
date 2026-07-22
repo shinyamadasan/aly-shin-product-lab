@@ -436,12 +436,14 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       prepMinutes: Number(formData.get("prepMinutes") || 0),
     };
     const gasDetail: CostingGasDetail = {
+      equipmentName: String(formData.get("gasEquipmentName") || "").trim(),
       gasKg: Number(formData.get("gasKg") || 0),
       gasPrice: Number(formData.get("gasPrice") || 0),
       gasUseKgPerHour: Number(formData.get("gasUseKgPerHour") || 0),
     };
     const electricityDetail: CostingElectricityDetail = {
       applianceWatts: Number(formData.get("electricityWatts") || 0),
+      equipmentName: String(formData.get("electricityEquipmentName") || "").trim(),
       minutes: Number(formData.get("electricityMinutes") || laborDetail.cookingMinutes || 0),
       ratePerKwh: Number(formData.get("electricityRatePerKwh") || 0),
     };
@@ -465,10 +467,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const yieldNotes = Number(formData.get("costingYield") || 0) > 0 ? `Costing yield: ${Number(formData.get("costingYield") || 0)}` : "";
     const baseNotes = getCostingBaseNotes(String(formData.get("notes") || "").trim());
     const gasNotes = gasCostDetail.cost > 0
-      ? `Gas: ${gasDetail.gasKg}kg refill / PHP ${gasDetail.gasPrice} / ${gasDetail.gasUseKgPerHour}kg per hour / PHP ${gasCostDetail.costPerMinute.toFixed(4)} per min / ${laborDetail.cookingMinutes} min`
+      ? `Gas: ${gasDetail.equipmentName || "Gas equipment"} / ${gasDetail.gasKg}kg refill / PHP ${gasDetail.gasPrice} / ${gasDetail.gasUseKgPerHour}kg per hour / PHP ${gasCostDetail.costPerMinute.toFixed(4)} per min / ${laborDetail.cookingMinutes} min`
       : "";
     const electricityNotes = electricityCostDetail.cost > 0
-      ? `Electricity: ${electricityDetail.applianceWatts}W / ${electricityDetail.minutes} min / PHP ${electricityDetail.ratePerKwh} per kWh`
+      ? `Electricity: ${electricityDetail.equipmentName || "Electric equipment"} / ${electricityDetail.applianceWatts}W / ${electricityDetail.minutes} min / PHP ${electricityDetail.ratePerKwh} per kWh`
       : "";
     const waterNotes = waterCostDetail.cost > 0
       ? `Water: ${waterDetail.litersUsed}L / PHP ${waterDetail.ratePerCubicMeter} per cubic meter`
@@ -1948,8 +1950,8 @@ function ProofDayChecklist() {
 type CostingIngredientRow = CostingEntry & { brandName: string; isManualCost?: boolean; rowId: string };
 type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
 type CostingNamedCostRow = { cost: number; name: string; note: string; rowId: string };
-type CostingGasDetail = { gasKg: number; gasPrice: number; gasUseKgPerHour: number };
-type CostingElectricityDetail = { applianceWatts: number; ratePerKwh: number; minutes: number };
+type CostingGasDetail = { equipmentName: string; gasKg: number; gasPrice: number; gasUseKgPerHour: number };
+type CostingElectricityDetail = { applianceWatts: number; equipmentName: string; ratePerKwh: number; minutes: number };
 type CostingWaterDetail = { litersUsed: number; ratePerCubicMeter: number };
 type CostingLaborDetail = {
   activeRate: number;
@@ -2839,16 +2841,18 @@ function CostingForm({
     packagingMinutes: 0,
     prepMinutes: latestBatch?.prepTimeMinutes ?? 0,
   });
-  const [gasDetail, setGasDetail] = useState<CostingGasDetail>(() => structuredDetail?.gasDetail ?? {
-    gasKg: 0,
-    gasPrice: 0,
-    gasUseKgPerHour: 0,
-  });
-  const [electricityDetail, setElectricityDetail] = useState<CostingElectricityDetail>(() => structuredDetail?.electricityDetail ?? {
-    applianceWatts: 0,
-    minutes: latestBatch?.bakeTimeMinutes ?? 0,
-    ratePerKwh: 0,
-  });
+  const [gasDetail, setGasDetail] = useState<CostingGasDetail>(() => ({
+    equipmentName: structuredDetail?.gasDetail?.equipmentName ?? "Oven",
+    gasKg: structuredDetail?.gasDetail?.gasKg ?? 0,
+    gasPrice: structuredDetail?.gasDetail?.gasPrice ?? 0,
+    gasUseKgPerHour: structuredDetail?.gasDetail?.gasUseKgPerHour ?? 0,
+  }));
+  const [electricityDetail, setElectricityDetail] = useState<CostingElectricityDetail>(() => ({
+    applianceWatts: structuredDetail?.electricityDetail?.applianceWatts ?? 0,
+    equipmentName: structuredDetail?.electricityDetail?.equipmentName ?? "Electric oven",
+    minutes: structuredDetail?.electricityDetail?.minutes ?? latestBatch?.bakeTimeMinutes ?? 0,
+    ratePerKwh: structuredDetail?.electricityDetail?.ratePerKwh ?? 0,
+  }));
   const [waterDetail, setWaterDetail] = useState<CostingWaterDetail>(() => structuredDetail?.waterDetail ?? {
     litersUsed: 0,
     ratePerCubicMeter: 0,
@@ -2874,7 +2878,7 @@ function CostingForm({
   const packagingCost = packagingRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const overheadCost = overheadRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const equipmentAllocations = equipmentUsage.map((row) => {
-    const equipmentItem = equipment.find((item) => item.id === row.equipmentId);
+    const equipmentItem = equipment.find((item) => item.id === row.equipmentId && item.calculationMode !== "gas-burn-rate");
     return {
       row,
       equipmentItem,
@@ -2898,6 +2902,8 @@ function CostingForm({
   const suggestedTargetPrice = targetFoodCost > 0 ? costPerPiece / targetFoodCost : 0;
   const appliedMessage = message || localMessage;
   const appliedMessageTone = message ? messageTone : localMessageTone;
+  const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
+  const electricEquipmentOptions = Array.from(new Set(["Electric oven", "Mixer", "Blender", "Espresso machine", "Refrigerator", ...equipment.filter((item) => item.calculationMode !== "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
 
   function changeProduct(productId: string) {
     setSelectedProductId(productId);
@@ -2994,8 +3000,8 @@ function CostingForm({
         ...ingredientRows.map((row) => ["Ingredient", `${row.brandName ? `${row.brandName} ` : ""}${row.ingredientName}`, row.quantityUsed, row.unit, row.cost, row.supplierNote]),
         ["Packaging", "Packaging", "", "", packagingCost, ""],
         ["Labor", "Labor", "", "", laborEstimate, "Pay for mixing, baking/cooking, cooling, packing, cleaning, and admin time"],
-        ["Utility", "Gas per minute", laborDetail.cookingMinutes, "min", gasCost, `${gasDetail.gasKg}kg refill / PHP ${gasDetail.gasPrice} / ${gasDetail.gasUseKgPerHour}kg per hour / PHP ${gasCostDetail.costPerMinute.toFixed(4)} per min`],
-        ["Utility", "Electricity", electricityDetail.minutes, "min", electricityCost, `${electricityDetail.applianceWatts}W / ${electricityCostDetail.kwhUsed.toFixed(4)} kWh / PHP ${electricityDetail.ratePerKwh} per kWh`],
+        ["Utility", gasDetail.equipmentName || "Gas equipment", laborDetail.cookingMinutes, "min", gasCost, `${gasDetail.gasKg}kg refill / PHP ${gasDetail.gasPrice} / ${gasDetail.gasUseKgPerHour}kg per hour / PHP ${gasCostDetail.costPerMinute.toFixed(4)} per min`],
+        ["Utility", electricityDetail.equipmentName || "Electric equipment", electricityDetail.minutes, "min", electricityCost, `${electricityDetail.applianceWatts}W / ${electricityCostDetail.kwhUsed.toFixed(4)} kWh / PHP ${electricityDetail.ratePerKwh} per kWh`],
         ["Utility", "Water", waterDetail.litersUsed, "L", waterCost, `PHP ${waterDetail.ratePerCubicMeter} per cubic meter / PHP ${waterCostDetail.pricePerLiter.toFixed(4)} per L`],
         ...utilityRows.map((row) => ["Utility", row.name, "", "", row.cost, row.note]),
         ["Overhead", "Allocated overhead", "", "", overheadCost, ""],
@@ -3119,29 +3125,41 @@ function CostingForm({
           <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Use these when the utility cost can be measured. They are added to the batch automatically; manual utility rows are only for one-off costs.</p>
           <div className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
             <p className="text-sm font-semibold">Gas cost per minute</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div className="mt-3 grid gap-3 sm:grid-cols-4">
+              <label className="grid gap-1 text-sm font-medium">
+                Gas equipment
+                <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="gasEquipmentName" onChange={(event) => setGasDetail((current) => ({ ...current, equipmentName: event.target.value }))} value={gasDetail.equipmentName || "Oven"}>
+                  {gasEquipmentOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </label>
               <Input name="gasKg" label="Gas tank kg" type="number" step="0.01" placeholder="11" value={gasDetail.gasKg || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasKg: Number(event.target.value || 0) }))} />
               <Input name="gasPrice" label="Refill price PHP" type="number" step="0.01" placeholder="950" value={gasDetail.gasPrice || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasPrice: Number(event.target.value || 0) }))} />
               <Input name="gasUseKgPerHour" label="Gas use kg/hour" type="number" step="0.001" placeholder="0.20" value={gasDetail.gasUseKgPerHour || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasUseKgPerHour: Number(event.target.value || 0) }))} />
             </div>
             <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm text-[#5f4a3d] sm:grid-cols-4">
-              <CostingBreakdown label="Gas PHP/kg" value={gasCostDetail.pricePerKg} />
+              <CostingBreakdown label={gasDetail.equipmentName || "Gas equipment"} value={gasCost} />
               <CostingBreakdown label="Gas PHP/min" value={gasCostDetail.costPerMinute} />
               <CostingBreakdown label="Cooking minutes" value={laborDetail.cookingMinutes} isCurrency={false} />
-              <CostingBreakdown label="Gas cost this batch" value={gasCost} />
+              <CostingBreakdown label="Gas PHP/kg" value={gasCostDetail.pricePerKg} />
             </div>
           </div>
           <div className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
             <p className="text-sm font-semibold">Electricity cost</p>
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <div className="mt-3 grid gap-3 sm:grid-cols-4">
+              <label className="grid gap-1 text-sm font-medium">
+                Electric equipment
+                <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="electricityEquipmentName" onChange={(event) => setElectricityDetail((current) => ({ ...current, equipmentName: event.target.value }))} value={electricityDetail.equipmentName || "Electric oven"}>
+                  {electricEquipmentOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </label>
               <Input name="electricityWatts" label="Appliance watts" type="number" step="1" placeholder="1500" value={electricityDetail.applianceWatts || ""} onChange={(event) => setElectricityDetail((current) => ({ ...current, applianceWatts: Number(event.target.value || 0) }))} />
               <Input name="electricityMinutes" label="Minutes used" type="number" step="1" value={electricityDetail.minutes || ""} onChange={(event) => setElectricityDetail((current) => ({ ...current, minutes: Number(event.target.value || 0) }))} />
               <Input name="electricityRatePerKwh" label="PHP per kWh" type="number" step="0.01" placeholder="12" value={electricityDetail.ratePerKwh || ""} onChange={(event) => setElectricityDetail((current) => ({ ...current, ratePerKwh: Number(event.target.value || 0) }))} />
             </div>
             <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm text-[#5f4a3d] sm:grid-cols-3">
+              <CostingBreakdown label={electricityDetail.equipmentName || "Electric equipment"} value={electricityCost} />
               <CostingBreakdown label="kWh used" value={electricityCostDetail.kwhUsed} isCurrency={false} />
               <CostingBreakdown label="PHP/kWh" value={electricityDetail.ratePerKwh} />
-              <CostingBreakdown label="Electricity cost" value={electricityCost} />
             </div>
           </div>
           <div className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
@@ -3160,8 +3178,8 @@ function CostingForm({
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-sm font-semibold">Utilities / equipment used</p>
-              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Add only what matters for this batch: oven, water, gas, refrigeration, ice, espresso machine, delivery cooling.</p>
+              <p className="text-sm font-semibold">Other one-off utility costs</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Use this only for utility costs that do not fit the gas, electricity, or water calculators above, like ice or delivery cooling.</p>
             </div>
             <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addUtilityRow} type="button">Add utility</button>
           </div>
@@ -3182,7 +3200,7 @@ function CostingForm({
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Utility total: PHP {utilityTotal.toFixed(2)}</p>
         </div>
         <NamedCostSection addLabel="Add overhead" namePrefix="overhead" onAdd={() => addNamedCostRow(setOverheadRows, "Overhead")} rows={overheadRows} setRows={setOverheadRows} title="Overhead allocation" total={overheadCost} updateNamedCostRow={updateNamedCostRow} />
-        <EquipmentUsageSection cookingMinutes={laborDetail.cookingMinutes} equipmentAllocations={equipmentAllocations} equipmentList={equipment} setEquipmentUsage={setEquipmentUsage} />
+        <EquipmentUsageSection equipmentAllocations={equipmentAllocations} equipmentList={equipment} setEquipmentUsage={setEquipmentUsage} />
         <NamedCostSection addLabel="Add waste" namePrefix="waste" onAdd={() => addNamedCostRow(setWasteRows, "Waste")} rows={wasteRows} setRows={setWasteRows} title="Waste and loss" total={wasteAllowance} updateNamedCostRow={updateNamedCostRow} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
@@ -3427,10 +3445,12 @@ function CostingPrintReport({
       <h2>Utility Calculations</h2>
       <table>
         <tbody>
-          <tr><th>Gas tank</th><td>{gasDetail.gasKg || 0} kg</td><th>Gas refill</th><td>PHP {gasDetail.gasPrice.toFixed(2)}</td></tr>
+          <tr><th>Gas equipment</th><td>{gasDetail.equipmentName || "Gas equipment"}</td><th>Gas refill</th><td>PHP {gasDetail.gasPrice.toFixed(2)}</td></tr>
+          <tr><th>Gas tank</th><td>{gasDetail.gasKg || 0} kg</td><th>Gas use</th><td>{gasDetail.gasUseKgPerHour || 0} kg/hour</td></tr>
           <tr><th>Gas PHP/min</th><td>PHP {gasCostDetail.costPerMinute.toFixed(4)}</td><th>Gas batch cost</th><td>PHP {gasCost.toFixed(2)}</td></tr>
-          <tr><th>Electricity</th><td>{electricityDetail.applianceWatts || 0}W / {electricityDetail.minutes || 0} min</td><th>kWh used</th><td>{electricityCostDetail.kwhUsed.toFixed(4)}</td></tr>
-          <tr><th>Electricity batch cost</th><td>PHP {electricityCost.toFixed(2)}</td><th>Rate</th><td>PHP {electricityDetail.ratePerKwh.toFixed(2)}/kWh</td></tr>
+          <tr><th>Electric equipment</th><td>{electricityDetail.equipmentName || "Electric equipment"}</td><th>Use</th><td>{electricityDetail.applianceWatts || 0}W / {electricityDetail.minutes || 0} min</td></tr>
+          <tr><th>kWh used</th><td>{electricityCostDetail.kwhUsed.toFixed(4)}</td><th>Rate</th><td>PHP {electricityDetail.ratePerKwh.toFixed(2)}/kWh</td></tr>
+          <tr><th>Electricity batch cost</th><td>PHP {electricityCost.toFixed(2)}</td><th /><td /></tr>
           <tr><th>Water used</th><td>{waterDetail.litersUsed || 0} L</td><th>Water PHP/L</th><td>PHP {waterCostDetail.pricePerLiter.toFixed(4)}</td></tr>
           <tr><th>Water batch cost</th><td>PHP {waterCost.toFixed(2)}</td><th>Water rate</th><td>PHP {waterDetail.ratePerCubicMeter.toFixed(2)}/m3</td></tr>
         </tbody>
@@ -3501,17 +3521,17 @@ type EquipmentAllocation = {
 };
 
 function EquipmentUsageSection({
-  cookingMinutes,
   equipmentAllocations,
   equipmentList,
   setEquipmentUsage,
 }: {
-  cookingMinutes: number;
   equipmentAllocations: EquipmentAllocation[];
   equipmentList: EquipmentEntry[];
   setEquipmentUsage: Dispatch<SetStateAction<EquipmentUsageRow[]>>;
 }) {
-  const activeEquipment = equipmentList.filter((item) => item.isActive);
+  const activeEquipment = equipmentList.filter((item) => item.isActive && item.calculationMode !== "gas-burn-rate");
+  const totalDepreciation = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
+  const totalMaintenance = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedMaintenance, 0);
   const totalAllocated = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedTotal, 0);
 
   function addUsageRow() {
@@ -3532,12 +3552,12 @@ function EquipmentUsageSection({
     <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-sm font-semibold">Equipment usage</p>
-          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Pick which equipment this recipe uses. Cost is calculated automatically from the Equipment database. Raise shared batches when equipment cost should be spread across multiple recipes. Gas-per-minute equipment uses this recipe&apos;s cooking time ({cookingMinutes || 0} min) from Labor timing below.</p>
+          <p className="text-sm font-semibold">Equipment depreciation + maintenance</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Use this card for ownership cost: appliance purchase price, useful life, and maintenance from the Equipment page. Gas and electricity usage stay in the utility cards above.</p>
         </div>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={activeEquipment.length === 0} onClick={addUsageRow} type="button">Add equipment</button>
       </div>
-      {activeEquipment.length === 0 ? <p className="mt-3 text-sm text-[#6f5a4c]">No active equipment yet. Add equipment on the Equipment page first.</p> : null}
+      {activeEquipment.length === 0 ? <p className="mt-3 text-sm text-[#6f5a4c]">No depreciation equipment yet. Add an appliance on the Equipment page with depreciation or replacement-reserve mode first.</p> : null}
       <div className="mt-3 grid gap-2">
         {equipmentAllocations.map((allocation) => (
           <div className="grid items-start gap-2 lg:grid-cols-[1fr_120px_140px_70px]" key={allocation.row.rowId}>
@@ -3552,14 +3572,18 @@ function EquipmentUsageSection({
             <div className="mt-6 text-sm">
               <p className="font-semibold text-[#5f4a3d]">PHP {allocation.allocatedTotal.toFixed(2)}</p>
               <p className="text-xs text-[#6f5a4c]">
-                {allocation.equipmentItem?.calculationMode === "gas-burn-rate" ? `at ${cookingMinutes || 0} min bake` : `dep ${allocation.allocatedDepreciation.toFixed(2)} + maint ${allocation.allocatedMaintenance.toFixed(2)}`}
+                dep {allocation.allocatedDepreciation.toFixed(2)} + maint {allocation.allocatedMaintenance.toFixed(2)}
               </p>
             </div>
             <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => removeUsageRow(allocation.row.rowId)} type="button">Remove</button>
           </div>
         ))}
       </div>
-      <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Equipment total: PHP {totalAllocated.toFixed(2)}</p>
+      <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-3">
+        <CostingBreakdown label="Depreciation" value={totalDepreciation} />
+        <CostingBreakdown label="Maintenance" value={totalMaintenance} />
+        <CostingBreakdown label="Dep + maintenance" value={totalAllocated} />
+      </div>
     </div>
   );
 }
