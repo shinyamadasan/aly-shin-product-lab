@@ -65,6 +65,7 @@ export type CostingEntry = {
 export type SupplyEntry = {
   id: string;
   ingredientName: string;
+  brandName: string;
   supplierName: string;
   purchaseDate: string;
   packQuantity: number;

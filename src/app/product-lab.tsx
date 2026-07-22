@@ -155,6 +155,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       supplies: supplyMissing ? [] : (supplyResult.data ?? []).map((row) => ({
         id: row.id,
         ingredientName: row.ingredient_name,
+        brandName: row.brand_name ?? "",
         supplierName: row.supplier_name,
         purchaseDate: row.purchase_date,
         packQuantity: Number(row.pack_quantity ?? 0),
@@ -464,6 +465,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const supply: SupplyEntry = {
       id: supplyId || crypto.randomUUID(),
       ingredientName: String(formData.get("ingredientName") || "").trim(),
+      brandName: String(formData.get("brandName") || "").trim(),
       supplierName: String(formData.get("supplierName") || "").trim(),
       purchaseDate: String(formData.get("purchaseDate") || today),
       packQuantity: Number(formData.get("packQuantity") || 0),
@@ -476,6 +478,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     if (supabase && session) {
       const payload = {
         ingredient_name: supply.ingredientName,
+        brand_name: supply.brandName,
         supplier_name: supply.supplierName,
         purchase_date: supply.purchaseDate,
         pack_quantity: supply.packQuantity,
@@ -488,9 +491,9 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         ? supabase.from("supply_entries").update(payload).eq("id", supplyId)
         : supabase.from("supply_entries").insert(payload);
       const { error } = await query;
-      setMessage(error ? `Supply save failed. Run the supplies SQL first if this is your first time: ${error.message}` : "Supply saved.");
+      setMessage(error ? `Supply save failed. Run the latest supplies SQL first if this is your first time: ${error.message}` : "Supply saved.");
       setMessageTone(error ? "bad" : "good");
-      setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries")));
+      setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries") || error?.message.includes("brand_name")));
       if (!error) {
         setEditingSupply(null);
         await loadSupabaseData();
@@ -1443,6 +1446,10 @@ function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number) {
   return (supply.totalCost / supply.packQuantity) * quantityUsed;
 }
 
+function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "supplierName" | "unit") {
+  return Array.from(new Set(supplies.map((supply) => supply[key].trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
 function SuppliesPage({
   cancelEdit,
   deleteSupply,
@@ -1460,24 +1467,38 @@ function SuppliesPage({
   saveSupply: (formData: FormData) => void;
   supply: SupplyEntry | null;
 }) {
+  const brandOptions = getUniqueSupplyValues(labState.supplies, "brandName");
+  const supplierOptions = getUniqueSupplyValues(labState.supplies, "supplierName");
+  const unitOptions = getUniqueSupplyValues(labState.supplies, "unit");
+
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
       <FormPanel title={supply ? "Edit supply purchase" : "Log supply purchase"} icon={<PackageCheck size={18} />}>
         {isSuppliesTableMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
-            Supplies table is not created in Supabase yet. Run <strong>supabase-add-supplies.sql</strong> once, then save again.
+            Supplies database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
           </div>
         ) : null}
         <form action={saveSupply} className="grid gap-3" key={supply?.id ?? "new-supply"}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
-          <div className="grid gap-3 sm:grid-cols-2">
+          <datalist id="supply-brand-options">
+            {brandOptions.map((option) => <option key={option} value={option} />)}
+          </datalist>
+          <datalist id="supply-supplier-options">
+            {supplierOptions.map((option) => <option key={option} value={option} />)}
+          </datalist>
+          <datalist id="supply-unit-options">
+            {unitOptions.map((option) => <option key={option} value={option} />)}
+          </datalist>
+          <div className="grid gap-3 sm:grid-cols-3">
             <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" defaultValue={supply?.ingredientName} />
-            <Input name="supplierName" label="Supplier" placeholder="SM / Shopee / local baking store" defaultValue={supply?.supplierName} />
+            <Input name="brandName" label="Brand" placeholder="Beryl's / Callebaut / local" defaultValue={supply?.brandName} list="supply-brand-options" />
+            <Input name="supplierName" label="Supplier" placeholder="SM / Shopee / local baking store" defaultValue={supply?.supplierName} list="supply-supplier-options" />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
             <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? today} />
             <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
-            <Input name="unit" label="Unit" placeholder="g" defaultValue={supply?.unit} />
+            <Input name="unit" label="Unit" placeholder="g" defaultValue={supply?.unit} list="supply-unit-options" />
             <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
           </div>
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
@@ -1506,11 +1527,13 @@ function SuppliesPage({
           {labState.supplies.map((supply) => {
             const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
             const supplierLabel = supply.supplierName || "Supplier not set";
+            const brandLabel = supply.brandName || "Brand not set";
             return (
               <article className="grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_70px]" key={supply.id}>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h4 className="font-semibold">{supply.ingredientName}</h4>
+                    <Tag tone="green">{brandLabel}</Tag>
                     <Tag tone="warm">{supplierLabel}</Tag>
                   </div>
                   <p className="mt-1 text-sm text-[#6f5a4c]">Bought {supply.purchaseDate}</p>

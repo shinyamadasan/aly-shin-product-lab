@@ -1,6 +1,7 @@
 create table if not exists supply_entries (
   id uuid primary key default gen_random_uuid(),
   ingredient_name text not null,
+  brand_name text,
   supplier_name text not null,
   purchase_date date not null default current_date,
   pack_quantity numeric not null default 0,
@@ -11,6 +12,9 @@ create table if not exists supply_entries (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table supply_entries
+  add column if not exists brand_name text;
 
 alter table supply_entries enable row level security;
 

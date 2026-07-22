@@ -77,6 +77,7 @@ create table if not exists costing_summaries (
 create table if not exists supply_entries (
   id uuid primary key default gen_random_uuid(),
   ingredient_name text not null,
+  brand_name text,
   supplier_name text not null,
   purchase_date date not null default current_date,
   pack_quantity numeric not null default 0,
