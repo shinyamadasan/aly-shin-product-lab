@@ -684,6 +684,13 @@ function parseBatchIngredients(notes: string): BatchFormulaRow[] {
   }
 }
 
+function formatBatchFormula(formula: BatchFormulaRow[]) {
+  return formula
+    .filter((row) => row.ingredient.trim())
+    .map((row) => `${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}`.trim())
+    .join("\n");
+}
+
 function ProductDetailPage({ labState }: { labState: LabState }) {
   const [selectedProductId, setSelectedProductId] = useState(products[0].id);
   const product = products.find((item) => item.id === selectedProductId) ?? products[0];
@@ -772,6 +779,18 @@ function BatchHistoryPage({
   labState: LabState;
   saveBatch: (formData: FormData) => void;
 }) {
+  const [copiedBatchId, setCopiedBatchId] = useState("");
+
+  async function copyFormula(batchId: string, formula: BatchFormulaRow[]) {
+    const text = formatBatchFormula(formula);
+    if (!text || typeof navigator === "undefined" || !navigator.clipboard) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(text);
+    setCopiedBatchId(batchId);
+  }
+
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
@@ -797,6 +816,7 @@ function BatchHistoryPage({
                     <p className="mt-1 text-sm text-[#6f5a4c]">{batch.dateMade} / {batch.launchDecision}</p>
                   </div>
                   <div className="flex gap-2">
+                    <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => copyFormula(batch.id, formula)} type="button">{copiedBatchId === batch.id ? "Copied" : "Copy formula"}</button>
                     <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => editBatch(batch)} type="button">Edit</button>
                     <button className="text-sm font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${batch.batchVersion}?`) ? deleteBatch(batch.id) : undefined} type="button">Delete</button>
                   </div>
@@ -1195,6 +1215,7 @@ function CostingForm({
   ingredientEntries: CostingEntry[];
   saveCosting: (formData: FormData) => void;
 }) {
+  const [selectedProductId, setSelectedProductId] = useState(costing?.productId ?? products[0].id);
   const savedIngredients = costing ? ingredientEntries.filter((entry) => entry.productId === costing.productId) : [];
   const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() =>
     savedIngredients.length > 0
@@ -1223,7 +1244,8 @@ function CostingForm({
 
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
-  const latestBatch = batches.find((batch) => batch.productId === (costing?.productId ?? products[0].id));
+  const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
+  const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
   const sellablePieces = latestBatch?.usablePieces ?? 0;
   const totalBatchCost = ingredientTotal + utilityTotal + packagingCost + laborEstimate + wasteAllowance;
   const costPerPiece = sellablePieces > 0 ? totalBatchCost / sellablePieces : 0;
@@ -1231,11 +1253,30 @@ function CostingForm({
   const margin = suggestedPrice > 0 ? (grossProfit / suggestedPrice) * 100 : 0;
 
   function addIngredientRow() {
-    setIngredientRows((current) => [...current, { cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
+    setIngredientRows((current) => [...current, { cost: 0, id: "", ingredientName: "", productId: selectedProductId, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
   }
 
   function addUtilityRow() {
     setUtilityRows((current) => [...current, { cost: 0, name: "", note: "", rowId: crypto.randomUUID() }]);
+  }
+
+  function importLatestFormula() {
+    const rows = latestFormula
+      .filter((row) => row.ingredient.trim())
+      .map((row) => ({
+        cost: 0,
+        id: "",
+        ingredientName: row.ingredient,
+        productId: selectedProductId,
+        quantityUsed: row.quantity,
+        rowId: crypto.randomUUID(),
+        supplierNote: row.change,
+        unit: row.unit,
+      }));
+
+    if (rows.length > 0) {
+      setIngredientRows(rows);
+    }
   }
 
   return (
@@ -1244,14 +1285,17 @@ function CostingForm({
         <input name="id" type="hidden" value={costing?.id ?? ""} />
         <input name="ingredientRowIds" type="hidden" value={ingredientRows.map((row) => row.rowId).join(",")} />
         <input name="utilityRowIds" type="hidden" value={utilityRows.map((row) => row.rowId).join(",")} />
-        <ProductSelect selectedProductId={costing?.productId} />
+        <ProductSelect onChange={(event) => setSelectedProductId(event.target.value)} value={selectedProductId} />
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-sm font-semibold">Ingredients used</p>
               <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Cost the quantity used in this batch. Example: butter, 250, g, 85 PHP.</p>
             </div>
-            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
+            <div className="flex flex-wrap gap-2">
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
+            </div>
           </div>
           <div className="mt-3 grid gap-3">
             {ingredientRows.map((row, index) => (

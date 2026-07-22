@@ -1,10 +1,19 @@
+import type React from "react";
 import { products } from "@/lib/sample-data";
 
-export function ProductSelect({ selectedProductId }: { selectedProductId?: string }) {
+export function ProductSelect({
+  onChange,
+  selectedProductId,
+  value,
+}: {
+  onChange?: (event: React.ChangeEvent<HTMLSelectElement>) => void;
+  selectedProductId?: string;
+  value?: string;
+}) {
   return (
     <label className="grid gap-1 text-sm font-medium">
       Product
-      <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="productId" defaultValue={selectedProductId}>
+      <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="productId" defaultValue={value ? undefined : selectedProductId} onChange={onChange} value={value}>
         {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
       </select>
     </label>
