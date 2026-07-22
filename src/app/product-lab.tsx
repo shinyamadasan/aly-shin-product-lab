@@ -1332,10 +1332,7 @@ function BatchForm({
               <div className="grid gap-2 lg:grid-cols-[minmax(220px,2fr)_100px_80px_150px_170px_70px]" key={row.rowId}>
                 <SupplyItemPicker row={row} rowIndex={index} supplies={supplies} updateFormulaRow={updateFormulaRow} />
                 <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" value={row.quantity || ""} onChange={(event) => updateFormulaRow(row.rowId, { quantity: Number(event.target.value || 0) })} />
-                <div className="grid gap-1 text-sm font-medium">
-                  Unit
-                  <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{row.unit || "-"}</p>
-                </div>
+                <Input name={`batchUnit-${row.rowId}`} label="Unit used" placeholder="g / ml / tbsp" value={row.unit} onChange={(event) => updateFormulaRow(row.rowId, { unit: event.target.value })} />
                 <div className="grid gap-1 text-sm font-medium">
                   Previous
                   <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{row.previousQuantity === undefined ? "No previous" : `${row.previousQuantity || 0}${row.unit ? ` ${row.unit}` : ""}`}</p>
@@ -1441,11 +1438,31 @@ function normalizeSupplyText(value: string) {
   return value.trim().toLowerCase();
 }
 
+function normalizeUnit(value: string) {
+  const unit = normalizeSupplyText(value);
+  if (unit === "gram" || unit === "grams") {
+    return "g";
+  }
+  if (unit === "milliliter" || unit === "milliliters") {
+    return "ml";
+  }
+  if (unit === "tablespoon" || unit === "tablespoons") {
+    return "tbsp";
+  }
+  if (unit === "teaspoon" || unit === "teaspoons") {
+    return "tsp";
+  }
+  return unit;
+}
+
 function getMatchingSupplies(supplies: SupplyEntry[], brandName: string, ingredientName: string, unit: string) {
   return supplies
     .filter((supply) => {
       const brandMatches = !brandName.trim() || normalizeSupplyText(supply.brandName) === normalizeSupplyText(brandName);
-      return brandMatches && normalizeSupplyText(supply.ingredientName) === normalizeSupplyText(ingredientName) && normalizeSupplyText(supply.unit) === normalizeSupplyText(unit);
+      const ingredientMatches = normalizeSupplyText(supply.ingredientName) === normalizeSupplyText(ingredientName);
+      const exactUnitMatch = normalizeUnit(supply.unit) === normalizeUnit(unit);
+      const convertibleUnitMatch = Boolean(getConvertedQuantityForSupply(1, unit, supply));
+      return brandMatches && ingredientMatches && (exactUnitMatch || convertibleUnitMatch);
     })
     .sort((a, b) => {
       const aUnitCost = a.packQuantity > 0 ? a.totalCost / a.packQuantity : Number.MAX_SAFE_INTEGER;
@@ -1454,12 +1471,79 @@ function getMatchingSupplies(supplies: SupplyEntry[], brandName: string, ingredi
     });
 }
 
-function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number) {
-  if (supply.packQuantity <= 0 || supply.totalCost <= 0 || quantityUsed <= 0) {
+function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number, usedUnit = supply.unit) {
+  const convertedQuantity = getConvertedQuantityForSupply(quantityUsed, usedUnit, supply);
+  if (supply.packQuantity <= 0 || supply.totalCost <= 0 || convertedQuantity <= 0) {
     return 0;
   }
 
-  return (supply.totalCost / supply.packQuantity) * quantityUsed;
+  return (supply.totalCost / supply.packQuantity) * convertedQuantity;
+}
+
+const volumeUnitMl: Record<string, number> = {
+  cup: 240,
+  cups: 240,
+  tbsp: 15,
+  tablespoon: 15,
+  tablespoons: 15,
+  tsp: 5,
+  teaspoon: 5,
+  teaspoons: 5,
+};
+
+const gramPerMlByIngredient: Array<{ keywords: string[]; gramPerMl: number }> = [
+  { keywords: ["water", "milk", "coffee", "espresso", "cream"], gramPerMl: 1 },
+  { keywords: ["oil"], gramPerMl: 0.92 },
+  { keywords: ["honey", "syrup"], gramPerMl: 1.4 },
+  { keywords: ["butter"], gramPerMl: 0.96 },
+  { keywords: ["sugar"], gramPerMl: 0.85 },
+  { keywords: ["flour"], gramPerMl: 0.53 },
+  { keywords: ["cocoa", "cacao"], gramPerMl: 0.42 },
+  { keywords: ["powder"], gramPerMl: 0.5 },
+  { keywords: ["salt"], gramPerMl: 1.2 },
+];
+
+function getIngredientGramPerMl(ingredientName: string) {
+  const normalizedIngredient = normalizeSupplyText(ingredientName);
+  return gramPerMlByIngredient.find((entry) => entry.keywords.some((keyword) => normalizedIngredient.includes(keyword)))?.gramPerMl;
+}
+
+function getConvertedQuantity(quantity: number, fromUnit: string, toUnit: string, ingredientName: string) {
+  const normalizedFrom = normalizeUnit(fromUnit);
+  const normalizedTo = normalizeUnit(toUnit);
+  if (!quantity || normalizedFrom === normalizedTo) {
+    return quantity;
+  }
+
+  const ml = volumeUnitMl[normalizedFrom] ? quantity * volumeUnitMl[normalizedFrom] : 0;
+  if (!ml) {
+    return 0;
+  }
+
+  if (normalizedTo === "ml") {
+    return ml;
+  }
+
+  if (normalizedTo === "g" || normalizedTo === "gram" || normalizedTo === "grams") {
+    const gramPerMl = getIngredientGramPerMl(ingredientName);
+    return gramPerMl ? ml * gramPerMl : 0;
+  }
+
+  return 0;
+}
+
+function getConvertedQuantityForSupply(quantity: number, usedUnit: string, supply: SupplyEntry) {
+  return getConvertedQuantity(quantity, usedUnit, supply.unit, supply.ingredientName);
+}
+
+function getConversionLabel(quantity: number, fromUnit: string, supply: SupplyEntry) {
+  const convertedQuantity = getConvertedQuantityForSupply(quantity, fromUnit, supply);
+  if (!convertedQuantity || normalizeUnit(fromUnit) === normalizeUnit(supply.unit)) {
+    return "";
+  }
+
+  const isEstimate = normalizeUnit(supply.unit) !== "ml";
+  return `${quantity}${fromUnit} = ${convertedQuantity.toFixed(1)}${supply.unit}${isEstimate ? " estimate" : ""}`;
 }
 
 function getSupplyLabel(supply: Pick<SupplyEntry, "brandName" | "ingredientName" | "unit">) {
@@ -1574,7 +1658,6 @@ function SupplyItemPicker({
       Supply item {rowIndex + 1}
       <input name={`batchBrand-${row.rowId}`} type="hidden" value={row.brand} />
       <input name={`batchIngredient-${row.rowId}`} type="hidden" value={row.ingredient} />
-      <input name={`batchUnit-${row.rowId}`} type="hidden" value={row.unit} />
       <div className="relative">
         <input
           autoComplete="off"
@@ -1820,10 +1903,9 @@ function CostingForm({
           ? {
               ...row,
               brandName: supply.brandName,
-              cost: Number(getSupplyUsedCost(supply, row.quantityUsed).toFixed(2)),
+              cost: Number(getSupplyUsedCost(supply, row.quantityUsed, row.unit).toFixed(2)),
               ingredientName: supply.ingredientName,
-              supplierNote: `${supply.supplierName} / ${supply.purchaseDate} / quality ${supply.qualityRating || 0}/5`,
-              unit: supply.unit,
+              supplierNote: [supply.supplierName, supply.purchaseDate, `quality ${supply.qualityRating || 0}/5`, getConversionLabel(row.quantityUsed, row.unit, supply)].filter(Boolean).join(" / "),
             }
           : row,
       ),
@@ -1870,13 +1952,15 @@ function CostingForm({
                     <div className="mt-2 grid gap-2">
                       {matches.map((supply) => {
                         const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
-                        const usedCost = getSupplyUsedCost(supply, row.quantityUsed);
+                        const usedCost = getSupplyUsedCost(supply, row.quantityUsed, row.unit);
+                        const conversionLabel = getConversionLabel(row.quantityUsed, row.unit, supply);
                         return (
                           <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-2 text-sm md:grid-cols-[1fr_120px_110px]" key={supply.id}>
                             <div className="text-[#5f4a3d]">
                               <p className="font-semibold">{getSupplyLabel(supply)}</p>
                               <p>{supply.supplierName}</p>
                               <p>PHP {unitCost.toFixed(4)} / {supply.unit || "unit"} · quality {supply.qualityRating || 0}/5</p>
+                              {conversionLabel ? <p className="text-xs text-[#8a6a54]">{conversionLabel}</p> : null}
                             </div>
                             <p className="self-center font-semibold">Used: PHP {usedCost.toFixed(2)}</p>
                             <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => applySupplyPrice(row.rowId, supply)} type="button">{appliedSupplyRowId === row.rowId ? "Applied" : "Use price"}</button>
@@ -1951,6 +2035,7 @@ function CostingGuide() {
         <p>Cost one real product batch. Do not average guesses across different recipes.</p>
         <ul className="space-y-2">
           <li><strong>Ingredients:</strong> enter the quantity used and the peso cost of that used amount.</li>
+          <li><strong>Vague units:</strong> tsp, tbsp, and cup can match g/ml supply prices when the ingredient has a known density. Gram conversions are estimates.</li>
           <li><strong>Packaging:</strong> box, cup, bottle, label, bag, seal, and insert.</li>
           <li><strong>Utilities:</strong> add only meaningful costs for this test.</li>
           <li><strong>Labor:</strong> mixing, baking, cooling, packing, cleaning.</li>
