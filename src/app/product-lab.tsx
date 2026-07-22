@@ -640,6 +640,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           {view === "launch" ? <LaunchOfferBuilder labState={labState} /> : null}
 
           {view === "content-studio" ? <ContentStudio labState={labState} /> : null}
+
+          {view === "guide" ? <OperatingGuide /> : null}
     </AppShell>
   );
 }
@@ -798,6 +800,72 @@ function ProofDayModeGuide() {
         <ProofBatchGuide />
       </div>
     </Panel>
+  );
+}
+
+function OperatingGuide() {
+  const dailyFlow = [
+    { title: "1. Record the kitchen test", page: "/proof-day", detail: "Use Proof Day every time a product is made. Select the product, adjust the auto-filled formula, record timing, sellable yield, issues, freshness, packaging behavior, and the next test only." },
+    { title: "2. Capture useful content", page: "/proof-day", detail: "Use the content journal only when real media or a real lesson exists. Log texture close-ups, process clips, packaging photos, reactions, content angle, and next action." },
+    { title: "3. Review the experiment history", page: "/batches", detail: "Use Batches after the kitchen work. Compare formulas, see automatic ingredient adjustments, review what failed, and decide whether to retest, pause, launch, or remove." },
+    { title: "4. Add tasting feedback", page: "/tasting", detail: "Use Tasting when someone tries the product. Record rating, what they liked, what should improve, willingness to pay, reorder signal, and packaging reaction." },
+    { title: "5. Cost only promising formulas", page: "/costing", detail: "Use Costing after the formula is close. Pull the latest proof formula into ingredients, then add real costs, packaging, labor, utilities, waste, and suggested price." },
+    { title: "6. Check product readiness", page: "/product-detail", detail: "Use Product Detail to see the full picture for one product: proof, costing, tasting, content, and what is missing before launch." },
+    { title: "7. Prepare the offer later", page: "/launch", detail: "Use Launch Offer only after proof, tasting, costing, freshness, and packaging look good enough. Draft cutoff, pickup or delivery rules, storage, serving instructions, and bundle idea." },
+  ];
+
+  const weeklyFlow = [
+    "Pick one product and one test change.",
+    "Run Proof Day and save the real formula.",
+    "Review Batches before deciding the next test.",
+    "Let people taste the strongest version.",
+    "Repeat the proof batch if feedback is unclear.",
+    "Cost the product only when the formula is stable.",
+    "Decide: retest, cost, taste again, launch, pause, or remove.",
+  ];
+
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_360px]">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white">
+        <div className="border-b border-[#eaded2] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Operating Manual</p>
+          <h3 className="mt-1 text-xl font-semibold">Day-to-day Product Lab flow</h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">This app should help you prove products before launch. Your wife records what happened in the kitchen. You review the data and decide what to improve, cost, launch, pause, or remove.</p>
+        </div>
+        <div className="divide-y divide-[#f0e4d8]">
+          {dailyFlow.map((step) => (
+            <article className="grid gap-3 p-5 md:grid-cols-[1fr_150px]" key={step.title}>
+              <div>
+                <h4 className="font-semibold">{step.title}</h4>
+                <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{step.detail}</p>
+              </div>
+              <a className="inline-flex h-10 items-center justify-center rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" href={step.page}>Open page</a>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-5">
+        <Panel title="Simple Roles" icon={<ClipboardCheck size={18} />}>
+          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+            <p><strong>Your wife:</strong> Proof Day, Tasting, Content Journal.</p>
+            <p><strong>You:</strong> Batches, Costing, Product Detail, Products, Admin, Launch.</p>
+          </div>
+        </Panel>
+        <Panel title="Weekly Rhythm" icon={<CalendarDays size={18} />}>
+          <ol className="space-y-2 text-sm leading-6 text-[#5f4a3d]">
+            {weeklyFlow.map((item) => <li key={item}>{item}</li>)}
+          </ol>
+        </Panel>
+        <Panel title="Testing Rule" icon={<ShieldAlert size={18} />}>
+          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+            <p>Do not change too many things at once.</p>
+            <p><strong>Weak test:</strong> changed sugar, butter, bake time, pan, packaging, and cooling.</p>
+            <p><strong>Good test:</strong> same formula as last batch, only reduced sugar by 15g.</p>
+          </div>
+        </Panel>
+      </div>
+    </section>
   );
 }
 

@@ -11,7 +11,8 @@ export type LabView =
   | "journal"
   | "admin"
   | "launch"
-  | "content-studio";
+  | "content-studio"
+  | "guide";
 
 export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Dashboard", href: "/", view: "dashboard" },
@@ -25,6 +26,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Product Admin", href: "/admin", view: "admin" },
   { label: "Launch Offer", href: "/launch", view: "launch" },
   { label: "Content Studio", href: "/content-studio", view: "content-studio" },
+  { label: "How To Use", href: "/guide", view: "guide" },
 ];
 
 export const storageKey = "aly-shin-product-lab-v1";

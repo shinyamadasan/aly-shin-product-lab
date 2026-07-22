@@ -14,6 +14,7 @@ const titles = {
   admin: "Product admin",
   launch: "Launch offer builder",
   "content-studio": "Content studio",
+  guide: "How to use Product Lab",
 };
 
 export function AppShell({ children, view }: { children: React.ReactNode; view: LabView }) {
