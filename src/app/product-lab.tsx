@@ -1450,6 +1450,41 @@ function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "supp
   return Array.from(new Set(supplies.map((supply) => supply[key].trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
+function SupplyValuePicker({
+  label,
+  name,
+  options,
+  placeholder,
+  value,
+}: {
+  label: string;
+  name: string;
+  options: string[];
+  placeholder: string;
+  value?: string;
+}) {
+  const [selectedValue, setSelectedValue] = useState(value && options.includes(value) ? value : value ? "__new" : "");
+  const showCustomInput = selectedValue === "__new" || options.length === 0;
+
+  return (
+    <div className="grid gap-2">
+      <label className="grid gap-1 text-sm font-medium">
+        {label}
+        <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" value={selectedValue} onChange={(event) => setSelectedValue(event.target.value)}>
+          <option value="">Select saved {label.toLowerCase()}</option>
+          {options.map((option) => <option key={option} value={option}>{option}</option>)}
+          <option value="__new">Add new {label.toLowerCase()}</option>
+        </select>
+      </label>
+      {showCustomInput ? (
+        <Input name={name} label={`${label} value`} placeholder={placeholder} defaultValue={value && !options.includes(value) ? value : ""} />
+      ) : (
+        <input name={name} type="hidden" value={selectedValue} />
+      )}
+    </div>
+  );
+}
+
 function SuppliesPage({
   cancelEdit,
   deleteSupply,
@@ -1481,24 +1516,15 @@ function SuppliesPage({
         ) : null}
         <form action={saveSupply} className="grid gap-3" key={supply?.id ?? "new-supply"}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
-          <datalist id="supply-brand-options">
-            {brandOptions.map((option) => <option key={option} value={option} />)}
-          </datalist>
-          <datalist id="supply-supplier-options">
-            {supplierOptions.map((option) => <option key={option} value={option} />)}
-          </datalist>
-          <datalist id="supply-unit-options">
-            {unitOptions.map((option) => <option key={option} value={option} />)}
-          </datalist>
           <div className="grid gap-3 sm:grid-cols-3">
             <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" defaultValue={supply?.ingredientName} />
-            <Input name="brandName" label="Brand" placeholder="Beryl's / Callebaut / local" defaultValue={supply?.brandName} list="supply-brand-options" />
-            <Input name="supplierName" label="Supplier" placeholder="SM / Shopee / local baking store" defaultValue={supply?.supplierName} list="supply-supplier-options" />
+            <SupplyValuePicker name="brandName" label="Brand" options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
+            <SupplyValuePicker name="supplierName" label="Supplier" options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
             <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? today} />
             <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
-            <Input name="unit" label="Unit" placeholder="g" defaultValue={supply?.unit} list="supply-unit-options" />
+            <SupplyValuePicker name="unit" label="Unit" options={unitOptions} placeholder="g" value={supply?.unit} />
             <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
           </div>
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
