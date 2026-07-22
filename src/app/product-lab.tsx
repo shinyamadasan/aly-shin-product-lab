@@ -161,7 +161,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         ingredientCost: Number(row.ingredient_cost ?? 0),
         packagingCost: Number(row.packaging_cost ?? 0),
         laborEstimate: Number(row.labor_estimate ?? 0),
-        waterCost: Number(row.water_cost ?? row.utilities_estimate ?? 0),
+        waterCost: Number(row.water_cost ?? 0),
         gasCost: Number(row.gas_cost ?? 0),
         ovenElectricCost: Number(row.oven_electric_cost ?? 0),
         refrigerationCost: Number(row.refrigeration_cost ?? 0),
@@ -435,6 +435,12 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       packagingMinutes: Number(formData.get("packagingMinutes") || 0),
       prepMinutes: Number(formData.get("prepMinutes") || 0),
     };
+    const gasDetail: CostingGasDetail = {
+      gasKg: Number(formData.get("gasKg") || 0),
+      gasPrice: Number(formData.get("gasPrice") || 0),
+      gasUseKgPerHour: Number(formData.get("gasUseKgPerHour") || 0),
+    };
+    const gasCostDetail = getGasCostDetail(gasDetail, laborDetail.cookingMinutes);
     const activeLaborMinutes = laborDetail.prepMinutes + laborDetail.packagingMinutes + laborDetail.cleaningMinutes;
     const laborEstimate = (activeLaborMinutes / 60) * laborDetail.activeRate;
     const packagingCost = packagingRows.reduce((total, row) => total + row.cost, 0);
@@ -447,7 +453,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       : "";
     const yieldNotes = Number(formData.get("costingYield") || 0) > 0 ? `Costing yield: ${Number(formData.get("costingYield") || 0)}` : "";
     const baseNotes = getCostingBaseNotes(String(formData.get("notes") || "").trim());
-    const structuredNotes = buildCostingStructuredDetail({ equipmentUsage, laborDetail, overheadRows, packagingRows, targetFoodCost, wasteRows });
+    const gasNotes = gasCostDetail.cost > 0
+      ? `Gas: ${gasDetail.gasKg}kg refill / PHP ${gasDetail.gasPrice} / ${gasDetail.gasUseKgPerHour}kg per hour / PHP ${gasCostDetail.costPerMinute.toFixed(4)} per min / ${laborDetail.cookingMinutes} min`
+      : "";
+    const structuredNotes = buildCostingStructuredDetail({ equipmentUsage, gasDetail, laborDetail, overheadRows, packagingRows, targetFoodCost, utilityRows, wasteRows });
     const costing: CostingSummary = {
       id: costingId || crypto.randomUUID(),
       productId,
@@ -455,13 +464,13 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       packagingCost,
       laborEstimate,
       waterCost: utilityBuckets.waterCost,
-      gasCost: utilityBuckets.gasCost,
+      gasCost: utilityBuckets.gasCost + gasCostDetail.cost,
       ovenElectricCost: utilityBuckets.ovenElectricCost,
       refrigerationCost: utilityBuckets.refrigerationCost + overheadCost,
       coffeeEquipmentCost: utilityBuckets.coffeeEquipmentCost,
       wasteAllowance: wasteAllowance + equipmentCost,
       suggestedPrice: Number(formData.get("suggestedPrice") || 0),
-      notes: [baseNotes, yieldNotes, utilityNotes, structuredNotes].filter(Boolean).join("\n"),
+      notes: [baseNotes, yieldNotes, utilityNotes, gasNotes, structuredNotes].filter(Boolean).join("\n"),
     };
     if (supabase && session) {
       const { error: deleteError } = await supabase.from("costing_entries").delete().eq("product_id", productId);
@@ -1922,6 +1931,7 @@ function ProofDayChecklist() {
 type CostingIngredientRow = CostingEntry & { brandName: string; isManualCost?: boolean; rowId: string };
 type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
 type CostingNamedCostRow = { cost: number; name: string; note: string; rowId: string };
+type CostingGasDetail = { gasKg: number; gasPrice: number; gasUseKgPerHour: number };
 type CostingLaborDetail = {
   activeRate: number;
   cleaningMinutes: number;
@@ -2072,7 +2082,7 @@ function getCostingYieldFromNotes(notes: string) {
 function getCostingBaseNotes(notes: string) {
   return notes
     .split("\n")
-    .filter((line) => !line.startsWith("Costing yield:") && !line.startsWith("Utilities:") && !line.startsWith("Professional costing detail:"))
+    .filter((line) => !line.startsWith("Costing yield:") && !line.startsWith("Utilities:") && !line.startsWith("Gas:") && !line.startsWith("Professional costing detail:"))
     .join("\n")
     .trim();
 }
@@ -2086,10 +2096,12 @@ function getCostingStructuredDetail(notes: string) {
   try {
     return JSON.parse(rawJson) as {
       equipmentUsage?: EquipmentUsageRow[];
+      gasDetail?: CostingGasDetail;
       laborDetail?: CostingLaborDetail;
       overheadRows?: CostingNamedCostRow[];
       packagingRows?: CostingNamedCostRow[];
       targetFoodCost?: number;
+      utilityRows?: CostingUtilityRow[];
       wasteRows?: CostingNamedCostRow[];
     };
   } catch {
@@ -2130,20 +2142,34 @@ function compactEquipmentUsageRows(rows: EquipmentUsageRow[]) {
 
 function buildCostingStructuredDetail(detail: {
   equipmentUsage: EquipmentUsageRow[];
+  gasDetail: CostingGasDetail;
   laborDetail: CostingLaborDetail;
   overheadRows: CostingNamedCostRow[];
   packagingRows: CostingNamedCostRow[];
   targetFoodCost: number;
+  utilityRows: Array<{ cost: number; name: string; note: string; rowId?: string }>;
   wasteRows: CostingNamedCostRow[];
 }) {
   return `Professional costing detail: ${JSON.stringify({
     equipmentUsage: compactEquipmentUsageRows(detail.equipmentUsage),
+    gasDetail: detail.gasDetail,
     laborDetail: detail.laborDetail,
     overheadRows: compactNamedCostRows(detail.overheadRows),
     packagingRows: compactNamedCostRows(detail.packagingRows),
     targetFoodCost: detail.targetFoodCost,
+    utilityRows: detail.utilityRows
+      .map((row) => ({ cost: Number(row.cost || 0), name: row.name.trim(), note: row.note.trim(), rowId: row.rowId }))
+      .filter((row) => row.name || row.cost > 0 || row.note),
     wasteRows: compactNamedCostRows(detail.wasteRows),
   })}`;
+}
+
+function getGasCostDetail(gasDetail: CostingGasDetail, cookingMinutes: number) {
+  const pricePerKg = gasDetail.gasKg > 0 ? gasDetail.gasPrice / gasDetail.gasKg : 0;
+  const costPerMinute = (gasDetail.gasUseKgPerHour / 60) * pricePerKg;
+  const cost = costPerMinute * cookingMinutes;
+
+  return { cost, costPerMinute, pricePerKg };
 }
 
 function buildNamedCostRows(names: string[], savedRows?: CostingNamedCostRow[], fallbackCost = 0) {
@@ -2736,12 +2762,18 @@ function CostingForm({
 }) {
   const [selectedProductId, setSelectedProductId] = useState(costing?.productId ?? products[0].id);
   const savedIngredients = costing ? ingredientEntries.filter((entry) => entry.productId === costing.productId) : [];
+  const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
+  const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() =>
     savedIngredients.length > 0
       ? savedIngredients.map((entry) => ({ ...entry, rowId: entry.id }))
       : [{ brandName: "", cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }],
   );
   const [utilityRows, setUtilityRows] = useState<CostingUtilityRow[]>(() => {
+    if (structuredDetail?.utilityRows?.length) {
+      return structuredDetail.utilityRows.map((row) => ({ ...row, rowId: row.rowId || crypto.randomUUID() }));
+    }
+
     if (!costing) {
       return [{ cost: 0, name: "", note: "", rowId: crypto.randomUUID() }];
     }
@@ -2756,8 +2788,6 @@ function CostingForm({
 
     return rows.length > 0 ? rows : [{ cost: 0, name: "", note: "", rowId: crypto.randomUUID() }];
   });
-  const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
-  const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   const [packagingRows, setPackagingRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultPackagingComponents, structuredDetail?.packagingRows, costing?.packagingCost ?? 0));
   const [overheadRows, setOverheadRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultOverheadRows, structuredDetail?.overheadRows));
   const [equipmentUsage, setEquipmentUsage] = useState<EquipmentUsageRow[]>(() => structuredDetail?.equipmentUsage ?? []);
@@ -2770,13 +2800,22 @@ function CostingForm({
     packagingMinutes: 0,
     prepMinutes: latestBatch?.prepTimeMinutes ?? 0,
   });
+  const [gasDetail, setGasDetail] = useState<CostingGasDetail>(() => structuredDetail?.gasDetail ?? {
+    gasKg: 0,
+    gasPrice: 0,
+    gasUseKgPerHour: 0,
+  });
   const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
   const [targetFoodCost, setTargetFoodCost] = useState(structuredDetail?.targetFoodCost ?? 0.35);
   const [localMessage, setLocalMessage] = useState("");
   const [localMessageTone, setLocalMessageTone] = useState<"good" | "bad" | "info">("info");
 
-  const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
-  const utilityBuckets = bucketUtilityRows(utilityRows);
+  const utilityRowsTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const gasCostDetail = getGasCostDetail(gasDetail, laborDetail.cookingMinutes);
+  const gasCost = gasCostDetail.cost;
+  const utilityTotal = utilityRowsTotal + gasCost;
+  const manualUtilityBuckets = bucketUtilityRows(utilityRows);
+  const utilityBuckets = { ...manualUtilityBuckets, gas: manualUtilityBuckets.gas + gasCost };
   const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || latestBatch?.usablePieces || 0);
@@ -2903,6 +2942,7 @@ function CostingForm({
         ...ingredientRows.map((row) => ["Ingredient", `${row.brandName ? `${row.brandName} ` : ""}${row.ingredientName}`, row.quantityUsed, row.unit, row.cost, row.supplierNote]),
         ["Packaging", "Packaging", "", "", packagingCost, ""],
         ["Labor", "Labor", "", "", laborEstimate, "Pay for mixing, baking/cooking, cooling, packing, cleaning, and admin time"],
+        ["Utility", "Gas per minute", laborDetail.cookingMinutes, "min", gasCost, `${gasDetail.gasKg}kg refill / PHP ${gasDetail.gasPrice} / ${gasDetail.gasUseKgPerHour}kg per hour / PHP ${gasCostDetail.costPerMinute.toFixed(4)} per min`],
         ...utilityRows.map((row) => ["Utility", row.name, "", "", row.cost, row.note]),
         ["Overhead", "Allocated overhead", "", "", overheadCost, ""],
         ...equipmentAllocations.map((allocation) => ["Equipment", allocation.equipmentItem ? `${allocation.equipmentItem.brand ? `${allocation.equipmentItem.brand} ` : ""}${allocation.equipmentItem.name}` : "Equipment not found", "", "", allocation.allocatedTotal, `dep ${allocation.allocatedDepreciation.toFixed(2)} + maint ${allocation.allocatedMaintenance.toFixed(2)}`]),
@@ -3017,6 +3057,21 @@ function CostingForm({
           </div>
         </div>
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <p className="text-sm font-semibold">Gas cost per minute</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Use this for LPG/gas cooking cost. It uses Cooking min from Labor timing, then adds the gas cost to this batch automatically.</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <Input name="gasKg" label="Gas tank kg" type="number" step="0.01" placeholder="11" value={gasDetail.gasKg || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasKg: Number(event.target.value || 0) }))} />
+            <Input name="gasPrice" label="Refill price PHP" type="number" step="0.01" placeholder="950" value={gasDetail.gasPrice || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasPrice: Number(event.target.value || 0) }))} />
+            <Input name="gasUseKgPerHour" label="Gas use kg/hour" type="number" step="0.001" placeholder="0.20" value={gasDetail.gasUseKgPerHour || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasUseKgPerHour: Number(event.target.value || 0) }))} />
+          </div>
+          <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-4">
+            <CostingBreakdown label="Gas PHP/kg" value={gasCostDetail.pricePerKg} />
+            <CostingBreakdown label="Gas PHP/min" value={gasCostDetail.costPerMinute} />
+            <CostingBreakdown label="Cooking minutes" value={laborDetail.cookingMinutes} isCurrency={false} />
+            <CostingBreakdown label="Gas cost this batch" value={gasCost} />
+          </div>
+        </div>
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-sm font-semibold">Utilities / equipment used</p>
@@ -3087,6 +3142,9 @@ function CostingForm({
         equipmentDepreciationCost={equipmentDepreciationCost}
         equipmentMaintenanceCost={equipmentMaintenanceCost}
         foodCostPercent={foodCostPercent}
+        gasCost={gasCost}
+        gasCostDetail={gasCostDetail}
+        gasDetail={gasDetail}
         grossProfit={grossProfit}
         indirectCost={indirectCost}
         ingredientRows={ingredientRows}
@@ -3148,6 +3206,9 @@ function CostingPrintReport({
   equipmentDepreciationCost,
   equipmentMaintenanceCost,
   foodCostPercent,
+  gasCost,
+  gasCostDetail,
+  gasDetail,
   grossProfit,
   indirectCost,
   ingredientRows,
@@ -3179,6 +3240,9 @@ function CostingPrintReport({
   equipmentDepreciationCost: number;
   equipmentMaintenanceCost: number;
   foodCostPercent: number;
+  gasCost: number;
+  gasCostDetail: { cost: number; costPerMinute: number; pricePerKg: number };
+  gasDetail: CostingGasDetail;
   grossProfit: number;
   indirectCost: number;
   ingredientRows: CostingIngredientRow[];
@@ -3256,6 +3320,14 @@ function CostingPrintReport({
       </table>
 
       <NamedCostTable emptyLabel="No utility cost entered" rows={utilityRows} title="Utilities" total={utilityTotal} />
+      <h2>Gas Calculation</h2>
+      <table>
+        <tbody>
+          <tr><th>Tank kg</th><td>{gasDetail.gasKg || 0}</td><th>Refill price</th><td>PHP {gasDetail.gasPrice.toFixed(2)}</td></tr>
+          <tr><th>Gas PHP/kg</th><td>PHP {gasCostDetail.pricePerKg.toFixed(4)}</td><th>Gas use</th><td>{gasDetail.gasUseKgPerHour || 0} kg/hour</td></tr>
+          <tr><th>Gas PHP/min</th><td>PHP {gasCostDetail.costPerMinute.toFixed(4)}</td><th>Batch gas cost</th><td>PHP {gasCost.toFixed(2)}</td></tr>
+        </tbody>
+      </table>
       <NamedCostTable emptyLabel="No overhead allocated" rows={overheadRows} title="Overhead" total={overheadCost} />
 
       <h2>Equipment Usage</h2>
