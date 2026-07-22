@@ -1463,14 +1463,57 @@ function SupplyValuePicker({
   placeholder: string;
   value?: string;
 }) {
-  const listId = `supply-${name}-options`;
+  const [inputValue, setInputValue] = useState(value ?? "");
+  const [isOpen, setIsOpen] = useState(false);
+  const filteredOptions = options.filter((option) => option.toLowerCase().includes(inputValue.trim().toLowerCase()));
+
   return (
-    <>
-      <Input name={name} label={`${label} (type or choose)`} placeholder={placeholder} defaultValue={value} list={listId} />
-      <datalist id={listId}>
-        {options.map((option) => <option key={option} value={option} />)}
-      </datalist>
-    </>
+    <label className="relative grid gap-1 text-sm font-medium">
+      {label}
+      <div className="relative">
+        <input
+          autoComplete="off"
+          className="h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3 pr-10"
+          name={name}
+          onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
+          onChange={(event) => {
+            setInputValue(event.target.value);
+            setIsOpen(true);
+          }}
+          onFocus={() => setIsOpen(true)}
+          placeholder={placeholder}
+          value={inputValue}
+        />
+        <button
+          aria-label={`Show saved ${label.toLowerCase()} options`}
+          className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[#6f5a4c]"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setIsOpen((current) => !current)}
+          type="button"
+        >
+          v
+        </button>
+      </div>
+      {isOpen ? (
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-auto rounded-md border border-[#d8c7b7] bg-white shadow-lg">
+          {filteredOptions.length === 0 ? <p className="px-3 py-2 text-sm font-normal text-[#6f5a4c]">No saved {label.toLowerCase()} yet. Type a new one.</p> : null}
+          {filteredOptions.map((option) => (
+            <button
+              className="block w-full px-3 py-2 text-left text-sm font-normal text-[#211713] hover:bg-[#fffaf3]"
+              key={option}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setInputValue(option);
+                setIsOpen(false);
+              }}
+              type="button"
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </label>
   );
 }
 
