@@ -324,7 +324,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       },
       { coffeeEquipmentCost: 0, gasCost: 0, ovenElectricCost: 0, refrigerationCost: 0, waterCost: 0 },
     );
-    const ingredientCost = ingredientRows.reduce((total, row) => total + row.cost, 0);
+    const latestFormula = parseBatchIngredients(labState.batches.find((batch) => batch.productId === productId)?.ingredientsNotes ?? "");
+    const ingredientCost = latestFormula.length > 0
+      ? ingredientRows.reduce((total, row) => total + getUsedIngredientCost(row, latestFormula), 0)
+      : ingredientRows.reduce((total, row) => total + row.cost, 0);
     const utilityNotes = utilityRows.length
       ? `Utilities: ${utilityRows.map((row) => `${row.name || "Unnamed"} ${row.cost}${row.note ? ` (${row.note})` : ""}`).join("; ")}`
       : "";
@@ -728,6 +731,19 @@ function formatBatchFormula(formula: BatchFormulaRow[]) {
     .filter((row) => row.ingredient.trim())
     .map((row) => `${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}`.trim())
     .join("\n");
+}
+
+function findFormulaIngredient(formula: BatchFormulaRow[], ingredientName: string, unit: string) {
+  return formula.find((row) => row.ingredient.trim().toLowerCase() === ingredientName.trim().toLowerCase() && row.unit.trim().toLowerCase() === unit.trim().toLowerCase());
+}
+
+function getUsedIngredientCost(entry: CostingEntry, formula: BatchFormulaRow[]) {
+  const formulaRow = findFormulaIngredient(formula, entry.ingredientName, entry.unit);
+  if (!formulaRow || entry.quantityUsed <= 0 || entry.cost <= 0) {
+    return 0;
+  }
+
+  return (entry.cost / entry.quantityUsed) * formulaRow.quantity;
 }
 
 function ProductDetailPage({ labState }: { labState: LabState }) {
@@ -1373,10 +1389,12 @@ function CostingForm({
   const [wasteAllowance, setWasteAllowance] = useState(costing?.wasteAllowance ?? 0);
   const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
 
-  const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
   const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
+  const ingredientTotal = latestFormula.length > 0
+    ? ingredientRows.reduce((total, row) => total + getUsedIngredientCost(row, latestFormula), 0)
+    : ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const sellablePieces = latestBatch?.usablePieces ?? 0;
   const totalBatchCost = ingredientTotal + utilityTotal + packagingCost + laborEstimate + wasteAllowance;
   const costPerPiece = sellablePieces > 0 ? totalBatchCost / sellablePieces : 0;
@@ -1399,7 +1417,7 @@ function CostingForm({
         id: "",
         ingredientName: row.ingredient,
         productId: selectedProductId,
-        quantityUsed: row.quantity,
+        quantityUsed: 0,
         rowId: crypto.randomUUID(),
         supplierNote: row.change,
         unit: row.unit,
@@ -1420,8 +1438,8 @@ function CostingForm({
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-sm font-semibold">Ingredients used</p>
-              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Cost the quantity used in this batch. Example: butter, 250, g, 85 PHP.</p>
+              <p className="text-sm font-semibold">Supplier ingredient prices</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Enter the supplier pack you bought. The app calculates used cost from the latest proof formula.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
@@ -1430,18 +1448,22 @@ function CostingForm({
           </div>
           <div className="mt-3 grid gap-3">
             {ingredientRows.map((row, index) => (
-              <div className="grid gap-2 lg:grid-cols-[1fr_90px_80px_110px_1fr_70px]" key={row.rowId}>
+              <div className="grid gap-2 lg:grid-cols-[1fr_100px_80px_110px_130px_1fr_70px]" key={row.rowId}>
                 <input name={`ingredientId-${row.rowId}`} type="hidden" value={row.id} />
-                <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" defaultValue={row.ingredientName} />
-                <Input name={`quantityUsed-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="250" defaultValue={row.quantityUsed || undefined} />
-                <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" defaultValue={row.unit} />
-                <Input name={`ingredientCost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" placeholder="85" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
-                <Input name={`supplierNote-${row.rowId}`} label="Supplier/note" placeholder="SM / estimated" defaultValue={row.supplierNote} />
+                <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Cocoa powder" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
+                <Input name={`quantityUsed-${row.rowId}`} label="Pack qty" type="number" step="0.01" placeholder="1000" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
+                <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
+                <Input name={`ingredientCost-${row.rowId}`} label="Pack PHP" type="number" step="0.01" placeholder="100" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
+                <div className="grid gap-1 text-sm font-medium">
+                  Used cost
+                  <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">PHP {getUsedIngredientCost(row, latestFormula).toFixed(2)}</p>
+                </div>
+                <Input name={`supplierNote-${row.rowId}`} label="Supplier/quality" placeholder="SM / darker cocoa / better aroma" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
                 <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
               </div>
             ))}
           </div>
-          <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient total: PHP {ingredientTotal.toFixed(2)}</p>
+          <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient used total from latest proof formula: PHP {ingredientTotal.toFixed(2)}</p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="packagingCost" label="Packaging cost per batch/unit" type="number" step="0.01" value={packagingCost || ""} onChange={(event) => setPackagingCost(Number(event.target.value || 0))} helper="Boxes, cups, bottles, labels, stickers, bags, seals." />
@@ -1500,9 +1522,9 @@ function CostingGuide() {
   return (
     <Panel title="Costing Rules" icon={<Sparkles size={18} />}>
       <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-        <p>Cost one real batch. Do not average guesses across different recipes.</p>
+        <p>Cost the latest proof formula using real supplier pack prices. Do not average guesses across different recipes.</p>
         <ul className="space-y-2">
-          <li><strong>Ingredients:</strong> cost only the amount used in this batch.</li>
+          <li><strong>Ingredients:</strong> enter supplier pack quantity and pack price. Used cost is calculated from the proof formula.</li>
           <li><strong>Packaging:</strong> box, cup, bottle, label, bag, seal, and insert.</li>
           <li><strong>Utilities:</strong> add only meaningful costs for this test.</li>
           <li><strong>Labor:</strong> mixing, baking, cooling, packing, cleaning.</li>
