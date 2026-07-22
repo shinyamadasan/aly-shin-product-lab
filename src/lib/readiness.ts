@@ -66,3 +66,48 @@ export function getProductPriority(product: Product) {
 
   return "Test first";
 }
+
+export function getProductsNeedingProof(products: Product[], batches: ProductBatch[]) {
+  return products.filter((product) => !batches.some((batch) => batch.productId === product.id));
+}
+
+export function getClosestToLaunch(
+  products: Product[],
+  batches: ProductBatch[] = [],
+  costings: CostingSummary[] = [],
+  tastings: TastingFeedback[] = [],
+) {
+  return products
+    .map((product) => ({ product, readiness: getReadinessScore(product, batches, costings, tastings) }))
+    .filter((entry) => entry.readiness.percent < 100)
+    .sort((a, b) => b.readiness.percent - a.readiness.percent)
+    .slice(0, 3);
+}
+
+export function getPauseCandidates(
+  products: Product[],
+  batches: ProductBatch[] = [],
+  costings: CostingSummary[] = [],
+  tastings: TastingFeedback[] = [],
+) {
+  return products.filter((product) => {
+    const stats = getProductStats(product, batches, costings, tastings);
+    if (stats.latestDecision === "pause" || stats.latestDecision === "remove") {
+      return true;
+    }
+
+    return product.category === "Coffee" && stats.proofBatches === 0;
+  });
+}
+
+export function getShinReviewItems(
+  products: Product[],
+  batches: ProductBatch[] = [],
+  costings: CostingSummary[] = [],
+  tastings: TastingFeedback[] = [],
+) {
+  return products.filter((product) => {
+    const stats = getProductStats(product, batches, costings, tastings);
+    return stats.costingDone && stats.tastingCount >= 5 && stats.latestDecision === "retest";
+  });
+}

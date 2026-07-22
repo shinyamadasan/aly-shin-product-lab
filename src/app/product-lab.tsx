@@ -18,8 +18,16 @@ import {
   Sparkles,
   Star,
 } from "lucide-react";
-import { products, readinessRules, recentJournal } from "@/lib/sample-data";
-import { getProductPriority, getProductStats, getReadinessScore } from "@/lib/readiness";
+import { products, readinessRules } from "@/lib/sample-data";
+import {
+  getClosestToLaunch,
+  getPauseCandidates,
+  getProductPriority,
+  getProductsNeedingProof,
+  getProductStats,
+  getReadinessScore,
+  getShinReviewItems,
+} from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
@@ -732,7 +740,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           {view === "products" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_360px]" id="products">
               <ProductReadiness labState={labState} />
-              <DecisionSidebar />
+              <DecisionSidebar labState={labState} />
             </section>
           ) : null}
 
@@ -787,7 +795,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "content-studio" ? <ContentStudio labState={labState} /> : null}
 
-          {view === "guide" ? <OperatingGuide /> : null}
+          {view === "guide" ? <OperatingGuide labState={labState} /> : null}
     </AppShell>
   );
 }
@@ -1013,7 +1021,106 @@ function ProofDayModeGuide() {
   );
 }
 
-function OperatingGuide() {
+function getProductGap(stats: ReturnType<typeof getProductStats>) {
+  if (stats.proofBatches === 0) {
+    return "Needs first proof batch";
+  }
+
+  if (!stats.costingDone) {
+    return "Needs costing";
+  }
+
+  if (!stats.packagingDone) {
+    return "Needs packaging cost";
+  }
+
+  if (stats.tastingCount < 5) {
+    return `Needs ${5 - stats.tastingCount} more tasting${5 - stats.tastingCount === 1 ? "" : "s"}`;
+  }
+
+  if (stats.averageRating !== null && stats.averageRating < 8) {
+    return "Rating below 8 — retest or adjust";
+  }
+
+  if (stats.latestDecision !== "launch") {
+    return "Awaiting launch decision";
+  }
+
+  return "Launch-ready";
+}
+
+function ContextBrain({ labState }: { labState: LabState }) {
+  const needsProof = getProductsNeedingProof(products, labState.batches);
+  const closestToLaunch = getClosestToLaunch(products, labState.batches, labState.costings, labState.tastings);
+  const pauseCandidates = getPauseCandidates(products, labState.batches, labState.costings, labState.tastings);
+  const reviewItems = getShinReviewItems(products, labState.batches, labState.costings, labState.tastings);
+  const averageRating = labState.tastings.length
+    ? Math.round((labState.tastings.reduce((total, tasting) => total + tasting.rating, 0) / labState.tastings.length) * 10) / 10
+    : null;
+
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_360px]">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white">
+        <div className="border-b border-[#eaded2] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Context Brain</p>
+          <h3 className="mt-1 text-xl font-semibold">What the data says right now</h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">Generated from real Proof Day, Costing, Tasting, and Journal entries — not generic text.</p>
+        </div>
+        <div className="grid gap-4 p-5 md:grid-cols-4">
+          <MetricCard icon={<FlaskConical size={20} />} label="Proof batches" value={labState.batches.length} detail="Logged so far" />
+          <MetricCard icon={<Beaker size={20} />} label="Supplies" value={labState.supplies.length} detail="Purchases logged" />
+          <MetricCard icon={<Star size={20} />} label="Tastings" value={labState.tastings.length} detail="Feedback entries" />
+          <MetricCard icon={<Star size={20} />} label="Avg rating" value={averageRating ?? 0} detail={averageRating === null ? "No ratings yet" : "Out of 10"} />
+        </div>
+        <div className="border-t border-[#eaded2] p-5">
+          <h4 className="font-semibold">What&apos;s missing, per product</h4>
+          <div className="mt-3 divide-y divide-[#f0e4d8]">
+            {products.map((product) => {
+              const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+              return (
+                <div className="flex items-center justify-between gap-3 py-3 text-sm" key={product.id}>
+                  <span className="font-medium">{product.name}</span>
+                  <span className="text-[#6f5a4c]">{getProductGap(stats)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-5">
+        <Panel title="Closest To Launch" icon={<PackageCheck size={18} />}>
+          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+            {closestToLaunch.length === 0 ? <p>No product has a readiness score yet.</p> : null}
+            {closestToLaunch.map((entry) => (
+              <p key={entry.product.id}><strong>{entry.product.name}:</strong> {entry.readiness.percent}% ({entry.readiness.passed}/{entry.readiness.total} gates)</p>
+            ))}
+          </div>
+        </Panel>
+        <Panel title="Consider Pausing" icon={<ShieldAlert size={18} />}>
+          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+            {pauseCandidates.length === 0 ? <p>No product currently flagged to pause.</p> : null}
+            {pauseCandidates.map((product) => <p key={product.id}>{product.name}</p>)}
+          </div>
+        </Panel>
+        <Panel title="Needs Your Review" icon={<ClipboardCheck size={18} />}>
+          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+            {reviewItems.length === 0 ? <p>Nothing has enough signal for a decision yet.</p> : null}
+            {reviewItems.map((product) => <p key={product.id}>{product.name}: costed and tasted, still marked retest.</p>)}
+          </div>
+        </Panel>
+        <Panel title="Needs A Proof Batch" icon={<FlaskConical size={18} />}>
+          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+            {needsProof.length === 0 ? <p>Every product has at least one proof batch.</p> : null}
+            {needsProof.map((product) => <p key={product.id}>{product.name}</p>)}
+          </div>
+        </Panel>
+      </div>
+    </section>
+  );
+}
+
+function OperatingGuide({ labState }: { labState: LabState }) {
   const dailyFlow = [
     { title: "1. Record the kitchen test", page: "/proof-day", detail: "Use Proof Day every time a product is made. Select the product, adjust the auto-filled formula, record timing, sellable yield, issues, freshness, packaging behavior, and the next test only." },
     { title: "2. Capture useful content", page: "/proof-day", detail: "Use the content journal only when real media or a real lesson exists. Log texture close-ups, process clips, packaging photos, reactions, content angle, and next action." },
@@ -1035,47 +1142,50 @@ function OperatingGuide() {
   ];
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[1fr_360px]">
-      <div className="rounded-lg border border-[#e1d4c4] bg-white">
-        <div className="border-b border-[#eaded2] p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Operating Manual</p>
-          <h3 className="mt-1 text-xl font-semibold">Day-to-day Product Lab flow</h3>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">This app should help you prove products before launch. Your wife records what happened in the kitchen. You review the data and decide what to improve, cost, launch, pause, or remove.</p>
+    <div className="space-y-5">
+      <ContextBrain labState={labState} />
+      <section className="grid gap-5 xl:grid-cols-[1fr_360px]">
+        <div className="rounded-lg border border-[#e1d4c4] bg-white">
+          <div className="border-b border-[#eaded2] p-5">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Operating Manual</p>
+            <h3 className="mt-1 text-xl font-semibold">Day-to-day Product Lab flow</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">This app should help you prove products before launch. Your wife records what happened in the kitchen. You review the data and decide what to improve, cost, launch, pause, or remove.</p>
+          </div>
+          <div className="divide-y divide-[#f0e4d8]">
+            {dailyFlow.map((step) => (
+              <article className="grid gap-3 p-5 md:grid-cols-[1fr_150px]" key={step.title}>
+                <div>
+                  <h4 className="font-semibold">{step.title}</h4>
+                  <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{step.detail}</p>
+                </div>
+                <a className="inline-flex h-10 items-center justify-center rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" href={step.page}>Open page</a>
+              </article>
+            ))}
+          </div>
         </div>
-        <div className="divide-y divide-[#f0e4d8]">
-          {dailyFlow.map((step) => (
-            <article className="grid gap-3 p-5 md:grid-cols-[1fr_150px]" key={step.title}>
-              <div>
-                <h4 className="font-semibold">{step.title}</h4>
-                <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{step.detail}</p>
-              </div>
-              <a className="inline-flex h-10 items-center justify-center rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" href={step.page}>Open page</a>
-            </article>
-          ))}
-        </div>
-      </div>
 
-      <div className="space-y-5">
-        <Panel title="Simple Roles" icon={<ClipboardCheck size={18} />}>
-          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-            <p><strong>Your wife:</strong> Proof Day, Tasting, Content Journal.</p>
-            <p><strong>You:</strong> Batches, Costing, Product Detail, Products, Admin, Launch.</p>
-          </div>
-        </Panel>
-        <Panel title="Weekly Rhythm" icon={<CalendarDays size={18} />}>
-          <ol className="space-y-2 text-sm leading-6 text-[#5f4a3d]">
-            {weeklyFlow.map((item) => <li key={item}>{item}</li>)}
-          </ol>
-        </Panel>
-        <Panel title="Testing Rule" icon={<ShieldAlert size={18} />}>
-          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-            <p>Do not change too many things at once.</p>
-            <p><strong>Weak test:</strong> changed sugar, butter, bake time, pan, packaging, and cooling.</p>
-            <p><strong>Good test:</strong> same formula as last batch, only reduced sugar by 15g.</p>
-          </div>
-        </Panel>
-      </div>
-    </section>
+        <div className="space-y-5">
+          <Panel title="Simple Roles" icon={<ClipboardCheck size={18} />}>
+            <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+              <p><strong>Your wife:</strong> Proof Day, Tasting, Content Journal.</p>
+              <p><strong>You:</strong> Batches, Costing, Product Detail, Products, Admin, Launch.</p>
+            </div>
+          </Panel>
+          <Panel title="Weekly Rhythm" icon={<CalendarDays size={18} />}>
+            <ol className="space-y-2 text-sm leading-6 text-[#5f4a3d]">
+              {weeklyFlow.map((item) => <li key={item}>{item}</li>)}
+            </ol>
+          </Panel>
+          <Panel title="Testing Rule" icon={<ShieldAlert size={18} />}>
+            <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+              <p>Do not change too many things at once.</p>
+              <p><strong>Weak test:</strong> changed sugar, butter, bake time, pan, packaging, and cooling.</p>
+              <p><strong>Good test:</strong> same formula as last batch, only reduced sugar by 15g.</p>
+            </div>
+          </Panel>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -1337,6 +1447,11 @@ function DashboardPage({
   session: Session | null;
   signOut: () => void;
 }) {
+  const productsNeedingProof = getProductsNeedingProof(products, labState.batches);
+  const proofDayCopy = productsNeedingProof.length
+    ? `Test ${productsNeedingProof.map((product) => product.name).join(", ")}. Capture yield, timing, texture, packaging behavior, freshness after 12/24 hours, and willingness to pay.`
+    : "Every product has at least one proof batch logged. Pick the weakest formula and run a focused retest.";
+
   return (
     <>
       <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr]" id="dashboard">
@@ -1353,7 +1468,7 @@ function DashboardPage({
                   <div>
                     <h3 className="font-semibold">Next Product Proof Day</h3>
                     <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5a4c]">
-                      Test Brownies, Revel Bars, and Cookies. Capture yield, timing, texture, packaging behavior, freshness after 12/24 hours, and willingness to pay.
+                      {proofDayCopy}
                     </p>
                   </div>
                 </div>
@@ -1372,7 +1487,7 @@ function DashboardPage({
 
           <section className="grid gap-5 xl:grid-cols-[1fr_360px]" id="products">
             <ProductReadiness labState={labState} />
-            <DecisionSidebar />
+            <DecisionSidebar labState={labState} />
           </section>
     </>
   );
@@ -1410,7 +1525,9 @@ function ProductReadiness({ labState }: { labState: LabState }) {
   );
 }
 
-function DecisionSidebar() {
+function DecisionSidebar({ labState }: { labState: LabState }) {
+  const latestJournal = labState.journal.slice(0, 3);
+
   return (
     <div className="space-y-5">
       <Panel title="Launch gates" icon={<PackageCheck size={18} />}>
@@ -1425,11 +1542,12 @@ function DecisionSidebar() {
       </Panel>
       <Panel title="Journal signals" icon={<NotebookPen size={18} />}>
         <div className="space-y-3">
-          {recentJournal.map((entry) => (
-            <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3" key={entry.title}>
-              <p className="text-sm font-semibold">{entry.title}</p>
-              <p className="mt-1 text-sm leading-5 text-[#6f5a4c]">{entry.detail}</p>
-              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{entry.status}</p>
+          {latestJournal.length === 0 ? <p className="text-sm text-[#6f5a4c]">No journal entries yet. Save one from Content Journal after real kitchen work.</p> : null}
+          {latestJournal.map((entry) => (
+            <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3" key={entry.id}>
+              <p className="text-sm font-semibold">{productName(entry.productId)} — {entry.entryDate}</p>
+              <p className="mt-1 text-sm leading-5 text-[#6f5a4c]">{entry.lessonLearned || entry.whatWasMade || "No lesson logged yet"}</p>
+              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{entry.nextAction || "Next action not set"}</p>
             </div>
           ))}
         </div>

@@ -72,20 +72,3 @@ export const readinessRules = [
   "Clear launch / retest / pause decision",
 ];
 
-export const recentJournal = [
-  {
-    title: "Next Product Proof Day",
-    detail: "Test Brownies, Revel Bars, and Cookies before adding coffee.",
-    status: "Current focus",
-  },
-  {
-    title: "Coffee Decision",
-    detail: "Treat bottled coffee as add-on only until freshness and premium feel are proven.",
-    status: "Guardrail",
-  },
-  {
-    title: "Content Rule",
-    detail: "Capture real process notes first; AI drafts only from real proof.",
-    status: "Brand rule",
-  },
-];
