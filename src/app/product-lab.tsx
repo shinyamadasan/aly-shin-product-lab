@@ -2606,51 +2606,124 @@ function CostingForm({
       <CostingPrintReport
         costPerPiece={costPerPiece}
         costingYield={costingYield}
+        directCost={directCost}
+        equipmentCost={equipmentCost}
+        equipmentRows={equipmentRows}
+        foodCostPercent={foodCostPercent}
         grossProfit={grossProfit}
+        indirectCost={indirectCost}
         ingredientRows={ingredientRows}
+        ingredientTotal={ingredientTotal}
+        laborDetail={laborDetail}
         laborEstimate={laborEstimate}
         margin={margin}
+        markup={markup}
+        notes={getCostingBaseNotes(costing?.notes ?? "")}
+        overheadCost={overheadCost}
+        overheadRows={overheadRows}
         packagingCost={packagingCost}
+        packagingRows={packagingRows}
         productId={selectedProductId}
         suggestedPrice={suggestedPrice}
+        suggestedTargetPrice={suggestedTargetPrice}
+        targetFoodCost={targetFoodCost}
         totalBatchCost={totalBatchCost}
         utilityRows={utilityRows}
         utilityTotal={utilityTotal}
         wasteAllowance={wasteAllowance}
+        wasteRows={wasteRows}
       />
     </FormPanel>
+  );
+}
+
+function NamedCostTable({ emptyLabel, rows, title, total }: { emptyLabel: string; rows: CostingNamedCostRow[]; title: string; total: number }) {
+  const meaningfulRows = compactNamedCostRows(rows);
+  return (
+    <>
+      <h2>{title}</h2>
+      <table>
+        <thead>
+          <tr><th>Item</th><th>PHP</th><th>Note</th></tr>
+        </thead>
+        <tbody>
+          {meaningfulRows.length === 0 ? <tr><td colSpan={3}>{emptyLabel}</td></tr> : null}
+          {meaningfulRows.map((row) => (
+            <tr key={row.rowId}>
+              <td>{row.name || title}</td>
+              <td>{row.cost.toFixed(2)}</td>
+              <td>{row.note}</td>
+            </tr>
+          ))}
+          <tr><th>{title} total</th><td colSpan={2}>PHP {total.toFixed(2)}</td></tr>
+        </tbody>
+      </table>
+    </>
   );
 }
 
 function CostingPrintReport({
   costPerPiece,
   costingYield,
+  directCost,
+  equipmentCost,
+  equipmentRows,
+  foodCostPercent,
   grossProfit,
+  indirectCost,
   ingredientRows,
+  ingredientTotal,
+  laborDetail,
   laborEstimate,
   margin,
+  markup,
+  notes,
+  overheadCost,
+  overheadRows,
   packagingCost,
+  packagingRows,
   productId,
   suggestedPrice,
+  suggestedTargetPrice,
+  targetFoodCost,
   totalBatchCost,
   utilityRows,
   utilityTotal,
   wasteAllowance,
+  wasteRows,
 }: {
   costPerPiece: number;
   costingYield: number;
+  directCost: number;
+  equipmentCost: number;
+  equipmentRows: CostingNamedCostRow[];
+  foodCostPercent: number;
   grossProfit: number;
+  indirectCost: number;
   ingredientRows: CostingIngredientRow[];
+  ingredientTotal: number;
+  laborDetail: CostingLaborDetail;
   laborEstimate: number;
   margin: number;
+  markup: number;
+  notes: string;
+  overheadCost: number;
+  overheadRows: CostingNamedCostRow[];
   packagingCost: number;
+  packagingRows: CostingNamedCostRow[];
   productId: string;
   suggestedPrice: number;
+  suggestedTargetPrice: number;
+  targetFoodCost: number;
   totalBatchCost: number;
   utilityRows: CostingUtilityRow[];
   utilityTotal: number;
   wasteAllowance: number;
+  wasteRows: CostingNamedCostRow[];
 }) {
+  const activeLaborMinutes = laborDetail.prepMinutes + laborDetail.packagingMinutes + laborDetail.cleaningMinutes;
+  const passiveMinutes = laborDetail.cookingMinutes + laborDetail.coolingMinutes;
+
   return (
     <div className="print-report" id="costing-print-report">
       <h1>Aly & Shin Costing Sheet</h1>
@@ -2661,7 +2734,9 @@ function CostingPrintReport({
         <tbody>
           <tr><th>Batch cost</th><td>PHP {totalBatchCost.toFixed(2)}</td><th>Yield</th><td>{costingYield || 0} pieces/units</td></tr>
           <tr><th>Cost per piece</th><td>PHP {costPerPiece.toFixed(2)}</td><th>Selling price</th><td>PHP {suggestedPrice.toFixed(2)}</td></tr>
-          <tr><th>Gross profit/unit</th><td>PHP {grossProfit.toFixed(2)}</td><th>Margin</th><td>{margin.toFixed(1)}%</td></tr>
+          <tr><th>Gross profit/unit</th><td>PHP {grossProfit.toFixed(2)}</td><th>Gross margin</th><td>{margin.toFixed(1)}%</td></tr>
+          <tr><th>Food cost</th><td>{foodCostPercent.toFixed(1)}%</td><th>Markup</th><td>{markup.toFixed(1)}%</td></tr>
+          <tr><th>Target food cost</th><td>{(targetFoodCost * 100).toFixed(1)}%</td><th>Target price</th><td>PHP {suggestedTargetPrice.toFixed(2)}</td></tr>
         </tbody>
       </table>
 
@@ -2681,19 +2756,42 @@ function CostingPrintReport({
               <td>{row.supplierNote}</td>
             </tr>
           ))}
+          <tr><th>Ingredients total</th><td colSpan={5}>PHP {ingredientTotal.toFixed(2)}</td></tr>
         </tbody>
       </table>
 
-      <h2>Batch Costs</h2>
+      <NamedCostTable emptyLabel="No packaging cost entered" rows={packagingRows} title="Packaging" total={packagingCost} />
+
+      <h2>Labor</h2>
       <table>
         <tbody>
-          <tr><th>Packaging</th><td>PHP {packagingCost.toFixed(2)}</td></tr>
-          <tr><th>Labor / owner&apos;s wage</th><td>PHP {laborEstimate.toFixed(2)}</td></tr>
-          <tr><th>Utilities total</th><td>PHP {utilityTotal.toFixed(2)}</td></tr>
-          {utilityRows.map((row) => <tr key={row.rowId}><th>{row.name || "Utility"}</th><td>PHP {row.cost.toFixed(2)} {row.note ? `/ ${row.note}` : ""}</td></tr>)}
-          <tr><th>Waste allowance</th><td>PHP {wasteAllowance.toFixed(2)}</td></tr>
+          <tr><th>Prep min</th><td>{laborDetail.prepMinutes}</td><th>Cooking min</th><td>{laborDetail.cookingMinutes}</td></tr>
+          <tr><th>Cooling min</th><td>{laborDetail.coolingMinutes}</td><th>Packaging min</th><td>{laborDetail.packagingMinutes}</td></tr>
+          <tr><th>Cleaning min</th><td>{laborDetail.cleaningMinutes}</td><th>Active rate</th><td>PHP {laborDetail.activeRate.toFixed(2)}/hr</td></tr>
+          <tr><th>Active minutes (paid)</th><td>{activeLaborMinutes}</td><th>Passive minutes</th><td>{passiveMinutes}</td></tr>
+          <tr><th>Labor cost</th><td colSpan={3}>PHP {laborEstimate.toFixed(2)}</td></tr>
         </tbody>
       </table>
+
+      <NamedCostTable emptyLabel="No utility cost entered" rows={utilityRows} title="Utilities" total={utilityTotal} />
+      <NamedCostTable emptyLabel="No overhead allocated" rows={overheadRows} title="Overhead" total={overheadCost} />
+      <NamedCostTable emptyLabel="No equipment depreciation entered" rows={equipmentRows} title="Equipment" total={equipmentCost} />
+      <NamedCostTable emptyLabel="No waste allowance entered" rows={wasteRows} title="Waste" total={wasteAllowance} />
+
+      <h2>Cost Recap</h2>
+      <table>
+        <tbody>
+          <tr><th>Direct cost</th><td>PHP {directCost.toFixed(2)}</td><th>Indirect cost</th><td>PHP {indirectCost.toFixed(2)}</td></tr>
+          <tr><th>Total batch cost</th><td colSpan={3}>PHP {totalBatchCost.toFixed(2)}</td></tr>
+        </tbody>
+      </table>
+
+      {notes ? (
+        <>
+          <h2>Notes</h2>
+          <p>{notes}</p>
+        </>
+      ) : null}
     </div>
   );
 }
