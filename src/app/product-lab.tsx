@@ -673,7 +673,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
   return (
     <AppShell view={view}>
-          {message && view !== "dashboard" ? <MessageBox message={message} tone={messageTone} /> : null}
+          {message && view !== "dashboard" && view !== "costing" ? <MessageBox message={message} tone={messageTone} /> : null}
           {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
 
           {view === "products" ? (
@@ -701,7 +701,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} saveCosting={saveCosting} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} saveCosting={saveCosting} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
                 <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} labState={labState} only="costing" />
@@ -1828,6 +1828,8 @@ function CostingForm({
   batches,
   costing,
   ingredientEntries,
+  message,
+  messageTone,
   saveCosting,
   supplies,
 }: {
@@ -1835,6 +1837,8 @@ function CostingForm({
   cancelEdit: () => void;
   costing: CostingSummary | null;
   ingredientEntries: CostingEntry[];
+  message: string;
+  messageTone: "good" | "bad" | "info";
   saveCosting: (formData: FormData) => void;
   supplies: SupplyEntry[];
 }) {
@@ -1865,6 +1869,8 @@ function CostingForm({
   const [wasteAllowance, setWasteAllowance] = useState(costing?.wasteAllowance ?? 0);
   const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
   const [appliedSupplyRowId, setAppliedSupplyRowId] = useState("");
+  const [localMessage, setLocalMessage] = useState("");
+  const [localMessageTone, setLocalMessageTone] = useState<"good" | "bad" | "info">("info");
 
   const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
@@ -1875,6 +1881,8 @@ function CostingForm({
   const costPerPiece = costingYield > 0 ? totalBatchCost / costingYield : 0;
   const grossProfit = suggestedPrice - costPerPiece;
   const margin = suggestedPrice > 0 ? (grossProfit / suggestedPrice) * 100 : 0;
+  const appliedMessage = message || localMessage;
+  const appliedMessageTone = message ? messageTone : localMessageTone;
 
   function changeProduct(productId: string) {
     setSelectedProductId(productId);
@@ -1884,10 +1892,14 @@ function CostingForm({
 
   function addIngredientRow() {
     setIngredientRows((current) => [...current, { brandName: "", cost: 0, id: "", ingredientName: "", productId: selectedProductId, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
+    setLocalMessage("Ingredient row added.");
+    setLocalMessageTone("good");
   }
 
   function addUtilityRow() {
     setUtilityRows((current) => [...current, { cost: 0, name: "", note: "", rowId: crypto.randomUUID() }]);
+    setLocalMessage("Utility row added.");
+    setLocalMessageTone("good");
   }
 
   function importLatestFormula() {
@@ -1907,7 +1919,16 @@ function CostingForm({
 
     if (rows.length > 0) {
       setIngredientRows(rows);
+      setLocalMessage("Latest proof formula imported. Use supply prices to calculate ingredient costs.");
+      setLocalMessageTone("good");
+    } else {
+      setLocalMessage("No proof formula found for this product yet.");
+      setLocalMessageTone("bad");
     }
+  }
+
+  function getBestSupplyMatch(row: CostingIngredientRow) {
+    return getMatchingSupplies(supplies, row.brandName, row.ingredientName, row.unit)[0];
   }
 
   function applySupplyPrice(rowId: string, supply: SupplyEntry) {
@@ -1925,10 +1946,35 @@ function CostingForm({
       ),
     );
     setAppliedSupplyRowId(rowId);
+    setLocalMessage("Supply price applied to this ingredient.");
+    setLocalMessageTone("good");
+  }
+
+  function applyAllSupplyPrices() {
+    let matchedCount = 0;
+    setIngredientRows((current) =>
+      current.map((row) => {
+        const supply = getBestSupplyMatch(row);
+        if (!supply) {
+          return row;
+        }
+        matchedCount += 1;
+        return {
+          ...row,
+          brandName: supply.brandName,
+          cost: Number(getSupplyUsedCost(supply, row.quantityUsed, row.unit).toFixed(2)),
+          ingredientName: supply.ingredientName,
+          supplierNote: [supply.supplierName, supply.purchaseDate, `quality ${supply.qualityRating || 0}/5`, getConversionLabel(row.quantityUsed, row.unit, supply)].filter(Boolean).join(" / "),
+        };
+      }),
+    );
+    setLocalMessage(matchedCount > 0 ? `Calculated ${matchedCount} ingredient cost${matchedCount === 1 ? "" : "s"} from Supplies.` : "No matching supply prices found. Brand, ingredient, and unit need to match.");
+    setLocalMessageTone(matchedCount > 0 ? "good" : "bad");
   }
 
   return (
     <FormPanel title={costing ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
+      {appliedMessage ? <MessageBox message={appliedMessage} tone={appliedMessageTone} /> : null}
       <form action={saveCosting} className="grid gap-3">
         <input name="id" type="hidden" value={costing?.id ?? ""} />
         <input name="ingredientRowIds" type="hidden" value={ingredientRows.map((row) => row.rowId).join(",")} />
@@ -1942,6 +1988,7 @@ function CostingForm({
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={applyAllSupplyPrices} type="button">Calculate all prices</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
             </div>
           </div>
@@ -1958,7 +2005,11 @@ function CostingForm({
                     <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
                     <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="Use price" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
                     <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Based on latest supply price / estimated" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
-                    <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+                    <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => {
+                      setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId));
+                      setLocalMessage("Ingredient row removed.");
+                      setLocalMessageTone("good");
+                    }} type="button">Remove</button>
                   </div>
                   <div className="mt-3 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">Matching supplies</p>
@@ -2020,7 +2071,11 @@ function CostingForm({
                 <Input name={`utilityName-${row.rowId}`} label={`Utility ${index + 1}`} placeholder="Oven preheat" defaultValue={row.name} />
                 <Input name={`utilityCost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" placeholder="20" value={row.cost || ""} onChange={(event) => setUtilityRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
                 <Input name={`utilityNote-${row.rowId}`} label="Note" placeholder="30 min electric oven" defaultValue={row.note} />
-                <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setUtilityRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+                <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => {
+                  setUtilityRows((current) => current.filter((item) => item.rowId !== row.rowId));
+                  setLocalMessage("Utility row removed.");
+                  setLocalMessageTone("good");
+                }} type="button">Remove</button>
               </div>
             ))}
           </div>
@@ -2031,6 +2086,13 @@ function CostingForm({
           <CostingMetric label="Cost per piece" value={costingYield > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need yield"} />
           <CostingMetric label="Gross profit/unit" value={costingYield > 0 ? `PHP ${grossProfit.toFixed(2)}` : "Need yield"} />
           <CostingMetric label="Margin" value={costingYield > 0 ? `${margin.toFixed(1)}%` : "Need yield"} />
+        </div>
+        <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-5">
+          <CostingBreakdown label="Ingredients" value={ingredientTotal} />
+          <CostingBreakdown label="Packaging" value={packagingCost} />
+          <CostingBreakdown label="Labor" value={laborEstimate} />
+          <CostingBreakdown label="Utilities" value={utilityTotal} />
+          <CostingBreakdown label="Waste" value={wasteAllowance} />
         </div>
         <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={getCostingBaseNotes(costing?.notes ?? "")} />
         <div className="flex flex-col gap-2 sm:flex-row">
@@ -2047,6 +2109,15 @@ function CostingMetric({ label, value }: { label: string; value: string }) {
     <div>
       <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ddb778]">{label}</p>
       <p className="mt-2 text-lg font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function CostingBreakdown({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{label}</p>
+      <p className="mt-1 font-semibold">PHP {Number(value || 0).toFixed(2)}</p>
     </div>
   );
 }
