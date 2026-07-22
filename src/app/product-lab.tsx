@@ -352,7 +352,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const utilityNotes = utilityRows.length
       ? `Utilities: ${utilityRows.map((row) => `${row.name || "Unnamed"} ${row.cost}${row.note ? ` (${row.note})` : ""}`).join("; ")}`
       : "";
-    const baseNotes = String(formData.get("notes") || "").trim();
+    const yieldNotes = Number(formData.get("costingYield") || 0) > 0 ? `Costing yield: ${Number(formData.get("costingYield") || 0)}` : "";
+    const baseNotes = getCostingBaseNotes(String(formData.get("notes") || "").trim());
     const costing: CostingSummary = {
       id: costingId || crypto.randomUUID(),
       productId,
@@ -366,7 +367,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       coffeeEquipmentCost: utilityBuckets.coffeeEquipmentCost,
       wasteAllowance: Number(formData.get("wasteAllowance") || 0),
       suggestedPrice: Number(formData.get("suggestedPrice") || 0),
-      notes: [baseNotes, utilityNotes].filter(Boolean).join("\n"),
+      notes: [baseNotes, yieldNotes, utilityNotes].filter(Boolean).join("\n"),
     };
     if (supabase && session) {
       const { error: deleteError } = await supabase.from("costing_entries").delete().eq("product_id", productId);
@@ -406,11 +407,6 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           costing.ovenElectricCost +
           costing.refrigerationCost +
           costing.coffeeEquipmentCost,
-        water_cost: costing.waterCost,
-        gas_cost: costing.gasCost,
-        oven_electric_cost: costing.ovenElectricCost,
-        refrigeration_cost: costing.refrigerationCost,
-        coffee_equipment_cost: costing.coffeeEquipmentCost,
         waste_allowance: costing.wasteAllowance,
         suggested_price: costing.suggestedPrice,
         notes: costing.notes,
@@ -1563,6 +1559,18 @@ function buildCostingSupplierNote(brandName: string, note: string) {
   return [brandName ? `Brand: ${brandName}` : "", cleanNote].filter(Boolean).join(" / ");
 }
 
+function getCostingYieldFromNotes(notes: string) {
+  return Number(notes.match(/^Costing yield: ([\d.]+)/m)?.[1] ?? 0);
+}
+
+function getCostingBaseNotes(notes: string) {
+  return notes
+    .split("\n")
+    .filter((line) => !line.startsWith("Costing yield:") && !line.startsWith("Utilities:"))
+    .join("\n")
+    .trim();
+}
+
 function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingredientName" | "supplierName" | "unit") {
   return Array.from(new Set(supplies.map((supply) => supply[key].trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
@@ -1862,11 +1870,17 @@ function CostingForm({
   const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
   const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
-  const sellablePieces = latestBatch?.usablePieces ?? 0;
+  const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || latestBatch?.usablePieces || 0);
   const totalBatchCost = ingredientTotal + utilityTotal + packagingCost + laborEstimate + wasteAllowance;
-  const costPerPiece = sellablePieces > 0 ? totalBatchCost / sellablePieces : 0;
+  const costPerPiece = costingYield > 0 ? totalBatchCost / costingYield : 0;
   const grossProfit = suggestedPrice - costPerPiece;
   const margin = suggestedPrice > 0 ? (grossProfit / suggestedPrice) * 100 : 0;
+
+  function changeProduct(productId: string) {
+    setSelectedProductId(productId);
+    const productLatestBatch = batches.find((batch) => batch.productId === productId);
+    setCostingYield(getCostingYieldFromNotes(costing?.notes ?? "") || productLatestBatch?.usablePieces || 0);
+  }
 
   function addIngredientRow() {
     setIngredientRows((current) => [...current, { brandName: "", cost: 0, id: "", ingredientName: "", productId: selectedProductId, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
@@ -1919,7 +1933,7 @@ function CostingForm({
         <input name="id" type="hidden" value={costing?.id ?? ""} />
         <input name="ingredientRowIds" type="hidden" value={ingredientRows.map((row) => row.rowId).join(",")} />
         <input name="utilityRowIds" type="hidden" value={utilityRows.map((row) => row.rowId).join(",")} />
-        <ProductSelect onChange={(event) => setSelectedProductId(event.target.value)} value={selectedProductId} />
+        <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -1979,6 +1993,15 @@ function CostingForm({
           <Input name="packagingCost" label="Packaging cost per batch/unit" type="number" step="0.01" value={packagingCost || ""} onChange={(event) => setPackagingCost(Number(event.target.value || 0))} helper="Boxes, cups, bottles, labels, stickers, bags, seals." />
           <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
         </div>
+        <Input
+          name="costingYield"
+          label="Batch yield used for costing"
+          type="number"
+          step="0.01"
+          value={costingYield || ""}
+          onChange={(event) => setCostingYield(Number(event.target.value || 0))}
+          helper={latestBatch?.usablePieces ? `Latest proof batch has ${latestBatch.usablePieces} sellable pieces. Override only if this costing uses a different yield.` : "Enter expected sellable pieces/units before trusting cost per piece."}
+        />
         <div className="grid gap-3 sm:grid-cols-3">
           <Input name="laborEstimate" label="Labor estimate" type="number" step="0.01" value={laborEstimate || ""} onChange={(event) => setLaborEstimate(Number(event.target.value || 0))} helper="Peso value of time spent mixing, baking, cooling, cutting, packing, and cleaning." />
           <Input name="wasteAllowance" label="Waste allowance" type="number" step="0.01" value={wasteAllowance || ""} onChange={(event) => setWasteAllowance(Number(event.target.value || 0))} helper="Allowance for broken pieces, test cuts, spills, rejects, or spoilage." />
@@ -2005,11 +2028,11 @@ function CostingForm({
         </div>
         <div className="grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
           <CostingMetric label="Batch cost" value={`PHP ${totalBatchCost.toFixed(2)}`} />
-          <CostingMetric label="Cost per piece" value={sellablePieces > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need batch yield"} />
-          <CostingMetric label="Gross profit/unit" value={sellablePieces > 0 ? `PHP ${grossProfit.toFixed(2)}` : "Need batch yield"} />
-          <CostingMetric label="Margin" value={sellablePieces > 0 ? `${margin.toFixed(1)}%` : "Need batch yield"} />
+          <CostingMetric label="Cost per piece" value={costingYield > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need yield"} />
+          <CostingMetric label="Gross profit/unit" value={costingYield > 0 ? `PHP ${grossProfit.toFixed(2)}` : "Need yield"} />
+          <CostingMetric label="Margin" value={costingYield > 0 ? `${margin.toFixed(1)}%` : "Need yield"} />
         </div>
-        <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={costing?.notes.split("\nUtilities:")[0]} />
+        <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={getCostingBaseNotes(costing?.notes ?? "")} />
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button>{costing ? "Update costing" : "Save costing"}</Button>
           {costing ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
