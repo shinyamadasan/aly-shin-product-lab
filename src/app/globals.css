@@ -35,19 +35,21 @@ textarea {
     color: #111;
   }
 
-  body * {
-    visibility: hidden;
+  main {
+    display: block;
+    height: 0;
+    overflow: visible;
   }
 
-  .print-report,
-  .print-report * {
-    visibility: visible;
+  main > *:not(.print-report) {
+    display: none;
   }
 
   .print-report {
     display: block;
-    position: absolute;
-    inset: 0;
+    position: fixed;
+    left: 0;
+    top: 0;
     width: 100%;
     padding: 24px;
     font-family: Arial, Helvetica, sans-serif;

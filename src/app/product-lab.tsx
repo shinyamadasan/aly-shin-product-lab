@@ -843,10 +843,48 @@ function downloadCsv(filename: string, headers: string[], rows: Array<Array<stri
   URL.revokeObjectURL(url);
 }
 
-function printPage() {
-  if (typeof window !== "undefined") {
-    window.print();
+function printPage(reportId: string) {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return;
   }
+
+  const report = document.getElementById(reportId);
+  if (!report) {
+    window.print();
+    return;
+  }
+
+  const printWindow = window.open("", "_blank", "width=900,height=700");
+  if (!printWindow) {
+    window.print();
+    return;
+  }
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>${report.querySelector("h1")?.textContent ?? "Aly & Shin Report"}</title>
+        <style>
+          @page { size: A4; margin: 10mm; }
+          * { box-sizing: border-box; }
+          body { color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10px; line-height: 1.25; margin: 0; }
+          h1 { font-size: 18px; margin: 0 0 4px; }
+          h2 { border-bottom: 1px solid #777; font-size: 12px; margin: 14px 0 6px; padding-bottom: 3px; }
+          p { margin: 0 0 6px; }
+          table { border-collapse: collapse; table-layout: fixed; width: 100%; }
+          th, td { border: 1px solid #888; padding: 4px; text-align: left; vertical-align: top; word-break: break-word; }
+          th { background: #f2f2f2; font-weight: 700; }
+          tr { break-inside: avoid; page-break-inside: avoid; }
+          .print-report { display: block; }
+        </style>
+      </head>
+      <body>${report.outerHTML}</body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+  printWindow.print();
 }
 
 function ProductDetailPage({ labState }: { labState: LabState }) {
@@ -1048,7 +1086,7 @@ function BatchHistoryPage({
           <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <h3 className="text-xl font-semibold">Proof batch records</h3>
             <div className="flex flex-wrap gap-2">
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={printPage} type="button">Print</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("proof-batches-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadBatches} type="button">Download CSV</button>
             </div>
           </div>
@@ -1094,7 +1132,7 @@ function BatchHistoryPage({
 
 function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
   return (
-    <div className="print-report">
+    <div className="print-report" id="proof-batches-print-report">
       <h1>Aly & Shin Proof Batch Records</h1>
       <p>Generated {today}</p>
       <table>
@@ -1885,7 +1923,7 @@ function SuppliesPage({
           <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <h3 className="text-xl font-semibold">Saved supplies</h3>
             <div className="flex flex-wrap gap-2">
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={printPage} type="button">Print</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("supplies-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadSupplies} type="button">Download CSV</button>
             </div>
           </div>
@@ -1937,7 +1975,7 @@ function SuppliesPage({
 
 function SuppliesPrintReport({ supplies }: { supplies: SupplyEntry[] }) {
   return (
-    <div className="print-report">
+    <div className="print-report" id="supplies-print-report">
       <h1>Aly & Shin Supply Purchase Log</h1>
       <p>Generated {today}</p>
       <table>
@@ -2150,7 +2188,7 @@ function CostingForm({
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={printPage} type="button">Print</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("costing-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadCosting} type="button">Download CSV</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
             </div>
@@ -2311,7 +2349,7 @@ function CostingPrintReport({
   wasteAllowance: number;
 }) {
   return (
-    <div className="print-report">
+    <div className="print-report" id="costing-print-report">
       <h1>Aly & Shin Costing Sheet</h1>
       <p>{productName(productId)} / Generated {today}</p>
 
