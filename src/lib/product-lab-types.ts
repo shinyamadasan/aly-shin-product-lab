@@ -99,3 +99,21 @@ export type ContentJournalEntry = {
   postIdeas: string;
   nextAction: string;
 };
+
+export type EquipmentCalculationMode = "depreciation" | "replacement-reserve";
+
+export type EquipmentEntry = {
+  id: string;
+  name: string;
+  brand: string;
+  model: string;
+  purchasePrice: number;
+  purchaseDate: string;
+  residualValuePercent: number;
+  usefulLifeYears: number;
+  batchesPerWeek: number;
+  annualMaintenancePercent: number;
+  calculationMode: EquipmentCalculationMode;
+  notes: string;
+  isActive: boolean;
+};

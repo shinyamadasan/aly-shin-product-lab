@@ -10,6 +10,7 @@ const titles = {
   batches: "Product proof batches",
   costing: "Costing and pricing",
   supplies: "Supplies and supplier prices",
+  equipment: "Equipment and depreciation",
   tasting: "Tasting feedback",
   journal: "Content journal",
   admin: "Product admin",

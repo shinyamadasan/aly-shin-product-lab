@@ -29,13 +29,14 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
 import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
 import { getCostingTotals } from "@/lib/costing";
+import { getAllocatedEquipmentCost, getEquipmentTotals } from "@/lib/equipment";
 
 export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [labState, setLabState] = useState<LabState>(() => {
@@ -51,9 +52,11 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
+  const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
+  const [editingEquipment, setEditingEquipment] = useState<EquipmentEntry | null>(null);
   const [editingTasting, setEditingTasting] = useState<TastingFeedback | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
 
@@ -95,23 +98,27 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       return;
     }
 
-    const [batchResult, costingEntryResult, costingResult, supplyResult, tastingResult, journalResult] = await Promise.all([
+    const [batchResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult] = await Promise.all([
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_summaries").select("*").order("created_at", { ascending: false }),
       supabase.from("supply_entries").select("*").order("created_at", { ascending: false }),
+      supabase.from("equipment").select("*").order("created_at", { ascending: false }),
       supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
       supabase.from("content_journal").select("*").order("created_at", { ascending: false }),
     ]);
 
     const supplyMissing = supplyResult.error?.message.includes("supply_entries");
+    const equipmentMissing = equipmentResult.error?.message.includes("equipment");
     setIsSuppliesTableMissing(Boolean(supplyMissing));
-    if (batchResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || tastingResult.error || journalResult.error) {
+    setIsEquipmentTableMissing(Boolean(equipmentMissing));
+    if (batchResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error) {
       const error =
         batchResult.error?.message ||
         costingEntryResult.error?.message ||
         costingResult.error?.message ||
         supplyResult.error?.message ||
+        equipmentResult.error?.message ||
         tastingResult.error?.message ||
         journalResult.error?.message;
       setMessage(`Could not load Supabase data: ${error}`);
@@ -174,6 +181,21 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         totalCost: Number(row.total_cost ?? 0),
         qualityRating: Number(row.quality_rating ?? 0),
         notes: row.notes ?? "",
+      })),
+      equipment: equipmentMissing ? [] : (equipmentResult.data ?? []).map((row) => ({
+        id: row.id,
+        name: row.name,
+        brand: row.brand ?? "",
+        model: row.model ?? "",
+        purchasePrice: Number(row.purchase_price ?? 0),
+        purchaseDate: row.purchase_date,
+        residualValuePercent: Number(row.residual_value_percent ?? 0),
+        usefulLifeYears: Number(row.useful_life_years ?? 0),
+        batchesPerWeek: Number(row.batches_per_week ?? 0),
+        annualMaintenancePercent: Number(row.annual_maintenance_percent ?? 0),
+        calculationMode: row.calculation_mode ?? "depreciation",
+        notes: row.notes ?? "",
+        isActive: row.is_active ?? true,
       })),
       tastings: (tastingResult.data ?? []).map((row) => ({
         id: row.id,
@@ -323,7 +345,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const overheadRowIds = String(formData.get("overheadRowIds") || "")
       .split(",")
       .filter(Boolean);
-    const equipmentRowIds = String(formData.get("equipmentRowIds") || "")
+    const equipmentUsageRowIds = String(formData.get("equipmentUsageRowIds") || "")
       .split(",")
       .filter(Boolean);
     const wasteRowIds = String(formData.get("wasteRowIds") || "")
@@ -382,12 +404,20 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       note: String(formData.get(`overheadNote-${rowId}`) || "").trim(),
       rowId,
     }));
-    const equipmentRows = equipmentRowIds.map((rowId) => ({
-      cost: Number(formData.get(`equipmentCost-${rowId}`) || 0),
-      name: String(formData.get(`equipmentName-${rowId}`) || "").trim(),
-      note: String(formData.get(`equipmentNote-${rowId}`) || "").trim(),
-      rowId,
-    }));
+    const equipmentUsage: EquipmentUsageRow[] = equipmentUsageRowIds
+      .map((rowId) => ({
+        equipmentId: String(formData.get(`equipmentUsageEquipmentId-${rowId}`) || ""),
+        rowId,
+        sharedBatches: Number(formData.get(`equipmentUsageSharedBatches-${rowId}`) || 1),
+        usagePercent: Number(formData.get(`equipmentUsageUsagePercent-${rowId}`) || 100),
+      }))
+      .filter((row) => row.equipmentId);
+    const equipmentAllocations = equipmentUsage.map((row) => {
+      const equipmentItem = labState.equipment.find((item) => item.id === row.equipmentId);
+      return equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 };
+    });
+    const equipmentDepreciationCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
+    const equipmentMaintenanceCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedMaintenance, 0);
     const wasteRows = wasteRowIds.map((rowId) => ({
       cost: Number(formData.get(`wasteCost-${rowId}`) || 0),
       name: String(formData.get(`wasteName-${rowId}`) || "").trim(),
@@ -406,7 +436,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const laborEstimate = (activeLaborMinutes / 60) * laborDetail.activeRate;
     const packagingCost = packagingRows.reduce((total, row) => total + row.cost, 0);
     const overheadCost = overheadRows.reduce((total, row) => total + row.cost, 0);
-    const equipmentCost = equipmentRows.reduce((total, row) => total + row.cost, 0);
+    const equipmentCost = equipmentDepreciationCost + equipmentMaintenanceCost;
     const wasteAllowance = wasteRows.reduce((total, row) => total + row.cost, 0);
     const targetFoodCost = Number(formData.get("targetFoodCost") || 0.35);
     const utilityNotes = utilityRows.length
@@ -414,7 +444,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       : "";
     const yieldNotes = Number(formData.get("costingYield") || 0) > 0 ? `Costing yield: ${Number(formData.get("costingYield") || 0)}` : "";
     const baseNotes = getCostingBaseNotes(String(formData.get("notes") || "").trim());
-    const structuredNotes = buildCostingStructuredDetail({ equipmentRows, laborDetail, overheadRows, packagingRows, targetFoodCost, wasteRows });
+    const structuredNotes = buildCostingStructuredDetail({ equipmentUsage, laborDetail, overheadRows, packagingRows, targetFoodCost, wasteRows });
     const costing: CostingSummary = {
       id: costingId || crypto.randomUUID(),
       productId,
@@ -593,6 +623,82 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     setMessageTone("good");
   }
 
+  async function saveEquipment(formData: FormData) {
+    const equipmentId = String(formData.get("id") || "");
+    const equipment: EquipmentEntry = {
+      id: equipmentId || crypto.randomUUID(),
+      name: String(formData.get("name") || "").trim(),
+      brand: String(formData.get("brand") || "").trim(),
+      model: String(formData.get("model") || "").trim(),
+      purchasePrice: Number(formData.get("purchasePrice") || 0),
+      purchaseDate: String(formData.get("purchaseDate") || today),
+      residualValuePercent: Number(formData.get("residualValuePercent") || 0),
+      usefulLifeYears: Number(formData.get("usefulLifeYears") || 0),
+      batchesPerWeek: Number(formData.get("batchesPerWeek") || 0),
+      annualMaintenancePercent: Number(formData.get("annualMaintenancePercent") || 0),
+      calculationMode: formData.get("calculationMode") === "replacement-reserve" ? "replacement-reserve" : "depreciation",
+      notes: String(formData.get("notes") || "").trim(),
+      isActive: formData.get("isActive") === "on",
+    };
+
+    if (supabase && session) {
+      const payload = {
+        name: equipment.name,
+        brand: equipment.brand,
+        model: equipment.model,
+        purchase_price: equipment.purchasePrice,
+        purchase_date: equipment.purchaseDate,
+        residual_value_percent: equipment.residualValuePercent,
+        useful_life_years: equipment.usefulLifeYears,
+        batches_per_week: equipment.batchesPerWeek,
+        annual_maintenance_percent: equipment.annualMaintenancePercent,
+        calculation_mode: equipment.calculationMode,
+        notes: equipment.notes,
+        is_active: equipment.isActive,
+      };
+      const query = equipmentId
+        ? supabase.from("equipment").update(payload).eq("id", equipmentId)
+        : supabase.from("equipment").insert(payload);
+      const { error } = await query;
+      setMessage(error ? `Equipment save failed. Run the latest equipment SQL first if this is your first time: ${error.message}` : "Equipment saved.");
+      setMessageTone(error ? "bad" : "good");
+      setIsEquipmentTableMissing(Boolean(error?.message.includes("equipment")));
+      if (!error) {
+        setEditingEquipment(null);
+        await loadSupabaseData();
+      }
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      equipment: equipmentId ? current.equipment.map((entry) => (entry.id === equipmentId ? equipment : entry)) : [equipment, ...current.equipment],
+    }));
+    setEditingEquipment(null);
+    setMessage("Equipment saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteEquipment(equipmentId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("equipment").delete().eq("id", equipmentId);
+      setMessage(error ? `Equipment delete failed: ${error.message}` : "Equipment deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingEquipment?.id === equipmentId) {
+        setEditingEquipment(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({ ...current, equipment: current.equipment.filter((entry) => entry.id !== equipmentId) }));
+    if (editingEquipment?.id === equipmentId) {
+      setEditingEquipment(null);
+    }
+    setMessage("Equipment deleted locally.");
+    setMessageTone("good");
+  }
+
   async function saveTasting(formData: FormData) {
     const tastingId = String(formData.get("id") || "");
     const tasting: TastingFeedback = {
@@ -762,7 +868,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} saveCosting={saveCosting} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} saveCosting={saveCosting} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
                 <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} labState={labState} only="costing" />
@@ -771,6 +877,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           ) : null}
 
           {view === "supplies" ? <SuppliesPage cancelEdit={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={editingSupply} /> : null}
+          {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
 
           {view === "tasting" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="tasting">
@@ -1733,10 +1840,44 @@ type CostingLaborDetail = {
   packagingMinutes: number;
   prepMinutes: number;
 };
+type EquipmentUsageRow = { equipmentId: string; rowId: string; sharedBatches: number; usagePercent: number };
+type EquipmentScenarioOverride = {
+  batchesPerWeek: number | null;
+  maintenancePercent: number | null;
+  purchasePrice: number | null;
+  sharedBatches: number | null;
+  usagePercent: number | null;
+  usefulLifeYears: number | null;
+};
+const emptyEquipmentScenarioOverride: EquipmentScenarioOverride = {
+  batchesPerWeek: null,
+  maintenancePercent: null,
+  purchasePrice: null,
+  sharedBatches: null,
+  usagePercent: null,
+  usefulLifeYears: null,
+};
+type ScenarioOverrides = {
+  equipment: Record<string, EquipmentScenarioOverride>;
+  ingredientPct: Record<string, number>;
+  ingredientSupplyId: Record<string, string>;
+  laborPct: number;
+  packagingPct: number;
+  sellingPriceOverride: number | null;
+  yieldOverride: number | null;
+};
+const emptyScenarioOverrides: ScenarioOverrides = {
+  equipment: {},
+  ingredientPct: {},
+  ingredientSupplyId: {},
+  laborPct: 0,
+  packagingPct: 0,
+  sellingPriceOverride: null,
+  yieldOverride: null,
+};
 
 const defaultPackagingComponents = ["Box", "Sticker", "Cup", "Lid", "Sleeve", "Label", "Bag", "Napkin", "Tape"];
 const defaultOverheadRows = ["Rent", "Internet", "POS Subscription", "Cleaning Supplies", "Equipment Maintenance", "Business Permits", "Accounting", "Miscellaneous"];
-const defaultEquipmentRows = ["Mixer", "Oven", "Scale", "Coffee Grinder", "Espresso Machine", "Cooling Rack"];
 const defaultWasteRows = ["Ingredient Waste", "Production Waste", "Packaging Waste", "Unsold Inventory", "Spoilage", "Returned Products"];
 
 function normalizeSupplyText(value: string) {
@@ -1888,7 +2029,7 @@ function getCostingStructuredDetail(notes: string) {
 
   try {
     return JSON.parse(rawJson) as {
-      equipmentRows?: CostingNamedCostRow[];
+      equipmentUsage?: EquipmentUsageRow[];
       laborDetail?: CostingLaborDetail;
       overheadRows?: CostingNamedCostRow[];
       packagingRows?: CostingNamedCostRow[];
@@ -1906,8 +2047,33 @@ function compactNamedCostRows(rows: CostingNamedCostRow[]) {
     .filter((row) => row.name || row.cost > 0 || row.note);
 }
 
+function bucketUtilityRows(rows: CostingUtilityRow[]) {
+  return rows.reduce(
+    (buckets, row) => {
+      const label = row.name.toLowerCase();
+      if (label.includes("water")) {
+        buckets.water += Number(row.cost || 0);
+      } else if (label.includes("gas")) {
+        buckets.gas += Number(row.cost || 0);
+      } else if (label.includes("electric")) {
+        buckets.electricity += Number(row.cost || 0);
+      } else {
+        buckets.other += Number(row.cost || 0);
+      }
+      return buckets;
+    },
+    { electricity: 0, gas: 0, other: 0, water: 0 },
+  );
+}
+
+function compactEquipmentUsageRows(rows: EquipmentUsageRow[]) {
+  return rows
+    .map((row) => ({ equipmentId: row.equipmentId, rowId: row.rowId, sharedBatches: Number(row.sharedBatches || 1), usagePercent: Number(row.usagePercent ?? 100) }))
+    .filter((row) => row.equipmentId);
+}
+
 function buildCostingStructuredDetail(detail: {
-  equipmentRows: CostingNamedCostRow[];
+  equipmentUsage: EquipmentUsageRow[];
   laborDetail: CostingLaborDetail;
   overheadRows: CostingNamedCostRow[];
   packagingRows: CostingNamedCostRow[];
@@ -1915,7 +2081,7 @@ function buildCostingStructuredDetail(detail: {
   wasteRows: CostingNamedCostRow[];
 }) {
   return `Professional costing detail: ${JSON.stringify({
-    equipmentRows: compactNamedCostRows(detail.equipmentRows),
+    equipmentUsage: compactEquipmentUsageRows(detail.equipmentUsage),
     laborDetail: detail.laborDetail,
     overheadRows: compactNamedCostRows(detail.overheadRows),
     packagingRows: compactNamedCostRows(detail.packagingRows),
@@ -2257,10 +2423,397 @@ function SuppliesPrintReport({ supplies }: { supplies: SupplyEntry[] }) {
   );
 }
 
+function EquipmentPage({
+  cancelEdit,
+  deleteEquipment,
+  editEquipment,
+  equipment,
+  isEquipmentTableMissing,
+  labState,
+  saveEquipment,
+}: {
+  cancelEdit: () => void;
+  deleteEquipment: (equipmentId: string) => void;
+  editEquipment: (equipment: EquipmentEntry) => void;
+  equipment: EquipmentEntry | null;
+  isEquipmentTableMissing: boolean;
+  labState: LabState;
+  saveEquipment: (formData: FormData) => void;
+}) {
+  function downloadEquipment() {
+    downloadCsv(
+      "equipment.csv",
+      ["Name", "Brand", "Model", "Purchase price", "Residual %", "Useful life (yr)", "Batches/week", "Maintenance %", "Mode", "Depreciation/batch", "Maintenance/batch", "Total/batch", "Active", "Notes"],
+      labState.equipment.map((item) => {
+        const totals = getEquipmentTotals(item);
+        return [
+          item.name,
+          item.brand,
+          item.model,
+          item.purchasePrice,
+          item.residualValuePercent,
+          item.usefulLifeYears,
+          item.batchesPerWeek,
+          item.annualMaintenancePercent,
+          item.calculationMode,
+          totals.depreciationPerBatch.toFixed(2),
+          totals.maintenancePerBatch.toFixed(2),
+          totals.totalPerBatch.toFixed(2),
+          item.isActive ? "Active" : "Inactive",
+          item.notes,
+        ];
+      }),
+    );
+  }
+
+  return (
+    <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
+      <FormPanel title={equipment ? "Edit equipment" : "Add equipment"} icon={<PackageCheck size={18} />}>
+        {isEquipmentTableMissing ? (
+          <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
+            Equipment database fields are not ready yet. Run <strong>supabase-add-equipment.sql</strong> once, then save again.
+          </div>
+        ) : null}
+        <form action={saveEquipment} className="grid gap-3" key={equipment?.id ?? "new-equipment"}>
+          <input name="id" type="hidden" value={equipment?.id ?? ""} />
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Input name="name" label="Equipment name" placeholder="Table Oven" defaultValue={equipment?.name} />
+            <Input name="brand" label="Brand" placeholder="La Germania" defaultValue={equipment?.brand} />
+            <Input name="model" label="Model" placeholder="SL-100-10W" defaultValue={equipment?.model} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input name="purchasePrice" label="Purchase price PHP" type="number" step="0.01" placeholder="8500" defaultValue={equipment?.purchasePrice || undefined} />
+            <Input name="purchaseDate" label="Purchase date" type="date" defaultValue={equipment?.purchaseDate ?? today} />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Input name="residualValuePercent" label="Residual value %" type="number" step="0.01" placeholder="10" defaultValue={equipment?.residualValuePercent ?? 10} helper="What it's worth at end of useful life, as % of purchase price." />
+            <Input name="usefulLifeYears" label="Useful life (years)" type="number" step="0.5" placeholder="5" defaultValue={equipment?.usefulLifeYears ?? 5} />
+            <Input name="batchesPerWeek" label="Expected batches / week" type="number" step="0.1" placeholder="4" defaultValue={equipment?.batchesPerWeek ?? 4} />
+          </div>
+          <Input name="annualMaintenancePercent" label="Annual maintenance % of purchase price" type="number" step="0.01" placeholder="3" defaultValue={equipment?.annualMaintenancePercent ?? 3} />
+          <label className="grid gap-1 text-sm font-medium">
+            Calculation mode
+            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={equipment?.calculationMode ?? "depreciation"} name="calculationMode">
+              <option value="depreciation">Standard depreciation + maintenance</option>
+              <option value="replacement-reserve">Simple replacement reserve (small tools)</option>
+            </select>
+          </label>
+          <Textarea name="notes" label="Notes" placeholder="Condition, warranty, where it lives, replacement plan." defaultValue={equipment?.notes} />
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input defaultChecked={equipment ? equipment.isActive : true} name="isActive" type="checkbox" />
+            Active (available to assign to recipes)
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button>{equipment ? "Update equipment" : "Save equipment"}</Button>
+            {equipment ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+          </div>
+        </form>
+      </FormPanel>
+
+      <Panel title="How the numbers are calculated" icon={<Sparkles size={18} />}>
+        <div className="space-y-2 text-sm leading-6 text-[#5f4a3d]">
+          <p><strong>Depreciation/batch</strong> = (Purchase price − Residual value) ÷ (Batches/week × 52 × Useful life).</p>
+          <p><strong>Maintenance/batch</strong> = (Purchase price × Maintenance %) ÷ (Batches/week × 52).</p>
+          <p>These are calculated live below from the fields on the left — never typed in manually. Assign equipment to a recipe from the Costing page&apos;s Equipment Usage section.</p>
+        </div>
+      </Panel>
+
+      <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2">
+        <div className="border-b border-[#eaded2] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Equipment Database</p>
+          <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <h3 className="text-xl font-semibold">Saved equipment</h3>
+            <div className="flex flex-wrap gap-2">
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("equipment-print-report")} type="button">Print</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadEquipment} type="button">Download CSV</button>
+            </div>
+          </div>
+        </div>
+        <div className="divide-y divide-[#f0e4d8]">
+          {labState.equipment.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No equipment saved yet.</p> : null}
+          {labState.equipment.map((item) => {
+            const totals = getEquipmentTotals(item);
+            return (
+              <article className="grid gap-4 p-5 lg:grid-cols-[1fr_150px_150px_150px_70px]" key={item.id}>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Tag tone={item.isActive ? "green" : "danger"}>{item.isActive ? "Active" : "Inactive"}</Tag>
+                    <Tag tone="warm">{item.calculationMode === "replacement-reserve" ? "Replacement reserve" : "Standard depreciation"}</Tag>
+                  </div>
+                  <h4 className="mt-2 font-semibold">{item.brand ? `${item.brand} ` : ""}{item.name}{item.model ? ` (${item.model})` : ""}</h4>
+                  <p className="mt-1 text-sm text-[#6f5a4c]">PHP {item.purchasePrice.toFixed(2)} · {item.batchesPerWeek}/week · {item.usefulLifeYears}yr life</p>
+                  {item.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{item.notes}</p> : null}
+                </div>
+                <div className="text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Depreciation (calc)</p>
+                  <p className="mt-1 font-semibold">PHP {totals.depreciationPerBatch.toFixed(2)}</p>
+                  <p className="text-[#6f5a4c]">per batch</p>
+                </div>
+                <div className="text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Maintenance (calc)</p>
+                  <p className="mt-1 font-semibold">PHP {totals.maintenancePerBatch.toFixed(2)}</p>
+                  <p className="text-[#6f5a4c]">per batch</p>
+                </div>
+                <div className="text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Total (calc)</p>
+                  <p className="mt-1 font-semibold">PHP {totals.totalPerBatch.toFixed(2)}</p>
+                  <p className="text-[#6f5a4c]">per batch</p>
+                </div>
+                <div className="flex gap-2 lg:flex-col">
+                  <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editEquipment(item)} type="button">Edit</button>
+                  <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${item.name}?`) ? deleteEquipment(item.id) : undefined} type="button">Delete</button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+      <EquipmentPrintReport equipment={labState.equipment} />
+    </section>
+  );
+}
+
+function EquipmentPrintReport({ equipment }: { equipment: EquipmentEntry[] }) {
+  return (
+    <div className="print-report" id="equipment-print-report">
+      <h1>Aly & Shin Equipment Database</h1>
+      <p>Generated {today}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Equipment</th>
+            <th>Purchase PHP</th>
+            <th>Residual %</th>
+            <th>Life (yr)</th>
+            <th>Batches/wk</th>
+            <th>Maint %</th>
+            <th>Depreciation/batch</th>
+            <th>Maintenance/batch</th>
+            <th>Total/batch</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {equipment.map((item) => {
+            const totals = getEquipmentTotals(item);
+            return (
+              <tr key={item.id}>
+                <td>{item.brand ? `${item.brand} ` : ""}{item.name}{item.model ? ` (${item.model})` : ""}</td>
+                <td>{item.purchasePrice.toFixed(2)}</td>
+                <td>{item.residualValuePercent}%</td>
+                <td>{item.usefulLifeYears}</td>
+                <td>{item.batchesPerWeek}</td>
+                <td>{item.annualMaintenancePercent}%</td>
+                <td>{totals.depreciationPerBatch.toFixed(2)}</td>
+                <td>{totals.maintenancePerBatch.toFixed(2)}</td>
+                <td>{totals.totalPerBatch.toFixed(2)}</td>
+                <td>{item.isActive ? "Active" : "Inactive"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ScenarioAnalysis({
+  costPerPiece,
+  costingYield,
+  equipmentAllocations,
+  ingredientRows,
+  laborEstimate,
+  margin,
+  overheadCost,
+  packagingCost,
+  suggestedPrice,
+  supplies,
+  targetFoodCost,
+  totalBatchCost,
+  utilityTotal,
+  wasteAllowance,
+}: {
+  costPerPiece: number;
+  costingYield: number;
+  equipmentAllocations: EquipmentAllocation[];
+  ingredientRows: CostingIngredientRow[];
+  laborEstimate: number;
+  margin: number;
+  overheadCost: number;
+  packagingCost: number;
+  suggestedPrice: number;
+  supplies: SupplyEntry[];
+  targetFoodCost: number;
+  totalBatchCost: number;
+  utilityTotal: number;
+  wasteAllowance: number;
+}) {
+  const [overrides, setOverrides] = useState<ScenarioOverrides>(emptyScenarioOverrides);
+
+  function updateIngredientPct(rowId: string, pct: number) {
+    setOverrides((current) => ({ ...current, ingredientPct: { ...current.ingredientPct, [rowId]: pct } }));
+  }
+
+  function updateIngredientSupply(rowId: string, supplyId: string) {
+    setOverrides((current) => {
+      const nextSupplyId = { ...current.ingredientSupplyId };
+      if (supplyId) {
+        nextSupplyId[rowId] = supplyId;
+      } else {
+        delete nextSupplyId[rowId];
+      }
+      return { ...current, ingredientSupplyId: nextSupplyId };
+    });
+  }
+
+  function updateEquipmentOverride(rowId: string, changes: Partial<EquipmentScenarioOverride>) {
+    setOverrides((current) => ({
+      ...current,
+      equipment: { ...current.equipment, [rowId]: { ...(current.equipment[rowId] ?? emptyEquipmentScenarioOverride), ...changes } },
+    }));
+  }
+
+  const scenarioIngredientRows = ingredientRows.map((row) => {
+    const swappedSupplyId = overrides.ingredientSupplyId[row.rowId];
+    const swappedSupply = swappedSupplyId ? supplies.find((supply) => supply.id === swappedSupplyId) : undefined;
+    const baseCost = swappedSupply ? getSupplyUsedCost(swappedSupply, row.quantityUsed, row.unit) : row.cost;
+    const pct = overrides.ingredientPct[row.rowId] || 0;
+    return { ...row, scenarioCost: baseCost * (1 + pct / 100) };
+  });
+  const scenarioIngredientTotal = scenarioIngredientRows.reduce((total, row) => total + row.scenarioCost, 0);
+  const scenarioPackagingCost = packagingCost * (1 + overrides.packagingPct / 100);
+  const scenarioLaborEstimate = laborEstimate * (1 + overrides.laborPct / 100);
+  const scenarioEquipmentAllocations = equipmentAllocations.map((allocation) => {
+    const override = overrides.equipment[allocation.row.rowId] ?? emptyEquipmentScenarioOverride;
+    if (!allocation.equipmentItem) {
+      return { ...allocation, scenarioAllocatedDepreciation: 0, scenarioAllocatedMaintenance: 0, scenarioAllocatedTotal: 0 };
+    }
+
+    const scenarioEquipmentItem: EquipmentEntry = {
+      ...allocation.equipmentItem,
+      annualMaintenancePercent: override.maintenancePercent ?? allocation.equipmentItem.annualMaintenancePercent,
+      batchesPerWeek: override.batchesPerWeek ?? allocation.equipmentItem.batchesPerWeek,
+      purchasePrice: override.purchasePrice ?? allocation.equipmentItem.purchasePrice,
+      usefulLifeYears: override.usefulLifeYears ?? allocation.equipmentItem.usefulLifeYears,
+    };
+    const scenarioAllocation = getAllocatedEquipmentCost(
+      scenarioEquipmentItem,
+      override.usagePercent ?? allocation.row.usagePercent,
+      override.sharedBatches ?? allocation.row.sharedBatches,
+    );
+    return { ...allocation, scenarioAllocatedDepreciation: scenarioAllocation.allocatedDepreciation, scenarioAllocatedMaintenance: scenarioAllocation.allocatedMaintenance, scenarioAllocatedTotal: scenarioAllocation.allocatedTotal };
+  });
+  const scenarioEquipmentCost = scenarioEquipmentAllocations.reduce((total, allocation) => total + allocation.scenarioAllocatedTotal, 0);
+  const scenarioDirectCost = scenarioIngredientTotal + scenarioPackagingCost + scenarioLaborEstimate + utilityTotal + wasteAllowance;
+  const scenarioTotalBatchCost = scenarioDirectCost + overheadCost + scenarioEquipmentCost;
+  const scenarioYield = overrides.yieldOverride ?? costingYield;
+  const scenarioCostPerPiece = scenarioYield > 0 ? scenarioTotalBatchCost / scenarioYield : 0;
+  const scenarioPrice = overrides.sellingPriceOverride ?? suggestedPrice;
+  const scenarioMargin = scenarioPrice > 0 ? ((scenarioPrice - scenarioCostPerPiece) / scenarioPrice) * 100 : 0;
+  const scenarioSuggestedPrice = targetFoodCost > 0 ? scenarioCostPerPiece / targetFoodCost : 0;
+
+  const deltaBatchCost = scenarioTotalBatchCost - totalBatchCost;
+  const deltaCostPerPiece = scenarioCostPerPiece - costPerPiece;
+  const deltaMargin = scenarioMargin - margin;
+  const hasChanges =
+    Object.values(overrides.ingredientPct).some((pct) => pct) ||
+    Object.keys(overrides.ingredientSupplyId).length > 0 ||
+    Object.keys(overrides.equipment).length > 0 ||
+    overrides.packagingPct !== 0 ||
+    overrides.laborPct !== 0 ||
+    overrides.sellingPriceOverride !== null ||
+    overrides.yieldOverride !== null;
+
+  return (
+    <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold">Scenario analysis</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Test a price increase, a different supplier, a yield change, or a new selling price. Nothing here is saved until you enter it in the fields above.</p>
+        </div>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOverrides(emptyScenarioOverrides)} type="button">Reset scenario</button>
+      </div>
+
+      <div className="mt-3 grid gap-2">
+        {scenarioIngredientRows.map((row) => {
+          const matches = getMatchingSupplies(supplies, "", row.ingredientName, row.unit);
+          return (
+            <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_100px]" key={row.rowId}>
+              <p className="self-center text-sm text-[#5f4a3d]">{row.brandName ? `${row.brandName} ` : ""}{row.ingredientName || "Ingredient"}</p>
+              <Input label="Price change %" type="number" step="1" value={overrides.ingredientPct[row.rowId] || ""} onChange={(event) => updateIngredientPct(row.rowId, Number(event.target.value || 0))} />
+              <label className="grid gap-1 text-sm font-medium">
+                Swap supplier
+                <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => updateIngredientSupply(row.rowId, event.target.value)} value={overrides.ingredientSupplyId[row.rowId] || ""}>
+                  <option value="">Keep current</option>
+                  {matches.map((supply) => (
+                    <option key={supply.id} value={supply.id}>{getSupplyLabel(supply)} · {supply.supplierName} (PHP {getSupplyUsedCost(supply, row.quantityUsed, row.unit).toFixed(2)})</option>
+                  ))}
+                </select>
+              </label>
+              <p className="self-center text-sm font-semibold text-[#5f4a3d]">PHP {row.scenarioCost.toFixed(2)}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-4">
+        <Input label="Packaging change %" type="number" step="1" value={overrides.packagingPct || ""} onChange={(event) => setOverrides((current) => ({ ...current, packagingPct: Number(event.target.value || 0) }))} />
+        <Input label="Labor change %" type="number" step="1" value={overrides.laborPct || ""} onChange={(event) => setOverrides((current) => ({ ...current, laborPct: Number(event.target.value || 0) }))} />
+        <Input label="New yield" type="number" step="1" placeholder={String(costingYield || 0)} value={overrides.yieldOverride ?? ""} onChange={(event) => setOverrides((current) => ({ ...current, yieldOverride: event.target.value === "" ? null : Number(event.target.value) }))} />
+        <Input label="New selling price" type="number" step="0.01" placeholder={suggestedPrice.toFixed(2)} value={overrides.sellingPriceOverride ?? ""} onChange={(event) => setOverrides((current) => ({ ...current, sellingPriceOverride: event.target.value === "" ? null : Number(event.target.value) }))} />
+      </div>
+
+      {scenarioEquipmentAllocations.length > 0 ? (
+        <div className="mt-3">
+          <p className="text-sm font-semibold text-[#5f4a3d]">Equipment scenarios</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Test production going from 4 to 8 batches/week, a longer or shorter useful life, a maintenance increase, a replacement purchase price, or sharing this equipment&apos;s cycle with another recipe.</p>
+          <div className="mt-2 grid gap-2">
+            {scenarioEquipmentAllocations.map((allocation) => {
+              if (!allocation.equipmentItem) {
+                return null;
+              }
+
+              const item = allocation.equipmentItem;
+              const override = overrides.equipment[allocation.row.rowId] ?? emptyEquipmentScenarioOverride;
+              return (
+                <div className="grid gap-2 lg:grid-cols-[1fr_100px_100px_100px_100px_110px_110px]" key={allocation.row.rowId}>
+                  <p className="self-center text-sm text-[#5f4a3d]">{item.brand ? `${item.brand} ` : ""}{item.name}</p>
+                  <Input label="Batches/wk" placeholder={String(item.batchesPerWeek)} type="number" step="1" value={override.batchesPerWeek ?? ""} onChange={(event) => updateEquipmentOverride(allocation.row.rowId, { batchesPerWeek: event.target.value === "" ? null : Number(event.target.value) })} />
+                  <Input label="Life (yr)" placeholder={String(item.usefulLifeYears)} type="number" step="0.5" value={override.usefulLifeYears ?? ""} onChange={(event) => updateEquipmentOverride(allocation.row.rowId, { usefulLifeYears: event.target.value === "" ? null : Number(event.target.value) })} />
+                  <Input label="Maint %" placeholder={String(item.annualMaintenancePercent)} type="number" step="0.1" value={override.maintenancePercent ?? ""} onChange={(event) => updateEquipmentOverride(allocation.row.rowId, { maintenancePercent: event.target.value === "" ? null : Number(event.target.value) })} />
+                  <Input label="Usage %" placeholder={String(allocation.row.usagePercent)} type="number" step="1" value={override.usagePercent ?? ""} onChange={(event) => updateEquipmentOverride(allocation.row.rowId, { usagePercent: event.target.value === "" ? null : Number(event.target.value) })} />
+                  <Input label="Shared batches" placeholder={String(allocation.row.sharedBatches)} type="number" step="1" value={override.sharedBatches ?? ""} onChange={(event) => updateEquipmentOverride(allocation.row.rowId, { sharedBatches: event.target.value === "" ? null : Number(event.target.value) })} />
+                  <Input label="Replace @ PHP" placeholder={item.purchasePrice.toFixed(2)} type="number" step="0.01" value={override.purchasePrice ?? ""} onChange={(event) => updateEquipmentOverride(allocation.row.rowId, { purchasePrice: event.target.value === "" ? null : Number(event.target.value) })} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-4 grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
+        <CostingMetric label="New batch cost" value={`PHP ${scenarioTotalBatchCost.toFixed(2)}`} />
+        <CostingMetric label="New cost per piece" value={scenarioYield > 0 ? `PHP ${scenarioCostPerPiece.toFixed(2)}` : "Need yield"} />
+        <CostingMetric label="New margin" value={scenarioYield > 0 && scenarioPrice > 0 ? `${scenarioMargin.toFixed(1)}%` : "Need yield/price"} />
+        <CostingMetric label="New suggested price" value={scenarioYield > 0 && targetFoodCost > 0 ? `PHP ${scenarioSuggestedPrice.toFixed(2)}` : "Need yield"} />
+      </div>
+
+      {hasChanges ? (
+        <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm sm:grid-cols-3">
+          <p className={deltaBatchCost > 0 ? "font-semibold text-[#8a3827]" : deltaBatchCost < 0 ? "font-semibold text-[#2e6b44]" : "text-[#5f4a3d]"}>Batch cost: {deltaBatchCost >= 0 ? "+" : ""}PHP {deltaBatchCost.toFixed(2)}</p>
+          <p className={deltaCostPerPiece > 0 ? "font-semibold text-[#8a3827]" : deltaCostPerPiece < 0 ? "font-semibold text-[#2e6b44]" : "text-[#5f4a3d]"}>Cost per piece: {deltaCostPerPiece >= 0 ? "+" : ""}PHP {deltaCostPerPiece.toFixed(2)}</p>
+          <p className={deltaMargin < 0 ? "font-semibold text-[#8a3827]" : deltaMargin > 0 ? "font-semibold text-[#2e6b44]" : "text-[#5f4a3d]"}>Margin: {deltaMargin >= 0 ? "+" : ""}{deltaMargin.toFixed(1)} pts vs current</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CostingForm({
   cancelEdit,
   batches,
   costing,
+  equipment,
   ingredientEntries,
   message,
   messageTone,
@@ -2270,6 +2823,7 @@ function CostingForm({
   batches: ProductBatch[];
   cancelEdit: () => void;
   costing: CostingSummary | null;
+  equipment: EquipmentEntry[];
   ingredientEntries: CostingEntry[];
   message: string;
   messageTone: "good" | "bad" | "info";
@@ -2302,7 +2856,7 @@ function CostingForm({
   const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   const [packagingRows, setPackagingRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultPackagingComponents, structuredDetail?.packagingRows, costing?.packagingCost ?? 0));
   const [overheadRows, setOverheadRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultOverheadRows, structuredDetail?.overheadRows));
-  const [equipmentRows, setEquipmentRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultEquipmentRows, structuredDetail?.equipmentRows));
+  const [equipmentUsage, setEquipmentUsage] = useState<EquipmentUsageRow[]>(() => structuredDetail?.equipmentUsage ?? []);
   const [wasteRows, setWasteRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultWasteRows, structuredDetail?.wasteRows, costing?.wasteAllowance ?? 0));
   const [laborDetail, setLaborDetail] = useState<CostingLaborDetail>(() => structuredDetail?.laborDetail ?? {
     activeRate: 120,
@@ -2318,18 +2872,28 @@ function CostingForm({
   const [localMessageTone, setLocalMessageTone] = useState<"good" | "bad" | "info">("info");
 
   const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const utilityBuckets = bucketUtilityRows(utilityRows);
   const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || latestBatch?.usablePieces || 0);
   const packagingCost = packagingRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const overheadCost = overheadRows.reduce((total, row) => total + Number(row.cost || 0), 0);
-  const equipmentCost = equipmentRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const equipmentAllocations = equipmentUsage.map((row) => {
+    const equipmentItem = equipment.find((item) => item.id === row.equipmentId);
+    return {
+      row,
+      equipmentItem,
+      ...(equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 }),
+    };
+  });
+  const equipmentDepreciationCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
+  const equipmentMaintenanceCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedMaintenance, 0);
   const wasteAllowance = wasteRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const activeLaborMinutes = laborDetail.prepMinutes + laborDetail.packagingMinutes + laborDetail.cleaningMinutes;
   const passiveMinutes = laborDetail.cookingMinutes + laborDetail.coolingMinutes;
   const laborEstimate = (activeLaborMinutes / 60) * laborDetail.activeRate;
   const directCost = ingredientTotal + packagingCost + laborEstimate + utilityTotal + wasteAllowance;
-  const indirectCost = overheadCost + equipmentCost;
+  const indirectCost = overheadCost + equipmentDepreciationCost + equipmentMaintenanceCost;
   const totalBatchCost = directCost + indirectCost;
   const costPerPiece = costingYield > 0 ? totalBatchCost / costingYield : 0;
   const grossProfit = suggestedPrice - costPerPiece;
@@ -2436,6 +3000,8 @@ function CostingForm({
         ["Packaging", "Packaging", "", "", packagingCost, ""],
         ["Labor", "Labor", "", "", laborEstimate, "Pay for mixing, baking/cooking, cooling, packing, cleaning, and admin time"],
         ...utilityRows.map((row) => ["Utility", row.name, "", "", row.cost, row.note]),
+        ["Overhead", "Allocated overhead", "", "", overheadCost, ""],
+        ...equipmentAllocations.map((allocation) => ["Equipment", allocation.equipmentItem ? `${allocation.equipmentItem.brand ? `${allocation.equipmentItem.brand} ` : ""}${allocation.equipmentItem.name}` : "Equipment not found", "", "", allocation.allocatedTotal, `dep ${allocation.allocatedDepreciation.toFixed(2)} + maint ${allocation.allocatedMaintenance.toFixed(2)}`]),
         ["Waste", "Waste allowance", "", "", wasteAllowance, ""],
         ["Summary", "Batch cost", "", "", totalBatchCost, ""],
         ["Summary", "Yield", costingYield, "pieces/units", "", ""],
@@ -2456,7 +3022,7 @@ function CostingForm({
         <input name="utilityRowIds" type="hidden" value={utilityRows.map((row) => row.rowId).join(",")} />
         <input name="packagingRowIds" type="hidden" value={packagingRows.map((row) => row.rowId).join(",")} />
         <input name="overheadRowIds" type="hidden" value={overheadRows.map((row) => row.rowId).join(",")} />
-        <input name="equipmentRowIds" type="hidden" value={equipmentRows.map((row) => row.rowId).join(",")} />
+        <input name="equipmentUsageRowIds" type="hidden" value={equipmentUsage.map((row) => row.rowId).join(",")} />
         <input name="wasteRowIds" type="hidden" value={wasteRows.map((row) => row.rowId).join(",")} />
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
@@ -2571,7 +3137,7 @@ function CostingForm({
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Utility total: PHP {utilityTotal.toFixed(2)}</p>
         </div>
         <NamedCostSection addLabel="Add overhead" namePrefix="overhead" onAdd={() => addNamedCostRow(setOverheadRows, "Overhead")} rows={overheadRows} setRows={setOverheadRows} title="Overhead allocation" total={overheadCost} updateNamedCostRow={updateNamedCostRow} />
-        <NamedCostSection addLabel="Add equipment" namePrefix="equipment" onAdd={() => addNamedCostRow(setEquipmentRows, "Equipment")} rows={equipmentRows} setRows={setEquipmentRows} title="Equipment depreciation per batch" total={equipmentCost} updateNamedCostRow={updateNamedCostRow} />
+        <EquipmentUsageSection equipmentAllocations={equipmentAllocations} equipmentList={equipment} setEquipmentUsage={setEquipmentUsage} />
         <NamedCostSection addLabel="Add waste" namePrefix="waste" onAdd={() => addNamedCostRow(setWasteRows, "Waste")} rows={wasteRows} setRows={setWasteRows} title="Waste and loss" total={wasteAllowance} updateNamedCostRow={updateNamedCostRow} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
@@ -2590,13 +3156,35 @@ function CostingForm({
         <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-4">
           <CostingBreakdown label="Ingredients" value={ingredientTotal} />
           <CostingBreakdown label="Packaging" value={packagingCost} />
-          <CostingBreakdown label="Labor" value={laborEstimate} />
-          <CostingBreakdown label="Utilities" value={utilityTotal} />
+          <CostingBreakdown label="Direct labor" value={laborEstimate} />
+          <CostingBreakdown label="Gas" value={utilityBuckets.gas} />
+          <CostingBreakdown label="Electricity" value={utilityBuckets.electricity} />
+          <CostingBreakdown label="Water" value={utilityBuckets.water} />
+          <CostingBreakdown label="Other direct costs" value={utilityBuckets.other} />
+          <CostingBreakdown label="Equipment depreciation" value={equipmentDepreciationCost} />
+          <CostingBreakdown label="Equipment maintenance" value={equipmentMaintenanceCost} />
           <CostingBreakdown label="Waste" value={wasteAllowance} />
+          <CostingBreakdown label="Allocated overhead" value={overheadCost} />
           <CostingBreakdown label="Direct cost" value={directCost} />
           <CostingBreakdown label="Indirect cost" value={indirectCost} />
-          <CostingBreakdown label="Total cost" value={totalBatchCost} />
+          <CostingBreakdown label="Total batch cost" value={totalBatchCost} />
         </div>
+        <ScenarioAnalysis
+          costPerPiece={costPerPiece}
+          costingYield={costingYield}
+          equipmentAllocations={equipmentAllocations}
+          ingredientRows={ingredientRows}
+          laborEstimate={laborEstimate}
+          margin={margin}
+          overheadCost={overheadCost}
+          packagingCost={packagingCost}
+          suggestedPrice={suggestedPrice}
+          supplies={supplies}
+          targetFoodCost={targetFoodCost}
+          totalBatchCost={totalBatchCost}
+          utilityTotal={utilityTotal}
+          wasteAllowance={wasteAllowance}
+        />
         <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={getCostingBaseNotes(costing?.notes ?? "")} />
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button>{costing ? "Update costing" : "Save costing"}</Button>
@@ -2607,8 +3195,9 @@ function CostingForm({
         costPerPiece={costPerPiece}
         costingYield={costingYield}
         directCost={directCost}
-        equipmentCost={equipmentCost}
-        equipmentRows={equipmentRows}
+        equipmentAllocations={equipmentAllocations}
+        equipmentDepreciationCost={equipmentDepreciationCost}
+        equipmentMaintenanceCost={equipmentMaintenanceCost}
         foodCostPercent={foodCostPercent}
         grossProfit={grossProfit}
         indirectCost={indirectCost}
@@ -2628,6 +3217,7 @@ function CostingForm({
         suggestedTargetPrice={suggestedTargetPrice}
         targetFoodCost={targetFoodCost}
         totalBatchCost={totalBatchCost}
+        utilityBuckets={utilityBuckets}
         utilityRows={utilityRows}
         utilityTotal={utilityTotal}
         wasteAllowance={wasteAllowance}
@@ -2666,8 +3256,9 @@ function CostingPrintReport({
   costPerPiece,
   costingYield,
   directCost,
-  equipmentCost,
-  equipmentRows,
+  equipmentAllocations,
+  equipmentDepreciationCost,
+  equipmentMaintenanceCost,
   foodCostPercent,
   grossProfit,
   indirectCost,
@@ -2687,6 +3278,7 @@ function CostingPrintReport({
   suggestedTargetPrice,
   targetFoodCost,
   totalBatchCost,
+  utilityBuckets,
   utilityRows,
   utilityTotal,
   wasteAllowance,
@@ -2695,8 +3287,9 @@ function CostingPrintReport({
   costPerPiece: number;
   costingYield: number;
   directCost: number;
-  equipmentCost: number;
-  equipmentRows: CostingNamedCostRow[];
+  equipmentAllocations: EquipmentAllocation[];
+  equipmentDepreciationCost: number;
+  equipmentMaintenanceCost: number;
   foodCostPercent: number;
   grossProfit: number;
   indirectCost: number;
@@ -2716,6 +3309,7 @@ function CostingPrintReport({
   suggestedTargetPrice: number;
   targetFoodCost: number;
   totalBatchCost: number;
+  utilityBuckets: { electricity: number; gas: number; other: number; water: number };
   utilityRows: CostingUtilityRow[];
   utilityTotal: number;
   wasteAllowance: number;
@@ -2775,12 +3369,39 @@ function CostingPrintReport({
 
       <NamedCostTable emptyLabel="No utility cost entered" rows={utilityRows} title="Utilities" total={utilityTotal} />
       <NamedCostTable emptyLabel="No overhead allocated" rows={overheadRows} title="Overhead" total={overheadCost} />
-      <NamedCostTable emptyLabel="No equipment depreciation entered" rows={equipmentRows} title="Equipment" total={equipmentCost} />
+
+      <h2>Equipment Usage</h2>
+      <table>
+        <thead>
+          <tr><th>Equipment</th><th>Usage %</th><th>Shared batches</th><th>Depreciation</th><th>Maintenance</th><th>Total</th></tr>
+        </thead>
+        <tbody>
+          {equipmentAllocations.length === 0 ? <tr><td colSpan={6}>No equipment assigned to this recipe</td></tr> : null}
+          {equipmentAllocations.map((allocation) => (
+            <tr key={allocation.row.rowId}>
+              <td>{allocation.equipmentItem ? `${allocation.equipmentItem.brand ? `${allocation.equipmentItem.brand} ` : ""}${allocation.equipmentItem.name}` : "Equipment not found"}</td>
+              <td>{allocation.row.usagePercent}%</td>
+              <td>{allocation.row.sharedBatches}</td>
+              <td>{allocation.allocatedDepreciation.toFixed(2)}</td>
+              <td>{allocation.allocatedMaintenance.toFixed(2)}</td>
+              <td>{allocation.allocatedTotal.toFixed(2)}</td>
+            </tr>
+          ))}
+          <tr><th>Equipment total</th><td colSpan={3} /><td colSpan={2}>PHP {(equipmentDepreciationCost + equipmentMaintenanceCost).toFixed(2)}</td></tr>
+        </tbody>
+      </table>
+
       <NamedCostTable emptyLabel="No waste allowance entered" rows={wasteRows} title="Waste" total={wasteAllowance} />
 
       <h2>Cost Recap</h2>
       <table>
         <tbody>
+          <tr><th>Ingredients</th><td>PHP {ingredientTotal.toFixed(2)}</td><th>Packaging</th><td>PHP {packagingCost.toFixed(2)}</td></tr>
+          <tr><th>Direct labor</th><td>PHP {laborEstimate.toFixed(2)}</td><th>Waste</th><td>PHP {wasteAllowance.toFixed(2)}</td></tr>
+          <tr><th>Gas</th><td>PHP {utilityBuckets.gas.toFixed(2)}</td><th>Electricity</th><td>PHP {utilityBuckets.electricity.toFixed(2)}</td></tr>
+          <tr><th>Water</th><td>PHP {utilityBuckets.water.toFixed(2)}</td><th>Other direct costs</th><td>PHP {utilityBuckets.other.toFixed(2)}</td></tr>
+          <tr><th>Equipment depreciation</th><td>PHP {equipmentDepreciationCost.toFixed(2)}</td><th>Equipment maintenance</th><td>PHP {equipmentMaintenanceCost.toFixed(2)}</td></tr>
+          <tr><th>Allocated overhead</th><td>PHP {overheadCost.toFixed(2)}</td><th /><td /></tr>
           <tr><th>Direct cost</th><td>PHP {directCost.toFixed(2)}</td><th>Indirect cost</th><td>PHP {indirectCost.toFixed(2)}</td></tr>
           <tr><th>Total batch cost</th><td colSpan={3}>PHP {totalBatchCost.toFixed(2)}</td></tr>
         </tbody>
@@ -2801,6 +3422,75 @@ function CostingMetric({ label, value }: { label: string; value: string }) {
     <div>
       <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ddb778]">{label}</p>
       <p className="mt-2 text-lg font-semibold">{value}</p>
+    </div>
+  );
+}
+
+type EquipmentAllocation = {
+  allocatedDepreciation: number;
+  allocatedMaintenance: number;
+  allocatedTotal: number;
+  equipmentItem: EquipmentEntry | undefined;
+  row: EquipmentUsageRow;
+};
+
+function EquipmentUsageSection({
+  equipmentAllocations,
+  equipmentList,
+  setEquipmentUsage,
+}: {
+  equipmentAllocations: EquipmentAllocation[];
+  equipmentList: EquipmentEntry[];
+  setEquipmentUsage: Dispatch<SetStateAction<EquipmentUsageRow[]>>;
+}) {
+  const activeEquipment = equipmentList.filter((item) => item.isActive);
+  const totalAllocated = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedTotal, 0);
+
+  function addUsageRow() {
+    const usedIds = new Set(equipmentAllocations.map((allocation) => allocation.row.equipmentId));
+    const firstAvailable = activeEquipment.find((item) => !usedIds.has(item.id));
+    setEquipmentUsage((current) => [...current, { equipmentId: firstAvailable?.id ?? "", rowId: crypto.randomUUID(), sharedBatches: 1, usagePercent: 100 }]);
+  }
+
+  function updateUsageRow(rowId: string, changes: Partial<EquipmentUsageRow>) {
+    setEquipmentUsage((current) => current.map((row) => (row.rowId === rowId ? { ...row, ...changes } : row)));
+  }
+
+  function removeUsageRow(rowId: string) {
+    setEquipmentUsage((current) => current.filter((row) => row.rowId !== rowId));
+  }
+
+  return (
+    <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold">Equipment usage</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Pick which equipment this recipe uses. Depreciation and maintenance are calculated automatically from the Equipment database, never typed in. Default usage is 100% of one batch — lower usage % or raise shared batches when equipment is shared with other recipes.</p>
+        </div>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={activeEquipment.length === 0} onClick={addUsageRow} type="button">Add equipment</button>
+      </div>
+      {activeEquipment.length === 0 ? <p className="mt-3 text-sm text-[#6f5a4c]">No active equipment yet. Add equipment on the Equipment page first.</p> : null}
+      <div className="mt-3 grid gap-2">
+        {equipmentAllocations.map((allocation) => (
+          <div className="grid gap-2 lg:grid-cols-[1fr_100px_120px_140px_70px]" key={allocation.row.rowId}>
+            <label className="grid gap-1 text-sm font-medium">
+              Equipment
+              <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name={`equipmentUsageEquipmentId-${allocation.row.rowId}`} onChange={(event) => updateUsageRow(allocation.row.rowId, { equipmentId: event.target.value })} value={allocation.row.equipmentId}>
+                <option value="">Select equipment</option>
+                {activeEquipment.map((item) => <option key={item.id} value={item.id}>{item.brand ? `${item.brand} ` : ""}{item.name}</option>)}
+              </select>
+            </label>
+            <Input label="Usage %" name={`equipmentUsageUsagePercent-${allocation.row.rowId}`} type="number" step="1" value={allocation.row.usagePercent || ""} onChange={(event) => updateUsageRow(allocation.row.rowId, { usagePercent: Number(event.target.value || 0) })} />
+            <Input label="Shared batches" min="1" name={`equipmentUsageSharedBatches-${allocation.row.rowId}`} step="1" type="number" value={allocation.row.sharedBatches || ""} onChange={(event) => updateUsageRow(allocation.row.rowId, { sharedBatches: Number(event.target.value || 1) })} />
+            <div className="self-center text-sm">
+              <p className="font-semibold text-[#5f4a3d]">PHP {allocation.allocatedTotal.toFixed(2)}</p>
+              <p className="text-xs text-[#6f5a4c]">dep {allocation.allocatedDepreciation.toFixed(2)} + maint {allocation.allocatedMaintenance.toFixed(2)}</p>
+            </div>
+            <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => removeUsageRow(allocation.row.rowId)} type="button">Remove</button>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Equipment total: PHP {totalAllocated.toFixed(2)}</p>
     </div>
   );
 }
