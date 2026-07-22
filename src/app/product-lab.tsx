@@ -1487,19 +1487,32 @@ function SuppliesPage({
           {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No supplies logged yet.</p> : null}
           {labState.supplies.map((supply) => {
             const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
+            const supplierLabel = supply.supplierName || "Supplier not set";
             return (
-              <article className="grid gap-3 p-5 md:grid-cols-[1fr_220px_90px]" key={supply.id}>
-                <div>
-                  <h4 className="font-semibold">{supply.ingredientName}</h4>
-                  <p className="mt-1 text-sm text-[#6f5a4c]">{supply.supplierName} / {supply.purchaseDate}</p>
-                  <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{supply.notes || "No quality notes."}</p>
+              <article className="grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_70px]" key={supply.id}>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="font-semibold">{supply.ingredientName}</h4>
+                    <Tag tone="warm">{supplierLabel}</Tag>
+                  </div>
+                  <p className="mt-1 text-sm text-[#6f5a4c]">Bought {supply.purchaseDate}</p>
+                  {supply.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{supply.notes}</p> : null}
                 </div>
-                <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm leading-6 text-[#5f4a3d]">
-                  <p>{supply.packQuantity}{supply.unit ? ` ${supply.unit}` : ""} / PHP {supply.totalCost.toFixed(2)}</p>
-                  <p>Unit cost: PHP {unitCost.toFixed(4)} per {supply.unit || "unit"}</p>
-                  <p>Quality: {supply.qualityRating || 0}/5</p>
+                <div className="text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Pack</p>
+                  <p className="mt-1 font-semibold">{supply.packQuantity}{supply.unit ? ` ${supply.unit}` : ""}</p>
+                  <p className="text-[#6f5a4c]">PHP {supply.totalCost.toFixed(2)}</p>
                 </div>
-                <button className="h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${supply.ingredientName} from ${supply.supplierName}?`) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+                <div className="text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Unit Cost</p>
+                  <p className="mt-1 font-semibold">PHP {unitCost.toFixed(4)}</p>
+                  <p className="text-[#6f5a4c]">per {supply.unit || "unit"}</p>
+                </div>
+                <div className="text-sm">
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Quality</p>
+                  <p className="mt-1 font-semibold">{supply.qualityRating || 0}/5</p>
+                </div>
+                <button className="h-9 self-start rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${supply.ingredientName} from ${supplierLabel}?`) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
               </article>
             );
           })}
