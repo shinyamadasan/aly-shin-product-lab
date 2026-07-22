@@ -412,13 +412,12 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         equipmentId: String(formData.get(`equipmentUsageEquipmentId-${rowId}`) || ""),
         rowId,
         sharedBatches: Number(formData.get(`equipmentUsageSharedBatches-${rowId}`) || 1),
-        usagePercent: Number(formData.get(`equipmentUsageUsagePercent-${rowId}`) || 100),
       }))
       .filter((row) => row.equipmentId);
     const formCookingMinutes = Number(formData.get("cookingMinutes") || 0);
     const equipmentAllocations = equipmentUsage.map((row) => {
       const equipmentItem = labState.equipment.find((item) => item.id === row.equipmentId);
-      return equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches, formCookingMinutes) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 };
+      return equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.sharedBatches, formCookingMinutes) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 };
     });
     const equipmentDepreciationCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
     const equipmentMaintenanceCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedMaintenance, 0);
@@ -1006,6 +1005,60 @@ function formatBatchFormula(formula: BatchFormulaRow[]) {
     .filter((row) => row.ingredient.trim())
     .map((row) => `${row.brand ? `${row.brand.trim()} ` : ""}${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}`.trim())
     .join("\n");
+}
+
+function parseFormulaText(text: string, supplies: SupplyEntry[]) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Array<Partial<BatchFormulaRow>>;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((row) => row.ingredient)
+        .map((row) => ({
+          brand: row.brand ?? "",
+          change: "",
+          ingredient: row.ingredient ?? "",
+          previousQuantity: Number(row.quantity || 0),
+          quantity: Number(row.quantity || 0),
+          rowId: crypto.randomUUID(),
+          unit: row.unit ?? "",
+        }));
+    }
+  } catch {
+    // Fall through to the human-readable formula parser.
+  }
+
+  return trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [namePart = "", quantityPart = ""] = line.split(/\s+-\s+/);
+      const quantityMatch = quantityPart.match(/^(-?\d+(?:\.\d+)?)\s*(.*)$/);
+      const quantity = Number(quantityMatch?.[1] ?? 0);
+      const unit = quantityMatch?.[2]?.trim() ?? "";
+      const normalizedName = normalizeSupplyText(namePart);
+      const supplyMatch = [...supplies]
+        .sort((a, b) => getSupplyLabel(b).length - getSupplyLabel(a).length)
+        .find((supply) => {
+          const fullName = `${supply.brandName} ${supply.ingredientName}`.trim();
+          return normalizeSupplyText(fullName) === normalizedName || normalizeSupplyText(supply.ingredientName) === normalizedName;
+        });
+
+      return {
+        brand: supplyMatch?.brandName ?? "",
+        change: "",
+        ingredient: supplyMatch?.ingredientName ?? namePart,
+        previousQuantity: quantity,
+        quantity,
+        rowId: crypto.randomUUID(),
+        unit,
+      };
+    });
 }
 
 function csvValue(value: string | number) {
@@ -1692,6 +1745,7 @@ function BatchForm({
   supplies: SupplyEntry[];
 }) {
   const [selectedProductId, setSelectedProductId] = useState(batch?.productId ?? products[0].id);
+  const [formulaMessage, setFormulaMessage] = useState("");
   const [formulaRows, setFormulaRows] = useState<BatchFormulaRow[]>(() => {
     const savedRows = parseBatchIngredients(batch?.ingredientsNotes ?? "");
     if (savedRows.length > 0) {
@@ -1716,6 +1770,23 @@ function BatchForm({
     setFormulaRows((current) => current.map((row) => row.rowId === rowId ? { ...row, ...changes } : row));
   }
 
+  async function pasteFormulaFromClipboard() {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+      setFormulaMessage("Clipboard paste is not available in this browser. Open the app in the deployed HTTPS page and try again.");
+      return;
+    }
+
+    const clipboardText = await navigator.clipboard.readText();
+    const pastedRows = parseFormulaText(clipboardText, supplies);
+    if (pastedRows.length === 0) {
+      setFormulaMessage("No formula rows found in clipboard.");
+      return;
+    }
+
+    setFormulaRows(pastedRows);
+    setFormulaMessage(`Pasted ${pastedRows.length} formula row${pastedRows.length === 1 ? "" : "s"}. Edit quantities to create the V2 adjustments.`);
+  }
+
   return (
     <FormPanel title={batch ? "Edit proof batch" : "Proof batch record"} icon={<FlaskConical size={18} />}>
       <form action={saveBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
@@ -1738,8 +1809,12 @@ function BatchForm({
               <p className="text-sm font-semibold">Formula / ingredients tested</p>
               <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Record the actual formula. Use change notes for +10g sugar, less butter, new cocoa, etc.</p>
             </div>
-            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addFormulaRow} type="button">Add ingredient</button>
+            <div className="flex flex-wrap gap-2">
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={pasteFormulaFromClipboard} type="button">Paste formula</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addFormulaRow} type="button">Add ingredient</button>
+            </div>
           </div>
+          {formulaMessage ? <p className="mt-3 rounded-md border border-[#ead9c8] bg-white px-3 py-2 text-sm text-[#5f4a3d]">{formulaMessage}</p> : null}
           <div className="mt-3 grid gap-3">
             {formulaRows.map((row, index) => (
               <div className="grid gap-2 lg:grid-cols-[minmax(220px,2fr)_100px_80px_150px_170px_70px]" key={row.rowId}>
@@ -1855,7 +1930,7 @@ type CostingLaborDetail = {
   packagingMinutes: number;
   prepMinutes: number;
 };
-type EquipmentUsageRow = { equipmentId: string; rowId: string; sharedBatches: number; usagePercent: number };
+type EquipmentUsageRow = { equipmentId: string; rowId: string; sharedBatches: number };
 
 const defaultPackagingComponents = ["Box", "Sticker", "Cup", "Lid", "Sleeve", "Label", "Bag", "Napkin", "Tape"];
 const defaultOverheadRows = ["Rent", "Internet", "POS Subscription", "Cleaning Supplies", "Equipment Maintenance", "Business Permits", "Accounting", "Miscellaneous"];
@@ -2049,7 +2124,7 @@ function bucketUtilityRows(rows: CostingUtilityRow[]) {
 
 function compactEquipmentUsageRows(rows: EquipmentUsageRow[]) {
   return rows
-    .map((row) => ({ equipmentId: row.equipmentId, rowId: row.rowId, sharedBatches: Number(row.sharedBatches || 1), usagePercent: Number(row.usagePercent ?? 100) }))
+    .map((row) => ({ equipmentId: row.equipmentId, rowId: row.rowId, sharedBatches: Number(row.sharedBatches || 1) }))
     .filter((row) => row.equipmentId);
 }
 
@@ -2716,7 +2791,7 @@ function CostingForm({
     return {
       row,
       equipmentItem,
-      ...(equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches, laborDetail.cookingMinutes) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 }),
+      ...(equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.sharedBatches, laborDetail.cookingMinutes) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 }),
     };
   });
   const equipmentDepreciationCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
@@ -3190,21 +3265,20 @@ function CostingPrintReport({
       <h2>Equipment Usage</h2>
       <table>
         <thead>
-          <tr><th>Equipment</th><th>Usage %</th><th>Shared batches</th><th>Depreciation</th><th>Maintenance</th><th>Total</th></tr>
+          <tr><th>Equipment</th><th>Shared batches</th><th>Depreciation</th><th>Maintenance</th><th>Total</th></tr>
         </thead>
         <tbody>
-          {equipmentAllocations.length === 0 ? <tr><td colSpan={6}>No equipment assigned to this recipe</td></tr> : null}
+          {equipmentAllocations.length === 0 ? <tr><td colSpan={5}>No equipment assigned to this recipe</td></tr> : null}
           {equipmentAllocations.map((allocation) => (
             <tr key={allocation.row.rowId}>
               <td>{allocation.equipmentItem ? `${allocation.equipmentItem.brand ? `${allocation.equipmentItem.brand} ` : ""}${allocation.equipmentItem.name}` : "Equipment not found"}</td>
-              <td>{allocation.row.usagePercent}%</td>
               <td>{allocation.row.sharedBatches}</td>
               <td>{allocation.allocatedDepreciation.toFixed(2)}</td>
               <td>{allocation.allocatedMaintenance.toFixed(2)}</td>
               <td>{allocation.allocatedTotal.toFixed(2)}</td>
             </tr>
           ))}
-          <tr><th>Equipment total</th><td colSpan={3} /><td colSpan={2}>PHP {(equipmentDepreciationCost + equipmentMaintenanceCost).toFixed(2)}</td></tr>
+          <tr><th>Equipment total</th><td colSpan={2} /><td colSpan={2}>PHP {(equipmentDepreciationCost + equipmentMaintenanceCost).toFixed(2)}</td></tr>
         </tbody>
       </table>
 
@@ -3268,7 +3342,7 @@ function EquipmentUsageSection({
   function addUsageRow() {
     const usedIds = new Set(equipmentAllocations.map((allocation) => allocation.row.equipmentId));
     const firstAvailable = activeEquipment.find((item) => !usedIds.has(item.id));
-    setEquipmentUsage((current) => [...current, { equipmentId: firstAvailable?.id ?? "", rowId: crypto.randomUUID(), sharedBatches: 1, usagePercent: 100 }]);
+    setEquipmentUsage((current) => [...current, { equipmentId: firstAvailable?.id ?? "", rowId: crypto.randomUUID(), sharedBatches: 1 }]);
   }
 
   function updateUsageRow(rowId: string, changes: Partial<EquipmentUsageRow>) {
@@ -3284,14 +3358,14 @@ function EquipmentUsageSection({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-sm font-semibold">Equipment usage</p>
-          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Pick which equipment this recipe uses. Cost is calculated automatically from the Equipment database, never typed in. Default usage is 100% of one batch — lower usage % or raise shared batches when equipment is shared with other recipes. Gas-per-minute equipment uses this recipe&apos;s cooking time ({cookingMinutes || 0} min) from Labor timing below — update that field to change it.</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Pick which equipment this recipe uses. Cost is calculated automatically from the Equipment database. Raise shared batches when equipment cost should be spread across multiple recipes. Gas-per-minute equipment uses this recipe&apos;s cooking time ({cookingMinutes || 0} min) from Labor timing below.</p>
         </div>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={activeEquipment.length === 0} onClick={addUsageRow} type="button">Add equipment</button>
       </div>
       {activeEquipment.length === 0 ? <p className="mt-3 text-sm text-[#6f5a4c]">No active equipment yet. Add equipment on the Equipment page first.</p> : null}
       <div className="mt-3 grid gap-2">
         {equipmentAllocations.map((allocation) => (
-          <div className="grid items-start gap-2 lg:grid-cols-[1fr_100px_120px_140px_70px]" key={allocation.row.rowId}>
+          <div className="grid items-start gap-2 lg:grid-cols-[1fr_120px_140px_70px]" key={allocation.row.rowId}>
             <label className="grid gap-1 text-sm font-medium">
               Equipment
               <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name={`equipmentUsageEquipmentId-${allocation.row.rowId}`} onChange={(event) => updateUsageRow(allocation.row.rowId, { equipmentId: event.target.value })} value={allocation.row.equipmentId}>
@@ -3299,7 +3373,6 @@ function EquipmentUsageSection({
                 {activeEquipment.map((item) => <option key={item.id} value={item.id}>{item.brand ? `${item.brand} ` : ""}{item.name}</option>)}
               </select>
             </label>
-            <Input label="Usage %" name={`equipmentUsageUsagePercent-${allocation.row.rowId}`} type="number" step="1" value={allocation.row.usagePercent || ""} onChange={(event) => updateUsageRow(allocation.row.rowId, { usagePercent: Number(event.target.value || 0) })} />
             <Input label="Shared batches" min="1" name={`equipmentUsageSharedBatches-${allocation.row.rowId}`} step="1" type="number" value={allocation.row.sharedBatches || ""} onChange={(event) => updateUsageRow(allocation.row.rowId, { sharedBatches: Number(event.target.value || 1) })} />
             <div className="mt-6 text-sm">
               <p className="font-semibold text-[#5f4a3d]">PHP {allocation.allocatedTotal.toFixed(2)}</p>

@@ -61,9 +61,9 @@ export function getEquipmentTotals(equipment: EquipmentEntry, cookingMinutes = R
   };
 }
 
-export function getAllocatedEquipmentCost(equipment: EquipmentEntry, usagePercent: number, sharedBatches: number, cookingMinutes = REFERENCE_COOKING_MINUTES) {
+export function getAllocatedEquipmentCost(equipment: EquipmentEntry, sharedBatches: number, cookingMinutes = REFERENCE_COOKING_MINUTES) {
   const totals = getEquipmentTotals(equipment, cookingMinutes);
-  const share = sharedBatches > 0 ? (usagePercent / 100) / sharedBatches : 0;
+  const share = sharedBatches > 0 ? 1 / sharedBatches : 0;
 
   return {
     allocatedDepreciation: totals.depreciationPerBatch * share,
