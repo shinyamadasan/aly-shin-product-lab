@@ -36,7 +36,7 @@ import { AppShell } from "@/components/app-shell";
 import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
 import { getCostingTotals } from "@/lib/costing";
-import { getAllocatedEquipmentCost, getEquipmentTotals } from "@/lib/equipment";
+import { getAllocatedEquipmentCost, getEquipmentTotals, REFERENCE_COOKING_MINUTES } from "@/lib/equipment";
 
 export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [labState, setLabState] = useState<LabState>(() => {
@@ -194,6 +194,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         batchesPerWeek: Number(row.batches_per_week ?? 0),
         annualMaintenancePercent: Number(row.annual_maintenance_percent ?? 0),
         batchesPerUnit: Number(row.batches_per_unit ?? 0),
+        tankSizeKg: Number(row.tank_size_kg ?? 0),
+        burnRateKgPerHour: Number(row.burn_rate_kg_per_hour ?? 0),
         calculationMode: row.calculation_mode ?? "depreciation",
         notes: row.notes ?? "",
         isActive: row.is_active ?? true,
@@ -413,9 +415,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         usagePercent: Number(formData.get(`equipmentUsageUsagePercent-${rowId}`) || 100),
       }))
       .filter((row) => row.equipmentId);
+    const formCookingMinutes = Number(formData.get("cookingMinutes") || 0);
     const equipmentAllocations = equipmentUsage.map((row) => {
       const equipmentItem = labState.equipment.find((item) => item.id === row.equipmentId);
-      return equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 };
+      return equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches, formCookingMinutes) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 };
     });
     const equipmentDepreciationCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
     const equipmentMaintenanceCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedMaintenance, 0);
@@ -638,7 +641,14 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       batchesPerWeek: Number(formData.get("batchesPerWeek") || 0),
       annualMaintenancePercent: Number(formData.get("annualMaintenancePercent") || 0),
       batchesPerUnit: Number(formData.get("batchesPerUnit") || 0),
-      calculationMode: formData.get("calculationMode") === "replacement-reserve" ? "replacement-reserve" : "depreciation",
+      tankSizeKg: Number(formData.get("tankSizeKg") || 0),
+      burnRateKgPerHour: Number(formData.get("burnRateKgPerHour") || 0),
+      calculationMode:
+        formData.get("calculationMode") === "gas-burn-rate"
+          ? "gas-burn-rate"
+          : formData.get("calculationMode") === "replacement-reserve"
+            ? "replacement-reserve"
+            : "depreciation",
       notes: String(formData.get("notes") || "").trim(),
       isActive: formData.get("isActive") === "on",
     };
@@ -655,6 +665,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         batches_per_week: equipment.batchesPerWeek,
         annual_maintenance_percent: equipment.annualMaintenancePercent,
         batches_per_unit: equipment.batchesPerUnit,
+        tank_size_kg: equipment.tankSizeKg,
+        burn_rate_kg_per_hour: equipment.burnRateKgPerHour,
         calculation_mode: equipment.calculationMode,
         notes: equipment.notes,
         is_active: equipment.isActive,
@@ -2414,7 +2426,7 @@ function EquipmentPage({
   function downloadEquipment() {
     downloadCsv(
       "equipment.csv",
-      ["Name", "Brand", "Model", "Purchase price", "Residual %", "Useful life (yr)", "Batches/week", "Maintenance %", "Batches/unit", "Mode", "Depreciation/batch", "Maintenance/batch", "Total/batch", "Active", "Notes"],
+      ["Name", "Brand", "Model", "Purchase price", "Residual %", "Useful life (yr)", "Batches/week", "Maintenance %", "Batches/unit", "Tank size kg", "Burn rate kg/hr", "Mode", `Depreciation/batch (at ${REFERENCE_COOKING_MINUTES}min if gas)`, "Maintenance/batch", "Total/batch", "Active", "Notes"],
       labState.equipment.map((item) => {
         const totals = getEquipmentTotals(item);
         return [
@@ -2427,6 +2439,8 @@ function EquipmentPage({
           item.batchesPerWeek,
           item.annualMaintenancePercent,
           item.batchesPerUnit,
+          item.tankSizeKg,
+          item.burnRateKgPerHour,
           item.calculationMode,
           totals.depreciationPerBatch.toFixed(2),
           totals.maintenancePerBatch.toFixed(2),
@@ -2454,14 +2468,15 @@ function EquipmentPage({
             <Input name="model" label="Model" placeholder="SL-100-10W" defaultValue={equipment?.model} />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Input name="purchasePrice" label="Purchase price PHP" type="number" step="0.01" placeholder="8500" defaultValue={equipment?.purchasePrice || undefined} />
+            <Input name="purchasePrice" label={calculationMode === "gas-burn-rate" ? "Tank price PHP" : "Purchase price PHP"} type="number" step="0.01" placeholder={calculationMode === "gas-burn-rate" ? "950" : "8500"} defaultValue={equipment?.purchasePrice || undefined} />
             <Input name="purchaseDate" label="Purchase date" type="date" defaultValue={equipment?.purchaseDate ?? today} />
           </div>
           <label className="grid gap-1 text-sm font-medium">
             Calculation mode
-            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="calculationMode" onChange={(event) => setCalculationMode(event.target.value === "replacement-reserve" ? "replacement-reserve" : "depreciation")} value={calculationMode}>
+            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="calculationMode" onChange={(event) => setCalculationMode(event.target.value as EquipmentCalculationMode)} value={calculationMode}>
               <option value="depreciation">Standard depreciation + maintenance (ovens, mixers, durable equipment)</option>
-              <option value="replacement-reserve">Simple constant: price ÷ batches per tank/unit (gas, small tools, consumables)</option>
+              <option value="replacement-reserve">Simple constant: price ÷ batches per tank/unit (small tools, consumables)</option>
+              <option value="gas-burn-rate">Gas usage per minute: tank price ÷ kg × burn rate × cooking time (LPG-fired equipment)</option>
             </select>
           </label>
           {calculationMode === "depreciation" ? (
@@ -2473,16 +2488,34 @@ function EquipmentPage({
               </div>
               <Input name="annualMaintenancePercent" label="Annual maintenance % of purchase price" type="number" step="0.01" placeholder="3" defaultValue={equipment?.annualMaintenancePercent ?? 3} />
               <input name="batchesPerUnit" type="hidden" value={equipment?.batchesPerUnit || 0} />
+              <input name="tankSizeKg" type="hidden" value={equipment?.tankSizeKg || 0} />
+              <input name="burnRateKgPerHour" type="hidden" value={equipment?.burnRateKgPerHour || 0} />
             </>
-          ) : (
+          ) : null}
+          {calculationMode === "replacement-reserve" ? (
             <>
               <Input name="batchesPerUnit" label="Batches per tank/unit" type="number" step="1" placeholder="12" defaultValue={equipment?.batchesPerUnit || undefined} helper="How many batches one purchase lasts. Example: an 11kg LPG tank at PHP 950 that lasts about 12 baking sessions." />
               <input name="residualValuePercent" type="hidden" value={equipment?.residualValuePercent ?? 0} />
               <input name="usefulLifeYears" type="hidden" value={equipment?.usefulLifeYears ?? 0} />
               <input name="batchesPerWeek" type="hidden" value={equipment?.batchesPerWeek ?? 0} />
               <input name="annualMaintenancePercent" type="hidden" value={equipment?.annualMaintenancePercent ?? 0} />
+              <input name="tankSizeKg" type="hidden" value={equipment?.tankSizeKg || 0} />
+              <input name="burnRateKgPerHour" type="hidden" value={equipment?.burnRateKgPerHour || 0} />
             </>
-          )}
+          ) : null}
+          {calculationMode === "gas-burn-rate" ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input name="tankSizeKg" label="Tank size (kg)" type="number" step="0.1" placeholder="11" defaultValue={equipment?.tankSizeKg || undefined} helper="Example: 11kg LPG tank." />
+                <Input name="burnRateKgPerHour" label="Typical LPG use (kg/hour)" type="number" step="0.01" placeholder="0.20" defaultValue={equipment?.burnRateKgPerHour || undefined} helper="Usually about 0.18-0.22 kg/hour for a table oven. Use the middle of the range if unsure." />
+              </div>
+              <input name="residualValuePercent" type="hidden" value={equipment?.residualValuePercent ?? 0} />
+              <input name="usefulLifeYears" type="hidden" value={equipment?.usefulLifeYears ?? 0} />
+              <input name="batchesPerWeek" type="hidden" value={equipment?.batchesPerWeek ?? 0} />
+              <input name="annualMaintenancePercent" type="hidden" value={equipment?.annualMaintenancePercent ?? 0} />
+              <input name="batchesPerUnit" type="hidden" value={equipment?.batchesPerUnit || 0} />
+            </>
+          ) : null}
           <Textarea name="notes" label="Notes" placeholder="Condition, warranty, where it lives, replacement plan." defaultValue={equipment?.notes} />
           <label className="flex items-center gap-2 text-sm font-medium">
             <input defaultChecked={equipment ? equipment.isActive : true} name="isActive" type="checkbox" />
@@ -2498,7 +2531,8 @@ function EquipmentPage({
       <Panel title="How the numbers are calculated" icon={<Sparkles size={18} />}>
         <div className="space-y-2 text-sm leading-6 text-[#5f4a3d]">
           <p><strong>Standard depreciation mode</strong> (ovens, mixers): Depreciation/batch = (Purchase price − Residual value) ÷ (Batches/week × 52 × Useful life). Maintenance/batch = (Purchase price × Maintenance %) ÷ (Batches/week × 52).</p>
-          <p><strong>Simple constant mode</strong> (gas tanks, small tools): Cost/batch = Purchase price ÷ Batches per tank/unit. Example: an 11kg LPG tank at PHP 950 that lasts 12 baking sessions = PHP 79.17/batch. Update the purchase price here whenever your gas price changes.</p>
+          <p><strong>Simple constant mode</strong> (small tools, consumables): Cost/batch = Purchase price ÷ Batches per tank/unit.</p>
+          <p><strong>Gas usage per minute</strong> (LPG-fired equipment): Cost/kg = Tank price ÷ Tank size. Cost/batch = (Burn rate kg/hour ÷ 60) × cooking minutes × Cost/kg. Example: PHP 950 ÷ 11kg ≈ PHP 86/kg; at 0.20 kg/hour and 60 minutes of baking, that&apos;s 0.20kg × PHP 86 ≈ PHP 17/batch. The list below shows the cost at {REFERENCE_COOKING_MINUTES} minutes as a reference — once assigned to a recipe in Costing, it uses that recipe&apos;s actual cooking time. Update the tank price here whenever gas price changes.</p>
           <p>These are calculated live below from the fields on the left — never typed in manually. Assign equipment to a recipe from the Costing page&apos;s Equipment Usage section.</p>
         </div>
       </Panel>
@@ -2523,13 +2557,15 @@ function EquipmentPage({
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Tag tone={item.isActive ? "green" : "danger"}>{item.isActive ? "Active" : "Inactive"}</Tag>
-                    <Tag tone="warm">{item.calculationMode === "replacement-reserve" ? "Simple constant" : "Standard depreciation"}</Tag>
+                    <Tag tone="warm">{item.calculationMode === "gas-burn-rate" ? "Gas per minute" : item.calculationMode === "replacement-reserve" ? "Simple constant" : "Standard depreciation"}</Tag>
                   </div>
                   <h4 className="mt-2 font-semibold">{item.brand ? `${item.brand} ` : ""}{item.name}{item.model ? ` (${item.model})` : ""}</h4>
                   <p className="mt-1 text-sm text-[#6f5a4c]">
-                    {item.calculationMode === "replacement-reserve"
-                      ? `PHP ${item.purchasePrice.toFixed(2)} ÷ ${item.batchesPerUnit} batches`
-                      : `PHP ${item.purchasePrice.toFixed(2)} · ${item.batchesPerWeek}/week · ${item.usefulLifeYears}yr life`}
+                    {item.calculationMode === "gas-burn-rate"
+                      ? `PHP ${item.purchasePrice.toFixed(2)} / ${item.tankSizeKg}kg ≈ PHP ${totals.pricePerKg.toFixed(2)}/kg · ${item.burnRateKgPerHour}kg/hr · at ${REFERENCE_COOKING_MINUTES}min: ${totals.kgUsed.toFixed(2)}kg`
+                      : item.calculationMode === "replacement-reserve"
+                        ? `PHP ${item.purchasePrice.toFixed(2)} ÷ ${item.batchesPerUnit} batches`
+                        : `PHP ${item.purchasePrice.toFixed(2)} · ${item.batchesPerWeek}/week · ${item.usefulLifeYears}yr life`}
                   </p>
                   {item.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{item.notes}</p> : null}
                 </div>
@@ -2680,7 +2716,7 @@ function CostingForm({
     return {
       row,
       equipmentItem,
-      ...(equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 }),
+      ...(equipmentItem ? getAllocatedEquipmentCost(equipmentItem, row.usagePercent, row.sharedBatches, laborDetail.cookingMinutes) : { allocatedDepreciation: 0, allocatedMaintenance: 0, allocatedTotal: 0 }),
     };
   });
   const equipmentDepreciationCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
@@ -2934,7 +2970,7 @@ function CostingForm({
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Utility total: PHP {utilityTotal.toFixed(2)}</p>
         </div>
         <NamedCostSection addLabel="Add overhead" namePrefix="overhead" onAdd={() => addNamedCostRow(setOverheadRows, "Overhead")} rows={overheadRows} setRows={setOverheadRows} title="Overhead allocation" total={overheadCost} updateNamedCostRow={updateNamedCostRow} />
-        <EquipmentUsageSection equipmentAllocations={equipmentAllocations} equipmentList={equipment} setEquipmentUsage={setEquipmentUsage} />
+        <EquipmentUsageSection cookingMinutes={laborDetail.cookingMinutes} equipmentAllocations={equipmentAllocations} equipmentList={equipment} setEquipmentUsage={setEquipmentUsage} />
         <NamedCostSection addLabel="Add waste" namePrefix="waste" onAdd={() => addNamedCostRow(setWasteRows, "Waste")} rows={wasteRows} setRows={setWasteRows} title="Waste and loss" total={wasteAllowance} updateNamedCostRow={updateNamedCostRow} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
@@ -3216,10 +3252,12 @@ type EquipmentAllocation = {
 };
 
 function EquipmentUsageSection({
+  cookingMinutes,
   equipmentAllocations,
   equipmentList,
   setEquipmentUsage,
 }: {
+  cookingMinutes: number;
   equipmentAllocations: EquipmentAllocation[];
   equipmentList: EquipmentEntry[];
   setEquipmentUsage: Dispatch<SetStateAction<EquipmentUsageRow[]>>;
@@ -3246,7 +3284,7 @@ function EquipmentUsageSection({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-sm font-semibold">Equipment usage</p>
-          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Pick which equipment this recipe uses. Depreciation and maintenance are calculated automatically from the Equipment database, never typed in. Default usage is 100% of one batch — lower usage % or raise shared batches when equipment is shared with other recipes.</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Pick which equipment this recipe uses. Cost is calculated automatically from the Equipment database, never typed in. Default usage is 100% of one batch — lower usage % or raise shared batches when equipment is shared with other recipes. Gas-per-minute equipment uses this recipe&apos;s cooking time ({cookingMinutes || 0} min) from Labor timing below — update that field to change it.</p>
         </div>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={activeEquipment.length === 0} onClick={addUsageRow} type="button">Add equipment</button>
       </div>
@@ -3265,7 +3303,9 @@ function EquipmentUsageSection({
             <Input label="Shared batches" min="1" name={`equipmentUsageSharedBatches-${allocation.row.rowId}`} step="1" type="number" value={allocation.row.sharedBatches || ""} onChange={(event) => updateUsageRow(allocation.row.rowId, { sharedBatches: Number(event.target.value || 1) })} />
             <div className="mt-6 text-sm">
               <p className="font-semibold text-[#5f4a3d]">PHP {allocation.allocatedTotal.toFixed(2)}</p>
-              <p className="text-xs text-[#6f5a4c]">dep {allocation.allocatedDepreciation.toFixed(2)} + maint {allocation.allocatedMaintenance.toFixed(2)}</p>
+              <p className="text-xs text-[#6f5a4c]">
+                {allocation.equipmentItem?.calculationMode === "gas-burn-rate" ? `at ${cookingMinutes || 0} min bake` : `dep ${allocation.allocatedDepreciation.toFixed(2)} + maint ${allocation.allocatedMaintenance.toFixed(2)}`}
+              </p>
             </div>
             <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => removeUsageRow(allocation.row.rowId)} type="button">Remove</button>
           </div>

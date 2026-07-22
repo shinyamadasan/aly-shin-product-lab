@@ -100,7 +100,7 @@ export type ContentJournalEntry = {
   nextAction: string;
 };
 
-export type EquipmentCalculationMode = "depreciation" | "replacement-reserve";
+export type EquipmentCalculationMode = "depreciation" | "replacement-reserve" | "gas-burn-rate";
 
 export type EquipmentEntry = {
   id: string;
@@ -114,6 +114,8 @@ export type EquipmentEntry = {
   batchesPerWeek: number;
   annualMaintenancePercent: number;
   batchesPerUnit: number;
+  tankSizeKg: number;
+  burnRateKgPerHour: number;
   calculationMode: EquipmentCalculationMode;
   notes: string;
   isActive: boolean;

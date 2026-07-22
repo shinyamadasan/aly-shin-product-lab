@@ -10,6 +10,8 @@ create table if not exists equipment (
   batches_per_week numeric not null default 4,
   annual_maintenance_percent numeric not null default 3,
   batches_per_unit numeric not null default 0,
+  tank_size_kg numeric not null default 0,
+  burn_rate_kg_per_hour numeric not null default 0,
   calculation_mode text not null default 'depreciation',
   notes text,
   is_active boolean not null default true,
@@ -19,6 +21,10 @@ create table if not exists equipment (
 
 alter table equipment
   add column if not exists batches_per_unit numeric not null default 0;
+
+alter table equipment
+  add column if not exists tank_size_kg numeric not null default 0,
+  add column if not exists burn_rate_kg_per_hour numeric not null default 0;
 
 alter table equipment enable row level security;
 
