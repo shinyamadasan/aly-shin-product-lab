@@ -1868,7 +1868,6 @@ function CostingForm({
   const [laborEstimate, setLaborEstimate] = useState(costing?.laborEstimate ?? 0);
   const [wasteAllowance, setWasteAllowance] = useState(costing?.wasteAllowance ?? 0);
   const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
-  const [appliedSupplyRowId, setAppliedSupplyRowId] = useState("");
   const [localMessage, setLocalMessage] = useState("");
   const [localMessageTone, setLocalMessageTone] = useState<"good" | "bad" | "info">("info");
 
@@ -1931,25 +1930,6 @@ function CostingForm({
     return getMatchingSupplies(supplies, row.brandName, row.ingredientName, row.unit)[0];
   }
 
-  function applySupplyPrice(rowId: string, supply: SupplyEntry) {
-    setIngredientRows((current) =>
-      current.map((row) =>
-        row.rowId === rowId
-          ? {
-              ...row,
-              brandName: supply.brandName,
-              cost: Number(getSupplyUsedCost(supply, row.quantityUsed, row.unit).toFixed(2)),
-              ingredientName: supply.ingredientName,
-              supplierNote: [supply.supplierName, supply.purchaseDate, `quality ${supply.qualityRating || 0}/5`, getConversionLabel(row.quantityUsed, row.unit, supply)].filter(Boolean).join(" / "),
-            }
-          : row,
-      ),
-    );
-    setAppliedSupplyRowId(rowId);
-    setLocalMessage("Supply price applied to this ingredient.");
-    setLocalMessageTone("good");
-  }
-
   function applyAllSupplyPrices() {
     let matchedCount = 0;
     setIngredientRows((current) =>
@@ -2003,7 +1983,7 @@ function CostingForm({
                     <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
                     <Input name={`quantityUsed-${row.rowId}`} label="Formula qty" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
                     <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
-                    <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="Use price" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
+                    <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="Auto or manual" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
                     <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Based on latest supply price / estimated" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
                     <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => {
                       setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId));
@@ -2020,7 +2000,7 @@ function CostingForm({
                         const usedCost = getSupplyUsedCost(supply, row.quantityUsed, row.unit);
                         const conversionLabel = getConversionLabel(row.quantityUsed, row.unit, supply);
                         return (
-                          <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-2 text-sm md:grid-cols-[1fr_120px_110px]" key={supply.id}>
+                          <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-2 text-sm md:grid-cols-[1fr_140px]" key={supply.id}>
                             <div className="text-[#5f4a3d]">
                               <p className="font-semibold">{getSupplyLabel(supply)}</p>
                               <p>{supply.supplierName}</p>
@@ -2028,7 +2008,6 @@ function CostingForm({
                               {conversionLabel ? <p className="text-xs text-[#8a6a54]">{conversionLabel}</p> : null}
                             </div>
                             <p className="self-center font-semibold">Used: PHP {usedCost.toFixed(2)}</p>
-                            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => applySupplyPrice(row.rowId, supply)} type="button">{appliedSupplyRowId === row.rowId ? "Applied" : "Use price"}</button>
                           </div>
                         );
                       })}
