@@ -43,6 +43,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
+  const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
   const [editingTasting, setEditingTasting] = useState<TastingFeedback | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
 
@@ -491,6 +492,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       setMessageTone(error ? "bad" : "good");
       setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries")));
       if (!error) {
+        setEditingSupply(null);
         await loadSupabaseData();
       }
       return;
@@ -500,6 +502,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       ...current,
       supplies: supplyId ? current.supplies.map((entry) => (entry.id === supplyId ? supply : entry)) : [supply, ...current.supplies],
     }));
+    setEditingSupply(null);
     setMessage("Supply saved locally.");
     setMessageTone("good");
   }
@@ -509,11 +512,17 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       const { error } = await supabase.from("supply_entries").delete().eq("id", supplyId);
       setMessage(error ? `Supply delete failed: ${error.message}` : "Supply deleted.");
       setMessageTone(error ? "bad" : "good");
+      if (!error && editingSupply?.id === supplyId) {
+        setEditingSupply(null);
+      }
       await loadSupabaseData();
       return;
     }
 
     setLabState((current) => ({ ...current, supplies: current.supplies.filter((entry) => entry.id !== supplyId) }));
+    if (editingSupply?.id === supplyId) {
+      setEditingSupply(null);
+    }
     setMessage("Supply deleted locally.");
     setMessageTone("good");
   }
@@ -695,7 +704,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
-          {view === "supplies" ? <SuppliesPage deleteSupply={deleteSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} /> : null}
+          {view === "supplies" ? <SuppliesPage cancelEdit={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={editingSupply} /> : null}
 
           {view === "tasting" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="tasting">
@@ -1435,39 +1444,48 @@ function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number) {
 }
 
 function SuppliesPage({
+  cancelEdit,
   deleteSupply,
+  editSupply,
   isSuppliesTableMissing,
   labState,
   saveSupply,
+  supply,
 }: {
+  cancelEdit: () => void;
   deleteSupply: (supplyId: string) => void;
+  editSupply: (supply: SupplyEntry) => void;
   isSuppliesTableMissing: boolean;
   labState: LabState;
   saveSupply: (formData: FormData) => void;
+  supply: SupplyEntry | null;
 }) {
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
-      <FormPanel title="Log supply purchase" icon={<PackageCheck size={18} />}>
+      <FormPanel title={supply ? "Edit supply purchase" : "Log supply purchase"} icon={<PackageCheck size={18} />}>
         {isSuppliesTableMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
             Supplies table is not created in Supabase yet. Run <strong>supabase-add-supplies.sql</strong> once, then save again.
           </div>
         ) : null}
-        <form action={saveSupply} className="grid gap-3">
-          <input name="id" type="hidden" value="" />
+        <form action={saveSupply} className="grid gap-3" key={supply?.id ?? "new-supply"}>
+          <input name="id" type="hidden" value={supply?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-2">
-            <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" />
-            <Input name="supplierName" label="Supplier" placeholder="SM / Shopee / local baking store" />
+            <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" defaultValue={supply?.ingredientName} />
+            <Input name="supplierName" label="Supplier" placeholder="SM / Shopee / local baking store" defaultValue={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
-            <Input name="purchaseDate" label="Date bought" type="date" defaultValue={today} />
-            <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" />
-            <Input name="unit" label="Unit" placeholder="g" />
-            <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" />
+            <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? today} />
+            <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
+            <Input name="unit" label="Unit" placeholder="g" defaultValue={supply?.unit} />
+            <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
           </div>
-          <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
-          <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." />
-          <Button>Save supply</Button>
+          <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
+          <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." defaultValue={supply?.notes} />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button>{supply ? "Update supply" : "Save supply"}</Button>
+            {supply ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+          </div>
         </form>
       </FormPanel>
 
@@ -1512,7 +1530,10 @@ function SuppliesPage({
                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Quality</p>
                   <p className="mt-1 font-semibold">{supply.qualityRating || 0}/5</p>
                 </div>
-                <button className="h-9 self-start rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${supply.ingredientName} from ${supplierLabel}?`) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+                <div className="flex gap-2 lg:flex-col">
+                  <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editSupply(supply)} type="button">Edit</button>
+                  <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${supply.ingredientName} from ${supplierLabel}?`) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+                </div>
               </article>
             );
           })}
