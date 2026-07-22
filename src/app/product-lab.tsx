@@ -1427,7 +1427,7 @@ function ProofDayChecklist() {
   );
 }
 
-type CostingIngredientRow = CostingEntry & { brandName: string; rowId: string };
+type CostingIngredientRow = CostingEntry & { brandName: string; isManualCost?: boolean; rowId: string };
 type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
 
 function normalizeSupplyText(value: string) {
@@ -1917,8 +1917,8 @@ function CostingForm({
       }));
 
     if (rows.length > 0) {
-      setIngredientRows(rows);
-      setLocalMessage("Latest proof formula imported. Use supply prices to calculate ingredient costs.");
+      setIngredientRows(autoCostRows(rows));
+      setLocalMessage("Latest proof formula imported. Matching supply prices were applied automatically.");
       setLocalMessageTone("good");
     } else {
       setLocalMessage("No proof formula found for this product yet.");
@@ -1930,26 +1930,33 @@ function CostingForm({
     return getMatchingSupplies(supplies, row.brandName, row.ingredientName, row.unit)[0];
   }
 
-  function applyAllSupplyPrices() {
-    let matchedCount = 0;
+  function getAutoCostedRow(row: CostingIngredientRow) {
+    if (row.isManualCost) {
+      return row;
+    }
+
+    const supply = getBestSupplyMatch(row);
+    if (!supply) {
+      return row;
+    }
+
+    return {
+      ...row,
+      brandName: supply.brandName,
+      cost: Number(getSupplyUsedCost(supply, row.quantityUsed, row.unit).toFixed(2)),
+      ingredientName: supply.ingredientName,
+      supplierNote: [supply.supplierName, supply.purchaseDate, `quality ${supply.qualityRating || 0}/5`, getConversionLabel(row.quantityUsed, row.unit, supply)].filter(Boolean).join(" / "),
+    };
+  }
+
+  function autoCostRows(rows: CostingIngredientRow[]) {
+    return rows.map((row) => getAutoCostedRow(row));
+  }
+
+  function updateIngredientRow(rowId: string, changes: Partial<CostingIngredientRow>, isManualCost = false) {
     setIngredientRows((current) =>
-      current.map((row) => {
-        const supply = getBestSupplyMatch(row);
-        if (!supply) {
-          return row;
-        }
-        matchedCount += 1;
-        return {
-          ...row,
-          brandName: supply.brandName,
-          cost: Number(getSupplyUsedCost(supply, row.quantityUsed, row.unit).toFixed(2)),
-          ingredientName: supply.ingredientName,
-          supplierNote: [supply.supplierName, supply.purchaseDate, `quality ${supply.qualityRating || 0}/5`, getConversionLabel(row.quantityUsed, row.unit, supply)].filter(Boolean).join(" / "),
-        };
-      }),
+      autoCostRows(current.map((row) => (row.rowId === rowId ? { ...row, ...changes, isManualCost } : row))),
     );
-    setLocalMessage(matchedCount > 0 ? `Calculated ${matchedCount} ingredient cost${matchedCount === 1 ? "" : "s"} from Supplies.` : "No matching supply prices found. Brand, ingredient, and unit need to match.");
-    setLocalMessageTone(matchedCount > 0 ? "good" : "bad");
   }
 
   return (
@@ -1968,7 +1975,6 @@ function CostingForm({
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={applyAllSupplyPrices} type="button">Calculate all prices</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
             </div>
           </div>
@@ -1979,12 +1985,12 @@ function CostingForm({
                 <div className="rounded-md border border-[#ead9c8] bg-white p-3" key={row.rowId}>
                   <div className="grid gap-2 lg:grid-cols-[1fr_1fr_90px_80px_110px_1fr_70px]">
                     <input name={`ingredientId-${row.rowId}`} type="hidden" value={row.id} />
-                    <Input name={`ingredientBrand-${row.rowId}`} label="Brand" placeholder="Beryl's" value={row.brandName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, brandName: event.target.value } : item))} />
-                    <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
-                    <Input name={`quantityUsed-${row.rowId}`} label="Formula qty" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
-                    <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
-                    <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="Auto or manual" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
-                    <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Based on latest supply price / estimated" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
+                    <Input name={`ingredientBrand-${row.rowId}`} label="Brand" placeholder="Beryl's" value={row.brandName} onChange={(event) => updateIngredientRow(row.rowId, { brandName: event.target.value })} />
+                    <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" value={row.ingredientName} onChange={(event) => updateIngredientRow(row.rowId, { ingredientName: event.target.value })} />
+                    <Input name={`quantityUsed-${row.rowId}`} label="Formula qty" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => updateIngredientRow(row.rowId, { quantityUsed: Number(event.target.value || 0) })} />
+                    <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => updateIngredientRow(row.rowId, { unit: event.target.value })} />
+                    <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="Auto-filled" value={row.cost || ""} onChange={(event) => updateIngredientRow(row.rowId, { cost: Number(event.target.value || 0) }, true)} />
+                    <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Auto supply match or manual note" value={row.supplierNote} onChange={(event) => updateIngredientRow(row.rowId, { supplierNote: event.target.value }, true)} />
                     <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => {
                       setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId));
                       setLocalMessage("Ingredient row removed.");
