@@ -683,7 +683,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} saveCosting={saveCosting} />
+              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} saveCosting={saveCosting} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
                 <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} labState={labState} only="costing" />
@@ -1408,6 +1408,28 @@ function ProofDayChecklist() {
 type CostingIngredientRow = CostingEntry & { rowId: string };
 type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
 
+function normalizeSupplyText(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function getMatchingSupplies(supplies: SupplyEntry[], ingredientName: string, unit: string) {
+  return supplies
+    .filter((supply) => normalizeSupplyText(supply.ingredientName) === normalizeSupplyText(ingredientName) && normalizeSupplyText(supply.unit) === normalizeSupplyText(unit))
+    .sort((a, b) => {
+      const aUnitCost = a.packQuantity > 0 ? a.totalCost / a.packQuantity : Number.MAX_SAFE_INTEGER;
+      const bUnitCost = b.packQuantity > 0 ? b.totalCost / b.packQuantity : Number.MAX_SAFE_INTEGER;
+      return aUnitCost - bUnitCost;
+    });
+}
+
+function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number) {
+  if (supply.packQuantity <= 0 || supply.totalCost <= 0 || quantityUsed <= 0) {
+    return 0;
+  }
+
+  return (supply.totalCost / supply.packQuantity) * quantityUsed;
+}
+
 function SuppliesPage({
   deleteSupply,
   labState,
@@ -1482,12 +1504,14 @@ function CostingForm({
   costing,
   ingredientEntries,
   saveCosting,
+  supplies,
 }: {
   batches: ProductBatch[];
   cancelEdit: () => void;
   costing: CostingSummary | null;
   ingredientEntries: CostingEntry[];
   saveCosting: (formData: FormData) => void;
+  supplies: SupplyEntry[];
 }) {
   const [selectedProductId, setSelectedProductId] = useState(costing?.productId ?? products[0].id);
   const savedIngredients = costing ? ingredientEntries.filter((entry) => entry.productId === costing.productId) : [];
@@ -1553,6 +1577,20 @@ function CostingForm({
     }
   }
 
+  function applySupplyPrice(rowId: string, supply: SupplyEntry) {
+    setIngredientRows((current) =>
+      current.map((row) =>
+        row.rowId === rowId
+          ? {
+              ...row,
+              cost: Number(getSupplyUsedCost(supply, row.quantityUsed).toFixed(2)),
+              supplierNote: `${supply.supplierName} / ${supply.purchaseDate} / quality ${supply.qualityRating || 0}/5`,
+            }
+          : row,
+      ),
+    );
+  }
+
   return (
     <FormPanel title={costing ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
       <form action={saveCosting} className="grid gap-3">
@@ -1572,17 +1610,42 @@ function CostingForm({
             </div>
           </div>
           <div className="mt-3 grid gap-3">
-            {ingredientRows.map((row, index) => (
-              <div className="grid gap-2 lg:grid-cols-[1fr_90px_80px_110px_1fr_70px]" key={row.rowId}>
-                <input name={`ingredientId-${row.rowId}`} type="hidden" value={row.id} />
-                <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
-                <Input name={`quantityUsed-${row.rowId}`} label="Qty used" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
-                <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
-                <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="85" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
-                <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Based on latest supply price / estimated" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
-                <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
-              </div>
-            ))}
+            {ingredientRows.map((row, index) => {
+              const matches = getMatchingSupplies(supplies, row.ingredientName, row.unit).slice(0, 3);
+              return (
+                <div className="rounded-md border border-[#ead9c8] bg-white p-3" key={row.rowId}>
+                  <div className="grid gap-2 lg:grid-cols-[1fr_90px_80px_110px_1fr_70px]">
+                    <input name={`ingredientId-${row.rowId}`} type="hidden" value={row.id} />
+                    <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" value={row.ingredientName} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, ingredientName: event.target.value } : item))} />
+                    <Input name={`quantityUsed-${row.rowId}`} label="Qty used" type="number" step="0.01" placeholder="250" value={row.quantityUsed || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, quantityUsed: Number(event.target.value || 0) } : item))} />
+                    <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" value={row.unit} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, unit: event.target.value } : item))} />
+                    <Input name={`ingredientCost-${row.rowId}`} label="Used PHP" type="number" step="0.01" placeholder="85" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
+                    <Input name={`supplierNote-${row.rowId}`} label="Cost note" placeholder="Based on latest supply price / estimated" value={row.supplierNote} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, supplierNote: event.target.value } : item))} />
+                    <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+                  </div>
+                  <div className="mt-3 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">Matching supplies</p>
+                    {matches.length === 0 ? <p className="mt-2 text-sm text-[#6f5a4c]">No exact supply match yet. Ingredient name and unit must match Supplies.</p> : null}
+                    <div className="mt-2 grid gap-2">
+                      {matches.map((supply) => {
+                        const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
+                        const usedCost = getSupplyUsedCost(supply, row.quantityUsed);
+                        return (
+                          <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-2 text-sm md:grid-cols-[1fr_120px_110px]" key={supply.id}>
+                            <div className="text-[#5f4a3d]">
+                              <p className="font-semibold">{supply.supplierName}</p>
+                              <p>PHP {unitCost.toFixed(4)} / {supply.unit || "unit"} · quality {supply.qualityRating || 0}/5</p>
+                            </div>
+                            <p className="self-center font-semibold">Used: PHP {usedCost.toFixed(2)}</p>
+                            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => applySupplyPrice(row.rowId, supply)} type="button">Use price</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient total: PHP {ingredientTotal.toFixed(2)}</p>
         </div>
