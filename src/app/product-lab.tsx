@@ -1463,29 +1463,14 @@ function SupplyValuePicker({
   placeholder: string;
   value?: string;
 }) {
-  const [selectedValue, setSelectedValue] = useState(value && options.includes(value) ? value : value ? "__new" : "");
-  const showCustomInput = selectedValue === "__new";
-
-  if (options.length === 0) {
-    return <Input name={name} label={label} placeholder={placeholder} defaultValue={value} />;
-  }
-
+  const listId = `supply-${name}-options`;
   return (
-    <div className="grid gap-2">
-      <label className="grid gap-1 text-sm font-medium">
-        {label}
-        <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" value={selectedValue} onChange={(event) => setSelectedValue(event.target.value)}>
-          <option value="">Select saved {label.toLowerCase()}</option>
-          {options.map((option) => <option key={option} value={option}>{option}</option>)}
-          <option value="__new">Add new {label.toLowerCase()}</option>
-        </select>
-      </label>
-      {showCustomInput ? (
-        <Input name={name} label={`${label} value`} placeholder={placeholder} defaultValue={value && !options.includes(value) ? value : ""} />
-      ) : (
-        <input name={name} type="hidden" value={selectedValue} />
-      )}
-    </div>
+    <>
+      <Input name={name} label={`${label} (type or choose)`} placeholder={placeholder} defaultValue={value} list={listId} />
+      <datalist id={listId}>
+        {options.map((option) => <option key={option} value={option} />)}
+      </datalist>
+    </>
   );
 }
 
@@ -1521,8 +1506,8 @@ function SuppliesPage({
         <form action={saveSupply} className="grid gap-3" key={supply?.id ?? "new-supply"}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-3">
-            <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" defaultValue={supply?.ingredientName} />
             <SupplyValuePicker name="brandName" label="Brand" options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
+            <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" defaultValue={supply?.ingredientName} />
             <SupplyValuePicker name="supplierName" label="Supplier" options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
@@ -1562,10 +1547,10 @@ function SuppliesPage({
               <article className="grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_70px]" key={supply.id}>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h4 className="font-semibold">{supply.ingredientName}</h4>
                     <Tag tone="green">{brandLabel}</Tag>
                     <Tag tone="warm">{supplierLabel}</Tag>
                   </div>
+                  <h4 className="mt-2 font-semibold">{supply.ingredientName}</h4>
                   <p className="mt-1 text-sm text-[#6f5a4c]">Bought {supply.purchaseDate}</p>
                   {supply.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{supply.notes}</p> : null}
                 </div>
