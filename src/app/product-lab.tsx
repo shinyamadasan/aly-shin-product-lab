@@ -1087,7 +1087,43 @@ function BatchHistoryPage({
           <a className="inline-flex rounded-md bg-[#8f5632] px-3 py-2 text-sm font-semibold text-white" href="/proof-day">Start Proof Day</a>
         </div>
       </Panel>
+      <ProofBatchesPrintReport batches={labState.batches} />
     </section>
+  );
+}
+
+function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
+  return (
+    <div className="print-report">
+      <h1>Aly & Shin Proof Batch Records</h1>
+      <p>Generated {today}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Batch</th>
+            <th>Date</th>
+            <th>Formula</th>
+            <th>Yield</th>
+            <th>Decision</th>
+            <th>Learning / Next Test</th>
+          </tr>
+        </thead>
+        <tbody>
+          {batches.map((batch) => (
+            <tr key={batch.id}>
+              <td>{productName(batch.productId)}</td>
+              <td>{batch.batchVersion}</td>
+              <td>{batch.dateMade}</td>
+              <td>{formatBatchFormula(parseBatchIngredients(batch.ingredientsNotes)) || "No formula saved"}</td>
+              <td>{batch.usablePieces} sellable / {batch.imperfectPieces} reject</td>
+              <td>{batch.launchDecision}</td>
+              <td>{[batch.tasteNotes, batch.textureNotes, batch.wentWrong ? `Issue: ${batch.wentWrong}` : "", batch.improveNext ? `Next: ${batch.improveNext}` : ""].filter(Boolean).join(" / ")}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -1894,7 +1930,50 @@ function SuppliesPage({
           })}
         </div>
       </div>
+      <SuppliesPrintReport supplies={labState.supplies} />
     </section>
+  );
+}
+
+function SuppliesPrintReport({ supplies }: { supplies: SupplyEntry[] }) {
+  return (
+    <div className="print-report">
+      <h1>Aly & Shin Supply Purchase Log</h1>
+      <p>Generated {today}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Brand</th>
+            <th>Ingredient</th>
+            <th>Supplier</th>
+            <th>Date</th>
+            <th>Pack</th>
+            <th>Total PHP</th>
+            <th>Unit Cost</th>
+            <th>Quality</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {supplies.map((supply) => {
+            const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
+            return (
+              <tr key={supply.id}>
+                <td>{supply.brandName || "Brand not set"}</td>
+                <td>{supply.ingredientName}</td>
+                <td>{supply.supplierName || "Supplier not set"}</td>
+                <td>{supply.purchaseDate}</td>
+                <td>{supply.packQuantity}{supply.unit ? ` ${supply.unit}` : ""}</td>
+                <td>{supply.totalCost.toFixed(2)}</td>
+                <td>{unitCost.toFixed(4)} / {supply.unit || "unit"}</td>
+                <td>{supply.qualityRating || 0}/5</td>
+                <td>{supply.notes}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -2183,7 +2262,98 @@ function CostingForm({
           {costing ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
         </div>
       </form>
+      <CostingPrintReport
+        costPerPiece={costPerPiece}
+        costingYield={costingYield}
+        grossProfit={grossProfit}
+        ingredientRows={ingredientRows}
+        laborEstimate={laborEstimate}
+        margin={margin}
+        packagingCost={packagingCost}
+        productId={selectedProductId}
+        suggestedPrice={suggestedPrice}
+        totalBatchCost={totalBatchCost}
+        utilityRows={utilityRows}
+        utilityTotal={utilityTotal}
+        wasteAllowance={wasteAllowance}
+      />
     </FormPanel>
+  );
+}
+
+function CostingPrintReport({
+  costPerPiece,
+  costingYield,
+  grossProfit,
+  ingredientRows,
+  laborEstimate,
+  margin,
+  packagingCost,
+  productId,
+  suggestedPrice,
+  totalBatchCost,
+  utilityRows,
+  utilityTotal,
+  wasteAllowance,
+}: {
+  costPerPiece: number;
+  costingYield: number;
+  grossProfit: number;
+  ingredientRows: CostingIngredientRow[];
+  laborEstimate: number;
+  margin: number;
+  packagingCost: number;
+  productId: string;
+  suggestedPrice: number;
+  totalBatchCost: number;
+  utilityRows: CostingUtilityRow[];
+  utilityTotal: number;
+  wasteAllowance: number;
+}) {
+  return (
+    <div className="print-report">
+      <h1>Aly & Shin Costing Sheet</h1>
+      <p>{productName(productId)} / Generated {today}</p>
+
+      <h2>Summary</h2>
+      <table>
+        <tbody>
+          <tr><th>Batch cost</th><td>PHP {totalBatchCost.toFixed(2)}</td><th>Yield</th><td>{costingYield || 0} pieces/units</td></tr>
+          <tr><th>Cost per piece</th><td>PHP {costPerPiece.toFixed(2)}</td><th>Selling price</th><td>PHP {suggestedPrice.toFixed(2)}</td></tr>
+          <tr><th>Gross profit/unit</th><td>PHP {grossProfit.toFixed(2)}</td><th>Margin</th><td>{margin.toFixed(1)}%</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Ingredients</h2>
+      <table>
+        <thead>
+          <tr><th>Brand</th><th>Ingredient</th><th>Qty</th><th>Unit</th><th>Used PHP</th><th>Cost Note</th></tr>
+        </thead>
+        <tbody>
+          {ingredientRows.map((row) => (
+            <tr key={row.rowId}>
+              <td>{row.brandName}</td>
+              <td>{row.ingredientName}</td>
+              <td>{row.quantityUsed}</td>
+              <td>{row.unit}</td>
+              <td>{row.cost.toFixed(2)}</td>
+              <td>{row.supplierNote}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h2>Batch Costs</h2>
+      <table>
+        <tbody>
+          <tr><th>Packaging</th><td>PHP {packagingCost.toFixed(2)}</td></tr>
+          <tr><th>Labor / owner&apos;s wage</th><td>PHP {laborEstimate.toFixed(2)}</td></tr>
+          <tr><th>Utilities total</th><td>PHP {utilityTotal.toFixed(2)}</td></tr>
+          {utilityRows.map((row) => <tr key={row.rowId}><th>{row.name || "Utility"}</th><td>PHP {row.cost.toFixed(2)} {row.note ? `/ ${row.note}` : ""}</td></tr>)}
+          <tr><th>Waste allowance</th><td>PHP {wasteAllowance.toFixed(2)}</td></tr>
+        </tbody>
+      </table>
+    </div>
   );
 }
 
