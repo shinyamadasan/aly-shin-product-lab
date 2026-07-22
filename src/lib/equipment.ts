@@ -9,6 +9,7 @@ export function getEquipmentTotals(equipment: EquipmentEntry, cookingMinutes = R
 
   if (equipment.calculationMode === "gas-burn-rate") {
     const pricePerKg = equipment.tankSizeKg > 0 ? equipment.purchasePrice / equipment.tankSizeKg : 0;
+    const costPerMinute = (equipment.burnRateKgPerHour / 60) * pricePerKg;
     const kgUsed = (equipment.burnRateKgPerHour / 60) * cookingMinutes;
     const perBatch = kgUsed * pricePerKg;
     return {
@@ -21,6 +22,7 @@ export function getEquipmentTotals(equipment: EquipmentEntry, cookingMinutes = R
       maintenancePerBatch: 0,
       totalPerBatch: perBatch,
       pricePerKg,
+      costPerMinute,
       kgUsed,
     };
   }
@@ -37,6 +39,7 @@ export function getEquipmentTotals(equipment: EquipmentEntry, cookingMinutes = R
       maintenancePerBatch: 0,
       totalPerBatch: perBatch,
       pricePerKg: 0,
+      costPerMinute: 0,
       kgUsed: 0,
     };
   }
@@ -57,6 +60,7 @@ export function getEquipmentTotals(equipment: EquipmentEntry, cookingMinutes = R
     maintenancePerBatch,
     totalPerBatch: depreciationPerBatch + maintenancePerBatch,
     pricePerKg: 0,
+    costPerMinute: 0,
     kgUsed: 0,
   };
 }

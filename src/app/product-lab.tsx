@@ -2501,7 +2501,7 @@ function EquipmentPage({
   function downloadEquipment() {
     downloadCsv(
       "equipment.csv",
-      ["Name", "Brand", "Model", "Purchase price", "Residual %", "Useful life (yr)", "Batches/week", "Maintenance %", "Batches/unit", "Tank size kg", "Burn rate kg/hr", "Mode", `Depreciation/batch (at ${REFERENCE_COOKING_MINUTES}min if gas)`, "Maintenance/batch", "Total/batch", "Active", "Notes"],
+      ["Name", "Brand", "Model", "Purchase/refill price", "Residual %", "Useful life (yr)", "Batches/week", "Maintenance %", "Batches/unit", "Gas kg", "Gas use kg/hr", "Mode", "PHP/kg", "PHP/min", `Total/batch (at ${REFERENCE_COOKING_MINUTES}min if gas)`, "Active", "Notes"],
       labState.equipment.map((item) => {
         const totals = getEquipmentTotals(item);
         return [
@@ -2517,8 +2517,8 @@ function EquipmentPage({
           item.tankSizeKg,
           item.burnRateKgPerHour,
           item.calculationMode,
-          totals.depreciationPerBatch.toFixed(2),
-          totals.maintenancePerBatch.toFixed(2),
+          totals.pricePerKg.toFixed(2),
+          totals.costPerMinute.toFixed(4),
           totals.totalPerBatch.toFixed(2),
           item.isActive ? "Active" : "Inactive",
           item.notes,
@@ -2538,20 +2538,20 @@ function EquipmentPage({
         <form action={saveEquipment} className="grid gap-3" key={equipment?.id ?? "new-equipment"}>
           <input name="id" type="hidden" value={equipment?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-3">
-            <Input name="name" label="Equipment name" placeholder="Table Oven or 11kg LPG Tank" defaultValue={equipment?.name} />
-            <Input name="brand" label="Brand" placeholder="La Germania" defaultValue={equipment?.brand} />
-            <Input name="model" label="Model" placeholder="SL-100-10W" defaultValue={equipment?.model} />
+            <Input name="name" label={calculationMode === "gas-burn-rate" ? "Gas name" : "Equipment name"} placeholder={calculationMode === "gas-burn-rate" ? "Gas / LPG" : "Table Oven"} defaultValue={equipment?.name} />
+            <Input name="brand" label={calculationMode === "gas-burn-rate" ? "Gas supplier / brand" : "Brand"} placeholder={calculationMode === "gas-burn-rate" ? "Petron / Solane / local" : "La Germania"} defaultValue={equipment?.brand} />
+            <Input name="model" label={calculationMode === "gas-burn-rate" ? "Gas note" : "Model"} placeholder={calculationMode === "gas-burn-rate" ? "11kg refill" : "SL-100-10W"} defaultValue={equipment?.model} />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Input name="purchasePrice" label={calculationMode === "gas-burn-rate" ? "Tank price PHP" : "Purchase price PHP"} type="number" step="0.01" placeholder={calculationMode === "gas-burn-rate" ? "950" : "8500"} defaultValue={equipment?.purchasePrice || undefined} />
-            <Input name="purchaseDate" label="Purchase date" type="date" defaultValue={equipment?.purchaseDate ?? today} />
+            <Input name="purchasePrice" label={calculationMode === "gas-burn-rate" ? "Gas refill price PHP" : "Purchase price PHP"} type="number" step="0.01" placeholder={calculationMode === "gas-burn-rate" ? "950" : "8500"} defaultValue={equipment?.purchasePrice || undefined} helper={calculationMode === "gas-burn-rate" ? "Update this whenever gas price changes." : undefined} />
+            <Input name="purchaseDate" label={calculationMode === "gas-burn-rate" ? "Price date" : "Purchase date"} type="date" defaultValue={equipment?.purchaseDate ?? today} />
           </div>
           <label className="grid gap-1 text-sm font-medium">
             Calculation mode
             <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="calculationMode" onChange={(event) => setCalculationMode(event.target.value as EquipmentCalculationMode)} value={calculationMode}>
               <option value="depreciation">Standard depreciation + maintenance (ovens, mixers, durable equipment)</option>
               <option value="replacement-reserve">Simple constant: price ÷ batches per tank/unit (small tools, consumables)</option>
-              <option value="gas-burn-rate">Gas usage per minute: tank price ÷ kg × burn rate × cooking time (LPG-fired equipment)</option>
+              <option value="gas-burn-rate">Gas: refill price ÷ kg = cost per minute</option>
             </select>
           </label>
           {calculationMode === "depreciation" ? (
@@ -2581,8 +2581,8 @@ function EquipmentPage({
           {calculationMode === "gas-burn-rate" ? (
             <>
               <div className="grid gap-3 sm:grid-cols-2">
-                <Input name="tankSizeKg" label="Tank size (kg)" type="number" step="0.1" placeholder="11" defaultValue={equipment?.tankSizeKg || undefined} helper="Example: 11kg LPG tank." />
-                <Input name="burnRateKgPerHour" label="Typical LPG use (kg/hour)" type="number" step="0.01" placeholder="0.20" defaultValue={equipment?.burnRateKgPerHour || undefined} helper="Usually about 0.18-0.22 kg/hour for a table oven. Use the middle of the range if unsure." />
+                <Input name="tankSizeKg" label="Gas kg" type="number" step="0.1" placeholder="11" defaultValue={equipment?.tankSizeKg || undefined} helper="How many kg the refill/tank has." />
+                <Input name="burnRateKgPerHour" label="Gas use kg/hour" type="number" step="0.01" placeholder="0.20" defaultValue={equipment?.burnRateKgPerHour || undefined} helper="If unsure, start with 0.20 kg/hour for a table oven, then adjust from real use." />
               </div>
               <input name="residualValuePercent" type="hidden" value={equipment?.residualValuePercent ?? 0} />
               <input name="usefulLifeYears" type="hidden" value={equipment?.usefulLifeYears ?? 0} />
@@ -2607,7 +2607,7 @@ function EquipmentPage({
         <div className="space-y-2 text-sm leading-6 text-[#5f4a3d]">
           <p><strong>Standard depreciation mode</strong> (ovens, mixers): Depreciation/batch = (Purchase price − Residual value) ÷ (Batches/week × 52 × Useful life). Maintenance/batch = (Purchase price × Maintenance %) ÷ (Batches/week × 52).</p>
           <p><strong>Simple constant mode</strong> (small tools, consumables): Cost/batch = Purchase price ÷ Batches per tank/unit.</p>
-          <p><strong>Gas usage per minute</strong> (LPG-fired equipment): Cost/kg = Tank price ÷ Tank size. Cost/batch = (Burn rate kg/hour ÷ 60) × cooking minutes × Cost/kg. Example: PHP 950 ÷ 11kg ≈ PHP 86/kg; at 0.20 kg/hour and 60 minutes of baking, that&apos;s 0.20kg × PHP 86 ≈ PHP 17/batch. The list below shows the cost at {REFERENCE_COOKING_MINUTES} minutes as a reference — once assigned to a recipe in Costing, it uses that recipe&apos;s actual cooking time. Update the tank price here whenever gas price changes.</p>
+          <p><strong>Gas mode</strong>: PHP/kg = refill price ÷ gas kg. PHP/min = PHP/kg × gas use kg/hour ÷ 60. Recipe gas cost = PHP/min × cooking minutes. Update refill price whenever gas price changes.</p>
           <p>These are calculated live below from the fields on the left — never typed in manually. Assign equipment to a recipe from the Costing page&apos;s Equipment Usage section.</p>
         </div>
       </Panel>
@@ -2637,7 +2637,7 @@ function EquipmentPage({
                   <h4 className="mt-2 font-semibold">{item.brand ? `${item.brand} ` : ""}{item.name}{item.model ? ` (${item.model})` : ""}</h4>
                   <p className="mt-1 text-sm text-[#6f5a4c]">
                     {item.calculationMode === "gas-burn-rate"
-                      ? `PHP ${item.purchasePrice.toFixed(2)} / ${item.tankSizeKg}kg ≈ PHP ${totals.pricePerKg.toFixed(2)}/kg · ${item.burnRateKgPerHour}kg/hr · at ${REFERENCE_COOKING_MINUTES}min: ${totals.kgUsed.toFixed(2)}kg`
+                      ? `PHP ${item.purchasePrice.toFixed(2)} / ${item.tankSizeKg}kg = PHP ${totals.pricePerKg.toFixed(2)}/kg · PHP ${totals.costPerMinute.toFixed(4)}/min · at ${REFERENCE_COOKING_MINUTES}min: PHP ${totals.totalPerBatch.toFixed(2)}`
                       : item.calculationMode === "replacement-reserve"
                         ? `PHP ${item.purchasePrice.toFixed(2)} ÷ ${item.batchesPerUnit} batches`
                         : `PHP ${item.purchasePrice.toFixed(2)} · ${item.batchesPerWeek}/week · ${item.usefulLifeYears}yr life`}
@@ -2645,14 +2645,14 @@ function EquipmentPage({
                   {item.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{item.notes}</p> : null}
                 </div>
                 <div className="text-sm">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Depreciation (calc)</p>
-                  <p className="mt-1 font-semibold">PHP {totals.depreciationPerBatch.toFixed(2)}</p>
-                  <p className="text-[#6f5a4c]">per batch</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{item.calculationMode === "gas-burn-rate" ? "Gas PHP/kg" : "Depreciation (calc)"}</p>
+                  <p className="mt-1 font-semibold">PHP {item.calculationMode === "gas-burn-rate" ? totals.pricePerKg.toFixed(2) : totals.depreciationPerBatch.toFixed(2)}</p>
+                  <p className="text-[#6f5a4c]">{item.calculationMode === "gas-burn-rate" ? "per kg" : "per batch"}</p>
                 </div>
                 <div className="text-sm">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Maintenance (calc)</p>
-                  <p className="mt-1 font-semibold">PHP {totals.maintenancePerBatch.toFixed(2)}</p>
-                  <p className="text-[#6f5a4c]">per batch</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{item.calculationMode === "gas-burn-rate" ? "Gas PHP/min" : "Maintenance (calc)"}</p>
+                  <p className="mt-1 font-semibold">PHP {item.calculationMode === "gas-burn-rate" ? totals.costPerMinute.toFixed(4) : totals.maintenancePerBatch.toFixed(2)}</p>
+                  <p className="text-[#6f5a4c]">{item.calculationMode === "gas-burn-rate" ? "per minute" : "per batch"}</p>
                 </div>
                 <div className="text-sm">
                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Total (calc)</p>
@@ -2683,12 +2683,10 @@ function EquipmentPrintReport({ equipment }: { equipment: EquipmentEntry[] }) {
           <tr>
             <th>Equipment</th>
             <th>Purchase PHP</th>
-            <th>Residual %</th>
-            <th>Life (yr)</th>
-            <th>Batches/wk</th>
-            <th>Maint %</th>
-            <th>Depreciation/batch</th>
-            <th>Maintenance/batch</th>
+            <th>Gas kg</th>
+            <th>Gas PHP/kg</th>
+            <th>Gas PHP/min</th>
+            <th>Mode details</th>
             <th>Total/batch</th>
             <th>Status</th>
           </tr>
@@ -2700,12 +2698,10 @@ function EquipmentPrintReport({ equipment }: { equipment: EquipmentEntry[] }) {
               <tr key={item.id}>
                 <td>{item.brand ? `${item.brand} ` : ""}{item.name}{item.model ? ` (${item.model})` : ""}</td>
                 <td>{item.purchasePrice.toFixed(2)}</td>
-                <td>{item.residualValuePercent}%</td>
-                <td>{item.usefulLifeYears}</td>
-                <td>{item.batchesPerWeek}</td>
-                <td>{item.annualMaintenancePercent}%</td>
-                <td>{totals.depreciationPerBatch.toFixed(2)}</td>
-                <td>{totals.maintenancePerBatch.toFixed(2)}</td>
+                <td>{item.calculationMode === "gas-burn-rate" ? item.tankSizeKg : ""}</td>
+                <td>{item.calculationMode === "gas-burn-rate" ? totals.pricePerKg.toFixed(2) : ""}</td>
+                <td>{item.calculationMode === "gas-burn-rate" ? totals.costPerMinute.toFixed(4) : ""}</td>
+                <td>{item.calculationMode === "gas-burn-rate" ? `${item.burnRateKgPerHour}kg/hr` : item.calculationMode === "replacement-reserve" ? `${item.batchesPerUnit} batches/unit` : `${item.usefulLifeYears}yr / ${item.batchesPerWeek} batches/wk / ${item.annualMaintenancePercent}% maint`}</td>
                 <td>{totals.totalPerBatch.toFixed(2)}</td>
                 <td>{item.isActive ? "Active" : "Inactive"}</td>
               </tr>
