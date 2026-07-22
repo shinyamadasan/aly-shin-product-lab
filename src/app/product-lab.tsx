@@ -1859,6 +1859,7 @@ const emptyEquipmentScenarioOverride: EquipmentScenarioOverride = {
 };
 type ScenarioOverrides = {
   equipment: Record<string, EquipmentScenarioOverride>;
+  gasPct: number;
   ingredientPct: Record<string, number>;
   ingredientSupplyId: Record<string, string>;
   laborPct: number;
@@ -1868,6 +1869,7 @@ type ScenarioOverrides = {
 };
 const emptyScenarioOverrides: ScenarioOverrides = {
   equipment: {},
+  gasPct: 0,
   ingredientPct: {},
   ingredientSupplyId: {},
   laborPct: 0,
@@ -2630,6 +2632,7 @@ function ScenarioAnalysis({
   supplies,
   targetFoodCost,
   totalBatchCost,
+  utilityBuckets,
   utilityTotal,
   wasteAllowance,
 }: {
@@ -2645,6 +2648,7 @@ function ScenarioAnalysis({
   supplies: SupplyEntry[];
   targetFoodCost: number;
   totalBatchCost: number;
+  utilityBuckets: { electricity: number; gas: number; other: number; water: number };
   utilityTotal: number;
   wasteAllowance: number;
 }) {
@@ -2704,7 +2708,9 @@ function ScenarioAnalysis({
     return { ...allocation, scenarioAllocatedDepreciation: scenarioAllocation.allocatedDepreciation, scenarioAllocatedMaintenance: scenarioAllocation.allocatedMaintenance, scenarioAllocatedTotal: scenarioAllocation.allocatedTotal };
   });
   const scenarioEquipmentCost = scenarioEquipmentAllocations.reduce((total, allocation) => total + allocation.scenarioAllocatedTotal, 0);
-  const scenarioDirectCost = scenarioIngredientTotal + scenarioPackagingCost + scenarioLaborEstimate + utilityTotal + wasteAllowance;
+  const scenarioGasCost = utilityBuckets.gas * (1 + overrides.gasPct / 100);
+  const scenarioUtilityTotal = utilityTotal - utilityBuckets.gas + scenarioGasCost;
+  const scenarioDirectCost = scenarioIngredientTotal + scenarioPackagingCost + scenarioLaborEstimate + scenarioUtilityTotal + wasteAllowance;
   const scenarioTotalBatchCost = scenarioDirectCost + overheadCost + scenarioEquipmentCost;
   const scenarioYield = overrides.yieldOverride ?? costingYield;
   const scenarioCostPerPiece = scenarioYield > 0 ? scenarioTotalBatchCost / scenarioYield : 0;
@@ -2719,6 +2725,7 @@ function ScenarioAnalysis({
     Object.values(overrides.ingredientPct).some((pct) => pct) ||
     Object.keys(overrides.ingredientSupplyId).length > 0 ||
     Object.keys(overrides.equipment).length > 0 ||
+    overrides.gasPct !== 0 ||
     overrides.packagingPct !== 0 ||
     overrides.laborPct !== 0 ||
     overrides.sellingPriceOverride !== null ||
@@ -2729,7 +2736,7 @@ function ScenarioAnalysis({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-sm font-semibold">Scenario analysis</p>
-          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Test a price increase, a different supplier, a yield change, or a new selling price. Nothing here is saved until you enter it in the fields above.</p>
+          <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Test a price increase, an LPG price change, a different supplier, a yield change, or a new selling price. Nothing here is saved until you enter it in the fields above.</p>
         </div>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOverrides(emptyScenarioOverrides)} type="button">Reset scenario</button>
       </div>
@@ -2738,8 +2745,8 @@ function ScenarioAnalysis({
         {scenarioIngredientRows.map((row) => {
           const matches = getMatchingSupplies(supplies, "", row.ingredientName, row.unit);
           return (
-            <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_100px]" key={row.rowId}>
-              <p className="self-center text-sm text-[#5f4a3d]">{row.brandName ? `${row.brandName} ` : ""}{row.ingredientName || "Ingredient"}</p>
+            <div className="grid items-start gap-2 lg:grid-cols-[1fr_120px_1fr_100px]" key={row.rowId}>
+              <p className="mt-6 text-sm text-[#5f4a3d]">{row.brandName ? `${row.brandName} ` : ""}{row.ingredientName || "Ingredient"}</p>
               <Input label="Price change %" type="number" step="1" value={overrides.ingredientPct[row.rowId] || ""} onChange={(event) => updateIngredientPct(row.rowId, Number(event.target.value || 0))} />
               <label className="grid gap-1 text-sm font-medium">
                 Swap supplier
@@ -2750,13 +2757,14 @@ function ScenarioAnalysis({
                   ))}
                 </select>
               </label>
-              <p className="self-center text-sm font-semibold text-[#5f4a3d]">PHP {row.scenarioCost.toFixed(2)}</p>
+              <p className="mt-6 text-sm font-semibold text-[#5f4a3d]">PHP {row.scenarioCost.toFixed(2)}</p>
             </div>
           );
         })}
       </div>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-4">
+      <div className="mt-3 grid gap-3 sm:grid-cols-5">
+        <Input helper={`Current: PHP ${utilityBuckets.gas.toFixed(2)}`} label="Gas change %" type="number" step="1" value={overrides.gasPct || ""} onChange={(event) => setOverrides((current) => ({ ...current, gasPct: Number(event.target.value || 0) }))} />
         <Input label="Packaging change %" type="number" step="1" value={overrides.packagingPct || ""} onChange={(event) => setOverrides((current) => ({ ...current, packagingPct: Number(event.target.value || 0) }))} />
         <Input label="Labor change %" type="number" step="1" value={overrides.laborPct || ""} onChange={(event) => setOverrides((current) => ({ ...current, laborPct: Number(event.target.value || 0) }))} />
         <Input label="New yield" type="number" step="1" placeholder={String(costingYield || 0)} value={overrides.yieldOverride ?? ""} onChange={(event) => setOverrides((current) => ({ ...current, yieldOverride: event.target.value === "" ? null : Number(event.target.value) }))} />
@@ -3182,6 +3190,7 @@ function CostingForm({
           supplies={supplies}
           targetFoodCost={targetFoodCost}
           totalBatchCost={totalBatchCost}
+          utilityBuckets={utilityBuckets}
           utilityTotal={utilityTotal}
           wasteAllowance={wasteAllowance}
         />
@@ -3472,7 +3481,7 @@ function EquipmentUsageSection({
       {activeEquipment.length === 0 ? <p className="mt-3 text-sm text-[#6f5a4c]">No active equipment yet. Add equipment on the Equipment page first.</p> : null}
       <div className="mt-3 grid gap-2">
         {equipmentAllocations.map((allocation) => (
-          <div className="grid gap-2 lg:grid-cols-[1fr_100px_120px_140px_70px]" key={allocation.row.rowId}>
+          <div className="grid items-start gap-2 lg:grid-cols-[1fr_100px_120px_140px_70px]" key={allocation.row.rowId}>
             <label className="grid gap-1 text-sm font-medium">
               Equipment
               <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name={`equipmentUsageEquipmentId-${allocation.row.rowId}`} onChange={(event) => updateUsageRow(allocation.row.rowId, { equipmentId: event.target.value })} value={allocation.row.equipmentId}>
@@ -3482,7 +3491,7 @@ function EquipmentUsageSection({
             </label>
             <Input label="Usage %" name={`equipmentUsageUsagePercent-${allocation.row.rowId}`} type="number" step="1" value={allocation.row.usagePercent || ""} onChange={(event) => updateUsageRow(allocation.row.rowId, { usagePercent: Number(event.target.value || 0) })} />
             <Input label="Shared batches" min="1" name={`equipmentUsageSharedBatches-${allocation.row.rowId}`} step="1" type="number" value={allocation.row.sharedBatches || ""} onChange={(event) => updateUsageRow(allocation.row.rowId, { sharedBatches: Number(event.target.value || 1) })} />
-            <div className="self-center text-sm">
+            <div className="mt-6 text-sm">
               <p className="font-semibold text-[#5f4a3d]">PHP {allocation.allocatedTotal.toFixed(2)}</p>
               <p className="text-xs text-[#6f5a4c]">dep {allocation.allocatedDepreciation.toFixed(2)} + maint {allocation.allocatedMaintenance.toFixed(2)}</p>
             </div>
