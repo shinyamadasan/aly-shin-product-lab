@@ -1,0 +1,1128 @@
+"use client";
+
+import Image from "next/image";
+import { useEffect, useMemo, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
+import {
+  Beaker,
+  BookOpenText,
+  CalendarDays,
+  CheckCircle2,
+  ClipboardCheck,
+  FlaskConical,
+  NotebookPen,
+  PackageCheck,
+  ShieldAlert,
+  Sparkles,
+  Star,
+} from "lucide-react";
+import { products, readinessRules, recentJournal } from "@/lib/sample-data";
+import { getProductPriority, getProductStats, getReadinessScore } from "@/lib/readiness";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import type { ContentJournalEntry, CostingEntry, CostingSummary, ProductBatch, TastingFeedback } from "@/lib/product-lab-types";
+import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
+import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
+import { AppShell } from "@/components/app-shell";
+import { MediaChecklist, ProductSelect } from "@/components/product-controls";
+import { RecentEntries } from "@/components/recent-entries";
+
+export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
+  const [labState, setLabState] = useState<LabState>(() => {
+    if (typeof window === "undefined") {
+      return emptyState;
+    }
+
+    const saved = window.localStorage.getItem(storageKey);
+    return saved ? (JSON.parse(saved) as LabState) : emptyState;
+  });
+  const [session, setSession] = useState<Session | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(isSupabaseConfigured);
+  const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
+  const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
+  const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
+  const [editingTasting, setEditingTasting] = useState<TastingFeedback | null>(null);
+  const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setIsAuthLoading(false);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+    });
+
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!supabase || !session) {
+      return;
+    }
+
+    loadSupabaseData();
+  }, [session]);
+
+  useEffect(() => {
+    if (supabase) {
+      return;
+    }
+
+    window.localStorage.setItem(storageKey, JSON.stringify(labState));
+  }, [labState]);
+
+  async function loadSupabaseData() {
+    if (!supabase) {
+      return;
+    }
+
+    const [batchResult, costingEntryResult, costingResult, tastingResult, journalResult] = await Promise.all([
+      supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
+      supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
+      supabase.from("costing_summaries").select("*").order("created_at", { ascending: false }),
+      supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
+      supabase.from("content_journal").select("*").order("created_at", { ascending: false }),
+    ]);
+
+    if (batchResult.error || costingEntryResult.error || costingResult.error || tastingResult.error || journalResult.error) {
+      const error =
+        batchResult.error?.message ||
+        costingEntryResult.error?.message ||
+        costingResult.error?.message ||
+        tastingResult.error?.message ||
+        journalResult.error?.message;
+      setMessage(`Could not load Supabase data: ${error}`);
+      setMessageTone("bad");
+      return;
+    }
+
+    setLabState({
+      batches: (batchResult.data ?? []).map((row) => ({
+        id: row.id,
+        productId: row.product_id,
+        batchVersion: row.batch_version,
+        dateMade: row.date_made,
+        prepTimeMinutes: row.prep_time_minutes ?? 0,
+        bakeTimeMinutes: row.bake_time_minutes ?? 0,
+        coolingTimeMinutes: row.cooling_time_minutes ?? 0,
+        usablePieces: row.usable_pieces ?? 0,
+        imperfectPieces: row.imperfect_pieces ?? 0,
+        stressLevel: row.stress_level ?? 3,
+        tasteNotes: row.taste_notes ?? "",
+        textureNotes: row.texture_notes ?? "",
+        wentWrong: row.went_wrong ?? "",
+        improveNext: row.improve_next ?? "",
+        launchDecision: row.launch_decision,
+      })),
+      costingEntries: (costingEntryResult.data ?? []).map((row) => ({
+        id: row.id,
+        productId: row.product_id,
+        ingredientName: row.ingredient_name,
+        quantityUsed: Number(row.quantity_used ?? 0),
+        unit: row.unit ?? "",
+        cost: Number(row.cost ?? 0),
+        supplierNote: row.supplier_note ?? "",
+      })),
+      costings: (costingResult.data ?? []).map((row) => ({
+        id: row.id,
+        productId: row.product_id,
+        ingredientCost: Number(row.ingredient_cost ?? 0),
+        packagingCost: Number(row.packaging_cost ?? 0),
+        laborEstimate: Number(row.labor_estimate ?? 0),
+        waterCost: Number(row.water_cost ?? row.utilities_estimate ?? 0),
+        gasCost: Number(row.gas_cost ?? 0),
+        ovenElectricCost: Number(row.oven_electric_cost ?? 0),
+        refrigerationCost: Number(row.refrigeration_cost ?? 0),
+        coffeeEquipmentCost: Number(row.coffee_equipment_cost ?? 0),
+        wasteAllowance: Number(row.waste_allowance ?? 0),
+        suggestedPrice: Number(row.suggested_price ?? 0),
+        notes: row.notes ?? "",
+      })),
+      tastings: (tastingResult.data ?? []).map((row) => ({
+        id: row.id,
+        productId: row.product_id,
+        tasterName: row.taster_name,
+        rating: row.rating ?? 0,
+        liked: row.liked ?? "",
+        improve: row.improve ?? "",
+        wouldBuy: row.would_buy,
+        willingToPay: Number(row.willing_to_pay ?? 0),
+        wouldReorder: row.would_reorder,
+        packagingReaction: row.packaging_reaction ?? "",
+      })),
+      journal: (journalResult.data ?? []).map((row) => ({
+        id: row.id,
+        productId: row.product_id,
+        entryDate: row.entry_date,
+        whatWasMade: row.what_was_made ?? "",
+        mediaCaptured: row.media_captured ?? "",
+        lessonLearned: row.lesson_learned ?? "",
+        postIdeas: row.post_ideas ?? "",
+        nextAction: row.next_action ?? "",
+      })),
+    });
+  }
+
+  async function signIn(formData: FormData) {
+    if (!supabase) {
+      return;
+    }
+
+    const email = String(formData.get("email"));
+    const password = String(formData.get("password"));
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setMessage(error ? error.message : "");
+    setMessageTone(error ? "bad" : "good");
+  }
+
+  async function signOut() {
+    await supabase?.auth.signOut();
+  }
+
+  const metrics = useMemo(() => {
+    const launchCandidates = products.filter((product) => {
+      const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
+      return readiness.percent >= 100;
+    }).length;
+
+    return {
+      productCount: products.length,
+      launchCandidates,
+      needsProof: products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings).proofBatches === 0).length,
+      tastingEntries: labState.tastings.length,
+    };
+  }, [labState]);
+
+  async function saveBatch(formData: FormData) {
+    const batchId = String(formData.get("id") || "");
+    const batch: ProductBatch = {
+      id: batchId || crypto.randomUUID(),
+      productId: String(formData.get("productId")),
+      batchVersion: String(formData.get("batchVersion") || "V1"),
+      dateMade: String(formData.get("dateMade") || today),
+      prepTimeMinutes: Number(formData.get("prepTimeMinutes") || 0),
+      bakeTimeMinutes: Number(formData.get("bakeTimeMinutes") || 0),
+      coolingTimeMinutes: Number(formData.get("coolingTimeMinutes") || 0),
+      usablePieces: Number(formData.get("usablePieces") || 0),
+      imperfectPieces: Number(formData.get("imperfectPieces") || 0),
+      stressLevel: Number(formData.get("stressLevel") || 3),
+      tasteNotes: String(formData.get("tasteNotes") || ""),
+      textureNotes: String(formData.get("textureNotes") || ""),
+      wentWrong: String(formData.get("wentWrong") || ""),
+      improveNext: String(formData.get("improveNext") || ""),
+      launchDecision: formData.get("launchDecision") as ProductBatch["launchDecision"],
+    };
+    if (supabase && session) {
+      const payload = {
+        product_id: batch.productId,
+        batch_version: batch.batchVersion,
+        date_made: batch.dateMade,
+        prep_time_minutes: batch.prepTimeMinutes,
+        bake_time_minutes: batch.bakeTimeMinutes,
+        cooling_time_minutes: batch.coolingTimeMinutes,
+        usable_pieces: batch.usablePieces,
+        imperfect_pieces: batch.imperfectPieces,
+        stress_level: batch.stressLevel,
+        taste_notes: batch.tasteNotes,
+        texture_notes: batch.textureNotes,
+        went_wrong: batch.wentWrong,
+        improve_next: batch.improveNext,
+        launch_decision: batch.launchDecision,
+      };
+      const query = batchId
+        ? supabase.from("product_batches").update(payload).eq("id", batchId)
+        : supabase.from("product_batches").insert(payload);
+      const { error } = await query;
+      setMessage(error ? `Batch save failed: ${error.message}` : batchId ? "Batch updated." : "Batch saved.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        setEditingBatch(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({
+      ...current,
+      batches: batchId ? current.batches.map((item) => (item.id === batchId ? batch : item)) : [batch, ...current.batches],
+    }));
+    setEditingBatch(null);
+    setMessage(batchId ? "Batch updated locally." : "Batch saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteBatch(batchId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("product_batches").delete().eq("id", batchId);
+      setMessage(error ? `Batch delete failed: ${error.message}` : "Batch deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingBatch?.id === batchId) {
+        setEditingBatch(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({ ...current, batches: current.batches.filter((batch) => batch.id !== batchId) }));
+    if (editingBatch?.id === batchId) {
+      setEditingBatch(null);
+    }
+    setMessage("Batch deleted locally.");
+    setMessageTone("good");
+  }
+
+  async function saveCosting(formData: FormData) {
+    const costingId = String(formData.get("id") || "");
+    const productId = String(formData.get("productId"));
+    const ingredientRowIds = String(formData.get("ingredientRowIds") || "")
+      .split(",")
+      .filter(Boolean);
+    const utilityRowIds = String(formData.get("utilityRowIds") || "")
+      .split(",")
+      .filter(Boolean);
+    const ingredientRows: CostingEntry[] = ingredientRowIds
+      .map((rowId) => ({
+        id: String(formData.get(`ingredientId-${rowId}`) || crypto.randomUUID()),
+        productId,
+        ingredientName: String(formData.get(`ingredientName-${rowId}`) || "").trim(),
+        quantityUsed: Number(formData.get(`quantityUsed-${rowId}`) || 0),
+        unit: String(formData.get(`unit-${rowId}`) || ""),
+        cost: Number(formData.get(`ingredientCost-${rowId}`) || 0),
+        supplierNote: String(formData.get(`supplierNote-${rowId}`) || ""),
+      }))
+      .filter((row) => row.ingredientName || row.cost > 0);
+    const utilityRows = utilityRowIds
+      .map((rowId) => ({
+        name: String(formData.get(`utilityName-${rowId}`) || "").trim(),
+        cost: Number(formData.get(`utilityCost-${rowId}`) || 0),
+        note: String(formData.get(`utilityNote-${rowId}`) || "").trim(),
+      }))
+      .filter((row) => row.name || row.cost > 0);
+    const utilityBuckets = utilityRows.reduce(
+      (buckets, row) => {
+        const label = row.name.toLowerCase();
+        if (label.includes("water")) {
+          buckets.waterCost += row.cost;
+        } else if (label.includes("gas")) {
+          buckets.gasCost += row.cost;
+        } else if (label.includes("coffee") || label.includes("espresso") || label.includes("grinder") || label.includes("blender")) {
+          buckets.coffeeEquipmentCost += row.cost;
+        } else if (label.includes("refrig") || label.includes("chill") || label.includes("freezer")) {
+          buckets.refrigerationCost += row.cost;
+        } else {
+          buckets.ovenElectricCost += row.cost;
+        }
+        return buckets;
+      },
+      { coffeeEquipmentCost: 0, gasCost: 0, ovenElectricCost: 0, refrigerationCost: 0, waterCost: 0 },
+    );
+    const ingredientCost = ingredientRows.reduce((total, row) => total + row.cost, 0);
+    const utilityNotes = utilityRows.length
+      ? `Utilities: ${utilityRows.map((row) => `${row.name || "Unnamed"} ${row.cost}${row.note ? ` (${row.note})` : ""}`).join("; ")}`
+      : "";
+    const baseNotes = String(formData.get("notes") || "").trim();
+    const costing: CostingSummary = {
+      id: costingId || crypto.randomUUID(),
+      productId,
+      ingredientCost,
+      packagingCost: Number(formData.get("packagingCost") || 0),
+      laborEstimate: Number(formData.get("laborEstimate") || 0),
+      waterCost: utilityBuckets.waterCost,
+      gasCost: utilityBuckets.gasCost,
+      ovenElectricCost: utilityBuckets.ovenElectricCost,
+      refrigerationCost: utilityBuckets.refrigerationCost,
+      coffeeEquipmentCost: utilityBuckets.coffeeEquipmentCost,
+      wasteAllowance: Number(formData.get("wasteAllowance") || 0),
+      suggestedPrice: Number(formData.get("suggestedPrice") || 0),
+      notes: [baseNotes, utilityNotes].filter(Boolean).join("\n"),
+    };
+    if (supabase && session) {
+      const { error: deleteError } = await supabase.from("costing_entries").delete().eq("product_id", productId);
+      if (deleteError) {
+        setMessage(`Costing save failed: ${deleteError.message}`);
+        setMessageTone("bad");
+        return;
+      }
+
+      if (ingredientRows.length > 0) {
+        const { error: ingredientError } = await supabase.from("costing_entries").insert(
+          ingredientRows.map((row) => ({
+            product_id: row.productId,
+            ingredient_name: row.ingredientName,
+            quantity_used: row.quantityUsed,
+            unit: row.unit,
+            cost: row.cost,
+            supplier_note: row.supplierNote,
+          })),
+        );
+
+        if (ingredientError) {
+          setMessage(`Costing save failed: ${ingredientError.message}`);
+          setMessageTone("bad");
+          return;
+        }
+      }
+
+      const payload = {
+        product_id: costing.productId,
+        ingredient_cost: costing.ingredientCost,
+        packaging_cost: costing.packagingCost,
+        labor_estimate: costing.laborEstimate,
+        utilities_estimate:
+          costing.waterCost +
+          costing.gasCost +
+          costing.ovenElectricCost +
+          costing.refrigerationCost +
+          costing.coffeeEquipmentCost,
+        water_cost: costing.waterCost,
+        gas_cost: costing.gasCost,
+        oven_electric_cost: costing.ovenElectricCost,
+        refrigeration_cost: costing.refrigerationCost,
+        coffee_equipment_cost: costing.coffeeEquipmentCost,
+        waste_allowance: costing.wasteAllowance,
+        suggested_price: costing.suggestedPrice,
+        notes: costing.notes,
+      };
+      const query = costingId
+        ? supabase.from("costing_summaries").update(payload).eq("id", costingId)
+        : supabase.from("costing_summaries").insert(payload);
+      const { error } = await query;
+      setMessage(error ? `Costing save failed: ${error.message}` : costingId ? "Costing updated." : "Costing saved.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        setEditingCosting(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({
+      ...current,
+      costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => entry.productId !== productId)],
+      costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => entry.productId !== productId)],
+    }));
+    setEditingCosting(null);
+    setMessage(costingId ? "Costing updated locally." : "Costing saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteCosting(costing: CostingSummary) {
+    if (supabase && session) {
+      const { error: entryError } = await supabase.from("costing_entries").delete().eq("product_id", costing.productId);
+      if (entryError) {
+        setMessage(`Costing delete failed: ${entryError.message}`);
+        setMessageTone("bad");
+        return;
+      }
+      const { error } = await supabase.from("costing_summaries").delete().eq("id", costing.id);
+      setMessage(error ? `Costing delete failed: ${error.message}` : "Costing deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingCosting?.id === costing.id) {
+        setEditingCosting(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({
+      ...current,
+      costingEntries: current.costingEntries.filter((entry) => entry.productId !== costing.productId),
+      costings: current.costings.filter((entry) => entry.id !== costing.id),
+    }));
+    if (editingCosting?.id === costing.id) {
+      setEditingCosting(null);
+    }
+    setMessage("Costing deleted locally.");
+    setMessageTone("good");
+  }
+
+  async function saveTasting(formData: FormData) {
+    const tastingId = String(formData.get("id") || "");
+    const tasting: TastingFeedback = {
+      id: tastingId || crypto.randomUUID(),
+      productId: String(formData.get("productId")),
+      tasterName: String(formData.get("tasterName") || "Unnamed taster"),
+      rating: Number(formData.get("rating") || 0),
+      liked: String(formData.get("liked") || ""),
+      improve: String(formData.get("improve") || ""),
+      wouldBuy: formData.get("wouldBuy") as TastingFeedback["wouldBuy"],
+      willingToPay: Number(formData.get("willingToPay") || 0),
+      wouldReorder: formData.get("wouldReorder") as TastingFeedback["wouldReorder"],
+      packagingReaction: String(formData.get("packagingReaction") || ""),
+    };
+    if (supabase && session) {
+      const payload = {
+        product_id: tasting.productId,
+        taster_name: tasting.tasterName,
+        rating: tasting.rating,
+        liked: tasting.liked,
+        improve: tasting.improve,
+        would_buy: tasting.wouldBuy,
+        willing_to_pay: tasting.willingToPay,
+        would_reorder: tasting.wouldReorder,
+        packaging_reaction: tasting.packagingReaction,
+      };
+      const query = tastingId
+        ? supabase.from("tasting_feedback").update(payload).eq("id", tastingId)
+        : supabase.from("tasting_feedback").insert(payload);
+      const { error } = await query;
+      setMessage(error ? `Feedback save failed: ${error.message}` : tastingId ? "Feedback updated." : "Feedback saved.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        setEditingTasting(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({
+      ...current,
+      tastings: tastingId ? current.tastings.map((entry) => (entry.id === tastingId ? tasting : entry)) : [tasting, ...current.tastings],
+    }));
+    setEditingTasting(null);
+    setMessage(tastingId ? "Feedback updated locally." : "Feedback saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteTasting(tastingId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("tasting_feedback").delete().eq("id", tastingId);
+      setMessage(error ? `Feedback delete failed: ${error.message}` : "Feedback deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingTasting?.id === tastingId) {
+        setEditingTasting(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({ ...current, tastings: current.tastings.filter((entry) => entry.id !== tastingId) }));
+    if (editingTasting?.id === tastingId) {
+      setEditingTasting(null);
+    }
+    setMessage("Feedback deleted locally.");
+    setMessageTone("good");
+  }
+
+  async function saveJournal(formData: FormData) {
+    const journalId = String(formData.get("id") || "");
+    const mediaCaptured = formData.getAll("mediaCaptured").join(", ");
+    const mediaLink = String(formData.get("mediaLink") || "").trim();
+    const contentAngle = String(formData.get("contentAngle") || "");
+    const entry: ContentJournalEntry = {
+      id: journalId || crypto.randomUUID(),
+      productId: String(formData.get("productId")),
+      entryDate: String(formData.get("entryDate") || today),
+      whatWasMade: String(formData.get("whatWasMade") || ""),
+      mediaCaptured: mediaLink ? `${mediaCaptured}. Link: ${mediaLink}` : mediaCaptured,
+      lessonLearned: String(formData.get("lessonLearned") || ""),
+      postIdeas: contentAngle,
+      nextAction: String(formData.get("nextAction") || ""),
+    };
+    if (supabase && session) {
+      const payload = {
+        product_id: entry.productId,
+        entry_date: entry.entryDate,
+        what_was_made: entry.whatWasMade,
+        media_captured: entry.mediaCaptured,
+        lesson_learned: entry.lessonLearned,
+        post_ideas: entry.postIdeas,
+        next_action: entry.nextAction,
+      };
+      const query = journalId
+        ? supabase.from("content_journal").update(payload).eq("id", journalId)
+        : supabase.from("content_journal").insert(payload);
+      const { error } = await query;
+      setMessage(error ? `Journal save failed: ${error.message}` : journalId ? "Journal updated." : "Journal saved.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        setEditingJournal(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({
+      ...current,
+      journal: journalId ? current.journal.map((item) => (item.id === journalId ? entry : item)) : [entry, ...current.journal],
+    }));
+    setEditingJournal(null);
+    setMessage(journalId ? "Journal updated locally." : "Journal saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteJournal(journalId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("content_journal").delete().eq("id", journalId);
+      setMessage(error ? `Journal delete failed: ${error.message}` : "Journal deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingJournal?.id === journalId) {
+        setEditingJournal(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({ ...current, journal: current.journal.filter((entry) => entry.id !== journalId) }));
+    if (editingJournal?.id === journalId) {
+      setEditingJournal(null);
+    }
+    setMessage("Journal deleted locally.");
+    setMessageTone("good");
+  }
+
+  if (isSupabaseConfigured && isAuthLoading) {
+    return <LoadingScreen />;
+  }
+
+  if (isSupabaseConfigured && !session) {
+    return <LoginScreen message={message} signIn={signIn} />;
+  }
+
+  return (
+    <AppShell view={view}>
+          {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
+
+          {view === "products" ? (
+            <section className="grid gap-5 xl:grid-cols-[1fr_360px]" id="products">
+              <ProductReadiness labState={labState} />
+              <DecisionSidebar />
+            </section>
+          ) : null}
+
+          {view === "batches" ? (
+            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day">
+              <BatchForm batch={editingBatch} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} />
+              <div className="space-y-5">
+                <ProofDayChecklist />
+                <ProofBatchGuide />
+                <RecentEntries deleteBatch={deleteBatch} editBatch={setEditingBatch} labState={labState} only="batches" />
+              </div>
+            </section>
+          ) : null}
+
+          {view === "costing" ? (
+            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
+              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} saveCosting={saveCosting} />
+              <div className="space-y-5">
+                <CostingGuide />
+                <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} labState={labState} only="costing" />
+              </div>
+            </section>
+          ) : null}
+
+          {view === "tasting" ? (
+            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="tasting">
+              <TastingForm cancelEdit={() => setEditingTasting(null)} saveTasting={saveTasting} tasting={editingTasting} />
+              <RecentEntries deleteTasting={deleteTasting} editTasting={setEditingTasting} labState={labState} only="tasting" />
+            </section>
+          ) : null}
+
+          {view === "journal" ? (
+            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
+              <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
+              <div className="space-y-5">
+                <ContentJournalGuide />
+                <RecentEntries deleteJournal={deleteJournal} editJournal={setEditingJournal} labState={labState} only="journal" />
+              </div>
+            </section>
+          ) : null}
+    </AppShell>
+  );
+}
+
+function DashboardPage({
+  metrics,
+  labState,
+  message,
+  messageTone,
+  session,
+  signOut,
+}: {
+  metrics: { productCount: number; launchCandidates: number; needsProof: number; tastingEntries: number };
+  labState: LabState;
+  message: string;
+  messageTone: "good" | "bad" | "info";
+  session: Session | null;
+  signOut: () => void;
+}) {
+  return (
+    <>
+      <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr]" id="dashboard">
+            <div className="rounded-lg border border-[#e1d4c4] bg-[#fffaf3] p-5">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <MetricCard icon={<Beaker size={20} />} label="Products" value={metrics.productCount} detail="Starter candidates" />
+                <MetricCard icon={<ClipboardCheck size={20} />} label="Launch-ready" value={metrics.launchCandidates} detail="Target after proof" />
+                <MetricCard icon={<FlaskConical size={20} />} label="Need batches" value={metrics.needsProof} detail="Proof logs missing" />
+                <MetricCard icon={<Star size={20} />} label="Taste entries" value={metrics.tastingEntries} detail="Target: 5 each" />
+              </div>
+              <div className="mt-5 rounded-md border border-[#e7d8c9] bg-white p-4">
+                <div className="flex items-start gap-3">
+                  <span className="rounded-md bg-[#f8ead9] p-2 text-[#9a5b2f]"><CalendarDays size={20} /></span>
+                  <div>
+                    <h3 className="font-semibold">Next Product Proof Day</h3>
+                    <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5a4c]">
+                      Test Brownies, Revel Bars, and Cookies. Capture yield, timing, texture, packaging behavior, freshness after 12/24 hours, and willingness to pay.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <aside className="rounded-lg border border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef]">
+              <div className="flex items-center gap-2 text-[#ddb778]"><ShieldAlert size={20} /><p className="text-sm font-semibold uppercase tracking-[0.16em]">Guardrails</p></div>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <h3 className="text-xl font-semibold">Coffee is not a hero yet.</h3>
+                {session ? <button className="text-sm text-[#ddb778] underline" onClick={signOut}>Sign out</button> : null}
+              </div>
+              <p className="mt-3 text-sm leading-6 text-[#e6d3c4]">Bottled coffee stays as an add-on test until it proves freshness, cold delivery, margin, and premium feel.</p>
+              {message ? <MessageBox message={message} tone={messageTone} dark /> : null}
+            </aside>
+          </section>
+
+          <section className="grid gap-5 xl:grid-cols-[1fr_360px]" id="products">
+            <ProductReadiness labState={labState} />
+            <DecisionSidebar />
+          </section>
+    </>
+  );
+}
+
+function ProductReadiness({ labState }: { labState: LabState }) {
+  return (
+    <div className="rounded-lg border border-[#e1d4c4] bg-white">
+      <div className="flex flex-col gap-3 border-b border-[#eaded2] p-5 sm:flex-row sm:items-end sm:justify-between">
+        <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Product decisions</p><h3 className="mt-1 text-xl font-semibold">Launch readiness by product</h3></div>
+        <p className="max-w-md text-sm leading-6 text-[#6f5a4c]">Saved in this browser for now. Supabase will make this shared for both users.</p>
+      </div>
+      <div className="divide-y divide-[#f0e4d8]">
+        {products.map((product) => {
+          const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
+          const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+          return (
+            <article className="grid gap-4 p-4 md:grid-cols-[92px_1fr_170px]" key={product.id}>
+              <div className="relative h-24 overflow-hidden rounded-md border border-[#eaded2] bg-[#fbf2e8]"><Image src={product.image} alt={product.name} fill sizes="92px" className="object-contain p-2" /></div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{product.name}</h4><Tag tone="warm">{product.role}</Tag><Tag tone={product.category === "Coffee" ? "danger" : "green"}>{getProductPriority(product)}</Tag></div>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-[#6f5a4c]">{product.description}</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-4"><StatusPill label={`${stats.proofBatches} batches`} done={stats.proofBatches > 0} /><StatusPill label="Costing" done={stats.costingDone} /><StatusPill label={`${stats.tastingCount}/5 tastings`} done={stats.tastingCount >= 5} /><StatusPill label={`Decision: ${stats.latestDecision}`} done={stats.latestDecision === "launch"} /></div>
+              </div>
+              <div className="self-center">
+                <div className="mb-2 flex items-center justify-between text-sm"><span className="font-medium">Readiness</span><span>{readiness.percent}%</span></div>
+                <div className="h-2 rounded-full bg-[#f0e3d6]"><div className="h-2 rounded-full bg-[#8f5632]" style={{ width: `${readiness.percent}%` }} /></div>
+                <p className="mt-3 text-xs text-[#6f5a4c]">{readiness.passed}/{readiness.total} gates passed</p>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DecisionSidebar() {
+  return (
+    <div className="space-y-5">
+      <Panel title="Launch gates" icon={<PackageCheck size={18} />}>
+        <ul className="space-y-3 text-sm text-[#5f4a3d]">
+          {readinessRules.map((rule) => (
+            <li className="flex gap-2" key={rule}>
+              <CheckCircle2 className="mt-0.5 shrink-0 text-[#9a5b2f]" size={16} />
+              <span>{rule}</span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
+      <Panel title="Journal signals" icon={<NotebookPen size={18} />}>
+        <div className="space-y-3">
+          {recentJournal.map((entry) => (
+            <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3" key={entry.title}>
+              <p className="text-sm font-semibold">{entry.title}</p>
+              <p className="mt-1 text-sm leading-5 text-[#6f5a4c]">{entry.detail}</p>
+              <p className="mt-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{entry.status}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function BatchForm({
+  batch,
+  cancelEdit,
+  saveBatch,
+}: {
+  batch: ProductBatch | null;
+  cancelEdit: () => void;
+  saveBatch: (formData: FormData) => void;
+}) {
+  return (
+    <FormPanel title={batch ? "Edit proof batch" : "Proof batch record"} icon={<FlaskConical size={18} />}>
+      <form action={saveBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
+        <input name="id" type="hidden" value={batch?.id ?? ""} />
+        <ProductSelect selectedProductId={batch?.productId} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
+          <Input name="dateMade" label="Date made" type="date" defaultValue={batch?.dateMade ?? today} />
+        </div>
+        <Textarea
+          name="tasteNotes"
+          label="Test change and quality result"
+          defaultValue={batch?.tasteNotes}
+          placeholder="Changed bake time from 28 to 25 min. Taste: less dry, chocolate stronger, top still clean."
+        />
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Input name="prepTimeMinutes" label="Prep minutes" type="number" placeholder="35" defaultValue={batch?.prepTimeMinutes || undefined} />
+          <Input name="bakeTimeMinutes" label="Cook/bake minutes" type="number" placeholder="25" defaultValue={batch?.bakeTimeMinutes || undefined} />
+          <Input name="coolingTimeMinutes" label="Cooling/set minutes" type="number" placeholder="60" defaultValue={batch?.coolingTimeMinutes || undefined} />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Input name="usablePieces" label="Sellable pieces" type="number" placeholder="12" defaultValue={batch?.usablePieces || undefined} helper="Pieces you would feel okay selling." />
+          <Input name="imperfectPieces" label="Reject/test pieces" type="number" placeholder="2" defaultValue={batch?.imperfectPieces || undefined} helper="Broken, ugly, underdone, overdone, or used for testing." />
+          <Input name="stressLevel" label="Kitchen difficulty 1-5" type="number" min="1" max="5" defaultValue={batch?.stressLevel ?? 3} helper="1 easy, 5 too stressful for preorder days." />
+        </div>
+        <Textarea
+          name="textureNotes"
+          label="Freshness and packaging result"
+          defaultValue={batch?.textureNotes}
+          placeholder="After 2 hours: still fudgy. In box: top smudged slightly. Needs liner before delivery test."
+        />
+        <Textarea name="wentWrong" label="Main issue found" placeholder="Example: Edges overbaked before center set; box trapped steam; drink separated after 20 minutes." defaultValue={batch?.wentWrong} />
+        <Textarea name="improveNext" label="Next test only" placeholder="Example: Retest at 24 min, cool 90 min before cutting, compare two box liners." defaultValue={batch?.improveNext} />
+        <Select name="launchDecision" label="Current decision" options={["retest", "launch", "pause", "remove"]} defaultValue={batch?.launchDecision ?? "retest"} />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button>{batch ? "Update batch" : "Save batch"}</Button>
+          {batch ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+        </div>
+      </form>
+    </FormPanel>
+  );
+}
+
+function ProofBatchGuide() {
+  return (
+    <Panel title="What This Page Proves" icon={<ClipboardCheck size={18} />}>
+      <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+        <p>Use one record per real kitchen test. The goal is to decide what changes next, not to write a diary.</p>
+        <ul className="space-y-2">
+          <li><strong>Quality:</strong> taste, texture, appearance.</li>
+          <li><strong>Repeatability:</strong> timing, yield, kitchen difficulty.</li>
+          <li><strong>Customer fit:</strong> freshness, packaging, delivery risk.</li>
+        </ul>
+      </div>
+    </Panel>
+  );
+}
+
+function ProofDayChecklist() {
+  const groups = [
+    {
+      title: "Before making",
+      items: ["Pick one product and one test change", "Weigh ingredients before mixing", "Set phone timer for each stage"],
+    },
+    {
+      title: "During making",
+      items: ["Record prep, cook/bake, and cooling time", "Note anything that slows the kitchen down", "Capture one process clip if hands are clean"],
+    },
+    {
+      title: "After making",
+      items: ["Count sellable vs reject pieces", "Taste after cooling, not only while warm", "Pack one sample the way a customer would receive it"],
+    },
+    {
+      title: "Freshness check",
+      items: ["Check after 2 hours", "Check after 12 or 24 hours if relevant", "Log the next test before cleaning up"],
+    },
+  ];
+
+  return (
+    <Panel title="Proof Day Checklist" icon={<CheckCircle2 size={18} />}>
+      <div className="space-y-4">
+        {groups.map((group) => (
+          <div key={group.title}>
+            <p className="text-sm font-semibold">{group.title}</p>
+            <div className="mt-2 space-y-2">
+              {group.items.map((item) => (
+                <label className="flex items-start gap-2 text-sm leading-5 text-[#5f4a3d]" key={item}>
+                  <input className="mt-0.5 h-4 w-4 accent-[#8f5632]" type="checkbox" />
+                  <span>{item}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+type CostingIngredientRow = CostingEntry & { rowId: string };
+type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
+
+function CostingForm({
+  cancelEdit,
+  batches,
+  costing,
+  ingredientEntries,
+  saveCosting,
+}: {
+  batches: ProductBatch[];
+  cancelEdit: () => void;
+  costing: CostingSummary | null;
+  ingredientEntries: CostingEntry[];
+  saveCosting: (formData: FormData) => void;
+}) {
+  const savedIngredients = costing ? ingredientEntries.filter((entry) => entry.productId === costing.productId) : [];
+  const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() =>
+    savedIngredients.length > 0
+      ? savedIngredients.map((entry) => ({ ...entry, rowId: entry.id }))
+      : [{ cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }],
+  );
+  const [utilityRows, setUtilityRows] = useState<CostingUtilityRow[]>(() => {
+    if (!costing) {
+      return [{ cost: 0, name: "", note: "", rowId: crypto.randomUUID() }];
+    }
+
+    const rows = [
+      { cost: costing.waterCost, name: "Water", note: "", rowId: crypto.randomUUID() },
+      { cost: costing.gasCost, name: "Gas", note: "", rowId: crypto.randomUUID() },
+      { cost: costing.ovenElectricCost, name: "Oven/electric", note: "", rowId: crypto.randomUUID() },
+      { cost: costing.refrigerationCost, name: "Refrigeration", note: "", rowId: crypto.randomUUID() },
+      { cost: costing.coffeeEquipmentCost, name: "Coffee equipment", note: "", rowId: crypto.randomUUID() },
+    ].filter((row) => row.cost > 0);
+
+    return rows.length > 0 ? rows : [{ cost: 0, name: "", note: "", rowId: crypto.randomUUID() }];
+  });
+  const [packagingCost, setPackagingCost] = useState(costing?.packagingCost ?? 0);
+  const [laborEstimate, setLaborEstimate] = useState(costing?.laborEstimate ?? 0);
+  const [wasteAllowance, setWasteAllowance] = useState(costing?.wasteAllowance ?? 0);
+  const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
+
+  const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const utilityTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  const latestBatch = batches.find((batch) => batch.productId === (costing?.productId ?? products[0].id));
+  const sellablePieces = latestBatch?.usablePieces ?? 0;
+  const totalBatchCost = ingredientTotal + utilityTotal + packagingCost + laborEstimate + wasteAllowance;
+  const costPerPiece = sellablePieces > 0 ? totalBatchCost / sellablePieces : 0;
+  const grossProfit = suggestedPrice - costPerPiece;
+  const margin = suggestedPrice > 0 ? (grossProfit / suggestedPrice) * 100 : 0;
+
+  function addIngredientRow() {
+    setIngredientRows((current) => [...current, { cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
+  }
+
+  function addUtilityRow() {
+    setUtilityRows((current) => [...current, { cost: 0, name: "", note: "", rowId: crypto.randomUUID() }]);
+  }
+
+  return (
+    <FormPanel title={costing ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
+      <form action={saveCosting} className="grid gap-3">
+        <input name="id" type="hidden" value={costing?.id ?? ""} />
+        <input name="ingredientRowIds" type="hidden" value={ingredientRows.map((row) => row.rowId).join(",")} />
+        <input name="utilityRowIds" type="hidden" value={utilityRows.map((row) => row.rowId).join(",")} />
+        <ProductSelect selectedProductId={costing?.productId} />
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold">Ingredients used</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Cost the quantity used in this batch. Example: butter, 250, g, 85 PHP.</p>
+            </div>
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
+          </div>
+          <div className="mt-3 grid gap-3">
+            {ingredientRows.map((row, index) => (
+              <div className="grid gap-2 lg:grid-cols-[1fr_90px_80px_110px_1fr_70px]" key={row.rowId}>
+                <input name={`ingredientId-${row.rowId}`} type="hidden" value={row.id} />
+                <Input name={`ingredientName-${row.rowId}`} label={`Ingredient ${index + 1}`} placeholder="Butter" defaultValue={row.ingredientName} />
+                <Input name={`quantityUsed-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="250" defaultValue={row.quantityUsed || undefined} />
+                <Input name={`unit-${row.rowId}`} label="Unit" placeholder="g" defaultValue={row.unit} />
+                <Input name={`ingredientCost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" placeholder="85" value={row.cost || ""} onChange={(event) => setIngredientRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
+                <Input name={`supplierNote-${row.rowId}`} label="Supplier/note" placeholder="SM / estimated" defaultValue={row.supplierNote} />
+                <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setIngredientRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient total: PHP {ingredientTotal.toFixed(2)}</p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input name="packagingCost" label="Packaging cost per batch/unit" type="number" step="0.01" value={packagingCost || ""} onChange={(event) => setPackagingCost(Number(event.target.value || 0))} helper="Boxes, cups, bottles, labels, stickers, bags, seals." />
+          <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Input name="laborEstimate" label="Labor estimate" type="number" step="0.01" value={laborEstimate || ""} onChange={(event) => setLaborEstimate(Number(event.target.value || 0))} helper="Peso value of time spent mixing, baking, cooling, cutting, packing, and cleaning." />
+          <Input name="wasteAllowance" label="Waste allowance" type="number" step="0.01" value={wasteAllowance || ""} onChange={(event) => setWasteAllowance(Number(event.target.value || 0))} helper="Allowance for broken pieces, test cuts, spills, rejects, or spoilage." />
+        </div>
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold">Utilities / equipment used</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Add only what matters for this batch: oven, water, gas, refrigeration, ice, espresso machine, delivery cooling.</p>
+            </div>
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addUtilityRow} type="button">Add utility</button>
+          </div>
+          <div className="mt-3 grid gap-3">
+            {utilityRows.map((row, index) => (
+              <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_70px]" key={row.rowId}>
+                <Input name={`utilityName-${row.rowId}`} label={`Utility ${index + 1}`} placeholder="Oven preheat" defaultValue={row.name} />
+                <Input name={`utilityCost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" placeholder="20" value={row.cost || ""} onChange={(event) => setUtilityRows((current) => current.map((item) => item.rowId === row.rowId ? { ...item, cost: Number(event.target.value || 0) } : item))} />
+                <Input name={`utilityNote-${row.rowId}`} label="Note" placeholder="30 min electric oven" defaultValue={row.note} />
+                <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setUtilityRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Utility total: PHP {utilityTotal.toFixed(2)}</p>
+        </div>
+        <div className="grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
+          <CostingMetric label="Batch cost" value={`PHP ${totalBatchCost.toFixed(2)}`} />
+          <CostingMetric label="Cost per piece" value={sellablePieces > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need batch yield"} />
+          <CostingMetric label="Gross profit/unit" value={sellablePieces > 0 ? `PHP ${grossProfit.toFixed(2)}` : "Need batch yield"} />
+          <CostingMetric label="Margin" value={sellablePieces > 0 ? `${margin.toFixed(1)}%` : "Need batch yield"} />
+        </div>
+        <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={costing?.notes.split("\nUtilities:")[0]} />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button>{costing ? "Update costing" : "Save costing"}</Button>
+          {costing ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+        </div>
+      </form>
+    </FormPanel>
+  );
+}
+
+function CostingMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ddb778]">{label}</p>
+      <p className="mt-2 text-lg font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function CostingGuide() {
+  return (
+    <Panel title="Costing Rules" icon={<Sparkles size={18} />}>
+      <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+        <p>Cost one real batch. Do not average guesses across different recipes.</p>
+        <ul className="space-y-2">
+          <li><strong>Ingredients:</strong> cost only the amount used in this batch.</li>
+          <li><strong>Packaging:</strong> box, cup, bottle, label, bag, seal, and insert.</li>
+          <li><strong>Utilities:</strong> add only meaningful costs for this test.</li>
+          <li><strong>Labor:</strong> mixing, baking, cooling, packing, cleaning.</li>
+        </ul>
+      </div>
+    </Panel>
+  );
+}
+
+function TastingForm({
+  cancelEdit,
+  saveTasting,
+  tasting,
+}: {
+  cancelEdit: () => void;
+  saveTasting: (formData: FormData) => void;
+  tasting: TastingFeedback | null;
+}) {
+  return (
+    <FormPanel title={tasting ? "Edit tasting feedback" : "Add tasting feedback"} icon={<BookOpenText size={18} />}>
+      <form action={saveTasting} className="grid gap-3" key={tasting?.id ?? "new-tasting"}>
+        <input name="id" type="hidden" value={tasting?.id ?? ""} />
+        <ProductSelect selectedProductId={tasting?.productId} />
+        <div className="grid gap-3 sm:grid-cols-2"><Input name="tasterName" label="Taster name" defaultValue={tasting?.tasterName} /><Input name="rating" label="Rating 1-10" type="number" min="1" max="10" defaultValue={tasting?.rating || undefined} /></div>
+        <Textarea name="liked" label="What they liked" defaultValue={tasting?.liked} />
+        <Textarea name="improve" label="What should improve" defaultValue={tasting?.improve} />
+        <div className="grid gap-3 sm:grid-cols-3"><Select name="wouldBuy" label="Would buy" options={["yes", "maybe", "no"]} defaultValue={tasting?.wouldBuy ?? "maybe"} /><Input name="willingToPay" label="Willing to pay" type="number" defaultValue={tasting?.willingToPay || undefined} /><Select name="wouldReorder" label="Would reorder" options={["yes", "maybe", "no"]} defaultValue={tasting?.wouldReorder ?? "maybe"} /></div>
+        <Textarea name="packagingReaction" label="Packaging reaction" defaultValue={tasting?.packagingReaction} />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button>{tasting ? "Update feedback" : "Save feedback"}</Button>
+          {tasting ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+        </div>
+      </form>
+    </FormPanel>
+  );
+}
+
+function JournalForm({
+  cancelEdit,
+  entry,
+  saveJournal,
+}: {
+  cancelEdit: () => void;
+  entry: ContentJournalEntry | null;
+  saveJournal: (formData: FormData) => void;
+}) {
+  const mediaOnly = entry?.mediaCaptured.split(". Link: ")[0] ?? "";
+  const mediaLink = entry?.mediaCaptured.split(". Link: ")[1] ?? "";
+
+  return (
+    <FormPanel title={entry ? "Edit content capture" : "Content capture record"} icon={<NotebookPen size={18} />}>
+      <form action={saveJournal} className="grid gap-3" key={entry?.id ?? "new-journal"}>
+        <input name="id" type="hidden" value={entry?.id ?? ""} />
+        <ProductSelect selectedProductId={entry?.productId} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input name="entryDate" label="Capture date" type="date" defaultValue={entry?.entryDate ?? today} />
+          <Select name="contentAngle" label="Best use" options={["product proof", "behind the scenes", "packaging test", "tasting feedback", "lesson learned", "launch teaser", "not content-worthy"]} defaultValue={entry?.postIdeas ?? "product proof"} />
+        </div>
+        <Textarea name="whatWasMade" label="Moment captured" placeholder="Example: Brownies V2 cooling and cutting test. One clean top shot, one slicing clip, one texture close-up." defaultValue={entry?.whatWasMade} />
+        <MediaChecklist selectedMedia={mediaOnly} />
+        <Input name="mediaLink" label="Media folder/link (optional)" placeholder="Google Drive folder, phone album name, or local folder path" defaultValue={mediaLink} helper="Only add this if the files are already organized somewhere." />
+        <Textarea name="lessonLearned" label="Useful note for content or product" placeholder="Example: The pull-apart texture looked strong on video, but the box shot looked messy." defaultValue={entry?.lessonLearned} />
+        <Textarea name="nextAction" label="Next content action" placeholder="Example: Turn texture clip into reel; reshoot packaging with cleaner liner; skip posting this batch." defaultValue={entry?.nextAction} />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button>{entry ? "Update journal" : "Save journal"}</Button>
+          {entry ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+        </div>
+      </form>
+    </FormPanel>
+  );
+}
+
+function ContentJournalGuide() {
+  return (
+    <Panel title="Keep It Low Friction" icon={<NotebookPen size={18} />}>
+      <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+        <p>Save only the evidence that helps future content. No caption writing here unless the idea is obvious.</p>
+        <ul className="space-y-2">
+          <li><strong>Capture:</strong> proof, process, packaging, reaction, final product.</li>
+          <li><strong>Decide:</strong> usable, reshoot, or not content-worthy.</li>
+          <li><strong>Next:</strong> one clear action for the next post or product test.</li>
+        </ul>
+      </div>
+    </Panel>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#f7f2ea] px-4 text-[#211713]">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white p-6 text-center">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#9a5b2f]">Aly & Shin</p>
+        <h1 className="mt-2 text-2xl font-semibold">Loading Product Lab</h1>
+        <p className="mt-2 text-sm text-[#6f5a4c]">Connecting to Supabase.</p>
+      </div>
+    </main>
+  );
+}
+
+function LoginScreen({
+  message,
+  signIn,
+}: {
+  message: string;
+  signIn: (formData: FormData) => void;
+}) {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#f7f2ea] px-4 text-[#211713]">
+      <section className="w-full max-w-md rounded-lg border border-[#e1d4c4] bg-white p-6">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#9a5b2f]">Aly & Shin</p>
+        <h1 className="mt-2 text-2xl font-semibold">Product Lab Login</h1>
+        <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">
+          Private workspace for product proof, costing, tasting, and content notes.
+        </p>
+        <form action={signIn} className="mt-6 grid gap-4">
+          <Input label="Email" name="email" type="email" required />
+          <Input label="Password" name="password" type="password" required />
+          <Button>Sign in</Button>
+        </form>
+        {message ? <p className="mt-4 rounded-md bg-[#fff2d8] p-3 text-sm text-[#7a531d]">{message}</p> : null}
+      </section>
+    </main>
+  );
+}
