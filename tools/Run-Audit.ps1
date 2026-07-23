@@ -40,9 +40,9 @@ $logFile      = Join-Path $root 'claude-session.log'
 $resultFile   = Join-Path $root '.last-phase-result.txt'
 $utf8         = New-Object System.Text.UTF8Encoding($false)
 $FULL_REFRESH_DAYS = 30   # D-043: one flat rule, not a count-or-time combo -- see DECISIONS.md
-# The app's own source files -- rendered per-app at install time (Install-AiDevOs.ps1's 'index.html', 'style.css', 'app.js'
+# The app's own source files -- rendered per-app at install time (Install-AiDevOs.ps1's 'src', 'supabase-schema.sql'
 # token, from that app's config codeFiles key), since this is inherently different for every app.
-$codeFiles = @('index.html', 'style.css', 'app.js')
+$codeFiles = @('src', 'supabase-schema.sql')
 
 function Write-Result([string]$Text) {
     [System.IO.File]::WriteAllText($resultFile, $Text, $utf8)

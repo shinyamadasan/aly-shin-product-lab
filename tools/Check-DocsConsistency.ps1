@@ -21,9 +21,9 @@
 param()
 
 $root = Split-Path $PSScriptRoot -Parent
-# The app's own source files -- rendered per-app at install time (Install-AiDevOs.ps1's 'index.html', 'style.css', 'app.js'
+# The app's own source files -- rendered per-app at install time (Install-AiDevOs.ps1's 'src', 'supabase-schema.sql'
 # token, from that app's config codeFiles key), since this is inherently different for every app.
-$appFiles = @('index.html', 'style.css', 'app.js')
+$appFiles = @('src', 'supabase-schema.sql')
 # docs/DECISIONS.md and CLAUDE.md document the AI Dev OS / automation layer as well as the app --
 # checking their identifiers against app files ALONE floods findings with false positives (PowerShell
 # API names, tool script variables, TASKS.md status vocabulary). Each doc gets the code scope that

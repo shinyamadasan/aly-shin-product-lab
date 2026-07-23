@@ -4,7 +4,7 @@
 #
 # Claude's job here is PLANNING ONLY: Triage (captures/inbox -> PROPOSALS.md) and converting approved
 # planning/BUILD_QUEUE.md items into PLAN.md + TASKS.md (status: codex). It NEVER touches the app's
-# own source files ('index.html', 'style.css', 'app.js') and NEVER invokes Codex -- that split is enforced two ways:
+# own source files ('src', 'supabase-schema.sql') and NEVER invokes Codex -- that split is enforced two ways:
 #   1. The Claude session's --allowedTools has no git commit/push -- it literally cannot ship anything.
 #   2. This script commits Claude's output itself, but only after checking every changed path against
 #      an explicit allow-list (Phase 2b below). Anything outside that list halts uncommitted.
@@ -221,7 +221,7 @@ stop mid-step, write the precise resume point to STATUS.md first.
 Read CLAUDE.md, STATUS.md, PLAN.md, and TASKS.md first.
 
 YOUR ROLE THIS RUN IS PLANNING ONLY -- you are acting as Claude (PM / Tech Lead / Architect), never as
-Codex (the Implementer). You must NEVER edit the app's own source files ('index.html', 'style.css', 'app.js') in this
+Codex (the Implementer). You must NEVER edit the app's own source files ('src', 'supabase-schema.sql') in this
 session, and you must NEVER invoke Codex or any other build agent. Committing and pushing is handled by the calling
 script, not by you -- do not attempt `git commit` or `git push` (that tool is not available to you this
 run). Do not touch the ROADMAP "Do Not Work On" section. Do not delete files (archiving captures is a
