@@ -75,13 +75,16 @@ export function RecentEntries({
         {showTasting ? <RecentList
           title="Tasting"
           empty="No tasting saved yet."
-          items={labState.tastings.slice(0, 3).map((tasting) => ({
-            id: tasting.id,
-            title: `${productName(tasting.productId)}: ${tasting.rating}/10`,
-            detail: `${tasting.tasterName} would buy: ${tasting.wouldBuy}. Reorder: ${tasting.wouldReorder}. Pay: PHP ${tasting.willingToPay || 0}.`,
-            onDelete: deleteTasting ? () => deleteTasting(tasting.id) : undefined,
-            onEdit: editTasting ? () => editTasting(tasting) : undefined,
-          }))}
+          items={labState.tastings.slice(0, 3).map((tasting) => {
+            const tastedBatch = labState.batches.find((batch) => batch.id === tasting.batchId);
+            return {
+              id: tasting.id,
+              title: `${productName(tasting.productId)}${tastedBatch ? ` (${tastedBatch.batchVersion})` : ""}: ${tasting.rating}/10`,
+              detail: `${tasting.tasterName} would buy: ${tasting.wouldBuy}. Reorder: ${tasting.wouldReorder}. Pay: PHP ${tasting.willingToPay || 0}.`,
+              onDelete: deleteTasting ? () => deleteTasting(tasting.id) : undefined,
+              onEdit: editTasting ? () => editTasting(tasting) : undefined,
+            };
+          })}
         /> : null}
         {showJournal ? <RecentList
           title="Journal"

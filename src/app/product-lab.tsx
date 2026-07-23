@@ -221,6 +221,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       tastings: (tastingResult.data ?? []).map((row) => ({
         id: row.id,
         productId: row.product_id,
+        batchId: row.batch_id ?? "",
         tasterName: row.taster_name,
         rating: row.rating ?? 0,
         liked: row.liked ?? "",
@@ -850,6 +851,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const tasting: TastingFeedback = {
       id: tastingId || crypto.randomUUID(),
       productId: String(formData.get("productId")),
+      batchId: String(formData.get("batchId") || ""),
       tasterName: String(formData.get("tasterName") || "Unnamed taster"),
       rating: Number(formData.get("rating") || 0),
       liked: String(formData.get("liked") || ""),
@@ -862,6 +864,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     if (supabase && session) {
       const payload = {
         product_id: tasting.productId,
+        batch_id: tasting.batchId || null,
         taster_name: tasting.tasterName,
         rating: tasting.rating,
         liked: tasting.liked,
@@ -1027,7 +1030,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "tasting" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="tasting">
-              <TastingForm cancelEdit={() => setEditingTasting(null)} saveTasting={saveTasting} tasting={editingTasting} />
+              <TastingForm batches={labState.batches} cancelEdit={() => setEditingTasting(null)} saveTasting={saveTasting} tasting={editingTasting} />
               <RecentEntries deleteTasting={deleteTasting} editTasting={setEditingTasting} labState={labState} only="tasting" />
             </section>
           ) : null}
@@ -4095,19 +4098,32 @@ function CostingGuide() {
 }
 
 function TastingForm({
+  batches,
   cancelEdit,
   saveTasting,
   tasting,
 }: {
+  batches: ProductBatch[];
   cancelEdit: () => void;
   saveTasting: (formData: FormData) => void;
   tasting: TastingFeedback | null;
 }) {
+  const [selectedProductId, setSelectedProductId] = useState(tasting?.productId ?? products[0].id);
+  const productBatches = batches.filter((batch) => batch.productId === selectedProductId);
+
   return (
     <FormPanel title={tasting ? "Edit tasting feedback" : "Add tasting feedback"} icon={<BookOpenText size={18} />}>
       <form action={saveTasting} className="grid gap-3" key={tasting?.id ?? "new-tasting"}>
         <input name="id" type="hidden" value={tasting?.id ?? ""} />
-        <ProductSelect selectedProductId={tasting?.productId} />
+        <ProductSelect onChange={(event) => setSelectedProductId(event.target.value)} selectedProductId={tasting?.productId} value={selectedProductId} />
+        <label className="grid gap-1 text-sm font-medium">
+          Which batch/version did they taste?
+          <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={tasting?.batchId ?? ""} name="batchId">
+            <option value="">Not sure / general feedback</option>
+            {productBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.batchVersion} ({batch.dateMade})</option>)}
+          </select>
+          {productBatches.length === 0 ? <span className="text-xs font-normal leading-5 text-[#6f5a4c]">No proof batches logged for this product yet.</span> : null}
+        </label>
         <div className="grid gap-3 sm:grid-cols-2"><Input name="tasterName" label="Taster name" defaultValue={tasting?.tasterName} /><Input name="rating" label="Rating 1-10" type="number" min="1" max="10" defaultValue={tasting?.rating || undefined} /></div>
         <Textarea name="liked" label="What they liked" defaultValue={tasting?.liked} />
         <Textarea name="improve" label="What should improve" defaultValue={tasting?.improve} />

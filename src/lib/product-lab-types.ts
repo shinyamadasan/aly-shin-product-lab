@@ -90,6 +90,7 @@ export type SupplyEntry = {
 export type TastingFeedback = {
   id: string;
   productId: string;
+  batchId: string;
   tasterName: string;
   rating: number;
   liked: string;

@@ -188,6 +188,8 @@ Use when:
 
 Must capture:
 - Taster.
+- Which proof batch/version they actually tasted (not just the product) — this is what makes it
+  possible to tell whether a specific formula change actually improved the taste signal.
 - Rating.
 - What they liked.
 - What should improve.
