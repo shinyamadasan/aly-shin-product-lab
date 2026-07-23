@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
@@ -3248,6 +3248,14 @@ function CostingForm({
   const equipmentDepreciationCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedDepreciation, 0);
   const equipmentMaintenanceCost = equipmentAllocations.reduce((total, allocation) => total + allocation.allocatedMaintenance, 0);
   const wasteAllowance = wasteRows.reduce((total, row) => total + Number(row.cost || 0), 0);
+  // Proof Day already records imperfectPieces per batch -- use that real reject history instead of
+  // asking for a cold-start guess. Averaged across this product's batches, not just the latest one,
+  // since a single batch's reject count is too noisy to build a cost estimate on.
+  const productBatchesForWaste = batches.filter((batch) => batch.productId === selectedProductId && batch.usablePieces + batch.imperfectPieces > 0);
+  const historicalRejectRate = productBatchesForWaste.length > 0
+    ? productBatchesForWaste.reduce((total, batch) => total + batch.imperfectPieces / (batch.usablePieces + batch.imperfectPieces), 0) / productBatchesForWaste.length
+    : 0;
+  const suggestedWasteCost = ingredientTotal * historicalRejectRate;
   const activeLaborMinutes = laborDetail.prepMinutes + laborDetail.packagingMinutes + laborDetail.cleaningMinutes;
   const passiveMinutes = laborDetail.cookingMinutes + laborDetail.coolingMinutes;
   const laborEstimate = (activeLaborMinutes / 60) * laborDetail.activeRate;
@@ -3297,6 +3305,20 @@ function CostingForm({
 
   function updateNamedCostRow(setRows: Dispatch<SetStateAction<CostingNamedCostRow[]>>, rowId: string, changes: Partial<CostingNamedCostRow>) {
     setRows((current) => current.map((row) => (row.rowId === rowId ? { ...row, ...changes } : row)));
+  }
+
+  function useSuggestedWasteCost() {
+    setWasteRows((current) => [
+      ...current,
+      {
+        cost: Number(suggestedWasteCost.toFixed(2)),
+        name: "Historical reject rate",
+        note: `${(historicalRejectRate * 100).toFixed(1)}% across ${productBatchesForWaste.length} batch${productBatchesForWaste.length === 1 ? "" : "es"}`,
+        rowId: crypto.randomUUID(),
+      },
+    ]);
+    setLocalMessage("Waste row added from batch reject history.");
+    setLocalMessageTone("good");
   }
 
   function importLatestFormula() {
@@ -3573,7 +3595,26 @@ function CostingForm({
         </div>
         <NamedCostSection addLabel="Add overhead" namePrefix="overhead" onAdd={() => addNamedCostRow(setOverheadRows, "Overhead")} rows={overheadRows} setRows={setOverheadRows} title="Overhead allocation" total={overheadCost} updateNamedCostRow={updateNamedCostRow} />
         <EquipmentUsageSection equipmentAllocations={equipmentAllocations} equipmentList={equipment} setEquipmentUsage={setEquipmentUsage} />
-        <NamedCostSection addLabel="Add waste" namePrefix="waste" onAdd={() => addNamedCostRow(setWasteRows, "Waste")} rows={wasteRows} setRows={setWasteRows} title="Waste and loss" total={wasteAllowance} updateNamedCostRow={updateNamedCostRow} />
+        <NamedCostSection
+          addLabel="Add waste"
+          extra={
+            productBatchesForWaste.length > 0 ? (
+              <div className="mt-3 flex flex-col gap-2 rounded-md border border-[#ead9c8] bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs leading-5 text-[#6f5a4c]">
+                  Batch history: {(historicalRejectRate * 100).toFixed(1)}% rejected across {productBatchesForWaste.length} batch{productBatchesForWaste.length === 1 ? "" : "es"} — suggests PHP {suggestedWasteCost.toFixed(2)} waste allowance.
+                </p>
+                <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={useSuggestedWasteCost} type="button">Use suggested waste</button>
+              </div>
+            ) : null
+          }
+          namePrefix="waste"
+          onAdd={() => addNamedCostRow(setWasteRows, "Waste")}
+          rows={wasteRows}
+          setRows={setWasteRows}
+          title="Waste and loss"
+          total={wasteAllowance}
+          updateNamedCostRow={updateNamedCostRow}
+        />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="suggestedPrice" label="Selling price per piece/unit" type="number" step="0.01" value={suggestedPrice || ""} onChange={(event) => setSuggestedPrice(Number(event.target.value || 0))} helper="The price you may charge per piece, box, or bottle." />
           <Input name="targetFoodCost" label="Target food cost %" type="number" step="0.01" value={targetFoodCost || ""} onChange={(event) => setTargetFoodCost(Number(event.target.value || 0))} helper="Use 0.35 for 35%. Suggested target price updates below." />
@@ -3969,6 +4010,7 @@ function EquipmentUsageSection({
 
 function NamedCostSection({
   addLabel,
+  extra,
   namePrefix,
   onAdd,
   rows,
@@ -3978,6 +4020,7 @@ function NamedCostSection({
   updateNamedCostRow,
 }: {
   addLabel: string;
+  extra?: ReactNode;
   namePrefix: string;
   onAdd: () => void;
   rows: CostingNamedCostRow[];
@@ -3995,6 +4038,7 @@ function NamedCostSection({
         </div>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onAdd} type="button">{addLabel}</button>
       </div>
+      {extra}
       <div className="mt-3 grid gap-2">
         {rows.map((row) => (
           <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_70px]" key={row.rowId}>
