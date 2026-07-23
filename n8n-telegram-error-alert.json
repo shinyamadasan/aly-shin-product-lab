@@ -1,0 +1,72 @@
+{
+  "name": "[Aly & Shin Product Lab] Error Alert -> Telegram",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "error-trigger",
+      "name": "On error (any workflow)",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_USER_ID",
+        "text": "={{ '🚨 ' + $json.workflow.name + ' failed\\n\\nNode: ' + $json.execution.lastNodeExecuted + '\\nError: ' + $json.execution.error.message + '\\n\\nExecution: ' + $json.execution.url }}",
+        "additionalFields": {}
+      },
+      "id": "send-error-alert",
+      "name": "Telegram: send failure alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On error (any workflow)": {
+      "main": [
+        [
+          {
+            "node": "Telegram: send failure alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_setup_notes": [
+    "NOT triggered directly -- it is a target, not a flow you run yourself. After importing it:",
+    "1. Open EACH of the other three workflows (Inbox, Digest, Replies) -> the 3-dot menu -> Settings",
+    "   -> 'Error Workflow' -> select '[Aly & Shin Product Lab] Error Alert -> Telegram'. Repeat for all three.",
+    "2. Fill REPLACE_WITH_YOUR_TELEGRAM_USER_ID with your numeric Telegram id (same value used in the",
+    "   other three workflows).",
+    "3. Confirm the Telegram node's credential is 'Telegram Bot - Aly & Shin Product Lab' (it should bind",
+    "   correctly on import since only one credential of that name exists, but check anyway -- see",
+    "   OPERATOR.md's 'n8n binds credentials by ID, not by name' trap).",
+    "Deliberately plain text (no parse_mode) -- a raw error message or stack trace can contain",
+    "underscores/asterisks/brackets that break Telegram's Markdown parser, which would make the alert",
+    "itself silently fail to send. The whole point of this workflow is to never be the thing that goes",
+    "silent, so it trades formatting for reliability.",
+    "This workflow exists because a real installation went 3 days with a silently-broken GitHub PAT --",
+    "n8n's own execution log had every failure the whole time, nothing was surfacing it to Telegram",
+    "where it would actually get seen. See the host app's DECISIONS.md D-049 if it recorded this.",
+    "One Error Workflow per app, not shared across apps -- it reuses that app's own Telegram credential",
+    "so the alert arrives on the bot you already associate with that app, and keeps this workflow from",
+    "becoming its own cross-app shared-credential single point of failure."
+  ]
+}

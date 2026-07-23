@@ -1,0 +1,247 @@
+{
+  "name": "[Aly & Shin Product Lab] Command Replies -> Telegram (fast relay)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/2 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 2 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/captures/replies/OUTBOX.md",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-aly-shin-product-lab-replies"
+            }
+          ]
+        },
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "github-get-outbox",
+      "name": "GitHub: get OUTBOX.md (json + sha)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "GitHub PAT - Aly & Shin Product Lab"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// The JSON-envelope response (not the raw Accept header) so we get both the base64 content\n// AND the file's sha in one call -- the sha is required later to PUT the cleared file back.\nconst item = $input.first().json;\nconst text = Buffer.from(item.content, 'base64').toString('utf8').trim();\nreturn [{ json: { text, sha: item.sha } }];"
+      },
+      "id": "decode-outbox",
+      "name": "Decode OUTBOX.md",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "No pending replies.",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-has-replies",
+      "name": "IF has pending replies",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_USER_ID",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "send-replies",
+      "name": "Telegram: send replies",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        220
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/captures/replies/OUTBOX.md",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-aly-shin-product-lab-replies"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"replies: cleared after send\",\n  \"content\": \"Tm8gcGVuZGluZyByZXBsaWVzLgo=\",\n  \"sha\": \"{{ $('Decode OUTBOX.md').item.json.sha }}\",\n  \"branch\": \"main\"\n}",
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "github-clear-outbox",
+      "name": "GitHub: clear OUTBOX.md",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "GitHub PAT - Aly & Shin Product Lab"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Every 2 minutes": {
+      "main": [
+        [
+          {
+            "node": "GitHub: get OUTBOX.md (json + sha)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub: get OUTBOX.md (json + sha)": {
+      "main": [
+        [
+          {
+            "node": "Decode OUTBOX.md",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode OUTBOX.md": {
+      "main": [
+        [
+          {
+            "node": "IF has pending replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF has pending replies": {
+      "main": [
+        [
+          {
+            "node": "Telegram: send replies",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Telegram: send replies": {
+      "main": [
+        [
+          {
+            "node": "GitHub: clear OUTBOX.md",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_setup_notes": [
+    "NEW workflow, part of the Telegram-control feature (docs/09-automation.md). Purely a fast relay:",
+    "fetch captures/replies/OUTBOX.md every 2 minutes, send it to Telegram if it has real content,",
+    "then PUT it back to the placeholder to clear it -- this is the one place n8n writes back to a",
+    "file it also reads, so it needs the file's sha (fetched via the JSON-envelope GET, not the raw",
+    "Accept header used elsewhere, since raw-text GETs don't return sha).",
+    "The IF node's placeholder string ('No pending replies.') must stay byte-for-byte identical to",
+    "$NO_REPLIES in tools/Dispatch-Commands.ps1.",
+    "Fill the 3 REPLACE_WITH_* placeholders (GitHub PAT with Contents read+write, your numeric",
+    "Telegram user id, Telegram credential id) before activating.",
+    "2-minute interval is a starting point, not sacred -- tighten or loosen via the cron expression",
+    "depending on how responsive you want /go etc. to feel vs. how many n8n executions you're OK with.",
+    "Race note: if Dispatch-Commands.ps1 appends to OUTBOX.md at the exact moment this workflow has",
+    "already fetched-but-not-yet-cleared it, the PUT-to-clear could overwrite that new append (using a",
+    "now-stale sha, which GitHub will actually reject with a 409 -- the new content survives, uncleared,",
+    "until the next poll). This is intentionally accepted as a rare, self-healing race rather than",
+    "building distributed-lock machinery around a personal single-user automation."
+  ]
+}

@@ -40,3 +40,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# AI Dev OS runtime artifacts -- these MUST be ignored, or the merge gates see a
+# permanently dirty tree and refuse to merge anything.
+claude-session.log
+automation.lock
+.last-phase-result.txt

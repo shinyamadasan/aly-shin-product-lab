@@ -1,0 +1,217 @@
+{
+  "name": "[Aly & Shin Product Lab] Telegram -> captures (capture + decide)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "telegram-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.message.from.id }}",
+              "rightValue": "REPLACE_WITH_YOUR_TELEGRAM_USER_ID",
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "authorized-user",
+      "name": "Authorized sender?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dumb transport: one Telegram message -> one immutable markdown file.\n// A message that STARTS with a control verb (status/next/go/run/build/review/merge/audit/stop/enable/disable/log) is\n// a remote-control command -> captures/commands/. A message that STARTS with a decision verb\n// (approve/park/reject/clarify) is an approval reply -> captures/decisions/. Everything else is a\n// capture -> captures/inbox/. No AI, no parsing of planning files here -- Dispatch-Commands.ps1,\n// Apply-Decisions.ps1, and the Claude triage run do all the logic, on the PC.\nconst msg = ($input.first().json.message) || {};\nconst text = (msg.text || '').trim();\nconst d = new Date();\nconst p = (n) => String(n).padStart(2, '0');\nconst ts = `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}Z`;\nconst msgId = msg.message_id || 'na';\nconst controlMatch = text.match(/^\\/(status|next|go|run|build|review|merge|audit|stop|enable|disable|log)\\b/i);\nconst isControl = !!controlMatch;\nconst isDecision = !isControl && /^\\s*(accept|approve|park|reject|clarify)\\b/i.test(text);\nlet id, path, command, content;\nif (isControl) {\n  const ctrl = controlMatch[1].toLowerCase();\n  id = `${ts}-${msgId}-command`;\n  path = `captures/commands/${id}.md`;\n  command = ctrl;\n  content = `---\\nid: ${id}\\nkind: command\\ncommand: ${ctrl}\\ncaptured: ${d.toISOString()}\\nvia: telegram\\nmsg_id: ${msgId}\\nstatus: new\\n---\\n\\n${text}\\n`;\n} else if (isDecision) {\n  id = `${ts}-${msgId}-decide`;\n  path = `captures/decisions/${id}.md`;\n  command = 'decide';\n  content = `---\\nid: ${id}\\nkind: decision\\ncaptured: ${d.toISOString()}\\nvia: telegram\\nmsg_id: ${msgId}\\nstatus: new\\n---\\n\\n${text || '(empty)'}\\n`;\n} else {\n  const m = text.match(/^\\/(feature|bug|idea|research|todo)\\b\\s*([\\s\\S]*)$/i);\n  const type = m ? m[1].toLowerCase() : 'unknown';\n  command = m ? ('/' + type) : '(none)';\n  const body = (m ? (m[2] || '') : text).trim();\n  id = `${ts}-${msgId}-${type}`;\n  path = `captures/inbox/${id}.md`;\n  content = `---\\nid: ${id}\\ncommand: ${command}\\ntype: ${type}\\ncaptured: ${d.toISOString()}\\nvia: telegram\\nmsg_id: ${msgId}\\nstatus: new\\n---\\n\\n${body || '(empty capture)'}\\n`;\n}\nconst contentB64 = Buffer.from(content, 'utf8').toString('base64');\nreturn [{ json: { id, path, command, isControl, isDecision, contentB64, chatId: (msg.chat && msg.chat.id) } }];"
+      },
+      "id": "build-file",
+      "name": "Build capture/decision file",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/{{ $json.path }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github+json"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-aly-shin-product-lab-capture"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"{{ $json.isControl ? 'command' : ($json.isDecision ? 'decision' : 'capture') }}: {{ $json.command }} ({{ $json.id }})\",\n  \"content\": \"{{ $json.contentB64 }}\",\n  \"branch\": \"main\"\n}",
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "github-create-file",
+      "name": "GitHub: create file",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        220
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "GitHub PAT - Aly & Shin Product Lab"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $('Build capture/decision file').item.json.isControl ? '\\u2699\\ufe0f Command `/' + $('Build capture/decision file').item.json.command + '` queued (`' + $('Build capture/decision file').item.json.id + '`). Processing shortly.' : ($('Build capture/decision file').item.json.isDecision ? '\\u2705 Decision noted (`' + $('Build capture/decision file').item.json.id + '`). I\\u2019ll apply it on the next run.' : '\\u2705 Captured `' + $('Build capture/decision file').item.json.id + '` as ' + $('Build capture/decision file').item.json.command + '. I\\u2019ll triage it on the next run.') }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "reply-ok",
+      "name": "Reply: ok",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1120,
+        220
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.message.chat.id }}",
+        "text": "Not authorized.",
+        "additionalFields": {}
+      },
+      "id": "reply-unauthorized",
+      "name": "Reply: unauthorized",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        680,
+        420
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Authorized sender?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized sender?": {
+      "main": [
+        [
+          {
+            "node": "Build capture/decision file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply: unauthorized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build capture/decision file": {
+      "main": [
+        [
+          {
+            "node": "GitHub: create file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub: create file": {
+      "main": [
+        [
+          {
+            "node": "Reply: ok",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_setup_notes": [
+    "UPDATED for the Telegram-control feature: one workflow now handles capture (/feature,/bug,...), approval replies, AND remote-control commands.",
+    "A message that STARTS with status/next/go/run/build/review/merge/audit/stop/enable/disable/log -> captures/commands/<id>.md (Dispatch-Commands.ps1 on the PC does the routing -- see docs/09-automation.md).",
+    "A message that STARTS with approve/park/reject/clarify -> captures/decisions/<id>.md (the reply gate). Unaffected by this change.",
+    "Everything else is unchanged -> captures/inbox/<id>.md (capture). Existing capture behavior is untouched.",
+    "Re-import this file in n8n to activate; fill the 4 REPLACE_WITH_* placeholders (Telegram credential id x3, your numeric Telegram user id, GitHub PAT with Contents read+write).",
+    "Apply-Decisions.ps1 (on the PC, via run-claude.ps1) reads captures/decisions/ and updates PROPOSALS + BUILD_QUEUE.",
+    "Dispatch-Commands.ps1 (on the PC, via the new Command Dispatcher scheduled task) reads captures/commands/ and routes to the matching phase runner.",
+    "Get your Telegram user id from @userinfobot. Prefer an n8n Header Auth credential over the inline PAT before going live."
+  ]
+}

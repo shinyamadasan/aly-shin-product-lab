@@ -1,0 +1,251 @@
+{
+  "name": "[Aly & Shin Product Lab] Morning Digest -> Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every morning 07:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/planning/DIGEST.md",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-aly-shin-product-lab-digest"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "github-get-digest",
+      "name": "GitHub: get DIGEST.md (raw)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "GitHub PAT - Aly & Shin Product Lab"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_USER_ID",
+        "text": "={{ $json.data }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "send-digest",
+      "name": "Telegram: send digest",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/planning/CODEX_READY.md",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-aly-shin-product-lab-digest"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "github-get-codex-ready",
+      "name": "GitHub: get CODEX_READY.md (raw)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        500
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "GitHub PAT - Aly & Shin Product Lab"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.data }}",
+              "rightValue": "No Codex-ready tasks right now.",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-codex-ready",
+      "name": "IF has Codex-ready tasks",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        720,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_USER_ID",
+        "text": "={{ $json.data }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "send-codex-ready",
+      "name": "Telegram: send codex-ready notice",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        460
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every morning 07:00": {
+      "main": [
+        [
+          {
+            "node": "GitHub: get DIGEST.md (raw)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "GitHub: get CODEX_READY.md (raw)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub: get DIGEST.md (raw)": {
+      "main": [
+        [
+          {
+            "node": "Telegram: send digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub: get CODEX_READY.md (raw)": {
+      "main": [
+        [
+          {
+            "node": "IF has Codex-ready tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF has Codex-ready tasks": {
+      "main": [
+        [
+          {
+            "node": "Telegram: send codex-ready notice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_setup_notes": [
+    "NEW workflow (separate from capture) - it has a Schedule trigger, so it does not conflict with the Telegram webhook.",
+    "Sends planning/DIGEST.md to Telegram every morning at 07:00 (server time). Edit the cron '0 7 * * *' to taste.",
+    "DIGEST.md is regenerated + committed by run-claude.ps1 (Generate-Digest.ps1) after each overnight run.",
+    "Fill the 3 REPLACE_WITH_* placeholders: GitHub PAT (Contents read), your numeric Telegram user id (chatId), Telegram credential id.",
+    "Accept: application/vnd.github.raw makes the Contents API return the file body as text (works for private repos); the body lands in {{ $json.data }} because the HTTP node response format is 'text'.",
+    "If Telegram rejects Markdown formatting on some message, remove the parse_mode field to send as plain text.",
+    "ADDED: planning/CODEX_READY.md branch (parallel to the digest fetch). Generate-Codex-Notice.ps1 writes it after every overnight run. The IF node checks the content does NOT contain the literal placeholder string 'No Codex-ready tasks right now.' -- if it does (no ready tasks), the false branch is empty and nothing is sent, so you only get pinged when there is actually something for Codex to pick up.",
+    "The IF node's placeholder string must stay byte-for-byte in sync with $NONE_PLACEHOLDER in tools/Generate-Codex-Notice.ps1."
+  ]
+}
