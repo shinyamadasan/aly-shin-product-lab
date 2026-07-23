@@ -1172,6 +1172,71 @@ function buildFormulaRowsFromPreviousBatch(previousBatch: ProductBatch | undefin
   }));
 }
 
+// batches is always loaded sorted newest-first (see loadSupabaseData's .order("created_at", { ascending:
+// false })), so a batch's previous version is simply the next match for the same product later in
+// the array -- same assumption the rest of the app already makes (buildFormulaRowsFromPreviousBatch,
+// getFormulaAdjustment).
+function getPreviousBatch(batches: ProductBatch[], batch: ProductBatch): ProductBatch | undefined {
+  const index = batches.findIndex((item) => item.id === batch.id);
+  if (index === -1) {
+    return undefined;
+  }
+  return batches.slice(index + 1).find((item) => item.productId === batch.productId);
+}
+
+type FormulaComparisonRow = {
+  brand: string;
+  currentQuantity: number | null;
+  currentUnit: string;
+  ingredient: string;
+  key: string;
+  previousQuantity: number | null;
+  previousUnit: string;
+  status: "changed" | "new" | "removed" | "same";
+  step: string;
+};
+
+// Diffs live, computed fresh from both batches' actual formulas -- not from the saved `change` text
+// snapshot (which only ever compared against whatever batch happened to be "previous" at save time).
+// Matched by ingredient + step together, so the same ingredient used in two different steps (cocoa
+// powder in the mix vs. as a sprinkle) is compared as two independent rows, not merged into one.
+function diffFormulaRows(previousFormula: BatchFormulaRow[], currentFormula: BatchFormulaRow[]): FormulaComparisonRow[] {
+  const rowKey = (row: BatchFormulaRow) => `${row.ingredient.trim().toLowerCase()}|${row.step.trim().toLowerCase()}`;
+  const previousByKey = new Map(previousFormula.filter((row) => row.ingredient.trim()).map((row) => [rowKey(row), row]));
+  const currentByKey = new Map(currentFormula.filter((row) => row.ingredient.trim()).map((row) => [rowKey(row), row]));
+  const allKeys = Array.from(new Set([...previousByKey.keys(), ...currentByKey.keys()]));
+
+  return allKeys
+    .map((key) => {
+      const previous = previousByKey.get(key);
+      const current = currentByKey.get(key);
+      const reference = current ?? previous;
+      if (!reference) {
+        return null;
+      }
+      const status: FormulaComparisonRow["status"] = !previous
+        ? "new"
+        : !current
+          ? "removed"
+          : previous.quantity === current.quantity && previous.unit === current.unit
+            ? "same"
+            : "changed";
+      return {
+        brand: reference.brand,
+        currentQuantity: current ? current.quantity : null,
+        currentUnit: current?.unit ?? "",
+        ingredient: reference.ingredient,
+        key,
+        previousQuantity: previous ? previous.quantity : null,
+        previousUnit: previous?.unit ?? "",
+        status,
+        step: reference.step,
+      };
+    })
+    .filter((row): row is FormulaComparisonRow => row !== null)
+    .sort((a, b) => a.ingredient.localeCompare(b.ingredient));
+}
+
 function formatBatchFormula(formula: BatchFormulaRow[]) {
   return formula
     .filter((row) => row.ingredient.trim())
@@ -1607,7 +1672,7 @@ function BatchHistoryPage({
   }
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+    <section className="grid gap-5">
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
@@ -1643,10 +1708,11 @@ function BatchHistoryPage({
                   </div>
                 </div>
                 <div className="mt-4 grid gap-4 xl:grid-cols-3">
-                  <DetailCard title="Formula" lines={formula.length ? formula.map((row) => `${row.brand ? `${row.brand} ` : ""}${row.ingredient || "Ingredient"}: ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` / ${row.change}` : ""}${row.step ? ` [${row.step}]` : ""}`) : ["No formula rows saved"]} />
+                  <DetailCard title="Formula" lines={formula.length ? formula.map((row) => `${row.brand ? `${row.brand} ` : ""}${row.ingredient || "Ingredient"}: ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.step ? ` [${row.step}]` : ""}`) : ["No formula rows saved"]} />
                   <DetailCard title="Process steps" lines={processSteps.length ? processSteps.map((step, index) => `${index + 1}. ${step}`) : ["No steps saved"]} />
                   <DetailCard title="Learning" lines={[batch.tasteNotes || "No process/quality notes", batch.wentWrong ? `Issue: ${batch.wentWrong}` : "Issue: none logged", batch.improveNext ? `Next: ${batch.improveNext}` : "Next: not set"]} />
                 </div>
+                <BatchComparisonSection currentBatch={batch} previousBatch={getPreviousBatch(labState.batches, batch)} />
                 <BatchPhotosSection batchId={batch.id} deleteBatchPhoto={deleteBatchPhoto} photos={labState.batchPhotos.filter((photo) => photo.batchId === batch.id)} uploadBatchPhotos={uploadBatchPhotos} />
                 <BatchTastingSection batchId={batch.id} deleteTasting={deleteTasting} productId={batch.productId} saveTasting={saveTasting} tastings={labState.tastings.filter((tasting) => tasting.batchId === batch.id)} />
               </article>
@@ -1654,13 +1720,6 @@ function BatchHistoryPage({
           })}
         </div>
       </div>
-      <Panel title="Page Split" icon={<ClipboardCheck size={18} />}>
-        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-          <p><strong>Proof Day:</strong> record today&apos;s live experiment.</p>
-          <p><strong>Batches:</strong> review and compare past experiments.</p>
-          <a className="inline-flex rounded-md bg-[#8f5632] px-3 py-2 text-sm font-semibold text-white" href="/proof-day">Start Proof Day</a>
-        </div>
-      </Panel>
       <ProofBatchesPrintReport batches={labState.batches} />
     </section>
   );
@@ -1728,6 +1787,65 @@ function BatchPhotosSection({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function BatchComparisonSection({ currentBatch, previousBatch }: { currentBatch: ProductBatch; previousBatch: ProductBatch | undefined }) {
+  if (!previousBatch) {
+    return (
+      <div className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+        <p className="text-sm font-semibold">Compare to previous version</p>
+        <p className="mt-1 text-sm text-[#6f5a4c]">This is the first logged version for this product — nothing to compare yet.</p>
+      </div>
+    );
+  }
+
+  const { formula: previousFormula } = parseBatchRecord(previousBatch.ingredientsNotes);
+  const { formula: currentFormula } = parseBatchRecord(currentBatch.ingredientsNotes);
+  const rows = diffFormulaRows(previousFormula, currentFormula);
+  const changedCount = rows.filter((row) => row.status !== "same").length;
+  const statusLabel = { changed: "Changed", new: "New", removed: "Removed", same: "Same" };
+  const statusTone = { changed: "text-[#9a5b2f]", new: "text-[#2e6b44]", removed: "text-[#8a3827]", same: "text-[#6f5a4c]" };
+
+  return (
+    <div className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+      <p className="text-sm font-semibold">Compare to previous version — {previousBatch.batchVersion} ({previousBatch.dateMade})</p>
+      <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">{changedCount} of {rows.length} ingredient{rows.length === 1 ? "" : "s"} changed.</p>
+      {rows.length > 0 ? (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[480px] text-left text-sm">
+            <thead>
+              <tr className="text-xs font-semibold uppercase tracking-[0.08em] text-[#9a5b2f]">
+                <th className="pb-2 pr-3">Ingredient</th>
+                <th className="pb-2 pr-3">Step</th>
+                <th className="pb-2 pr-3">Previous</th>
+                <th className="pb-2 pr-3">This version</th>
+                <th className="pb-2">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#ead9c8]">
+              {rows.map((row) => (
+                <tr key={row.key}>
+                  <td className="py-2 pr-3">{row.brand ? `${row.brand} ` : ""}{row.ingredient}</td>
+                  <td className="py-2 pr-3 text-[#6f5a4c]">{row.step || "—"}</td>
+                  <td className="py-2 pr-3">{row.previousQuantity === null ? "—" : `${row.previousQuantity}${row.previousUnit ? ` ${row.previousUnit}` : ""}`}</td>
+                  <td className="py-2 pr-3">{row.currentQuantity === null ? "—" : `${row.currentQuantity}${row.currentUnit ? ` ${row.currentUnit}` : ""}`}</td>
+                  <td className={`py-2 font-semibold ${statusTone[row.status]}`}>{statusLabel[row.status]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      <div className="mt-3 grid gap-2 text-xs text-[#6f5a4c] sm:grid-cols-3">
+        <p>Prep: {previousBatch.prepTimeMinutes || 0} → {currentBatch.prepTimeMinutes || 0} min</p>
+        <p>Bake: {previousBatch.bakeTimeMinutes || 0} → {currentBatch.bakeTimeMinutes || 0} min</p>
+        <p>Cooling: {previousBatch.coolingTimeMinutes || 0} → {currentBatch.coolingTimeMinutes || 0} min</p>
+        <p>Sellable: {previousBatch.usablePieces || 0} → {currentBatch.usablePieces || 0}</p>
+        <p>Rejects: {previousBatch.imperfectPieces || 0} → {currentBatch.imperfectPieces || 0}</p>
+        <p>Decision: {previousBatch.launchDecision} → {currentBatch.launchDecision}</p>
+      </div>
     </div>
   );
 }

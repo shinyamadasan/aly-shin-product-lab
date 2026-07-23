@@ -43,6 +43,20 @@ Aly:
 9. Print/download outputs should be clean reports, not full app screenshots.
 10. Every page should answer: purpose, what to enter, what it proves, and next action.
 
+## Product Development Lifecycle
+
+Every product should move through the same repeatable stages. The purpose is to reduce wasted
+ingredients, reduce repeated thinking, and make launch decisions based on evidence instead of
+opinions.
+
+A product is never "finished." It simply has enough evidence to move to the next stage.
+
+This is why comparing versions matters: the app's job is to make it obvious what changed between
+one test and the next and whether that change actually moved the evidence forward, not to just
+archive a pile of past attempts. Every feature that touches Proof Day, Batches, Costing, or Tasting
+should be evaluated against this — does it help decide "is there enough evidence yet," or is it
+just recording for its own sake.
+
 ## Page Dictionary
 
 ### Dashboard
@@ -119,7 +133,9 @@ Purpose: experiment history and comparison.
 Use when:
 - Reviewing past tests.
 - Copying formula.
-- Comparing what changed.
+- Comparing what changed — every batch shows a live diff against its previous version for the same
+  product (ingredient-by-ingredient: same/changed/new/removed, plus prep/bake/cool time, yield, and
+  decision). Computed fresh from both batches' real formulas each time, not a stale saved snapshot.
 - Printing/downloading proof records.
 - Attaching photos of the batch — each record can hold photos (camera capture on mobile), stored in
   Supabase Storage and linked to the batch.
