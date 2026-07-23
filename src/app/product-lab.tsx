@@ -3254,6 +3254,12 @@ function CostingForm({
   const foodCostPercent = suggestedPrice > 0 ? (costPerPiece / suggestedPrice) * 100 : 0;
   const markup = costPerPiece > 0 ? ((suggestedPrice - costPerPiece) / costPerPiece) * 100 : 0;
   const suggestedTargetPrice = targetFoodCost > 0 ? costPerPiece / targetFoodCost : 0;
+  // Break-even units: how many pieces of THIS batch need to sell to cover this batch's fixed-cost
+  // allocation (overhead + equipment). Direct costs (ingredients/packaging/labor/utilities/waste)
+  // scale per piece, so only indirectCost is "fixed" at the batch level here.
+  const variableCostPerPiece = costingYield > 0 ? directCost / costingYield : 0;
+  const contributionMarginPerPiece = suggestedPrice - variableCostPerPiece;
+  const breakEvenUnits = contributionMarginPerPiece > 0 ? Math.ceil(indirectCost / contributionMarginPerPiece) : 0;
   const appliedMessage = message || localMessage;
   const appliedMessageTone = message ? messageTone : localMessageTone;
   const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...customGasEquipmentNames, ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
@@ -3573,7 +3579,7 @@ function CostingForm({
           <CostingMetric label="Food cost" value={costingYield > 0 ? `${foodCostPercent.toFixed(1)}%` : "Need yield"} />
           <CostingMetric label="Gross margin" value={costingYield > 0 ? `${margin.toFixed(1)}%` : "Need yield"} />
           <CostingMetric label="Markup" value={costingYield > 0 ? `${markup.toFixed(1)}%` : "Need yield"} />
-          <CostingMetric label="Break-even" value={costingYield > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need yield"} />
+          <CostingMetric label="Break-even" value={costingYield === 0 ? "Need yield" : contributionMarginPerPiece > 0 ? `${breakEvenUnits} pcs` : "Price below cost"} />
           <CostingMetric label="Target price" value={costingYield > 0 ? `PHP ${suggestedTargetPrice.toFixed(2)}` : "Need yield"} />
         </div>
         <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-4">
@@ -3599,6 +3605,8 @@ function CostingForm({
         </div>
       </form>
       <CostingPrintReport
+        breakEvenUnits={breakEvenUnits}
+        contributionMarginPerPiece={contributionMarginPerPiece}
         costPerPiece={costPerPiece}
         costingYield={costingYield}
         directCost={directCost}
@@ -3669,6 +3677,8 @@ function NamedCostTable({ emptyLabel, rows, title, total }: { emptyLabel: string
 }
 
 function CostingPrintReport({
+  breakEvenUnits,
+  contributionMarginPerPiece,
   costPerPiece,
   costingYield,
   directCost,
@@ -3709,6 +3719,8 @@ function CostingPrintReport({
   waterCostDetail,
   waterDetail,
 }: {
+  breakEvenUnits: number;
+  contributionMarginPerPiece: number;
   costPerPiece: number;
   costingYield: number;
   directCost: number;
@@ -3765,6 +3777,7 @@ function CostingPrintReport({
           <tr><th>Gross profit/unit</th><td>PHP {grossProfit.toFixed(2)}</td><th>Gross margin</th><td>{margin.toFixed(1)}%</td></tr>
           <tr><th>Food cost</th><td>{foodCostPercent.toFixed(1)}%</td><th>Markup</th><td>{markup.toFixed(1)}%</td></tr>
           <tr><th>Target food cost</th><td>{(targetFoodCost * 100).toFixed(1)}%</td><th>Target price</th><td>PHP {suggestedTargetPrice.toFixed(2)}</td></tr>
+          <tr><th>Break-even</th><td>{contributionMarginPerPiece > 0 ? `${breakEvenUnits} pieces to cover overhead + equipment` : "Not achievable at this price"}</td><th>Contribution margin/unit</th><td>PHP {contributionMarginPerPiece.toFixed(2)}</td></tr>
         </tbody>
       </table>
 
