@@ -276,6 +276,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
   async function saveBatch(formData: FormData) {
     const batchId = String(formData.get("id") || "");
+    // The form always sends a real id now (BatchForm pre-generates one for new batches so photos
+    // can be staged against it before the batch itself is saved) -- existingId is the separate
+    // signal for whether this was actually a pre-existing row, for messaging and upsert semantics.
+    const isExisting = Boolean(formData.get("existingId"));
     const batch: ProductBatch = {
       id: batchId || crypto.randomUUID(),
       productId: String(formData.get("productId")),
@@ -296,6 +300,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     };
     if (supabase && session) {
       const payload = {
+        id: batch.id,
         product_id: batch.productId,
         batch_version: batch.batchVersion,
         date_made: batch.dateMade,
@@ -312,11 +317,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         improve_next: batch.improveNext,
         launch_decision: batch.launchDecision,
       };
-      const query = batchId
-        ? supabase.from("product_batches").update(payload).eq("id", batchId)
-        : supabase.from("product_batches").insert(payload);
-      const { error } = await query;
-      setMessage(error ? `Batch save failed: ${error.message}` : batchId ? "Batch updated." : "Batch saved.");
+      const { error } = await supabase.from("product_batches").upsert(payload);
+      setMessage(error ? `Batch save failed: ${error.message}` : isExisting ? "Batch updated." : "Batch saved.");
       setMessageTone(error ? "bad" : "good");
       if (!error) {
         setEditingBatch(null);
@@ -326,10 +328,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     }
     setLabState((current) => ({
       ...current,
-      batches: batchId ? current.batches.map((item) => (item.id === batchId ? batch : item)) : [batch, ...current.batches],
+      batches: isExisting ? current.batches.map((item) => (item.id === batch.id ? batch : item)) : [batch, ...current.batches],
     }));
     setEditingBatch(null);
-    setMessage(batchId ? "Batch updated locally." : "Batch saved locally.");
+    setMessage(isExisting ? "Batch updated locally." : "Batch saved locally.");
     setMessageTone("good");
   }
 
@@ -352,7 +354,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     setMessageTone("good");
   }
 
-  async function uploadBatchPhotos(batchId: string, files: FileList) {
+  async function uploadBatchPhotos(batchId: string, files: FileList | File[]) {
     if (!supabase || !session) {
       setMessage("Sign in with Supabase to upload photos.");
       setMessageTone("bad");
@@ -1003,7 +1005,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
-              <BatchForm batch={editingBatch} batches={labState.batches} cancelEdit={() => setEditingBatch(null)} saveBatch={saveBatch} supplies={labState.supplies} />
+              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
                 <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
@@ -1578,7 +1580,7 @@ function BatchHistoryPage({
   editBatch: (batch: ProductBatch) => void;
   labState: LabState;
   saveBatch: (formData: FormData) => void;
-  uploadBatchPhotos: (batchId: string, files: FileList) => void;
+  uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
 }) {
   const [copiedBatchId, setCopiedBatchId] = useState("");
 
@@ -1621,7 +1623,7 @@ function BatchHistoryPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
-            <BatchForm batch={batch} batches={labState.batches} cancelEdit={cancelEdit} saveBatch={saveBatch} supplies={labState.supplies} />
+            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -1684,7 +1686,7 @@ function BatchPhotosSection({
   batchId: string;
   deleteBatchPhoto: (photo: BatchPhoto) => void;
   photos: BatchPhoto[];
-  uploadBatchPhotos: (batchId: string, files: FileList) => void;
+  uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
 }) {
   const [isUploading, setIsUploading] = useState(false);
 
@@ -2010,16 +2012,28 @@ function DecisionSidebar({ labState }: { labState: LabState }) {
 function BatchForm({
   batch,
   batches,
+  batchPhotos,
   cancelEdit,
+  deleteBatchPhoto,
   saveBatch,
   supplies,
+  uploadBatchPhotos,
 }: {
   batch: ProductBatch | null;
   batches: ProductBatch[];
+  batchPhotos: BatchPhoto[];
   cancelEdit: () => void;
+  deleteBatchPhoto: (photo: BatchPhoto) => void;
   saveBatch: (formData: FormData) => void;
   supplies: SupplyEntry[];
+  uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
 }) {
+  // Generated once and reused as the batch's real id, even before it's saved -- lets photos be
+  // staged and uploaded against a real batch_id the moment the save succeeds, instead of only
+  // being addable after the record already exists and you're back on the Batches list.
+  const [formBatchId] = useState(() => batch?.id ?? crypto.randomUUID());
+  const [stagedPhotos, setStagedPhotos] = useState<Array<{ file: File; previewUrl: string; rowId: string }>>([]);
+  const [isSavingWithPhotos, setIsSavingWithPhotos] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState(batch?.productId ?? products[0].id);
   const [formulaMessage, setFormulaMessage] = useState("");
   const [formulaRows, setFormulaRows] = useState<BatchFormulaRow[]>(() => {
@@ -2086,10 +2100,22 @@ function BatchForm({
     setFormulaMessage(`Pasted ${pastedRows.length} formula row${pastedRows.length === 1 ? "" : "s"}. Edit quantities to create the V2 adjustments.`);
   }
 
+  async function submitBatch(formData: FormData) {
+    setIsSavingWithPhotos(stagedPhotos.length > 0);
+    await saveBatch(formData);
+    if (stagedPhotos.length > 0) {
+      await uploadBatchPhotos(formBatchId, stagedPhotos.map((item) => item.file));
+      stagedPhotos.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      setStagedPhotos([]);
+    }
+    setIsSavingWithPhotos(false);
+  }
+
   return (
     <FormPanel title={batch ? "Edit proof batch" : "Proof batch record"} icon={<FlaskConical size={18} />}>
-      <form action={saveBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
-        <input name="id" type="hidden" value={batch?.id ?? ""} />
+      <form action={submitBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
+        <input name="id" type="hidden" value={formBatchId} />
+        <input name="existingId" type="hidden" value={batch?.id ?? ""} />
         <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
         <input name="batchProcessStepRowIds" type="hidden" value={processStepRows.map((row) => row.rowId).join(",")} />
         <datalist id="formulaStepSuggestions">
@@ -2175,8 +2201,62 @@ function BatchForm({
         <Textarea name="wentWrong" label="Main issue found" placeholder="Example: Edges overbaked before center set; box trapped steam; drink separated after 20 minutes." defaultValue={batch?.wentWrong} />
         <Textarea name="improveNext" label="Next test only" placeholder="Example: Retest at 24 min, cool 90 min before cutting, compare two box liners." defaultValue={batch?.improveNext} />
         <Select name="launchDecision" label="Current decision" options={["retest", "launch", "pause", "remove"]} defaultValue={batch?.launchDecision ?? "retest"} />
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <p className="text-sm font-semibold">Photos</p>
+          {batch ? (
+            <>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Uploads immediately, no need to save first.</p>
+              <BatchPhotosSection batchId={batch.id} deleteBatchPhoto={deleteBatchPhoto} photos={batchPhotos.filter((photo) => photo.batchId === batch.id)} uploadBatchPhotos={uploadBatchPhotos} />
+            </>
+          ) : (
+            <>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Attach photos now — they upload automatically the moment you save this batch, not after.</p>
+              <label className="mt-3 inline-flex h-9 cursor-pointer items-center rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]">
+                Add photo
+                <input
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  multiple
+                  onChange={(event) => {
+                    const files = event.target.files;
+                    if (files && files.length > 0) {
+                      setStagedPhotos((current) => [
+                        ...current,
+                        ...Array.from(files).map((file) => ({ file, previewUrl: URL.createObjectURL(file), rowId: crypto.randomUUID() })),
+                      ]);
+                    }
+                    event.target.value = "";
+                  }}
+                  type="file"
+                />
+              </label>
+              {stagedPhotos.length > 0 ? (
+                <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+                  {stagedPhotos.map((staged) => (
+                    <div className="relative aspect-square overflow-hidden rounded-md border border-[#ead9c8] bg-white" key={staged.rowId}>
+                      {/* eslint-disable-next-line @next/next/no-img-element -- local blob: preview URL, not a static/local asset path */}
+                      <img alt={staged.file.name} className="h-full w-full object-cover" src={staged.previewUrl} />
+                      <button
+                        aria-label="Remove staged photo"
+                        className="absolute right-1 top-1 rounded-md bg-black/60 px-1.5 py-0.5 text-xs font-semibold text-white"
+                        onClick={() => {
+                          URL.revokeObjectURL(staged.previewUrl);
+                          setStagedPhotos((current) => current.filter((item) => item.rowId !== staged.rowId));
+                        }}
+                        type="button"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button>{batch ? "Update batch" : "Save batch"}</Button>
+          <Button disabled={isSavingWithPhotos}>{isSavingWithPhotos ? "Saving + uploading photos..." : batch ? "Update batch" : "Save batch"}</Button>
           {batch ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
         </div>
       </form>

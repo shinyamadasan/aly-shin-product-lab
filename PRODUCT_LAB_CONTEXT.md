@@ -108,6 +108,8 @@ Important:
 - Vague units like tsp/tbsp/cup need conversion context when costing.
 - Step names autosuggest from step names already used (this batch and past ones) so wording stays
   uniform instead of drifting into near-duplicate variants.
+- Photos can be attached while filling out the batch, not only after it's saved. They're staged
+  locally and upload automatically the moment the save succeeds, so it feels like one action.
 
 ### Batches
 

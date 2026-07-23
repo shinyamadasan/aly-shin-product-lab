@@ -32,8 +32,8 @@ export function Select({ label, options, ...props }: React.SelectHTMLAttributes<
   );
 }
 
-export function Button({ children }: { children: React.ReactNode }) {
-  return <button className="h-10 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427]" type="submit">{children}</button>;
+export function Button({ children, disabled }: { children: React.ReactNode; disabled?: boolean }) {
+  return <button className="h-10 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427] disabled:cursor-not-allowed disabled:opacity-60" disabled={disabled} type="submit">{children}</button>;
 }
 
 export function SecondaryButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
