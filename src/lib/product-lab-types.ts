@@ -36,6 +36,14 @@ export type ProductBatch = {
   launchDecision: "launch" | "retest" | "pause" | "remove";
 };
 
+export type BatchPhoto = {
+  id: string;
+  batchId: string;
+  photoUrl: string;
+  photoType: string;
+  notes: string;
+};
+
 export type CostingSummary = {
   id: string;
   productId: string;

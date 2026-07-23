@@ -1,4 +1,4 @@
-import type { ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -37,6 +37,7 @@ export const storageKey = "aly-shin-product-lab-v1";
 
 export type LabState = {
   batches: ProductBatch[];
+  batchPhotos: BatchPhoto[];
   costingEntries: CostingEntry[];
   costings: CostingSummary[];
   supplies: SupplyEntry[];
@@ -47,6 +48,7 @@ export type LabState = {
 
 export const emptyState: LabState = {
   batches: [],
+  batchPhotos: [],
   costingEntries: [],
   costings: [],
   supplies: [],

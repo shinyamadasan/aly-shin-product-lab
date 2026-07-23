@@ -29,7 +29,7 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { ContentJournalEntry, CostingEntry, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -98,8 +98,9 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       return;
     }
 
-    const [batchResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult] = await Promise.all([
+    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult] = await Promise.all([
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
+      supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_summaries").select("*").order("created_at", { ascending: false }),
       supabase.from("supply_entries").select("*").order("created_at", { ascending: false }),
@@ -112,9 +113,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const equipmentMissing = equipmentResult.error?.message.includes("equipment");
     setIsSuppliesTableMissing(Boolean(supplyMissing));
     setIsEquipmentTableMissing(Boolean(equipmentMissing));
-    if (batchResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error) {
+    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error) {
       const error =
         batchResult.error?.message ||
+        batchPhotoResult.error?.message ||
         costingEntryResult.error?.message ||
         costingResult.error?.message ||
         supplyResult.error?.message ||
@@ -144,6 +146,13 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         wentWrong: row.went_wrong ?? "",
         improveNext: row.improve_next ?? "",
         launchDecision: row.launch_decision,
+      })),
+      batchPhotos: (batchPhotoResult.data ?? []).map((row) => ({
+        id: row.id,
+        batchId: row.batch_id,
+        photoUrl: row.photo_url,
+        photoType: row.photo_type ?? "",
+        notes: row.notes ?? "",
       })),
       costingEntries: (costingEntryResult.data ?? []).map((row) => ({
         id: row.id,
@@ -331,6 +340,60 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     }
     setMessage("Batch deleted locally.");
     setMessageTone("good");
+  }
+
+  async function uploadBatchPhotos(batchId: string, files: FileList) {
+    if (!supabase || !session) {
+      setMessage("Sign in with Supabase to upload photos.");
+      setMessageTone("bad");
+      return;
+    }
+    const client = supabase;
+
+    const results = await Promise.all(
+      Array.from(files).map(async (file) => {
+        const path = `${batchId}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9.\-]+/g, "-")}`;
+        const { error: uploadError } = await client.storage.from("batch-photos").upload(path, file, { contentType: file.type });
+        if (uploadError) {
+          return uploadError.message;
+        }
+
+        const { data: publicUrlData } = client.storage.from("batch-photos").getPublicUrl(path);
+        const { error: insertError } = await client.from("batch_photos").insert({
+          batch_id: batchId,
+          photo_url: publicUrlData.publicUrl,
+          photo_type: file.type,
+        });
+        return insertError?.message ?? null;
+      }),
+    );
+
+    const failures = results.filter((result): result is string => Boolean(result));
+    if (failures.length > 0) {
+      setMessage(`Photo upload failed: ${failures[0]}. Run supabase-add-batch-photos-storage.sql if the bucket is missing.`);
+      setMessageTone("bad");
+    } else {
+      setMessage(`${files.length} photo${files.length === 1 ? "" : "s"} uploaded.`);
+      setMessageTone("good");
+    }
+    await loadSupabaseData();
+  }
+
+  async function deleteBatchPhoto(photo: BatchPhoto) {
+    if (!supabase || !session) {
+      return;
+    }
+
+    const marker = "/storage/v1/object/public/batch-photos/";
+    const markerIndex = photo.photoUrl.indexOf(marker);
+    if (markerIndex >= 0) {
+      await supabase.storage.from("batch-photos").remove([photo.photoUrl.slice(markerIndex + marker.length)]);
+    }
+
+    const { error } = await supabase.from("batch_photos").delete().eq("id", photo.id);
+    setMessage(error ? `Photo delete failed: ${error.message}` : "Photo deleted.");
+    setMessageTone(error ? "bad" : "good");
+    await loadSupabaseData();
   }
 
   async function saveCosting(formData: FormData) {
@@ -905,7 +968,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           ) : null}
 
           {view === "batches" ? (
-            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} />
+            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} uploadBatchPhotos={uploadBatchPhotos} />
           ) : null}
 
           {view === "costing" ? (
@@ -1449,16 +1512,20 @@ function BatchHistoryPage({
   batch,
   cancelEdit,
   deleteBatch,
+  deleteBatchPhoto,
   editBatch,
   labState,
   saveBatch,
+  uploadBatchPhotos,
 }: {
   batch: ProductBatch | null;
   cancelEdit: () => void;
   deleteBatch: (batchId: string) => void;
+  deleteBatchPhoto: (photo: BatchPhoto) => void;
   editBatch: (batch: ProductBatch) => void;
   labState: LabState;
   saveBatch: (formData: FormData) => void;
+  uploadBatchPhotos: (batchId: string, files: FileList) => void;
 }) {
   const [copiedBatchId, setCopiedBatchId] = useState("");
 
@@ -1535,6 +1602,7 @@ function BatchHistoryPage({
                   <DetailCard title="Process steps" lines={processSteps.length ? processSteps.map((step, index) => `${index + 1}. ${step}`) : ["No steps saved"]} />
                   <DetailCard title="Learning" lines={[batch.tasteNotes || "No process/quality notes", batch.wentWrong ? `Issue: ${batch.wentWrong}` : "Issue: none logged", batch.improveNext ? `Next: ${batch.improveNext}` : "Next: not set"]} />
                 </div>
+                <BatchPhotosSection batchId={batch.id} deleteBatchPhoto={deleteBatchPhoto} photos={labState.batchPhotos.filter((photo) => photo.batchId === batch.id)} uploadBatchPhotos={uploadBatchPhotos} />
               </article>
             );
           })}
@@ -1549,6 +1617,72 @@ function BatchHistoryPage({
       </Panel>
       <ProofBatchesPrintReport batches={labState.batches} />
     </section>
+  );
+}
+
+function BatchPhotosSection({
+  batchId,
+  deleteBatchPhoto,
+  photos,
+  uploadBatchPhotos,
+}: {
+  batchId: string;
+  deleteBatchPhoto: (photo: BatchPhoto) => void;
+  photos: BatchPhoto[];
+  uploadBatchPhotos: (batchId: string, files: FileList) => void;
+}) {
+  const [isUploading, setIsUploading] = useState(false);
+
+  async function handleFiles(files: FileList | null) {
+    if (!files || files.length === 0) {
+      return;
+    }
+    setIsUploading(true);
+    await uploadBatchPhotos(batchId, files);
+    setIsUploading(false);
+  }
+
+  return (
+    <div className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm font-semibold">Photos</p>
+        <label className="inline-flex h-9 cursor-pointer items-center rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]">
+          {isUploading ? "Uploading..." : "Add photo"}
+          <input
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            disabled={isUploading}
+            multiple
+            onChange={(event) => {
+              handleFiles(event.target.files);
+              event.target.value = "";
+            }}
+            type="file"
+          />
+        </label>
+      </div>
+      {photos.length === 0 ? (
+        <p className="mt-2 text-sm text-[#6f5a4c]">No photos yet.</p>
+      ) : (
+        <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+          {photos.map((photo) => (
+            <div className="relative aspect-square overflow-hidden rounded-md border border-[#ead9c8] bg-white" key={photo.id}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- external Supabase Storage URLs, not a static/local asset */}
+              <img alt="Batch photo" className="h-full w-full object-cover" src={photo.photoUrl} />
+              <button
+                aria-label="Delete photo"
+                className="absolute right-1 top-1 rounded-md bg-black/60 px-1.5 py-0.5 text-xs font-semibold text-white"
+                onClick={() => window.confirm("Delete this photo?") ? deleteBatchPhoto(photo) : undefined}
+                type="button"
+              >
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
