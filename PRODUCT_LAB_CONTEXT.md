@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab Context Brain
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 ## What This App Is
 
@@ -90,6 +90,11 @@ Use when:
 Must capture:
 - Product and batch/version.
 - Formula with brand, ingredient, quantity, and unit.
+- Which step each formula line belongs to (e.g. First mix, Sprinkle), so the same ingredient can
+  appear more than once in a batch without ambiguity — cocoa powder in the first mix and cocoa
+  powder as a sprinkle are two separate lines, not one.
+- The process itself as an ordered Process Steps list, kept separate from the formula. This is what
+  lets a retest keep the same ingredients but document a changed process.
 - Auto adjustment vs previous batch.
 - Prep/cook/cooling time.
 - Sellable pieces and rejects.
@@ -101,6 +106,8 @@ Important:
 - Ingredients should come from Supplies where possible.
 - Brand must travel with ingredient.
 - Vague units like tsp/tbsp/cup need conversion context when costing.
+- Step names autosuggest from step names already used (this batch and past ones) so wording stays
+  uniform instead of drifting into near-duplicate variants.
 
 ### Batches
 
@@ -111,6 +118,8 @@ Use when:
 - Copying formula.
 - Comparing what changed.
 - Printing/downloading proof records.
+- Attaching photos of the batch — each record can hold photos (camera capture on mobile), stored in
+  Supabase Storage and linked to the batch.
 
 Should not be a duplicate live-entry page. Proof Day is for recording; Batches is for reviewing.
 
@@ -165,6 +174,9 @@ Important:
 - Labor is not profit. Labor pays the person doing the work.
 - Yield must be explicit. Cost per piece is meaningless without yield.
 - Reports should print as clean costing sheets.
+- Gas/electric equipment for the utility calculators can be added inline from the equipment
+  dropdown ("+ Add new...") — no need to leave Costing and go set up a full Equipment record just to
+  name what was used.
 
 ### Tasting
 
