@@ -42,6 +42,7 @@ export type BatchPhoto = {
   photoUrl: string;
   photoType: string;
   notes: string;
+  storagePath: string;
 };
 
 export type CostingSummary = {

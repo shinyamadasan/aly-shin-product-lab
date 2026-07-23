@@ -39,8 +39,12 @@ create table if not exists batch_photos (
   photo_url text not null,
   photo_type text,
   notes text,
+  storage_path text,
   created_at timestamptz not null default now()
 );
+
+comment on column product_batches.ingredients_notes is
+  'JSON: { formula: BatchFormulaRow[], steps: string[] }. Column name predates the steps field -- it is not freeform notes.';
 
 create table if not exists costing_entries (
   id uuid primary key default gen_random_uuid(),

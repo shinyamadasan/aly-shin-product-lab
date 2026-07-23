@@ -38,6 +38,12 @@ import { RecentEntries } from "@/components/recent-entries";
 import { getCostingTotals } from "@/lib/costing";
 import { getAllocatedEquipmentCost, getEquipmentTotals, REFERENCE_COOKING_MINUTES } from "@/lib/equipment";
 
+// Keep these in sync with the file_size_limit / allowed_mime_types set on the
+// batch-photos bucket in supabase-add-batch-photos-storage.sql -- that bucket
+// config is the real enforcement point, this is just fast client-side feedback.
+const BATCH_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const BATCH_PHOTO_ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
+
 export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [labState, setLabState] = useState<LabState>(() => {
     if (typeof window === "undefined") {
@@ -153,6 +159,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         photoUrl: row.photo_url,
         photoType: row.photo_type ?? "",
         notes: row.notes ?? "",
+        storagePath: row.storage_path ?? "",
       })),
       costingEntries: (costingEntryResult.data ?? []).map((row) => ({
         id: row.id,
@@ -350,6 +357,19 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     }
     const client = supabase;
 
+    const oversized = Array.from(files).find((file) => file.size > BATCH_PHOTO_MAX_BYTES);
+    if (oversized) {
+      setMessage(`Photo upload failed: "${oversized.name}" is over the 10MB limit.`);
+      setMessageTone("bad");
+      return;
+    }
+    const wrongType = Array.from(files).find((file) => !BATCH_PHOTO_ALLOWED_TYPES.includes(file.type));
+    if (wrongType) {
+      setMessage(`Photo upload failed: "${wrongType.name}" is not a supported image type.`);
+      setMessageTone("bad");
+      return;
+    }
+
     const results = await Promise.all(
       Array.from(files).map(async (file) => {
         const path = `${batchId}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9.\-]+/g, "-")}`;
@@ -363,8 +383,14 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           batch_id: batchId,
           photo_url: publicUrlData.publicUrl,
           photo_type: file.type,
+          storage_path: path,
         });
-        return insertError?.message ?? null;
+        if (insertError) {
+          // The file uploaded but its DB row didn't -- remove it rather than leaving an orphan.
+          await client.storage.from("batch-photos").remove([path]);
+          return insertError.message;
+        }
+        return null;
       }),
     );
 
@@ -384,10 +410,19 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       return;
     }
 
+    // Older rows saved before storage_path existed don't have it -- fall back to deriving the
+    // path from the public URL for those only. New uploads always carry storage_path directly.
     const marker = "/storage/v1/object/public/batch-photos/";
     const markerIndex = photo.photoUrl.indexOf(marker);
-    if (markerIndex >= 0) {
-      await supabase.storage.from("batch-photos").remove([photo.photoUrl.slice(markerIndex + marker.length)]);
+    const storagePath = photo.storagePath || (markerIndex >= 0 ? photo.photoUrl.slice(markerIndex + marker.length) : "");
+
+    if (storagePath) {
+      const { error: removeError } = await supabase.storage.from("batch-photos").remove([storagePath]);
+      if (removeError) {
+        setMessage(`Photo delete failed: ${removeError.message}`);
+        setMessageTone("bad");
+        return;
+      }
     }
 
     const { error } = await supabase.from("batch_photos").delete().eq("id", photo.id);
@@ -1543,20 +1578,23 @@ function BatchHistoryPage({
     downloadCsv(
       "proof-batches.csv",
       ["Product", "Batch", "Date", "Decision", "Formula", "Process steps", "Taste notes", "Texture notes", "Issue", "Next test", "Sellable", "Rejects"],
-      labState.batches.map((batch) => [
-        productName(batch.productId),
-        batch.batchVersion,
-        batch.dateMade,
-        batch.launchDecision,
-        formatBatchFormula(parseBatchIngredients(batch.ingredientsNotes)),
-        parseBatchProcessSteps(batch.ingredientsNotes).map((step, index) => `${index + 1}. ${step}`).join(" / "),
-        batch.tasteNotes,
-        batch.textureNotes,
-        batch.wentWrong,
-        batch.improveNext,
-        batch.usablePieces,
-        batch.imperfectPieces,
-      ]),
+      labState.batches.map((batch) => {
+        const { formula, steps } = parseBatchRecord(batch.ingredientsNotes);
+        return [
+          productName(batch.productId),
+          batch.batchVersion,
+          batch.dateMade,
+          batch.launchDecision,
+          formatBatchFormula(formula),
+          steps.map((step, index) => `${index + 1}. ${step}`).join(" / "),
+          batch.tasteNotes,
+          batch.textureNotes,
+          batch.wentWrong,
+          batch.improveNext,
+          batch.usablePieces,
+          batch.imperfectPieces,
+        ];
+      }),
     );
   }
 
@@ -1582,8 +1620,7 @@ function BatchHistoryPage({
         <div className="divide-y divide-[#f0e4d8]">
           {labState.batches.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No proof batches yet.</p> : null}
           {labState.batches.map((batch) => {
-            const formula = parseBatchIngredients(batch.ingredientsNotes);
-            const processSteps = parseBatchProcessSteps(batch.ingredientsNotes);
+            const { formula, steps: processSteps } = parseBatchRecord(batch.ingredientsNotes);
             return (
               <article className="p-5" key={batch.id}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1705,18 +1742,21 @@ function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
           </tr>
         </thead>
         <tbody>
-          {batches.map((batch) => (
-            <tr key={batch.id}>
-              <td>{productName(batch.productId)}</td>
-              <td>{batch.batchVersion}</td>
-              <td>{batch.dateMade}</td>
-              <td>{formatBatchFormula(parseBatchIngredients(batch.ingredientsNotes)) || "No formula saved"}</td>
-              <td>{parseBatchProcessSteps(batch.ingredientsNotes).map((step, index) => `${index + 1}. ${step}`).join(" ") || "No steps saved"}</td>
-              <td>{batch.usablePieces} sellable / {batch.imperfectPieces} reject</td>
-              <td>{batch.launchDecision}</td>
-              <td>{[batch.tasteNotes, batch.textureNotes, batch.wentWrong ? `Issue: ${batch.wentWrong}` : "", batch.improveNext ? `Next: ${batch.improveNext}` : ""].filter(Boolean).join(" / ")}</td>
-            </tr>
-          ))}
+          {batches.map((batch) => {
+            const { formula, steps } = parseBatchRecord(batch.ingredientsNotes);
+            return (
+              <tr key={batch.id}>
+                <td>{productName(batch.productId)}</td>
+                <td>{batch.batchVersion}</td>
+                <td>{batch.dateMade}</td>
+                <td>{formatBatchFormula(formula) || "No formula saved"}</td>
+                <td>{steps.map((step, index) => `${index + 1}. ${step}`).join(" ") || "No steps saved"}</td>
+                <td>{batch.usablePieces} sellable / {batch.imperfectPieces} reject</td>
+                <td>{batch.launchDecision}</td>
+                <td>{[batch.tasteNotes, batch.textureNotes, batch.wentWrong ? `Issue: ${batch.wentWrong}` : "", batch.improveNext ? `Next: ${batch.improveNext}` : ""].filter(Boolean).join(" / ")}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
