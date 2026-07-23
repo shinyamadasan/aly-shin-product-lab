@@ -1409,11 +1409,39 @@ function getProductGap(stats: ReturnType<typeof getProductStats>) {
   return "Launch-ready";
 }
 
-function ContextBrain({ labState }: { labState: LabState }) {
-  const needsProof = getProductsNeedingProof(products, labState.batches);
+function ReadinessPanels({ labState }: { labState: LabState }) {
   const closestToLaunch = getClosestToLaunch(products, labState.batches, labState.costings, labState.tastings);
   const pauseCandidates = getPauseCandidates(products, labState.batches, labState.costings, labState.tastings);
   const reviewItems = getShinReviewItems(products, labState.batches, labState.costings, labState.tastings);
+
+  return (
+    <>
+      <Panel title="Closest To Launch" icon={<PackageCheck size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          {closestToLaunch.length === 0 ? <p>No product has a readiness score yet.</p> : null}
+          {closestToLaunch.map((entry) => (
+            <p key={entry.product.id}><strong>{entry.product.name}:</strong> {entry.readiness.percent}% ({entry.readiness.passed}/{entry.readiness.total} gates)</p>
+          ))}
+        </div>
+      </Panel>
+      <Panel title="Consider Pausing" icon={<ShieldAlert size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          {pauseCandidates.length === 0 ? <p>No product currently flagged to pause.</p> : null}
+          {pauseCandidates.map((product) => <p key={product.id}>{product.name}</p>)}
+        </div>
+      </Panel>
+      <Panel title="Needs Your Review" icon={<ClipboardCheck size={18} />}>
+        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+          {reviewItems.length === 0 ? <p>Nothing has enough signal for a decision yet.</p> : null}
+          {reviewItems.map((product) => <p key={product.id}>{product.name}: costed and tasted, still marked retest.</p>)}
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+function ContextBrain({ labState }: { labState: LabState }) {
+  const needsProof = getProductsNeedingProof(products, labState.batches);
   const averageRating = labState.tastings.length
     ? Math.round((labState.tastings.reduce((total, tasting) => total + tasting.rating, 0) / labState.tastings.length) * 10) / 10
     : null;
@@ -1449,26 +1477,7 @@ function ContextBrain({ labState }: { labState: LabState }) {
       </div>
 
       <div className="space-y-5">
-        <Panel title="Closest To Launch" icon={<PackageCheck size={18} />}>
-          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-            {closestToLaunch.length === 0 ? <p>No product has a readiness score yet.</p> : null}
-            {closestToLaunch.map((entry) => (
-              <p key={entry.product.id}><strong>{entry.product.name}:</strong> {entry.readiness.percent}% ({entry.readiness.passed}/{entry.readiness.total} gates)</p>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Consider Pausing" icon={<ShieldAlert size={18} />}>
-          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-            {pauseCandidates.length === 0 ? <p>No product currently flagged to pause.</p> : null}
-            {pauseCandidates.map((product) => <p key={product.id}>{product.name}</p>)}
-          </div>
-        </Panel>
-        <Panel title="Needs Your Review" icon={<ClipboardCheck size={18} />}>
-          <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-            {reviewItems.length === 0 ? <p>Nothing has enough signal for a decision yet.</p> : null}
-            {reviewItems.map((product) => <p key={product.id}>{product.name}: costed and tasted, still marked retest.</p>)}
-          </div>
-        </Panel>
+        <ReadinessPanels labState={labState} />
         <Panel title="Needs A Proof Batch" icon={<FlaskConical size={18} />}>
           <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
             {needsProof.length === 0 ? <p>Every product has at least one proof batch.</p> : null}
@@ -1894,36 +1903,41 @@ function DashboardPage({
     : "Every product has at least one proof batch logged. Pick the weakest formula and run a focused retest.";
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr]" id="dashboard">
-      <div className="rounded-lg border border-[#e1d4c4] bg-[#fffaf3] p-5">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <MetricCard icon={<Beaker size={20} />} label="Products" value={metrics.productCount} detail="Starter candidates" />
-          <MetricCard icon={<ClipboardCheck size={20} />} label="Launch-ready" value={metrics.launchCandidates} detail="Target after proof" />
-          <MetricCard icon={<FlaskConical size={20} />} label="Need batches" value={metrics.needsProof} detail="Proof logs missing" />
-          <MetricCard icon={<Star size={20} />} label="Taste entries" value={metrics.tastingEntries} detail="Target: 5 each" />
-        </div>
-        <div className="mt-5 rounded-md border border-[#e7d8c9] bg-white p-4">
-          <div className="flex items-start gap-3">
-            <span className="rounded-md bg-[#f8ead9] p-2 text-[#9a5b2f]"><CalendarDays size={20} /></span>
-            <div>
-              <h3 className="font-semibold">Next Product Proof Day</h3>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5a4c]">
-                {proofDayCopy}
-              </p>
+    <div className="space-y-5">
+      <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr]" id="dashboard">
+        <div className="rounded-lg border border-[#e1d4c4] bg-[#fffaf3] p-5">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard icon={<Beaker size={20} />} label="Products" value={metrics.productCount} detail="Starter candidates" />
+            <MetricCard icon={<ClipboardCheck size={20} />} label="Launch-ready" value={metrics.launchCandidates} detail="Target after proof" />
+            <MetricCard icon={<FlaskConical size={20} />} label="Need batches" value={metrics.needsProof} detail="Proof logs missing" />
+            <MetricCard icon={<Star size={20} />} label="Taste entries" value={metrics.tastingEntries} detail="Target: 5 each" />
+          </div>
+          <div className="mt-5 rounded-md border border-[#e7d8c9] bg-white p-4">
+            <div className="flex items-start gap-3">
+              <span className="rounded-md bg-[#f8ead9] p-2 text-[#9a5b2f]"><CalendarDays size={20} /></span>
+              <div>
+                <h3 className="font-semibold">Next Product Proof Day</h3>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5a4c]">
+                  {proofDayCopy}
+                </p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      <aside className="rounded-lg border border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef]">
-        <div className="flex items-center gap-2 text-[#ddb778]"><ShieldAlert size={20} /><p className="text-sm font-semibold uppercase tracking-[0.16em]">Guardrails</p></div>
-        <div className="mt-3 flex items-center justify-between gap-3">
-          <h3 className="text-xl font-semibold">Coffee is not a hero yet.</h3>
-          {session ? <button className="text-sm text-[#ddb778] underline" onClick={signOut}>Sign out</button> : null}
-        </div>
-        <p className="mt-3 text-sm leading-6 text-[#e6d3c4]">Bottled coffee stays as an add-on test until it proves freshness, cold delivery, margin, and premium feel.</p>
-        {message ? <MessageBox message={message} tone={messageTone} dark /> : null}
-      </aside>
-    </section>
+        <aside className="rounded-lg border border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef]">
+          <div className="flex items-center gap-2 text-[#ddb778]"><ShieldAlert size={20} /><p className="text-sm font-semibold uppercase tracking-[0.16em]">Guardrails</p></div>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <h3 className="text-xl font-semibold">Coffee is not a hero yet.</h3>
+            {session ? <button className="text-sm text-[#ddb778] underline" onClick={signOut}>Sign out</button> : null}
+          </div>
+          <p className="mt-3 text-sm leading-6 text-[#e6d3c4]">Bottled coffee stays as an add-on test until it proves freshness, cold delivery, margin, and premium feel.</p>
+          {message ? <MessageBox message={message} tone={messageTone} dark /> : null}
+        </aside>
+      </section>
+      <section className="grid gap-4 md:grid-cols-3">
+        <ReadinessPanels labState={labState} />
+      </section>
+    </div>
   );
 }
 
