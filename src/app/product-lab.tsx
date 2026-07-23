@@ -956,40 +956,91 @@ type BatchFormulaRow = {
   quantity: number;
   unit: string;
   change: string;
+  step: string;
   rowId: string;
 };
+
+type BatchProcessStepRow = { rowId: string; text: string };
 
 function buildBatchIngredientsNotes(formData: FormData) {
   const rowIds = String(formData.get("batchIngredientRowIds") || "")
     .split(",")
     .filter(Boolean);
-  const rows = rowIds
+  const formula = rowIds
     .map((rowId) => ({
       brand: String(formData.get(`batchBrand-${rowId}`) || "").trim(),
       ingredient: String(formData.get(`batchIngredient-${rowId}`) || "").trim(),
       quantity: Number(formData.get(`batchQuantity-${rowId}`) || 0),
       unit: String(formData.get(`batchUnit-${rowId}`) || "").trim(),
       change: String(formData.get(`batchChange-${rowId}`) || "").trim(),
+      step: String(formData.get(`batchIngredientStep-${rowId}`) || "").trim(),
     }))
     .filter((row) => row.brand || row.ingredient || row.quantity > 0 || row.change);
 
-  return JSON.stringify(rows);
+  const stepRowIds = String(formData.get("batchProcessStepRowIds") || "")
+    .split(",")
+    .filter(Boolean);
+  const steps = stepRowIds
+    .map((rowId) => String(formData.get(`batchProcessStep-${rowId}`) || "").trim())
+    .filter(Boolean);
+
+  return JSON.stringify({ formula, steps });
 }
 
-function parseBatchIngredients(notes: string): BatchFormulaRow[] {
+function parseBatchRecord(notes: string): { formula: BatchFormulaRow[]; steps: string[] } {
   if (!notes) {
-    return [];
+    return { formula: [], steps: [] };
   }
 
   try {
-    const parsed = JSON.parse(notes) as Array<Omit<BatchFormulaRow, "rowId">>;
-    if (!Array.isArray(parsed)) {
-      return [];
+    const parsed = JSON.parse(notes) as unknown;
+
+    // Legacy format: a bare array of formula rows with no process steps.
+    if (Array.isArray(parsed)) {
+      return {
+        formula: (parsed as Array<Partial<BatchFormulaRow>>).map((row) => ({
+          brand: row.brand ?? "",
+          change: row.change ?? "",
+          ingredient: row.ingredient ?? "",
+          previousQuantity: row.previousQuantity,
+          quantity: row.quantity ?? 0,
+          rowId: crypto.randomUUID(),
+          step: row.step ?? "",
+          unit: row.unit ?? "",
+        })),
+        steps: [],
+      };
     }
-    return parsed.map((row) => ({ ...row, brand: row.brand ?? "", rowId: crypto.randomUUID() }));
+
+    const record = parsed as { formula?: Array<Partial<BatchFormulaRow>>; steps?: unknown };
+    if (record && Array.isArray(record.formula)) {
+      return {
+        formula: record.formula.map((row) => ({
+          brand: row.brand ?? "",
+          change: row.change ?? "",
+          ingredient: row.ingredient ?? "",
+          previousQuantity: row.previousQuantity,
+          quantity: row.quantity ?? 0,
+          rowId: crypto.randomUUID(),
+          step: row.step ?? "",
+          unit: row.unit ?? "",
+        })),
+        steps: Array.isArray(record.steps) ? record.steps.filter((step): step is string => typeof step === "string") : [],
+      };
+    }
   } catch {
-    return [];
+    // fall through
   }
+
+  return { formula: [], steps: [] };
+}
+
+function parseBatchIngredients(notes: string): BatchFormulaRow[] {
+  return parseBatchRecord(notes).formula;
+}
+
+function parseBatchProcessSteps(notes: string): string[] {
+  return parseBatchRecord(notes).steps;
 }
 
 function getFormulaAdjustment(row: BatchFormulaRow) {
@@ -1017,7 +1068,7 @@ function getFormulaAdjustment(row: BatchFormulaRow) {
 function buildFormulaRowsFromPreviousBatch(previousBatch: ProductBatch | undefined) {
   const previousRows = parseBatchIngredients(previousBatch?.ingredientsNotes ?? "");
   if (previousRows.length === 0) {
-    return [{ brand: "", change: "", ingredient: "", previousQuantity: undefined, quantity: 0, rowId: crypto.randomUUID(), unit: "" }];
+    return [{ brand: "", change: "", ingredient: "", previousQuantity: undefined, quantity: 0, rowId: crypto.randomUUID(), step: "", unit: "" }];
   }
 
   return previousRows.map((row) => ({
@@ -1031,7 +1082,7 @@ function buildFormulaRowsFromPreviousBatch(previousBatch: ProductBatch | undefin
 function formatBatchFormula(formula: BatchFormulaRow[]) {
   return formula
     .filter((row) => row.ingredient.trim())
-    .map((row) => `${row.brand ? `${row.brand.trim()} ` : ""}${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}`.trim())
+    .map((row) => `${row.brand ? `${row.brand.trim()} ` : ""}${row.ingredient.trim()} - ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` - ${row.change}` : ""}${row.step ? ` [${row.step}]` : ""}`.trim())
     .join("\n");
 }
 
@@ -1053,6 +1104,7 @@ function parseFormulaText(text: string, supplies: SupplyEntry[]) {
           previousQuantity: Number(row.quantity || 0),
           quantity: Number(row.quantity || 0),
           rowId: crypto.randomUUID(),
+          step: row.step ?? "",
           unit: row.unit ?? "",
         }));
     }
@@ -1084,6 +1136,7 @@ function parseFormulaText(text: string, supplies: SupplyEntry[]) {
         previousQuantity: quantity,
         quantity,
         rowId: crypto.randomUUID(),
+        step: "",
         unit,
       };
     });
@@ -1422,13 +1475,14 @@ function BatchHistoryPage({
   function downloadBatches() {
     downloadCsv(
       "proof-batches.csv",
-      ["Product", "Batch", "Date", "Decision", "Formula", "Taste notes", "Texture notes", "Issue", "Next test", "Sellable", "Rejects"],
+      ["Product", "Batch", "Date", "Decision", "Formula", "Process steps", "Taste notes", "Texture notes", "Issue", "Next test", "Sellable", "Rejects"],
       labState.batches.map((batch) => [
         productName(batch.productId),
         batch.batchVersion,
         batch.dateMade,
         batch.launchDecision,
         formatBatchFormula(parseBatchIngredients(batch.ingredientsNotes)),
+        parseBatchProcessSteps(batch.ingredientsNotes).map((step, index) => `${index + 1}. ${step}`).join(" / "),
         batch.tasteNotes,
         batch.textureNotes,
         batch.wentWrong,
@@ -1462,6 +1516,7 @@ function BatchHistoryPage({
           {labState.batches.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No proof batches yet.</p> : null}
           {labState.batches.map((batch) => {
             const formula = parseBatchIngredients(batch.ingredientsNotes);
+            const processSteps = parseBatchProcessSteps(batch.ingredientsNotes);
             return (
               <article className="p-5" key={batch.id}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1475,8 +1530,9 @@ function BatchHistoryPage({
                     <button className="text-sm font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${batch.batchVersion}?`) ? deleteBatch(batch.id) : undefined} type="button">Delete</button>
                   </div>
                 </div>
-                <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                  <DetailCard title="Formula" lines={formula.length ? formula.map((row) => `${row.brand ? `${row.brand} ` : ""}${row.ingredient || "Ingredient"}: ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` / ${row.change}` : ""}`) : ["No formula rows saved"]} />
+                <div className="mt-4 grid gap-4 xl:grid-cols-3">
+                  <DetailCard title="Formula" lines={formula.length ? formula.map((row) => `${row.brand ? `${row.brand} ` : ""}${row.ingredient || "Ingredient"}: ${row.quantity || ""}${row.unit ? ` ${row.unit}` : ""}${row.change ? ` / ${row.change}` : ""}${row.step ? ` [${row.step}]` : ""}`) : ["No formula rows saved"]} />
+                  <DetailCard title="Process steps" lines={processSteps.length ? processSteps.map((step, index) => `${index + 1}. ${step}`) : ["No steps saved"]} />
                   <DetailCard title="Learning" lines={[batch.tasteNotes || "No process/quality notes", batch.wentWrong ? `Issue: ${batch.wentWrong}` : "Issue: none logged", batch.improveNext ? `Next: ${batch.improveNext}` : "Next: not set"]} />
                 </div>
               </article>
@@ -1508,6 +1564,7 @@ function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
             <th>Batch</th>
             <th>Date</th>
             <th>Formula</th>
+            <th>Process steps</th>
             <th>Yield</th>
             <th>Decision</th>
             <th>Learning / Next Test</th>
@@ -1520,6 +1577,7 @@ function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
               <td>{batch.batchVersion}</td>
               <td>{batch.dateMade}</td>
               <td>{formatBatchFormula(parseBatchIngredients(batch.ingredientsNotes)) || "No formula saved"}</td>
+              <td>{parseBatchProcessSteps(batch.ingredientsNotes).map((step, index) => `${index + 1}. ${step}`).join(" ") || "No steps saved"}</td>
               <td>{batch.usablePieces} sellable / {batch.imperfectPieces} reject</td>
               <td>{batch.launchDecision}</td>
               <td>{[batch.tasteNotes, batch.textureNotes, batch.wentWrong ? `Issue: ${batch.wentWrong}` : "", batch.improveNext ? `Next: ${batch.improveNext}` : ""].filter(Boolean).join(" / ")}</td>
@@ -1783,8 +1841,16 @@ function BatchForm({
     return buildFormulaRowsFromPreviousBatch(batches.find((item) => item.productId === (batch?.productId ?? products[0].id)));
   });
 
+  const [processStepRows, setProcessStepRows] = useState<BatchProcessStepRow[]>(() => {
+    const savedSteps = parseBatchProcessSteps(batch?.ingredientsNotes ?? "");
+    if (savedSteps.length > 0) {
+      return savedSteps.map((text) => ({ rowId: crypto.randomUUID(), text }));
+    }
+    return [{ rowId: crypto.randomUUID(), text: "" }];
+  });
+
   function addFormulaRow() {
-    setFormulaRows((current) => [...current, { brand: "", change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), unit: "" }]);
+    setFormulaRows((current) => [...current, { brand: "", change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), step: "", unit: "" }]);
   }
 
   function changeProduct(productId: string) {
@@ -1796,6 +1862,14 @@ function BatchForm({
 
   function updateFormulaRow(rowId: string, changes: Partial<BatchFormulaRow>) {
     setFormulaRows((current) => current.map((row) => row.rowId === rowId ? { ...row, ...changes } : row));
+  }
+
+  function addProcessStepRow() {
+    setProcessStepRows((current) => [...current, { rowId: crypto.randomUUID(), text: "" }]);
+  }
+
+  function updateProcessStepRow(rowId: string, text: string) {
+    setProcessStepRows((current) => current.map((row) => (row.rowId === rowId ? { ...row, text } : row)));
   }
 
   async function pasteFormulaFromClipboard() {
@@ -1820,6 +1894,7 @@ function BatchForm({
       <form action={saveBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
         <input name="id" type="hidden" value={batch?.id ?? ""} />
         <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
+        <input name="batchProcessStepRowIds" type="hidden" value={processStepRows.map((row) => row.rowId).join(",")} />
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
@@ -1835,7 +1910,7 @@ function BatchForm({
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-sm font-semibold">Formula / ingredients tested</p>
-              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Record the actual formula. Use change notes for +10g sugar, less butter, new cocoa, etc.</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Record the actual formula. Use change notes for +10g sugar, less butter, new cocoa, etc. Use Step when the same ingredient is added more than once, like Cocoa powder in both First mix and Final mix.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={pasteFormulaFromClipboard} type="button">Paste formula</button>
@@ -1845,10 +1920,11 @@ function BatchForm({
           {formulaMessage ? <p className="mt-3 rounded-md border border-[#ead9c8] bg-white px-3 py-2 text-sm text-[#5f4a3d]">{formulaMessage}</p> : null}
           <div className="mt-3 grid gap-3">
             {formulaRows.map((row, index) => (
-              <div className="grid gap-2 lg:grid-cols-[minmax(220px,2fr)_100px_80px_150px_170px_70px]" key={row.rowId}>
+              <div className="grid gap-2 lg:grid-cols-[minmax(220px,2fr)_100px_80px_130px_150px_170px_70px]" key={row.rowId}>
                 <SupplyItemPicker row={row} rowIndex={index} supplies={supplies} updateFormulaRow={updateFormulaRow} />
                 <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" value={row.quantity || ""} onChange={(event) => updateFormulaRow(row.rowId, { quantity: Number(event.target.value || 0) })} />
                 <Input name={`batchUnit-${row.rowId}`} label="Unit used" placeholder="g / ml / tbsp" value={row.unit} onChange={(event) => updateFormulaRow(row.rowId, { unit: event.target.value })} />
+                <Input name={`batchIngredientStep-${row.rowId}`} label="Step" placeholder="First mix" value={row.step} onChange={(event) => updateFormulaRow(row.rowId, { step: event.target.value })} />
                 <div className="grid gap-1 text-sm font-medium">
                   Previous
                   <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{row.previousQuantity === undefined ? "No previous" : `${row.previousQuantity || 0}${row.unit ? ` ${row.unit}` : ""}`}</p>
@@ -1859,6 +1935,23 @@ function BatchForm({
                   <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{getFormulaAdjustment(row) || "No change yet"}</p>
                 </div>
                 <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setFormulaRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold">Process steps</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Write the actual method in order. Match the wording used in the formula&apos;s Step field, like First mix or Final mix.</p>
+            </div>
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addProcessStepRow} type="button">Add step</button>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {processStepRows.map((row, index) => (
+              <div className="grid gap-2 lg:grid-cols-[1fr_70px]" key={row.rowId}>
+                <Input name={`batchProcessStep-${row.rowId}`} label={`Step ${index + 1}`} placeholder="Cream butter and sugar for 3 minutes" value={row.text} onChange={(event) => updateProcessStepRow(row.rowId, event.target.value)} />
+                <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setProcessStepRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
               </div>
             ))}
           </div>
@@ -2780,6 +2873,84 @@ function EquipmentPrintReport({ equipment }: { equipment: EquipmentEntry[] }) {
   );
 }
 
+function EquipmentNameField({
+  formFieldName,
+  label,
+  onAdd,
+  onChange,
+  options,
+  placeholder,
+  value,
+}: {
+  formFieldName: string;
+  label: string;
+  onAdd: (name: string) => void;
+  onChange: (name: string) => void;
+  options: string[];
+  placeholder: string;
+  value: string;
+}) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [draftName, setDraftName] = useState("");
+
+  function confirmAdd() {
+    const trimmed = draftName.trim();
+    if (!trimmed) {
+      setIsAdding(false);
+      return;
+    }
+    onAdd(trimmed);
+    onChange(trimmed);
+    setDraftName("");
+    setIsAdding(false);
+  }
+
+  return (
+    <label className="grid gap-1 text-sm font-medium">
+      {label}
+      <input name={formFieldName} type="hidden" value={value} />
+      {isAdding ? (
+        <div className="flex gap-2">
+          <input
+            autoFocus
+            className="h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal"
+            onChange={(event) => setDraftName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                confirmAdd();
+              }
+              if (event.key === "Escape") {
+                setIsAdding(false);
+                setDraftName("");
+              }
+            }}
+            placeholder={placeholder}
+            value={draftName}
+          />
+          <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={confirmAdd} type="button">Add</button>
+          <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => { setIsAdding(false); setDraftName(""); }} type="button">Cancel</button>
+        </div>
+      ) : (
+        <select
+          className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+          onChange={(event) => {
+            if (event.target.value === "__add_new__") {
+              setIsAdding(true);
+              return;
+            }
+            onChange(event.target.value);
+          }}
+          value={value}
+        >
+          {options.map((name) => <option key={name} value={name}>{name}</option>)}
+          <option value="__add_new__">+ Add new...</option>
+        </select>
+      )}
+    </label>
+  );
+}
+
 function CostingForm({
   cancelEdit,
   batches,
@@ -2857,6 +3028,12 @@ function CostingForm({
     litersUsed: 0,
     ratePerCubicMeter: 0,
   });
+  const [customGasEquipmentNames, setCustomGasEquipmentNames] = useState<string[]>(() =>
+    structuredDetail?.gasDetail?.equipmentName ? [structuredDetail.gasDetail.equipmentName] : [],
+  );
+  const [customElectricEquipmentNames, setCustomElectricEquipmentNames] = useState<string[]>(() =>
+    structuredDetail?.electricityDetail?.equipmentName ? [structuredDetail.electricityDetail.equipmentName] : [],
+  );
   const [suggestedPrice, setSuggestedPrice] = useState(costing?.suggestedPrice ?? 0);
   const [targetFoodCost, setTargetFoodCost] = useState(structuredDetail?.targetFoodCost ?? 0.35);
   const [localMessage, setLocalMessage] = useState("");
@@ -2902,8 +3079,8 @@ function CostingForm({
   const suggestedTargetPrice = targetFoodCost > 0 ? costPerPiece / targetFoodCost : 0;
   const appliedMessage = message || localMessage;
   const appliedMessageTone = message ? messageTone : localMessageTone;
-  const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
-  const electricEquipmentOptions = Array.from(new Set(["Electric oven", "Mixer", "Blender", "Espresso machine", "Refrigerator", ...equipment.filter((item) => item.calculationMode !== "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
+  const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...customGasEquipmentNames, ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
+  const electricEquipmentOptions = Array.from(new Set(["Electric oven", "Mixer", "Blender", "Espresso machine", "Refrigerator", ...customElectricEquipmentNames, ...equipment.filter((item) => item.calculationMode !== "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
 
   function changeProduct(productId: string) {
     setSelectedProductId(productId);
@@ -3126,12 +3303,15 @@ function CostingForm({
           <div className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
             <p className="text-sm font-semibold">Gas cost per minute</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-4">
-              <label className="grid gap-1 text-sm font-medium">
-                Gas equipment
-                <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="gasEquipmentName" onChange={(event) => setGasDetail((current) => ({ ...current, equipmentName: event.target.value }))} value={gasDetail.equipmentName || "Oven"}>
-                  {gasEquipmentOptions.map((name) => <option key={name} value={name}>{name}</option>)}
-                </select>
-              </label>
+              <EquipmentNameField
+                formFieldName="gasEquipmentName"
+                label="Gas equipment"
+                onAdd={(name) => setCustomGasEquipmentNames((current) => Array.from(new Set([...current, name])))}
+                onChange={(name) => setGasDetail((current) => ({ ...current, equipmentName: name }))}
+                options={gasEquipmentOptions}
+                placeholder="Turbo broiler"
+                value={gasDetail.equipmentName || "Oven"}
+              />
               <Input name="gasKg" label="Gas tank kg" type="number" step="0.01" placeholder="11" value={gasDetail.gasKg || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasKg: Number(event.target.value || 0) }))} />
               <Input name="gasPrice" label="Refill price PHP" type="number" step="0.01" placeholder="950" value={gasDetail.gasPrice || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasPrice: Number(event.target.value || 0) }))} />
               <Input name="gasUseKgPerHour" label="Gas use kg/hour" type="number" step="0.001" placeholder="0.20" value={gasDetail.gasUseKgPerHour || ""} onChange={(event) => setGasDetail((current) => ({ ...current, gasUseKgPerHour: Number(event.target.value || 0) }))} />
@@ -3146,12 +3326,15 @@ function CostingForm({
           <div className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
             <p className="text-sm font-semibold">Electricity cost</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-4">
-              <label className="grid gap-1 text-sm font-medium">
-                Electric equipment
-                <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="electricityEquipmentName" onChange={(event) => setElectricityDetail((current) => ({ ...current, equipmentName: event.target.value }))} value={electricityDetail.equipmentName || "Electric oven"}>
-                  {electricEquipmentOptions.map((name) => <option key={name} value={name}>{name}</option>)}
-                </select>
-              </label>
+              <EquipmentNameField
+                formFieldName="electricityEquipmentName"
+                label="Electric equipment"
+                onAdd={(name) => setCustomElectricEquipmentNames((current) => Array.from(new Set([...current, name])))}
+                onChange={(name) => setElectricityDetail((current) => ({ ...current, equipmentName: name }))}
+                options={electricEquipmentOptions}
+                placeholder="Air fryer"
+                value={electricityDetail.equipmentName || "Electric oven"}
+              />
               <Input name="electricityWatts" label="Appliance watts" type="number" step="1" placeholder="1500" value={electricityDetail.applianceWatts || ""} onChange={(event) => setElectricityDetail((current) => ({ ...current, applianceWatts: Number(event.target.value || 0) }))} />
               <Input name="electricityMinutes" label="Minutes used" type="number" step="1" value={electricityDetail.minutes || ""} onChange={(event) => setElectricityDetail((current) => ({ ...current, minutes: Number(event.target.value || 0) }))} />
               <Input name="electricityRatePerKwh" label="PHP per kWh" type="number" step="0.01" placeholder="12" value={electricityDetail.ratePerKwh || ""} onChange={(event) => setElectricityDetail((current) => ({ ...current, ratePerKwh: Number(event.target.value || 0) }))} />
