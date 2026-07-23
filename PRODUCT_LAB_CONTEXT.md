@@ -27,7 +27,8 @@ Shin:
 Aly:
 - Uses the app mainly during or after real kitchen work.
 - Should not have to understand database structure or business theory to enter useful records.
-- Needs low-friction flows: Proof Day, Tasting, Content Journal, and possibly Supplies.
+- Needs low-friction flows: Proof Day, tasting checkpoints (now nested under Batches), Content
+  Journal, and possibly Supplies.
 
 ## Product Lab Principles
 
@@ -122,8 +123,13 @@ Use when:
 - Printing/downloading proof records.
 - Attaching photos of the batch — each record can hold photos (camera capture on mobile), stored in
   Supabase Storage and linked to the batch.
+- Logging tasting checkpoints — there is no separate Tasting page. Feedback lives directly under
+  each batch, and a batch can have several checkpoints over time (e.g. "2 hours post-bake", "24
+  hours", "Day 3"). The checkpoint timing is free text the operator writes, not a fixed schedule,
+  because real tasting doesn't happen on a clock.
 
-Should not be a duplicate live-entry page. Proof Day is for recording; Batches is for reviewing.
+Should not be a duplicate live-entry page. Proof Day is for recording; Batches is for reviewing —
+and, now, for logging tasting checkpoints and photos as they happen over the following hours/days.
 
 ### Supplies
 
@@ -179,25 +185,6 @@ Important:
 - Gas/electric equipment for the utility calculators can be added inline from the equipment
   dropdown ("+ Add new...") — no need to leave Costing and go set up a full Equipment record just to
   name what was used.
-
-### Tasting
-
-Purpose: outside feedback and buying signal.
-
-Use when:
-- Someone tastes a test product.
-- Feedback affects launch, retest, price, packaging, or flavor decisions.
-
-Must capture:
-- Taster.
-- Which proof batch/version they actually tasted (not just the product) — this is what makes it
-  possible to tell whether a specific formula change actually improved the taste signal.
-- Rating.
-- What they liked.
-- What should improve.
-- Would buy / reorder.
-- Willingness to pay.
-- Packaging reaction.
 
 ### Content Journal
 
@@ -276,7 +263,8 @@ Costing:
 - May store structured details in notes when schema does not yet have dedicated columns.
 
 Tasting:
-- Validates whether people want the product and at what price.
+- Nested under Proof Batch, not its own top-level entity — a batch can have several checkpoints
+  over time. Validates whether people want the product and at what price.
 
 Content Journal:
 - Converts proof work into marketing assets and ideas.

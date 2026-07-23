@@ -11,7 +11,6 @@ const titles = {
   costing: "Costing and pricing",
   supplies: "Supplies and supplier prices",
   equipment: "Equipment and depreciation",
-  tasting: "Tasting feedback",
   journal: "Content journal",
   admin: "Product admin",
   launch: "Launch offer builder",

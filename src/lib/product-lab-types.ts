@@ -91,6 +91,7 @@ export type TastingFeedback = {
   id: string;
   productId: string;
   batchId: string;
+  timeLabel: string;
   tasterName: string;
   rating: number;
   liked: string;

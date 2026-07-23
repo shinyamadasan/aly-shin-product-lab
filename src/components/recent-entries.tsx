@@ -1,34 +1,29 @@
 import { getCostingTotals } from "@/lib/costing";
 import type { LabState } from "@/lib/lab-state";
-import type { ContentJournalEntry, CostingSummary, ProductBatch, TastingFeedback } from "@/lib/product-lab-types";
+import type { ContentJournalEntry, CostingSummary, ProductBatch } from "@/lib/product-lab-types";
 import { productName } from "@/components/product-controls";
 
 export function RecentEntries({
   deleteBatch,
   deleteCosting,
   deleteJournal,
-  deleteTasting,
   editBatch,
   editCosting,
   editJournal,
-  editTasting,
   labState,
   only,
 }: {
   deleteBatch?: (batchId: string) => void;
   deleteCosting?: (costing: CostingSummary) => void;
   deleteJournal?: (journalId: string) => void;
-  deleteTasting?: (tastingId: string) => void;
   editBatch?: (batch: ProductBatch) => void;
   editCosting?: (costing: CostingSummary) => void;
   editJournal?: (entry: ContentJournalEntry) => void;
-  editTasting?: (entry: TastingFeedback) => void;
   labState: LabState;
-  only?: "batches" | "costing" | "tasting" | "journal";
+  only?: "batches" | "costing" | "journal";
 }) {
   const showBatches = !only || only === "batches";
   const showCosting = !only || only === "costing";
-  const showTasting = !only || only === "tasting";
   const showJournal = !only || only === "journal";
 
   return (
@@ -41,7 +36,7 @@ export function RecentEntries({
         <p className="text-sm text-[#6f5a4c]">Use this to confirm saves before refreshing.</p>
       </div>
 
-      <div className={`mt-5 grid gap-4 ${only ? "xl:grid-cols-1" : "xl:grid-cols-4"}`}>
+      <div className={`mt-5 grid gap-4 ${only ? "xl:grid-cols-1" : "xl:grid-cols-3"}`}>
         {showBatches ? <RecentList
           title="Batches"
           empty="No batches saved yet."
@@ -69,20 +64,6 @@ export function RecentEntries({
               detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${latestBatch?.usablePieces ? `PHP ${costPerPiece.toFixed(2)}` : "needs yield"}. Margin ${latestBatch?.usablePieces ? `${margin.toFixed(1)}%` : "needs yield"}.`,
               onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
               onEdit: editCosting ? () => editCosting(costing) : undefined,
-            };
-          })}
-        /> : null}
-        {showTasting ? <RecentList
-          title="Tasting"
-          empty="No tasting saved yet."
-          items={labState.tastings.slice(0, 3).map((tasting) => {
-            const tastedBatch = labState.batches.find((batch) => batch.id === tasting.batchId);
-            return {
-              id: tasting.id,
-              title: `${productName(tasting.productId)}${tastedBatch ? ` (${tastedBatch.batchVersion})` : ""}: ${tasting.rating}/10`,
-              detail: `${tasting.tasterName} would buy: ${tasting.wouldBuy}. Reorder: ${tasting.wouldReorder}. Pay: PHP ${tasting.willingToPay || 0}.`,
-              onDelete: deleteTasting ? () => deleteTasting(tasting.id) : undefined,
-              onEdit: editTasting ? () => editTasting(tasting) : undefined,
             };
           })}
         /> : null}

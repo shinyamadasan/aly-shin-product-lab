@@ -6,7 +6,6 @@ import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   Beaker,
-  BookOpenText,
   CalendarDays,
   CheckCircle2,
   ChevronDown,
@@ -63,7 +62,6 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
   const [editingEquipment, setEditingEquipment] = useState<EquipmentEntry | null>(null);
-  const [editingTasting, setEditingTasting] = useState<TastingFeedback | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
 
   useEffect(() => {
@@ -222,6 +220,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         id: row.id,
         productId: row.product_id,
         batchId: row.batch_id ?? "",
+        timeLabel: row.time_label ?? "",
         tasterName: row.taster_name,
         rating: row.rating ?? 0,
         liked: row.liked ?? "",
@@ -854,6 +853,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       id: tastingId || crypto.randomUUID(),
       productId: String(formData.get("productId")),
       batchId: String(formData.get("batchId") || ""),
+      timeLabel: String(formData.get("timeLabel") || "").trim(),
       tasterName: String(formData.get("tasterName") || "Unnamed taster"),
       rating: Number(formData.get("rating") || 0),
       liked: String(formData.get("liked") || ""),
@@ -867,6 +867,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       const payload = {
         product_id: tasting.productId,
         batch_id: tasting.batchId || null,
+        time_label: tasting.timeLabel,
         taster_name: tasting.tasterName,
         rating: tasting.rating,
         liked: tasting.liked,
@@ -882,9 +883,6 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       const { error } = await query;
       setMessage(error ? `Feedback save failed: ${error.message}` : tastingId ? "Feedback updated." : "Feedback saved.");
       setMessageTone(error ? "bad" : "good");
-      if (!error) {
-        setEditingTasting(null);
-      }
       await loadSupabaseData();
       return;
     }
@@ -892,7 +890,6 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       ...current,
       tastings: tastingId ? current.tastings.map((entry) => (entry.id === tastingId ? tasting : entry)) : [tasting, ...current.tastings],
     }));
-    setEditingTasting(null);
     setMessage(tastingId ? "Feedback updated locally." : "Feedback saved locally.");
     setMessageTone("good");
   }
@@ -902,16 +899,10 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       const { error } = await supabase.from("tasting_feedback").delete().eq("id", tastingId);
       setMessage(error ? `Feedback delete failed: ${error.message}` : "Feedback deleted.");
       setMessageTone(error ? "bad" : "good");
-      if (!error && editingTasting?.id === tastingId) {
-        setEditingTasting(null);
-      }
       await loadSupabaseData();
       return;
     }
     setLabState((current) => ({ ...current, tastings: current.tastings.filter((entry) => entry.id !== tastingId) }));
-    if (editingTasting?.id === tastingId) {
-      setEditingTasting(null);
-    }
     setMessage("Feedback deleted locally.");
     setMessageTone("good");
   }
@@ -1014,7 +1005,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           ) : null}
 
           {view === "batches" ? (
-            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} uploadBatchPhotos={uploadBatchPhotos} />
+            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} />
           ) : null}
 
           {view === "costing" ? (
@@ -1029,13 +1020,6 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "supplies" ? <SuppliesPage cancelEdit={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={editingSupply} /> : null}
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
-
-          {view === "tasting" ? (
-            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="tasting">
-              <TastingForm batches={labState.batches} cancelEdit={() => setEditingTasting(null)} saveTasting={saveTasting} tasting={editingTasting} />
-              <RecentEntries deleteTasting={deleteTasting} editTasting={setEditingTasting} labState={labState} only="tasting" />
-            </section>
-          ) : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
@@ -1499,7 +1483,7 @@ function OperatingGuide({ labState }: { labState: LabState }) {
     { title: "1. Record the kitchen test", page: "/proof-day", detail: "Use Proof Day every time a product is made. Select the product, adjust the auto-filled formula, record timing, sellable yield, issues, freshness, packaging behavior, and the next test only." },
     { title: "2. Capture useful content", page: "/proof-day", detail: "Use the content journal only when real media or a real lesson exists. Log texture close-ups, process clips, packaging photos, reactions, content angle, and next action." },
     { title: "3. Review the experiment history", page: "/batches", detail: "Use Batches after the kitchen work. Compare formulas, see automatic ingredient adjustments, review what failed, and decide whether to retest, pause, launch, or remove." },
-    { title: "4. Add tasting feedback", page: "/tasting", detail: "Use Tasting when someone tries the product. Record rating, what they liked, what should improve, willingness to pay, reorder signal, and packaging reaction." },
+    { title: "4. Add tasting checkpoints", page: "/batches", detail: "Tasting now lives directly under each batch on the Batches page. Add a checkpoint every time someone tries it -- 2 hours post-bake, 24 hours, whenever -- with rating, what they liked, what should improve, willingness to pay, reorder signal, and packaging reaction." },
     { title: "5. Cost only promising formulas", page: "/costing", detail: "Use Costing after the formula is close. Pull the latest proof formula into ingredients, then add real costs, packaging, labor, utilities, waste, and suggested price." },
     { title: "6. Check product readiness", page: "/product-detail", detail: "Use Product Detail to see the full picture for one product: proof, costing, tasting, content, and what is missing before launch." },
     { title: "7. Prepare the offer later", page: "/launch", detail: "Use Launch Offer only after proof, tasting, costing, freshness, and packaging look good enough. Draft cutoff, pickup or delivery rules, storage, serving instructions, and bundle idea." },
@@ -1568,18 +1552,22 @@ function BatchHistoryPage({
   cancelEdit,
   deleteBatch,
   deleteBatchPhoto,
+  deleteTasting,
   editBatch,
   labState,
   saveBatch,
+  saveTasting,
   uploadBatchPhotos,
 }: {
   batch: ProductBatch | null;
   cancelEdit: () => void;
   deleteBatch: (batchId: string) => void;
   deleteBatchPhoto: (photo: BatchPhoto) => void;
+  deleteTasting: (tastingId: string) => void;
   editBatch: (batch: ProductBatch) => void;
   labState: LabState;
   saveBatch: (formData: FormData) => void;
+  saveTasting: (formData: FormData) => void;
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
 }) {
   const [copiedBatchId, setCopiedBatchId] = useState("");
@@ -1660,6 +1648,7 @@ function BatchHistoryPage({
                   <DetailCard title="Learning" lines={[batch.tasteNotes || "No process/quality notes", batch.wentWrong ? `Issue: ${batch.wentWrong}` : "Issue: none logged", batch.improveNext ? `Next: ${batch.improveNext}` : "Next: not set"]} />
                 </div>
                 <BatchPhotosSection batchId={batch.id} deleteBatchPhoto={deleteBatchPhoto} photos={labState.batchPhotos.filter((photo) => photo.batchId === batch.id)} uploadBatchPhotos={uploadBatchPhotos} />
+                <BatchTastingSection batchId={batch.id} deleteTasting={deleteTasting} productId={batch.productId} saveTasting={saveTasting} tastings={labState.tastings.filter((tasting) => tasting.batchId === batch.id)} />
               </article>
             );
           })}
@@ -4177,44 +4166,76 @@ function CostingGuide() {
   );
 }
 
-function TastingForm({
-  batches,
-  cancelEdit,
+function BatchTastingSection({
+  batchId,
+  deleteTasting,
+  productId,
   saveTasting,
-  tasting,
+  tastings,
 }: {
-  batches: ProductBatch[];
-  cancelEdit: () => void;
+  batchId: string;
+  deleteTasting: (tastingId: string) => void;
+  productId: string;
   saveTasting: (formData: FormData) => void;
-  tasting: TastingFeedback | null;
+  tastings: TastingFeedback[];
 }) {
-  const [selectedProductId, setSelectedProductId] = useState(tasting?.productId ?? products[0].id);
-  const productBatches = batches.filter((batch) => batch.productId === selectedProductId);
+  const [isAdding, setIsAdding] = useState(false);
+
+  function submitCheckpoint(formData: FormData) {
+    saveTasting(formData);
+    setIsAdding(false);
+  }
 
   return (
-    <FormPanel title={tasting ? "Edit tasting feedback" : "Add tasting feedback"} icon={<BookOpenText size={18} />}>
-      <form action={saveTasting} className="grid gap-3" key={tasting?.id ?? "new-tasting"}>
-        <input name="id" type="hidden" value={tasting?.id ?? ""} />
-        <ProductSelect onChange={(event) => setSelectedProductId(event.target.value)} selectedProductId={tasting?.productId} value={selectedProductId} />
-        <label className="grid gap-1 text-sm font-medium">
-          Which batch/version did they taste?
-          <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={tasting?.batchId ?? ""} name="batchId">
-            <option value="">Not sure / general feedback</option>
-            {productBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.batchVersion} ({batch.dateMade})</option>)}
-          </select>
-          {productBatches.length === 0 ? <span className="text-xs font-normal leading-5 text-[#6f5a4c]">No proof batches logged for this product yet.</span> : null}
-        </label>
-        <div className="grid gap-3 sm:grid-cols-2"><Input name="tasterName" label="Taster name" defaultValue={tasting?.tasterName} /><Input name="rating" label="Rating 1-10" type="number" min="1" max="10" defaultValue={tasting?.rating || undefined} /></div>
-        <Textarea name="liked" label="What they liked" defaultValue={tasting?.liked} />
-        <Textarea name="improve" label="What should improve" defaultValue={tasting?.improve} />
-        <div className="grid gap-3 sm:grid-cols-3"><Select name="wouldBuy" label="Would buy" options={["yes", "maybe", "no"]} defaultValue={tasting?.wouldBuy ?? "maybe"} /><Input name="willingToPay" label="Willing to pay" type="number" defaultValue={tasting?.willingToPay || undefined} /><Select name="wouldReorder" label="Would reorder" options={["yes", "maybe", "no"]} defaultValue={tasting?.wouldReorder ?? "maybe"} /></div>
-        <Textarea name="packagingReaction" label="Packaging reaction" defaultValue={tasting?.packagingReaction} />
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Button>{tasting ? "Update feedback" : "Save feedback"}</Button>
-          {tasting ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+    <div className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm font-semibold">Tasting checkpoints</p>
+        <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsAdding((current) => !current)} type="button">
+          {isAdding ? "Cancel" : "Add tasting checkpoint"}
+        </button>
+      </div>
+      {tastings.length === 0 && !isAdding ? <p className="mt-2 text-sm text-[#6f5a4c]">No tasting checkpoints yet — add one anytime, like 2 hours or 24 hours after baking.</p> : null}
+      {tastings.length > 0 ? (
+        <div className="mt-3 grid gap-2">
+          {tastings.map((tasting) => (
+            <div className="flex items-start justify-between gap-3 rounded-md border border-[#ead9c8] bg-white p-3 text-sm" key={tasting.id}>
+              <div>
+                <p className="font-semibold">{tasting.timeLabel || "No timing noted"} — {tasting.tasterName}: {tasting.rating}/10</p>
+                <p className="mt-1 leading-5 text-[#6f5a4c]">
+                  Would buy: {tasting.wouldBuy}. Reorder: {tasting.wouldReorder}. Pay: PHP {tasting.willingToPay || 0}.
+                  {tasting.liked ? ` Liked: ${tasting.liked}.` : ""}
+                  {tasting.improve ? ` Improve: ${tasting.improve}.` : ""}
+                  {tasting.packagingReaction ? ` Packaging: ${tasting.packagingReaction}.` : ""}
+                </p>
+              </div>
+              <button className="shrink-0 text-xs font-semibold text-[#8a3827] underline" onClick={() => window.confirm("Delete this tasting checkpoint?") ? deleteTasting(tasting.id) : undefined} type="button">Delete</button>
+            </div>
+          ))}
         </div>
-      </form>
-    </FormPanel>
+      ) : null}
+      {isAdding ? (
+        <form action={submitCheckpoint} className="mt-3 grid gap-3 rounded-md border border-[#ead9c8] bg-white p-3">
+          <input name="productId" type="hidden" value={productId} />
+          <input name="batchId" type="hidden" value={batchId} />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input name="timeLabel" label="Checkpoint timing" placeholder="2 hours post-bake" helper="Whatever timing fits — 2 hours, 24 hours, Day 3." />
+            <Input name="tasterName" label="Taster name" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input name="rating" label="Rating 1-10" type="number" min="1" max="10" />
+            <Input name="willingToPay" label="Willing to pay" type="number" />
+          </div>
+          <Textarea name="liked" label="What they liked" />
+          <Textarea name="improve" label="What should improve" />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Select name="wouldBuy" label="Would buy" options={["yes", "maybe", "no"]} defaultValue="maybe" />
+            <Select name="wouldReorder" label="Would reorder" options={["yes", "maybe", "no"]} defaultValue="maybe" />
+          </div>
+          <Textarea name="packagingReaction" label="Packaging reaction" />
+          <Button>Save checkpoint</Button>
+        </form>
+      ) : null}
+    </div>
   );
 }
 

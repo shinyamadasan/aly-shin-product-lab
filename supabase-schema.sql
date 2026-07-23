@@ -108,6 +108,7 @@ create table if not exists tasting_feedback (
   would_reorder text,
   packaging_reaction text,
   notes text,
+  time_label text,
   created_at timestamptz not null default now()
 );
 
