@@ -57,6 +57,8 @@ export type CostingSummary = {
   refrigerationCost: number;
   coffeeEquipmentCost: number;
   wasteAllowance: number;
+  overheadCost: number;
+  equipmentCost: number;
   suggestedPrice: number;
   notes: string;
 };

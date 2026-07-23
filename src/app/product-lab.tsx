@@ -183,6 +183,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         refrigerationCost: Number(row.refrigeration_cost ?? 0),
         coffeeEquipmentCost: Number(row.coffee_equipment_cost ?? 0),
         wasteAllowance: Number(row.waste_allowance ?? 0),
+        overheadCost: Number(row.overhead_cost ?? 0),
+        equipmentCost: Number(row.equipment_cost ?? 0),
         suggestedPrice: Number(row.suggested_price ?? 0),
         notes: row.notes ?? "",
       })),
@@ -583,9 +585,11 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       waterCost: utilityBuckets.waterCost + waterCostDetail.cost,
       gasCost: utilityBuckets.gasCost + gasCostDetail.cost,
       ovenElectricCost: utilityBuckets.ovenElectricCost + electricityCostDetail.cost,
-      refrigerationCost: utilityBuckets.refrigerationCost + overheadCost,
+      refrigerationCost: utilityBuckets.refrigerationCost,
       coffeeEquipmentCost: utilityBuckets.coffeeEquipmentCost,
-      wasteAllowance: wasteAllowance + equipmentCost,
+      wasteAllowance,
+      overheadCost,
+      equipmentCost,
       suggestedPrice: Number(formData.get("suggestedPrice") || 0),
       notes: [baseNotes, yieldNotes, utilityNotes, gasNotes, electricityNotes, waterNotes, structuredNotes].filter(Boolean).join("\n"),
     };
@@ -628,6 +632,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           costing.refrigerationCost +
           costing.coffeeEquipmentCost,
         waste_allowance: costing.wasteAllowance,
+        overhead_cost: costing.overheadCost,
+        equipment_cost: costing.equipmentCost,
         suggested_price: costing.suggestedPrice,
         notes: costing.notes,
       };

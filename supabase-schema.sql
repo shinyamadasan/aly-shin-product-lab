@@ -72,6 +72,8 @@ create table if not exists costing_summaries (
   refrigeration_cost numeric not null default 0,
   coffee_equipment_cost numeric not null default 0,
   waste_allowance numeric not null default 0,
+  overhead_cost numeric not null default 0,
+  equipment_cost numeric not null default 0,
   suggested_price numeric,
   notes text,
   created_at timestamptz not null default now(),
