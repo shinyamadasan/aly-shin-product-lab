@@ -2,8 +2,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = process.cwd();
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const defaultRoot = path.resolve(scriptDir, "..");
+const rootFlagIndex = process.argv.indexOf("--root");
+const root = rootFlagIndex >= 0 && process.argv[rootFlagIndex + 1] ? path.resolve(process.argv[rootFlagIndex + 1]) : defaultRoot;
 const command = process.argv[2] || "help";
 
 function readText(relativePath) {

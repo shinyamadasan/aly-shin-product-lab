@@ -2,6 +2,9 @@
   "name": "aly-shin-product-lab",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "product-lab": "scripts/lab-cli.mjs"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

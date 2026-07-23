@@ -95,4 +95,14 @@ npm run lab -- test-proof-to-costing
 npm run lab -- context
 ```
 
+After linking it globally with `npm link`, the same CLI is available as:
+
+```bash
+product-lab help
+product-lab validate-schema
+product-lab audit-costing
+product-lab test-proof-to-costing
+product-lab context
+```
+
 The CLI is intentionally small. It should grow when a workflow needs repeatable verification, especially costing, proof batch formula transfer, Supabase schema checks, and launch readiness audits.
