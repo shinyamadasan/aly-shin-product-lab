@@ -1714,43 +1714,36 @@ function DashboardPage({
     : "Every product has at least one proof batch logged. Pick the weakest formula and run a focused retest.";
 
   return (
-    <>
-      <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr]" id="dashboard">
-            <div className="rounded-lg border border-[#e1d4c4] bg-[#fffaf3] p-5">
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <MetricCard icon={<Beaker size={20} />} label="Products" value={metrics.productCount} detail="Starter candidates" />
-                <MetricCard icon={<ClipboardCheck size={20} />} label="Launch-ready" value={metrics.launchCandidates} detail="Target after proof" />
-                <MetricCard icon={<FlaskConical size={20} />} label="Need batches" value={metrics.needsProof} detail="Proof logs missing" />
-                <MetricCard icon={<Star size={20} />} label="Taste entries" value={metrics.tastingEntries} detail="Target: 5 each" />
-              </div>
-              <div className="mt-5 rounded-md border border-[#e7d8c9] bg-white p-4">
-                <div className="flex items-start gap-3">
-                  <span className="rounded-md bg-[#f8ead9] p-2 text-[#9a5b2f]"><CalendarDays size={20} /></span>
-                  <div>
-                    <h3 className="font-semibold">Next Product Proof Day</h3>
-                    <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5a4c]">
-                      {proofDayCopy}
-                    </p>
-                  </div>
-                </div>
-              </div>
+    <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr]" id="dashboard">
+      <div className="rounded-lg border border-[#e1d4c4] bg-[#fffaf3] p-5">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard icon={<Beaker size={20} />} label="Products" value={metrics.productCount} detail="Starter candidates" />
+          <MetricCard icon={<ClipboardCheck size={20} />} label="Launch-ready" value={metrics.launchCandidates} detail="Target after proof" />
+          <MetricCard icon={<FlaskConical size={20} />} label="Need batches" value={metrics.needsProof} detail="Proof logs missing" />
+          <MetricCard icon={<Star size={20} />} label="Taste entries" value={metrics.tastingEntries} detail="Target: 5 each" />
+        </div>
+        <div className="mt-5 rounded-md border border-[#e7d8c9] bg-white p-4">
+          <div className="flex items-start gap-3">
+            <span className="rounded-md bg-[#f8ead9] p-2 text-[#9a5b2f]"><CalendarDays size={20} /></span>
+            <div>
+              <h3 className="font-semibold">Next Product Proof Day</h3>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5a4c]">
+                {proofDayCopy}
+              </p>
             </div>
-            <aside className="rounded-lg border border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef]">
-              <div className="flex items-center gap-2 text-[#ddb778]"><ShieldAlert size={20} /><p className="text-sm font-semibold uppercase tracking-[0.16em]">Guardrails</p></div>
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <h3 className="text-xl font-semibold">Coffee is not a hero yet.</h3>
-                {session ? <button className="text-sm text-[#ddb778] underline" onClick={signOut}>Sign out</button> : null}
-              </div>
-              <p className="mt-3 text-sm leading-6 text-[#e6d3c4]">Bottled coffee stays as an add-on test until it proves freshness, cold delivery, margin, and premium feel.</p>
-              {message ? <MessageBox message={message} tone={messageTone} dark /> : null}
-            </aside>
-          </section>
-
-          <section className="grid gap-5 xl:grid-cols-[1fr_360px]" id="products">
-            <ProductReadiness labState={labState} />
-            <DecisionSidebar labState={labState} />
-          </section>
-    </>
+          </div>
+        </div>
+      </div>
+      <aside className="rounded-lg border border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef]">
+        <div className="flex items-center gap-2 text-[#ddb778]"><ShieldAlert size={20} /><p className="text-sm font-semibold uppercase tracking-[0.16em]">Guardrails</p></div>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <h3 className="text-xl font-semibold">Coffee is not a hero yet.</h3>
+          {session ? <button className="text-sm text-[#ddb778] underline" onClick={signOut}>Sign out</button> : null}
+        </div>
+        <p className="mt-3 text-sm leading-6 text-[#e6d3c4]">Bottled coffee stays as an add-on test until it proves freshness, cold delivery, margin, and premium feel.</p>
+        {message ? <MessageBox message={message} tone={messageTone} dark /> : null}
+      </aside>
+    </section>
   );
 }
 
@@ -1849,6 +1842,13 @@ function BatchForm({
     return [{ rowId: crypto.randomUUID(), text: "" }];
   });
 
+  const stepNameSuggestions = Array.from(
+    new Set([
+      ...formulaRows.map((row) => row.step),
+      ...batches.flatMap((item) => parseBatchIngredients(item.ingredientsNotes).map((row) => row.step)),
+    ]),
+  ).filter(Boolean).sort();
+
   function addFormulaRow() {
     setFormulaRows((current) => [...current, { brand: "", change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), step: "", unit: "" }]);
   }
@@ -1895,6 +1895,9 @@ function BatchForm({
         <input name="id" type="hidden" value={batch?.id ?? ""} />
         <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
         <input name="batchProcessStepRowIds" type="hidden" value={processStepRows.map((row) => row.rowId).join(",")} />
+        <datalist id="formulaStepSuggestions">
+          {stepNameSuggestions.map((step) => <option key={step} value={step} />)}
+        </datalist>
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
@@ -1924,7 +1927,7 @@ function BatchForm({
                 <SupplyItemPicker row={row} rowIndex={index} supplies={supplies} updateFormulaRow={updateFormulaRow} />
                 <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" value={row.quantity || ""} onChange={(event) => updateFormulaRow(row.rowId, { quantity: Number(event.target.value || 0) })} />
                 <Input name={`batchUnit-${row.rowId}`} label="Unit used" placeholder="g / ml / tbsp" value={row.unit} onChange={(event) => updateFormulaRow(row.rowId, { unit: event.target.value })} />
-                <Input name={`batchIngredientStep-${row.rowId}`} label="Step" placeholder="First mix" value={row.step} onChange={(event) => updateFormulaRow(row.rowId, { step: event.target.value })} />
+                <Input list="formulaStepSuggestions" name={`batchIngredientStep-${row.rowId}`} label="Step" placeholder="First mix" value={row.step} onChange={(event) => updateFormulaRow(row.rowId, { step: event.target.value })} />
                 <div className="grid gap-1 text-sm font-medium">
                   Previous
                   <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-[#6f5a4c]">{row.previousQuantity === undefined ? "No previous" : `${row.previousQuantity || 0}${row.unit ? ` ${row.unit}` : ""}`}</p>
