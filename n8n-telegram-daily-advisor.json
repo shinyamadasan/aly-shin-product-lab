@@ -1,0 +1,180 @@
+{
+  "name": "[Aly & Shin Product Lab] Daily AI Advisor -> Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "20 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every morning 09:20",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/daily-advisor/output/{{ $now.setZone('Asia/Manila').toFormat('yyyy-LL-dd') }}.md?ref=automation/daily-advisor",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/vnd.github.raw"
+            },
+            {
+              "name": "User-Agent",
+              "value": "n8n-aly-shin-product-lab-daily-advisor"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "github-get-briefing",
+      "name": "GitHub: get today's dated briefing (Asia/Manila, automation/daily-advisor)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "GitHub PAT - Aly & Shin Product Lab"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const MAX_CHUNK = 3800;\nconst LABEL_PREFIX = 'Daily Advisor';\nconst LABEL_RESERVE = 30; // headroom for \"Daily Advisor (i/N)\\n\\n\" so label + chunk never exceeds MAX_CHUNK\nconst SPLIT_BUDGET = MAX_CHUNK - LABEL_RESERVE;\n\nconst input = $input.first().json;\nconst text = input.data;\n\nif (typeof text !== 'string' || text.trim().length === 0) {\n  throw new Error('GitHub response did not contain the expected raw markdown body (data field missing or empty).');\n}\n\nfunction splitIntoChunks(source, maxLen) {\n  const chunks = [];\n  let current = '';\n\n  function flush() {\n    if (current.length > 0) {\n      chunks.push(current);\n      current = '';\n    }\n  }\n\n  function addPiece(piece, separator) {\n    const candidate = current.length === 0 ? piece : current + separator + piece;\n    if (candidate.length <= maxLen) {\n      current = candidate;\n      return;\n    }\n    flush();\n    if (piece.length <= maxLen) {\n      current = piece;\n      return;\n    }\n    const lines = piece.split('\\n');\n    if (lines.length > 1) {\n      for (const line of lines) {\n        addPiece(line, '\\n');\n      }\n      return;\n    }\n    let rest = piece;\n    while (rest.length > maxLen) {\n      chunks.push(rest.slice(0, maxLen));\n      rest = rest.slice(maxLen);\n    }\n    current = rest;\n  }\n\n  const paragraphs = source.split('\\n\\n');\n  for (const paragraph of paragraphs) {\n    addPiece(paragraph, '\\n\\n');\n  }\n  flush();\n  return chunks;\n}\n\nconst chunks = splitIntoChunks(text, SPLIT_BUDGET);\n\nreturn chunks.map((chunk, i) => {\n  const label = chunks.length > 1 ? (LABEL_PREFIX + ' (' + (i + 1) + '/' + chunks.length + ')\\n\\n') : '';\n  return { json: { text: label + chunk, chunkIndex: i + 1, chunkCount: chunks.length } };\n});"
+      },
+      "id": "prepare-message-chunks",
+      "name": "Prepare Telegram message chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_TELEGRAM_USER_ID",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "send-briefing",
+      "name": "Telegram: send daily briefing",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        220
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_WIFE_TELEGRAM_USER_ID",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "send-briefing-wife",
+      "name": "Telegram: send daily briefing (wife)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        960,
+        380
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram Bot - Aly & Shin Product Lab"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every morning 09:20": {
+      "main": [
+        [
+          {
+            "node": "GitHub: get today's dated briefing (Asia/Manila, automation/daily-advisor)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub: get today's dated briefing (Asia/Manila, automation/daily-advisor)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Telegram message chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Telegram message chunks": {
+      "main": [
+        [
+          {
+            "node": "Telegram: send daily briefing",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram: send daily briefing (wife)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "_setup_notes": [
+    "NEW workflow, separate from '[Aly & Shin Product Lab] Morning Digest -> Telegram' -- that one delivers AI-DEV-OS build-pipeline proposals (a different concern); this one delivers the Daily AI Advisor's product-portfolio briefing. Keep them separate, don't merge.",
+    "REVISED after an independent pre-import review found the original design (fetch latest.md, gate on a placeholder-text IF check) had no freshness protection: a failed or missed worker run would leave a REAL prior-day briefing in place, which would then be resent as if current, indistinguishable from a fresh one except by reading the date inside the message. This version fetches the DATED file for today's Asia/Manila calendar date instead -- daily-advisor/output/{{ $now.setZone('Asia/Manila').toFormat('yyyy-LL-dd') }}.md -- so a missing/stale day produces a 404 (the GitHub node fails, the workflow halts, nothing is sent) rather than a silent stale resend. latest.md is intentionally NOT used by this workflow for exactly this reason -- it always reflects whatever the most recent successful run produced, with no way to tell from its content alone whether that was today or several days ago.",
+    "No placeholder-text guard exists anymore, and none should be re-added: the dated-file fetch already makes 'no real briefing today' and '404' the same thing structurally, and a free-text placeholder check is fragile against Claude's own unconstrained AI note potentially containing common phrases -- see the removed IF node's original 'not yet activated' check, which is why it was removed rather than kept as a second check.",
+    "The date expression uses $now.setZone('Asia/Manila') explicitly -- $now is a timezone-aware instant (a specific point in time), and .setZone() converts it to Asia/Manila's local calendar date regardless of what timezone n8n's own instance/server happens to be configured with. This does NOT depend on or inherit the n8n host's configured timezone the way an unqualified date expression would.",
+    "'Prepare Telegram message chunks' (Code node) reads only $json.data (the raw markdown body) from the GitHub node, splits it into chunks under 3800 characters (conservative margin under Telegram's 4096 hard limit), preferring paragraph boundaries (\\n\\n), falling back to line boundaries (\\n), and only hard-splitting mid-line as a last resort for a single line longer than the limit. Emits one item per chunk. Both Telegram nodes below run off this SAME output in parallel, so both recipients get every chunk, independently, in order (n8n runs each Telegram node once per input item by default, preserving order) -- a failure sending to one recipient does not block or skip the other. A 'Daily Advisor (i/N)' label is prepended only when there's more than one chunk -- a single short briefing gets no label at all.",
+    "Two Telegram send nodes, both wired to the same 'Prepare Telegram message chunks' output, both using the same Bot credential: 'Telegram: send daily briefing' (chatId REPLACE_WITH_YOUR_TELEGRAM_USER_ID) and 'Telegram: send daily briefing (wife)' (chatId REPLACE_WITH_WIFE_TELEGRAM_USER_ID). A Telegram bot can only message a chat that has already initiated contact with it -- your wife needs to send the bot any message (e.g. /start) at least once before her chatId will work; her numeric id can be found via a bot like @userinfobot, or by checking this workflow's execution data after she messages the bot. To add further recipients later, duplicate one of these two nodes and wire it to the same Code node output.",
+    "Telegram parse_mode is intentionally NOT set (plain text, not Markdown) -- neither this workflow nor the existing proven Morning Digest workflow escapes special characters (_, *, `, [, ]) before interpolating free text into the message, and this workflow's content includes Claude's unconstrained AI-generated prose, which is more likely to contain an unescaped character than the Digest's more templated content. Plain text can never fail to send due to a Telegram-side parse error; the cost is that ## headers and ** bold ** render as literal characters rather than formatting. Revisit only if a real, fully-escaping strategy is added later.",
+    "Fill the 4 REPLACE_WITH_* / credential placeholders: GitHub PAT (Contents read on this repo -- the same 'GitHub PAT - Aly & Shin Product Lab' credential the Morning Digest workflow already uses, reusable as-is), your numeric Telegram user id and your wife's numeric Telegram user id (one per Telegram node's chatId), the Telegram Bot credential on both Telegram nodes (same 'Telegram Bot - Aly & Shin Product Lab' credential already configured).",
+    "Accept: application/vnd.github.raw makes the Contents API return the file body as text (works for private repos); the body lands in {{ $json.data }} because the HTTP node response format is 'text'.",
+    "Cron '20 9 * * *' assumes the Daily Advisor worker is scheduled for 9:00 AM Asia/Manila and gives it a 20-minute buffer to generate and publish before this reads it. The cron trigger's OWN firing time still runs in n8n's server/instance timezone (unlike the date expression above, which is explicit) -- adjust the expression so it actually fires after 9:00 AM Manila time on your n8n instance, or set an explicit timezone on the Schedule Trigger node if your n8n version supports one.",
+    "Recommended, not done by this file: in the n8n UI, set this workflow's Error Workflow to the existing '[Aly & Shin Product Lab] Error Alert' workflow (same as the other three n8n-telegram-*.json workflows already do), so a missing dated file, a bad GitHub credential, or an API failure here alerts you instead of failing silently. Workflow-level Error Workflow settings aren't portable through JSON import/export, so this has to be set by hand after importing.",
+    "Manual test sequence (see scripts/daily-advisor/README.md's activation order), performed while this workflow stays INACTIVE: (1) run the worker once for real against Supabase and confirm today's dated file (not just latest.md) exists on automation/daily-advisor; (2) import this workflow, fill the placeholders (including confirming your wife has messaged the bot at least once so her chatId is valid), save (leave it inactive); (3) execute it manually once from the n8n UI ('Execute workflow') to confirm BOTH recipients receive the Telegram message(s) and they read correctly, including checking chunk numbering if the briefing was long enough to split; (4) only then activate it on its schedule."
+  ]
+}

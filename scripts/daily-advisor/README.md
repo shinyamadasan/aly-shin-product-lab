@@ -147,18 +147,47 @@ feature-branch work is never touched, staged, or blocked by this.
 
 ## Consuming the briefing (n8n / GitHub raw)
 
-Same pattern already used by `n8n-telegram-digest.json` for the AI-DEV-OS proposal digest --
-GitHub's raw-content API, pointed at the artifact branch instead of `main`:
+`../../n8n-telegram-daily-advisor.json` (repo root) is the delivery workflow, structurally cloned
+from `n8n-telegram-digest.json`'s proven shape (same credential names, same node types/versions,
+same raw-content GitHub fetch pattern) but reading from the **dated** file, not `latest.md`:
 
 ```
-GET https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/daily-advisor/output/latest.md?ref=automation/daily-advisor
+GET https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/daily-advisor/output/{today in Asia/Manila, YYYY-MM-DD}.md?ref=automation/daily-advisor
 Accept: application/vnd.github.raw
 ```
 
-No n8n workflow JSON was created in this implementation (out of scope for this pass) -- cloning
-`n8n-telegram-digest.json` with the URL above and a new schedule is the remaining step whenever
-you want it delivered to Telegram. The worker itself never holds a Telegram credential or makes an
-outbound call beyond Supabase and the local `claude` binary.
+**`latest.md` is deliberately not used for scheduled delivery.** An earlier draft of this workflow
+fetched `latest.md` and gated sending on a placeholder-text check -- an independent pre-import
+review found that design had no freshness protection: if the worker failed or never ran on a
+given day, `latest.md` still holds a real, non-placeholder briefing from whenever it last
+succeeded, and that stale content would pass the placeholder check and get sent as if current.
+Fetching the Asia/Manila-dated file instead closes this by construction: **no dated file for
+today means the GitHub node 404s, the workflow halts there (default n8n behavior -- no
+`continueOnFail` is set), and nothing is sent** -- not a stale resend, not a placeholder message.
+This is computed with an explicit-timezone n8n expression,
+`{{ $now.setZone('Asia/Manila').toFormat('yyyy-LL-dd') }}`, which does not depend on or inherit
+whatever timezone the n8n host/instance itself happens to be configured with.
+
+The workflow has three nodes after the schedule trigger: the GitHub fetch above, a **Code node**
+("Prepare Telegram message chunks") that splits the raw markdown into pieces safely under
+Telegram's 4096-character limit (paragraph boundaries preferred, then line boundaries, hard
+character splitting only as a last resort -- never drops content, labels each piece `Daily
+Advisor (i/N)` only when there's more than one), and the Telegram send itself -- which n8n runs
+once per chunk automatically, in order. Telegram `parse_mode` is deliberately left unset (plain
+text): neither this workflow nor the proven Digest workflow escapes special Markdown characters
+before interpolating free text, and this briefing includes Claude's unconstrained AI note, which
+is more likely than the Digest's templated content to contain a character that breaks Markdown
+parsing outright.
+
+Import it into n8n and follow its `_setup_notes` (credentials, the manual-test sequence, the
+Error Workflow step below) **while leaving it inactive** -- activation is its own explicit step,
+only after a real Supabase briefing has actually been published and manually verified. Not yet
+imported or activated by this change. The worker itself never holds a Telegram credential or
+makes an outbound call beyond Supabase and the local `claude` binary -- n8n owns delivery
+entirely. Also not done by this file: n8n's per-workflow Error Workflow setting isn't portable
+through JSON import/export, so pointing this workflow at the existing
+`[Aly & Shin Product Lab] Error Alert` workflow (the same alerting the other three
+`n8n-telegram-*.json` workflows already use) has to be set by hand in the n8n UI after import.
 
 ## Environment variables (`.env.advisor.local`)
 
