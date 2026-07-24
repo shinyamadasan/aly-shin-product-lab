@@ -2439,7 +2439,7 @@ function BatchForm({
                         <button
                           className="block w-full px-3 py-2 text-left text-sm hover:bg-[#fffaf3]"
                           key={formulaRow.rowId}
-                          onMouseDown={(event) => {
+                          onPointerDown={(event) => {
                             event.preventDefault();
                             insertIngredientIntoStep(formulaRow);
                           }}
