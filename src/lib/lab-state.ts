@@ -1,4 +1,4 @@
-import type { AiReviewRecord, BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { AiReviewRecord, BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, ProductBatch, PurchaseImport, PurchaseImportRow, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -9,6 +9,11 @@ export type LabView =
   | "costing"
   | "supplies"
   | "equipment"
+  | "inventory"
+  | "need-to-buy"
+  | "purchase-import"
+  | "inventory-timeline"
+  | "bake"
   | "journal"
   | "admin"
   | "launch"
@@ -24,6 +29,11 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Costing", href: "/costing", view: "costing" },
   { label: "Supplies", href: "/supplies", view: "supplies" },
   { label: "Equipment", href: "/equipment", view: "equipment" },
+  { label: "Inventory", href: "/inventory", view: "inventory" },
+  { label: "Need to Buy", href: "/need-to-buy", view: "need-to-buy" },
+  { label: "Import Purchase CSV", href: "/purchase-import", view: "purchase-import" },
+  { label: "Bake", href: "/bake", view: "bake" },
+  { label: "Inventory Timeline", href: "/inventory-timeline", view: "inventory-timeline" },
   { label: "Content Journal", href: "/journal", view: "journal" },
   { label: "Product Admin", href: "/admin", view: "admin" },
   { label: "Launch Offer", href: "/launch", view: "launch" },
@@ -40,6 +50,11 @@ export type LabState = {
   costings: CostingSummary[];
   supplies: SupplyEntry[];
   equipment: EquipmentEntry[];
+  ingredients: Ingredient[];
+  ingredientAliases: IngredientAlias[];
+  purchaseImports: PurchaseImport[];
+  purchaseImportRows: PurchaseImportRow[];
+  inventoryTransactions: InventoryTransaction[];
   tastings: TastingFeedback[];
   journal: ContentJournalEntry[];
   aiReviews: AiReviewRecord[];
@@ -52,6 +67,11 @@ export const emptyState: LabState = {
   costings: [],
   supplies: [],
   equipment: [],
+  ingredients: [],
+  ingredientAliases: [],
+  purchaseImports: [],
+  purchaseImportRows: [],
+  inventoryTransactions: [],
   tastings: [],
   journal: [],
   aiReviews: [],

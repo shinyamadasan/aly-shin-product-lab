@@ -83,3 +83,48 @@ anywhere in this change, so there is no new external-service or credential-handl
 red-zone. Fully covered by 90 passing automated tests; reversible via git. The one open item
 before this is genuinely useful is running `supabase-add-ai-reviews.sql` — Copy Prompt works
 without it, but Save Review does not.
+
+## 2026-07-24 — Supply Inventory Loop, Milestone 5: RPC atomicity
+
+**Scope:** two new Postgres functions (`confirm_purchase_import`, `confirm_bake`) appended to
+`supabase-add-inventory.sql`; `confirmPurchaseImport`/`confirmBake`'s Supabase-configured branch
+in `src/app/product-lab.tsx` swapped from sequential `.update()`/`.insert()` calls to one
+`supabase.rpc(...)` call each. This is the first `supabase.rpc()` usage anywhere in this codebase
+(confirmed via grep before writing anything).
+
+**Verdict: sound, and genuinely minimal.** `git diff` on `product-lab.tsx` touches only the
+`if (supabase && session) { ... }` block inside each of the two functions — the guard checks, the
+call into `applyPurchaseImportConfirmation`/`applyBakeConfirmation`, and the entire `localStorage`
+branch are byte-for-byte identical to Milestone 4. The two pure confirmation functions were not
+opened. The RPC functions do not reimplement matching, unit conversion, weighted-average cost, or
+insufficient-stock logic in SQL — they receive the *already-computed* result as `jsonb` and apply
+it as one atomic transaction, which is what closes the actual gap (a mid-sequence failure
+previously leaving inventory partially updated) without creating a second place business rules
+could drift out of sync with the first. Atomicity itself wasn't just asserted: verified directly
+against the live database by forcing `confirm_bake` to fail mid-loop (a malformed `id` in the
+second of two ingredient updates) and confirming the first, already-executed update did not
+persist.
+
+**Not rubber-stamped — one trust-model fact worth stating plainly, not a regression:** neither RPC
+re-validates business rules server-side. `confirm_bake` does not re-check insufficient stock;
+either function will faithfully apply whatever ingredient quantities and ledger rows it's given.
+This sounds like a gap, but it isn't a new one — this app's RLS already grants any authenticated
+user unrestricted `select/insert/update/delete` on every table involved (`using (true) / with
+check (true)`, the same template used everywhere else in this codebase), so a client could always
+have written arbitrary inventory values directly, with or without this milestone. The RPC's own
+guard (`confirm_purchase_import` rejects confirming a non-`draft` import, re-checked server-side
+via `select ... for update` even when called directly, not just from the app's own client-side
+pre-check) is the one place this milestone *tightens* enforcement rather than merely relocating
+it. If this app ever needs to defend against a malicious or compromised client rather than just a
+racing/refreshing legitimate one, that requires a real authorization boundary (a service role +
+Route Handler, the same gap the AI Advisor review above already surfaced for a different feature)
+— out of scope here and not something Milestone 5 was asked to solve.
+
+**Merge gate: `done`.** Both functions are `security invoker`, running under the calling user's
+own RLS-governed identity — no privilege escalation, no new capability beyond what direct table
+access already granted. No auth, provider key, or external-service surface touched. Purely
+additive to the schema (two new functions; no table, column, or policy changed); reversible via
+git. Fully covered by 278 passing automated tests (unchanged from Milestone 4 — no new pure-logic
+surface exists to test) plus 16 localStorage-mode and 22 real-Supabase-mode browser/database
+checks, including a direct, deliberate-failure proof of atomicity against the live project. All
+temporary test data removed and confirmed gone after verification.
