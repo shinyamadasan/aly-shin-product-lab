@@ -27,3 +27,36 @@ build).
 Files: `src/lib/rule-engine/*.ts` (new), `src/lib/batches.ts` (new), `src/lib/readiness.ts`,
 `src/lib/costing.ts`, `src/app/product-lab.tsx`, `tsconfig.json`, `tests/rule-engine.test.ts`
 (new, 43 tests), `docs/ARCHITECTURE.md`.
+
+## 2026-07-24 — Integrate the AI Advisor into Product Lab
+
+Built `src/services/ai/` (types, specialists, routing, context, prompts, advisor) — a
+Copy-Prompt AI Advisor, not a live AI integration. `generateAdvisorPrompt(action, product,
+context)` assembles a deterministic, self-contained prompt from the Rule Engine's output
+(`evaluateProduct`) and Costing's output (`getCostingTotals`) for 5 fixed actions (Explain
+Current Status, Recommend Next Action, Improve Product, Design Experiment, Launch Review). The
+operator copies the prompt into an AI chat of their choice and pastes the reply back to save it.
+The AI never recalculates a deterministic check — every number in the prompt is quoted verbatim
+from an existing source of truth.
+
+Deferred by explicit decision, not oversight: this app has no server-side execution boundary
+anywhere (everything is `"use client"`, talking to Supabase with its public anon key), so wiring
+a live LLM API call would have required adding a new Route Handler to hold a secret provider key
+— evaluated and deliberately not built this phase. `AiProvider` (`services/ai/types.ts`) defines
+the interface a future live integration implements; `generateAdvisorPrompt()` in `advisor.ts` is
+the one function that would change to call it. No other file needs to know a provider exists.
+
+New table `ai_reviews` (`supabase-add-ai-reviews.sql`, not yet applied) stores saved prompt +
+response pairs per product/batch/action; Copy Prompt itself works before the table exists,
+following the same `isSuppliesTableMissing`/`isEquipmentTableMissing` graceful-degradation
+pattern already used elsewhere in `product-lab.tsx`.
+
+Refactoring: exported `averageRating`/`getLatestBatch`/`getLinkedCosting`/`getProductBatches`/
+`getProductTastings` from `src/lib/rule-engine/index.ts` (previously internal to the engine) so
+`services/ai/context.ts` reuses the same "which batch, which costing" selection logic instead of
+a second implementation.
+
+Files: `src/services/ai/*.ts` (new), `src/components/ai-advisor-panel.tsx` (new),
+`supabase-add-ai-reviews.sql` (new), `tests/ai-advisor.test.ts` (new, 18 tests),
+`src/lib/product-lab-types.ts`, `src/lib/lab-state.ts`, `src/lib/rule-engine/index.ts`,
+`src/app/product-lab.tsx`, `PRODUCT_LAB_CONTEXT.md`, `docs/ARCHITECTURE.md`.

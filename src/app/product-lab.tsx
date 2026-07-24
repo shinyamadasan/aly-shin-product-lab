@@ -29,7 +29,8 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -75,6 +76,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
+  const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
@@ -119,7 +121,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       return;
     }
 
-    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult] = await Promise.all([
+    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, aiReviewResult] = await Promise.all([
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
@@ -128,13 +130,16 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       supabase.from("equipment").select("*").order("created_at", { ascending: false }),
       supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
       supabase.from("content_journal").select("*").order("created_at", { ascending: false }),
+      supabase.from("ai_reviews").select("*").order("created_at", { ascending: false }),
     ]);
 
     const supplyMissing = supplyResult.error?.message.includes("supply_entries");
     const equipmentMissing = equipmentResult.error?.message.includes("equipment");
+    const aiReviewsMissing = aiReviewResult.error?.message.includes("ai_reviews");
     setIsSuppliesTableMissing(Boolean(supplyMissing));
     setIsEquipmentTableMissing(Boolean(equipmentMissing));
-    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error) {
+    setIsAiReviewsTableMissing(Boolean(aiReviewsMissing));
+    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!aiReviewsMissing && aiReviewResult.error)) {
       const error =
         batchResult.error?.message ||
         batchPhotoResult.error?.message ||
@@ -143,7 +148,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         supplyResult.error?.message ||
         equipmentResult.error?.message ||
         tastingResult.error?.message ||
-        journalResult.error?.message;
+        journalResult.error?.message ||
+        aiReviewResult.error?.message;
       setMessage(`Could not load Supabase data: ${error}`);
       setMessageTone("bad");
       return;
@@ -260,7 +266,57 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         postIdeas: row.post_ideas ?? "",
         nextAction: row.next_action ?? "",
       })),
+      aiReviews: aiReviewsMissing ? [] : (aiReviewResult.data ?? []).map((row) => ({
+        id: row.id,
+        productId: row.product_id,
+        batchId: row.batch_id ?? "",
+        action: row.action,
+        specialists: row.specialists ? row.specialists.split(",").filter(Boolean) : [],
+        prompt: row.prompt ?? "",
+        response: row.response ?? "",
+        createdAt: row.created_at ?? "",
+      })),
     });
+  }
+
+  async function saveAiReview(review: { productId: string; batchId: string; action: AiAction; specialists: SpecialistId[]; prompt: string; response: string }) {
+    if (supabase && session) {
+      const { error } = await supabase.from("ai_reviews").insert({
+        product_id: review.productId,
+        batch_id: review.batchId || null,
+        action: review.action,
+        specialists: review.specialists.join(","),
+        prompt: review.prompt,
+        response: review.response,
+      });
+      setMessage(error ? `AI review save failed: ${error.message}` : "AI review saved.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        await loadSupabaseData();
+      }
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      aiReviews: [{ ...review, id: crypto.randomUUID(), createdAt: new Date().toISOString() }, ...current.aiReviews],
+    }));
+    setMessage("AI review saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteAiReview(reviewId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("ai_reviews").delete().eq("id", reviewId);
+      setMessage(error ? `AI review delete failed: ${error.message}` : "AI review deleted.");
+      setMessageTone(error ? "bad" : "good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({ ...current, aiReviews: current.aiReviews.filter((review) => review.id !== reviewId) }));
+    setMessage("AI review deleted locally.");
+    setMessageTone("good");
   }
 
   async function signIn(formData: FormData) {
@@ -1031,7 +1087,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
-          {view === "product-detail" ? <ProductDetailPage labState={labState} /> : null}
+          {view === "product-detail" ? <ProductDetailPage deleteAiReview={deleteAiReview} isAiReviewsTableMissing={isAiReviewsTableMissing} labState={labState} saveAiReview={saveAiReview} /> : null}
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
@@ -1270,7 +1326,17 @@ function printPage(reportId: string) {
   printWindow.print();
 }
 
-function ProductDetailPage({ labState }: { labState: LabState }) {
+function ProductDetailPage({
+  deleteAiReview,
+  isAiReviewsTableMissing,
+  labState,
+  saveAiReview,
+}: {
+  deleteAiReview: (reviewId: string) => void;
+  isAiReviewsTableMissing: boolean;
+  labState: LabState;
+  saveAiReview: (review: { productId: string; batchId: string; action: AiAction; specialists: SpecialistId[]; prompt: string; response: string }) => void;
+}) {
   const [selectedProductId, setSelectedProductId] = useState(products[0].id);
   const product = products.find((item) => item.id === selectedProductId) ?? products[0];
   const batches = labState.batches.filter((batch) => batch.productId === product.id);
@@ -1278,6 +1344,7 @@ function ProductDetailPage({ labState }: { labState: LabState }) {
   const costing = labState.costings.find((entry) => entry.productId === product.id);
   const tastings = labState.tastings.filter((entry) => entry.productId === product.id);
   const journal = labState.journal.filter((entry) => entry.productId === product.id);
+  const aiReviews = labState.aiReviews.filter((review) => review.productId === product.id);
   const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
   const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
   const averageRating = stats.averageRating ? stats.averageRating.toFixed(1) : "None";
@@ -1316,6 +1383,19 @@ function ProductDetailPage({ labState }: { labState: LabState }) {
           <a className="inline-flex rounded-md bg-[#8f5632] px-3 py-2 text-sm font-semibold text-white" href="/proof-day">Open Proof Day</a>
         </div>
       </Panel>
+      <div className="xl:col-span-2">
+        <AiAdvisorPanel
+          batches={labState.batches}
+          costings={labState.costings}
+          deleteReview={deleteAiReview}
+          isTableMissing={isAiReviewsTableMissing}
+          product={product}
+          reviews={aiReviews}
+          saveReview={saveAiReview}
+          supplies={labState.supplies}
+          tastings={labState.tastings}
+        />
+      </div>
     </section>
   );
 }

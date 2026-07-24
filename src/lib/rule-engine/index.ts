@@ -16,6 +16,10 @@ export { evaluateProduction } from "./production.ts";
 export { evaluateQuality } from "./quality.ts";
 export { evaluateSupply } from "./supply.ts";
 export { getPriorityScore } from "./priority.ts";
+// Selector helpers -- exposed so other consumers (e.g. services/ai/context.ts) reuse the exact
+// same "which batch, which costing, which tastings" logic every rule category already shares,
+// instead of a second, potentially-drifting implementation.
+export { averageRating, getLatestBatch, getLinkedCosting, getProductBatches, getProductTastings } from "./types.ts";
 
 // Pure, deterministic, no side effects: same product + same context always produces the same
 // result. No database reads or network requests happen inside the Rule Engine -- all data is

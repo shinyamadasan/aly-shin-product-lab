@@ -92,6 +92,9 @@ Should combine:
 - Tasting feedback.
 - Content signals.
 - Missing readiness items.
+- AI Advisor -- explain/recommend/improve/design-experiment/launch-review buttons that assemble
+  a prompt from the Rule Engine's output (never recalculate it), for the operator to run through
+  an AI chat and paste the reply back. See "AI Advisor" in docs/ARCHITECTURE.md.
 
 ### Proof Day
 

@@ -1,4 +1,4 @@
-import type { BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { AiReviewRecord, BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -42,6 +42,7 @@ export type LabState = {
   equipment: EquipmentEntry[];
   tastings: TastingFeedback[];
   journal: ContentJournalEntry[];
+  aiReviews: AiReviewRecord[];
 };
 
 export const emptyState: LabState = {
@@ -53,6 +54,7 @@ export const emptyState: LabState = {
   equipment: [],
   tastings: [],
   journal: [],
+  aiReviews: [],
 };
 
 export const today = new Date().toISOString().slice(0, 10);
