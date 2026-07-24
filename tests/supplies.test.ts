@@ -24,6 +24,7 @@ function ingredientRow(overrides: Partial<CostingIngredientRow> = {}): CostingIn
   return {
     id: "",
     productId: "product-1",
+    batchId: "",
     brandName: "Beryl's",
     ingredientName: "Classic Cocoa Powder",
     quantityUsed: 25,

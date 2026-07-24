@@ -57,4 +57,8 @@ export const emptyState: LabState = {
   aiReviews: [],
 };
 
-export const today = new Date().toISOString().slice(0, 10);
+// Evaluated at call time, not once at module load: a computed-at-import constant goes stale in a
+// tab left open overnight, defaulting new batch/journal/supply forms to yesterday's date.
+export function getToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}

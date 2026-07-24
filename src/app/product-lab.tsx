@@ -3,7 +3,7 @@
 import Image from "next/image";
 import type { ChangeEvent as ReactChangeEvent, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
+import type { PostgrestError, Session } from "@supabase/supabase-js";
 import {
   Beaker,
   CalendarDays,
@@ -32,7 +32,7 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
-import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
+import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
 import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
@@ -61,14 +61,35 @@ import {
 const BATCH_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 const BATCH_PHOTO_ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
 
+// A table the operator hasn't created yet surfaces as PostgREST "undefined table" (PGRST205, a
+// schema-cache miss) or the underlying Postgres 42P01 -- not as an arbitrary error message that
+// merely happens to contain the table's name. Match on the error CODE so a genuine load failure
+// whose text includes e.g. "equipment" is never silently mistaken for "table not set up yet"
+// (which would hide the real error behind a "run the setup SQL" banner).
+function isMissingTableError(error: PostgrestError | null): boolean {
+  return error?.code === "PGRST205" || error?.code === "42P01";
+}
+
 export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [labState, setLabState] = useState<LabState>(() => {
     if (typeof window === "undefined") {
       return emptyState;
     }
 
+    // Never let a corrupt or legacy-shaped localStorage value crash the whole app on load. A bad
+    // JSON.parse here would white-screen the page with no in-app way to recover, so on any failure
+    // we drop back to emptyState and clear the poisoned key instead of throwing during render.
     const saved = window.localStorage.getItem(storageKey);
-    return saved ? { ...emptyState, ...(JSON.parse(saved) as LabState) } : emptyState;
+    if (!saved) {
+      return emptyState;
+    }
+
+    try {
+      return { ...emptyState, ...(JSON.parse(saved) as LabState) };
+    } catch {
+      window.localStorage.removeItem(storageKey);
+      return emptyState;
+    }
   });
   const [session, setSession] = useState<Session | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(isSupabaseConfigured);
@@ -133,9 +154,9 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       supabase.from("ai_reviews").select("*").order("created_at", { ascending: false }),
     ]);
 
-    const supplyMissing = supplyResult.error?.message.includes("supply_entries");
-    const equipmentMissing = equipmentResult.error?.message.includes("equipment");
-    const aiReviewsMissing = aiReviewResult.error?.message.includes("ai_reviews");
+    const supplyMissing = isMissingTableError(supplyResult.error);
+    const equipmentMissing = isMissingTableError(equipmentResult.error);
+    const aiReviewsMissing = isMissingTableError(aiReviewResult.error);
     setIsSuppliesTableMissing(Boolean(supplyMissing));
     setIsEquipmentTableMissing(Boolean(equipmentMissing));
     setIsAiReviewsTableMissing(Boolean(aiReviewsMissing));
@@ -359,7 +380,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       id: batchId || crypto.randomUUID(),
       productId: String(formData.get("productId")),
       batchVersion: String(formData.get("batchVersion") || "V1"),
-      dateMade: String(formData.get("dateMade") || today),
+      dateMade: String(formData.get("dateMade") || getToday()),
       ingredientsNotes: buildBatchIngredientsNotes(formData),
       prepTimeMinutes: Number(formData.get("prepTimeMinutes") || 0),
       bakeTimeMinutes: Number(formData.get("bakeTimeMinutes") || 0),
@@ -791,7 +812,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       ingredientName: String(formData.get("ingredientName") || "").trim(),
       brandName: String(formData.get("brandName") || "").trim(),
       supplierName: String(formData.get("supplierName") || "").trim(),
-      purchaseDate: String(formData.get("purchaseDate") || today),
+      purchaseDate: String(formData.get("purchaseDate") || getToday()),
       createdAt: new Date().toISOString(),
       packQuantity: Number(formData.get("packQuantity") || 0),
       unit: String(formData.get("unit") || "").trim(),
@@ -863,7 +884,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       brand: String(formData.get("brand") || "").trim(),
       model: String(formData.get("model") || "").trim(),
       purchasePrice: Number(formData.get("purchasePrice") || 0),
-      purchaseDate: String(formData.get("purchaseDate") || today),
+      purchaseDate: String(formData.get("purchaseDate") || getToday()),
       residualValuePercent: Number(formData.get("residualValuePercent") || 0),
       usefulLifeYears: Number(formData.get("usefulLifeYears") || 0),
       batchesPerWeek: Number(formData.get("batchesPerWeek") || 0),
@@ -1010,7 +1031,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const entry: ContentJournalEntry = {
       id: journalId || crypto.randomUUID(),
       productId: String(formData.get("productId")),
-      entryDate: String(formData.get("entryDate") || today),
+      entryDate: String(formData.get("entryDate") || getToday()),
       whatWasMade: String(formData.get("whatWasMade") || ""),
       mediaCaptured: mediaLink ? `${mediaCaptured}. Link: ${mediaLink}` : mediaCaptured,
       lessonLearned: String(formData.get("lessonLearned") || ""),
@@ -1842,7 +1863,7 @@ function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
   return (
     <div className="print-report" id="proof-batches-print-report">
       <h1>Aly & Shin Proof Batch Records</h1>
-      <p>Generated {today}</p>
+      <p>Generated {getToday()}</p>
       <table>
         <thead>
           <tr>
@@ -2327,7 +2348,7 @@ function BatchForm({
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
-          <Input name="dateMade" label="Date made" type="date" defaultValue={batch?.dateMade ?? today} />
+          <Input name="dateMade" label="Date made" type="date" defaultValue={batch?.dateMade ?? getToday()} />
         </div>
         <Textarea
           name="tasteNotes"
@@ -2938,7 +2959,7 @@ function SuppliesPage({
             <SupplyValuePicker name="supplierName" label="Supplier" options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
-            <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? today} />
+            <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? getToday()} />
             <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
             <SupplyValuePicker name="unit" label="Unit" options={unitOptions} placeholder="g" value={supply?.unit} />
             <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
@@ -3019,7 +3040,7 @@ function SuppliesPrintReport({ supplies }: { supplies: SupplyEntry[] }) {
   return (
     <div className="print-report" id="supplies-print-report">
       <h1>Aly & Shin Supply Purchase Log</h1>
-      <p>Generated {today}</p>
+      <p>Generated {getToday()}</p>
       <table>
         <thead>
           <tr>
@@ -3122,7 +3143,7 @@ function EquipmentPage({
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Input name="purchasePrice" label={calculationMode === "gas-burn-rate" ? "Gas refill price PHP" : "Purchase price PHP"} type="number" step="0.01" placeholder={calculationMode === "gas-burn-rate" ? "950" : "8500"} defaultValue={equipment?.purchasePrice || undefined} helper={calculationMode === "gas-burn-rate" ? "Update this whenever gas price changes." : undefined} />
-            <Input name="purchaseDate" label={calculationMode === "gas-burn-rate" ? "Price date" : "Purchase date"} type="date" defaultValue={equipment?.purchaseDate ?? today} />
+            <Input name="purchaseDate" label={calculationMode === "gas-burn-rate" ? "Price date" : "Purchase date"} type="date" defaultValue={equipment?.purchaseDate ?? getToday()} />
           </div>
           <label className="grid gap-1 text-sm font-medium">
             Calculation mode
@@ -3255,7 +3276,7 @@ function EquipmentPrintReport({ equipment }: { equipment: EquipmentEntry[] }) {
   return (
     <div className="print-report" id="equipment-print-report">
       <h1>Aly & Shin Equipment Database</h1>
-      <p>Generated {today}</p>
+      <p>Generated {getToday()}</p>
       <table>
         <thead>
           <tr>
@@ -4085,7 +4106,7 @@ function CostingPrintReport({
   return (
     <div className="print-report" id="costing-print-report">
       <h1>Aly & Shin Costing Sheet</h1>
-      <p>{productName(productId)}{batchVersion ? ` ${batchVersion}` : ""} / Generated {today}</p>
+      <p>{productName(productId)}{batchVersion ? ` ${batchVersion}` : ""} / Generated {getToday()}</p>
 
       <h2>Summary</h2>
       <table>
@@ -4442,7 +4463,7 @@ function JournalForm({
         <input name="id" type="hidden" value={entry?.id ?? ""} />
         <ProductSelect selectedProductId={entry?.productId} />
         <div className="grid gap-3 sm:grid-cols-2">
-          <Input name="entryDate" label="Capture date" type="date" defaultValue={entry?.entryDate ?? today} />
+          <Input name="entryDate" label="Capture date" type="date" defaultValue={entry?.entryDate ?? getToday()} />
           <Select name="contentAngle" label="Best use" options={["product proof", "behind the scenes", "packaging test", "tasting feedback", "lesson learned", "launch teaser", "not content-worthy"]} defaultValue={entry?.postIdeas ?? "product proof"} />
         </div>
         <Textarea name="whatWasMade" label="Moment captured" placeholder="Example: Brownies V2 cooling and cutting test. One clean top shot, one slicing clip, one texture close-up." defaultValue={entry?.whatWasMade} />

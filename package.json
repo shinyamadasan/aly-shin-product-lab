@@ -11,6 +11,7 @@
     "lab": "node scripts/lab-cli.mjs",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
     "advisor": "node scripts/daily-advisor/run.ts",
     "advisor:smoke": "node --test tests/smoke/*.test.ts"
@@ -32,5 +33,9 @@
     "eslint-config-next": "16.2.11",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "overrides": {
+    "sharp": "^0.35.0",
+    "postcss": "^8.5.18"
   }
 }

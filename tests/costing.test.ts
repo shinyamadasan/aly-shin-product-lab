@@ -7,6 +7,7 @@ function baseCosting(overrides: Partial<CostingSummary> = {}): CostingSummary {
   return {
     id: "costing-1",
     productId: "product-1",
+    batchId: "",
     ingredientCost: 200,
     packagingCost: 20,
     laborEstimate: 100,
