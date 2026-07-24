@@ -94,24 +94,31 @@ pwsh ./daily-advisor.ps1 -Source sample -SkipClaude
 
 ## Scheduling
 
-Not registered automatically by this implementation -- register it yourself once you're happy
-with a few manual runs (matches `run-claude.ps1`'s own "watch one run before enabling" caution).
-Recommended: **9:00 AM Asia/Manila**, Windows Task Scheduler:
+**Registered.** Task Scheduler triggers fire in the *scheduling machine's local OS timezone*
+(Task Scheduler has no timezone concept of its own) -- this machine is confirmed set to
+**Arizona time (`US Mountain Standard Time`, UTC-7, no DST)**, not Asia/Manila (UTC+8), a 15-hour
+offset. Verified with `Get-TimeZone` before registering, after almost registering the naive
+`9:00AM` value below and having it silently fire at 9:00 AM *Arizona* -- i.e. midnight Manila,
+not the intended morning run. **9:00 AM Asia/Manila = 6:00 PM the previous day, Arizona time.**
 
 ```
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
   -Argument '-NonInteractive -ExecutionPolicy Bypass -File "C:\Users\Admin\Desktop\Vibe code\Coffee and Bakery business\05_App_And_Tech\aly-shin-product-lab\daily-advisor.ps1" -Source supabase'
-$trigger = New-ScheduledTaskTrigger -Daily -At "9:00AM"
+# 6:00 PM Arizona (UTC-7) = 9:00 AM Manila (UTC+8) the next calendar day.
+$trigger = New-ScheduledTaskTrigger -Daily -At "6:00PM"
 Register-ScheduledTask -TaskName "Aly & Shin Product Lab Daily Advisor" -Action $action -Trigger $trigger `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew) `
-  -Description "Generates the daily Product Lab briefing and publishes it to automation/daily-advisor."
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun) `
+  -Description "Generates the daily Product Lab briefing (9:00 AM Asia/Manila = 6:00 PM Arizona previous day) and publishes it to automation/daily-advisor."
 ```
 
-Note the trigger time is in the *scheduling machine's local OS timezone* (Task Scheduler has no
-timezone concept of its own) -- if the machine's OS timezone is already Asia/Manila, `9:00AM`
-above is correct as written; otherwise adjust the `-At` value so it fires at 9:00 AM Manila time.
-This is separate from `-Timezone`/`ADVISOR_TIMEZONE`, which only controls what calendar date the
-*briefing* is dated for, not when the task fires.
+`-WakeToRun` is included deliberately: this is meant to run genuinely unattended now, so a
+sleeping PC should wake for it rather than silently skip the day.
+
+**If you ever run this setup on a different machine**, don't reuse `6:00PM` blindly -- check that
+machine's real timezone first (`Get-TimeZone` in PowerShell) and recompute the offset from
+Asia/Manila (UTC+8). This is separate from `-Timezone`/`ADVISOR_TIMEZONE`, which only controls
+what calendar date the *briefing* is dated for (always computed correctly regardless of the host
+machine's timezone), not when the task fires.
 
 Idempotent by design: if `daily-advisor/output/YYYY-MM-DD.md` (for "today" in the configured
 timezone) already exists, a run without `-Force` logs and exits 0 without touching Supabase,
