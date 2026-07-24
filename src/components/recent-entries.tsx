@@ -53,9 +53,12 @@ export function RecentEntries({
           empty="No costing saved yet."
           items={labState.costings.slice(0, 3).map((costing) => {
             const totals = getCostingTotals(costing);
-            const latestBatch = labState.batches.find((batch) => batch.productId === costing.productId);
+            // Prefer the batch this costing is actually linked to; only fall back to "any batch
+            // of this product" for legacy costings saved before costing was batch-scoped.
+            const linkedBatch = labState.batches.find((batch) => batch.id === costing.batchId)
+              ?? labState.batches.find((batch) => batch.productId === costing.productId);
             const metrics = getCostingMetrics({
-              costingYield: latestBatch?.usablePieces ?? 0,
+              costingYield: linkedBatch?.usablePieces ?? 0,
               directCost: totals.directCost,
               indirectCost: totals.indirectCost,
               suggestedPrice: costing.suggestedPrice,
@@ -65,7 +68,7 @@ export function RecentEntries({
 
             return {
               id: costing.id,
-              title: productName(costing.productId),
+              title: `${productName(costing.productId)}${linkedBatch?.batchVersion ? ` ${linkedBatch.batchVersion}` : ""}`,
               detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`, "needs yield")}. Margin ${formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`, "needs yield")}.`,
               onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
               onEdit: editCosting ? () => editCosting(costing) : undefined,

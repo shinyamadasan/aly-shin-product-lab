@@ -171,6 +171,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       costingEntries: (costingEntryResult.data ?? []).map((row) => ({
         id: row.id,
         productId: row.product_id,
+        batchId: row.batch_id ?? "",
         brandName: getBrandFromCostingNote(row.supplier_note ?? ""),
         ingredientName: row.ingredient_name,
         quantityUsed: Number(row.quantity_used ?? 0),
@@ -181,6 +182,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       costings: (costingResult.data ?? []).map((row) => ({
         id: row.id,
         productId: row.product_id,
+        batchId: row.batch_id ?? "",
         ingredientCost: Number(row.ingredient_cost ?? 0),
         packagingCost: Number(row.packaging_cost ?? 0),
         laborEstimate: Number(row.labor_estimate ?? 0),
@@ -448,6 +450,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   async function saveCosting(formData: FormData) {
     const costingId = String(formData.get("id") || "");
     const productId = String(formData.get("productId"));
+    const batchId = String(formData.get("batchId") || "");
     const ingredientRowIds = String(formData.get("ingredientRowIds") || "")
       .split(",")
       .filter(Boolean);
@@ -472,6 +475,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         return {
           id: String(formData.get(`ingredientId-${rowId}`) || crypto.randomUUID()),
           productId,
+          batchId,
           brandName,
           ingredientName: String(formData.get(`ingredientName-${rowId}`) || "").trim(),
           quantityUsed: Number(formData.get(`quantityUsed-${rowId}`) || 0),
@@ -591,6 +595,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     const costing: CostingSummary = {
       id: costingId || crypto.randomUUID(),
       productId,
+      batchId,
       ingredientCost,
       packagingCost,
       laborEstimate,
@@ -606,7 +611,13 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       notes: [baseNotes, yieldNotes, utilityNotes, gasNotes, electricityNotes, waterNotes, structuredNotes].filter(Boolean).join("\n"),
     };
     if (supabase && session) {
-      const { error: deleteError } = await supabase.from("costing_entries").delete().eq("product_id", productId);
+      // Scoped by batch (not just product) so saving one batch's costing can't wipe the
+      // ingredient rows belonging to a sibling costing for a different batch of the same
+      // product. Legacy costings with no batch link fall back to the old product-only scope,
+      // constrained to other rows that are also unlinked, for the same reason.
+      const deleteQuery = supabase.from("costing_entries").delete();
+      const scopedDeleteQuery = batchId ? deleteQuery.eq("batch_id", batchId) : deleteQuery.eq("product_id", productId).is("batch_id", null);
+      const { error: deleteError } = await scopedDeleteQuery;
       if (deleteError) {
         setMessage(`Costing save failed: ${deleteError.message}`);
         setMessageTone("bad");
@@ -617,6 +628,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         const { error: ingredientError } = await supabase.from("costing_entries").insert(
           ingredientRows.map((row) => ({
             product_id: row.productId,
+            batch_id: row.batchId || null,
             ingredient_name: row.ingredientName,
             quantity_used: row.quantityUsed,
             unit: row.unit,
@@ -634,6 +646,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
       const payload = {
         product_id: costing.productId,
+        batch_id: costing.batchId || null,
         ingredient_cost: costing.ingredientCost,
         packaging_cost: costing.packagingCost,
         labor_estimate: costing.laborEstimate,
@@ -661,10 +674,12 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       await loadSupabaseData();
       return;
     }
+    const matchesThisCosting = (entry: { productId: string; batchId: string }) =>
+      batchId ? entry.batchId === batchId : entry.productId === productId && !entry.batchId;
     setLabState((current) => ({
       ...current,
-      costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => entry.productId !== productId)],
-      costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => entry.productId !== productId)],
+      costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => !matchesThisCosting(entry))],
+      costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => !matchesThisCosting(entry))],
     }));
     setEditingCosting(null);
     setMessage(costingId ? "Costing updated locally." : "Costing saved locally.");
@@ -673,7 +688,11 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
   async function deleteCosting(costing: CostingSummary) {
     if (supabase && session) {
-      const { error: entryError } = await supabase.from("costing_entries").delete().eq("product_id", costing.productId);
+      const deleteQuery = supabase.from("costing_entries").delete();
+      const scopedDeleteQuery = costing.batchId
+        ? deleteQuery.eq("batch_id", costing.batchId)
+        : deleteQuery.eq("product_id", costing.productId).is("batch_id", null);
+      const { error: entryError } = await scopedDeleteQuery;
       if (entryError) {
         setMessage(`Costing delete failed: ${entryError.message}`);
         setMessageTone("bad");
@@ -690,7 +709,8 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     }
     setLabState((current) => ({
       ...current,
-      costingEntries: current.costingEntries.filter((entry) => entry.productId !== costing.productId),
+      costingEntries: current.costingEntries.filter((entry) =>
+        costing.batchId ? entry.batchId !== costing.batchId : !(entry.productId === costing.productId && !entry.batchId)),
       costings: current.costings.filter((entry) => entry.id !== costing.id),
     }));
     if (editingCosting?.id === costing.id) {
@@ -3411,14 +3431,28 @@ function CostingForm({
   saveCosting: (formData: FormData) => void;
   supplies: SupplyEntry[];
 }) {
-  const [selectedProductId, setSelectedProductId] = useState(costing?.productId ?? products[0].id);
-  const savedIngredients = costing ? ingredientEntries.filter((entry) => entry.productId === costing.productId) : [];
-  const latestBatch = batches.find((batch) => batch.productId === selectedProductId);
+  // Costing is scoped to a specific proof batch/version (e.g. "Brownies V3"), not just a
+  // product -- so the same product can have separate costing per version instead of only ever
+  // reflecting whichever batch happened to be "latest" when the costing was last saved.
+  const batchesByProduct = products
+    .map((product) => ({
+      product,
+      productBatches: batches.filter((item) => item.productId === product.id).sort((a, b) => (b.dateMade || "").localeCompare(a.dateMade || "")),
+    }))
+    .filter((group) => group.productBatches.length > 0);
+  const [selectedBatchId, setSelectedBatchId] = useState(
+    () => costing?.batchId || batches.find((item) => item.productId === costing?.productId)?.id || batchesByProduct[0]?.productBatches[0]?.id || "",
+  );
+  const selectedBatch = batches.find((item) => item.id === selectedBatchId);
+  const selectedProductId = selectedBatch?.productId ?? costing?.productId ?? products[0].id;
+  const savedIngredients = costing
+    ? ingredientEntries.filter((entry) => (costing.batchId ? entry.batchId === costing.batchId : entry.productId === costing.productId && !entry.batchId))
+    : [];
   const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() =>
     savedIngredients.length > 0
       ? savedIngredients.map((entry) => ({ ...entry, rowId: entry.id }))
-      : [{ brandName: "", cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }],
+      : [{ batchId: costing?.batchId ?? "", brandName: "", cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }],
   );
   const [utilityRows, setUtilityRows] = useState<CostingUtilityRow[]>(() => {
     if (structuredDetail?.utilityRows?.length) {
@@ -3446,10 +3480,10 @@ function CostingForm({
   const [laborDetail, setLaborDetail] = useState<CostingLaborDetail>(() => structuredDetail?.laborDetail ?? {
     activeRate: 120,
     cleaningMinutes: 0,
-    cookingMinutes: latestBatch?.bakeTimeMinutes ?? 0,
-    coolingMinutes: latestBatch?.coolingTimeMinutes ?? 0,
+    cookingMinutes: selectedBatch?.bakeTimeMinutes ?? 0,
+    coolingMinutes: selectedBatch?.coolingTimeMinutes ?? 0,
     packagingMinutes: 0,
-    prepMinutes: latestBatch?.prepTimeMinutes ?? 0,
+    prepMinutes: selectedBatch?.prepTimeMinutes ?? 0,
   });
   const [gasDetail, setGasDetail] = useState<CostingGasDetail>(() => ({
     equipmentName: structuredDetail?.gasDetail?.equipmentName ?? "Oven",
@@ -3460,7 +3494,7 @@ function CostingForm({
   const [electricityDetail, setElectricityDetail] = useState<CostingElectricityDetail>(() => ({
     applianceWatts: structuredDetail?.electricityDetail?.applianceWatts ?? 0,
     equipmentName: structuredDetail?.electricityDetail?.equipmentName ?? "Electric oven",
-    minutes: structuredDetail?.electricityDetail?.minutes ?? latestBatch?.bakeTimeMinutes ?? 0,
+    minutes: structuredDetail?.electricityDetail?.minutes ?? selectedBatch?.bakeTimeMinutes ?? 0,
     ratePerKwh: structuredDetail?.electricityDetail?.ratePerKwh ?? 0,
   }));
   const [waterDetail, setWaterDetail] = useState<CostingWaterDetail>(() => structuredDetail?.waterDetail ?? {
@@ -3488,9 +3522,9 @@ function CostingForm({
   const utilityTotal = utilityRowsTotal + gasCost + electricityCost + waterCost;
   const manualUtilityBuckets = bucketUtilityRows(utilityRows);
   const utilityBuckets = { ...manualUtilityBuckets, electricity: manualUtilityBuckets.electricity + electricityCost, gas: manualUtilityBuckets.gas + gasCost, water: manualUtilityBuckets.water + waterCost };
-  const latestFormula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
+  const selectedBatchFormula = parseBatchIngredients(selectedBatch?.ingredientsNotes ?? "");
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
-  const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || latestBatch?.usablePieces || 0);
+  const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || selectedBatch?.usablePieces || 0);
   const packagingCost = packagingRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const overheadCost = overheadRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const equipmentAllocations = equipmentUsage.map((row) => {
@@ -3536,14 +3570,14 @@ function CostingForm({
   const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...customGasEquipmentNames, ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
   const electricEquipmentOptions = Array.from(new Set(["Electric oven", "Mixer", "Blender", "Espresso machine", "Refrigerator", ...customElectricEquipmentNames, ...equipment.filter((item) => item.calculationMode !== "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
 
-  function changeProduct(productId: string) {
-    setSelectedProductId(productId);
-    const productLatestBatch = batches.find((batch) => batch.productId === productId);
-    setCostingYield(getCostingYieldFromNotes(costing?.notes ?? "") || productLatestBatch?.usablePieces || 0);
+  function changeBatch(batchId: string) {
+    setSelectedBatchId(batchId);
+    const newlySelectedBatch = batches.find((item) => item.id === batchId);
+    setCostingYield(newlySelectedBatch?.usablePieces || 0);
   }
 
   function addIngredientRow() {
-    setIngredientRows((current) => [...current, { brandName: "", cost: 0, id: "", ingredientName: "", productId: selectedProductId, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
+    setIngredientRows((current) => [...current, { batchId: selectedBatchId, brandName: "", cost: 0, id: "", ingredientName: "", productId: selectedProductId, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
     setLocalMessage("Ingredient row added.");
     setLocalMessageTone("good");
   }
@@ -3578,10 +3612,11 @@ function CostingForm({
     setLocalMessageTone("good");
   }
 
-  function importLatestFormula() {
-    const rows = latestFormula
+  function importBatchFormula() {
+    const rows = selectedBatchFormula
       .filter((row) => row.ingredient.trim())
       .map((row) => ({
+        batchId: selectedBatchId,
         cost: 0,
         id: "",
         brandName: row.brand,
@@ -3595,10 +3630,10 @@ function CostingForm({
 
     if (rows.length > 0) {
       setIngredientRows(autoCostRows(rows));
-      setLocalMessage("Latest proof formula imported. Matching supply prices were applied automatically.");
+      setLocalMessage(`${selectedBatch?.batchVersion ?? "This batch"}'s formula imported. Matching supply prices were applied automatically.`);
       setLocalMessageTone("good");
     } else {
-      setLocalMessage("No proof formula found for this product yet.");
+      setLocalMessage("No proof formula found for this batch.");
       setLocalMessageTone("bad");
     }
   }
@@ -3614,7 +3649,8 @@ function CostingForm({
   }
 
   function downloadCosting() {
-    const filename = `${productName(selectedProductId).toLowerCase().replaceAll(" ", "-")}-costing.csv`;
+    const filenameBase = `${productName(selectedProductId)}${selectedBatch?.batchVersion ? ` ${selectedBatch.batchVersion}` : ""}`;
+    const filename = `${filenameBase.toLowerCase().replaceAll(" ", "-")}-costing.csv`;
     downloadCsv(
       filename,
       ["Section", "Name", "Qty", "Unit", "PHP", "Note"],
@@ -3650,7 +3686,22 @@ function CostingForm({
         <input name="overheadRowIds" type="hidden" value={overheadRows.map((row) => row.rowId).join(",")} />
         <input name="equipmentUsageRowIds" type="hidden" value={equipmentUsage.map((row) => row.rowId).join(",")} />
         <input name="wasteRowIds" type="hidden" value={wasteRows.map((row) => row.rowId).join(",")} />
-        <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
+        <input name="productId" type="hidden" value={selectedProductId} />
+        <input name="batchId" type="hidden" value={selectedBatchId} />
+        <label className="grid gap-1 text-sm font-medium">
+          Product batch
+          {batchesByProduct.length > 0 ? (
+            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => changeBatch(event.target.value)} value={selectedBatchId}>
+              {batchesByProduct.map((group) => (
+                <optgroup key={group.product.id} label={group.product.name}>
+                  {group.productBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.batchVersion}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          ) : (
+            <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">No proof batches yet — record one on Proof Day first.</p>
+          )}
+        </label>
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -3658,7 +3709,7 @@ function CostingForm({
               <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Cost the quantity used in this product batch. Use Supplies for purchase prices and supplier comparison.</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={latestFormula.length === 0} onClick={importLatestFormula} type="button">Use latest proof formula</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={selectedBatchFormula.length === 0} onClick={importBatchFormula} type="button">Use this batch&apos;s formula</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("costing-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadCosting} type="button">Download CSV</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addIngredientRow} type="button">Add ingredient</button>
@@ -3720,7 +3771,7 @@ function CostingForm({
           step="0.01"
           value={costingYield || ""}
           onChange={(event) => setCostingYield(Number(event.target.value || 0))}
-          helper={latestBatch?.usablePieces ? `Latest proof batch has ${latestBatch.usablePieces} sellable pieces. Override only if this costing uses a different yield.` : "Enter expected sellable pieces/units before trusting cost per piece."}
+          helper={selectedBatch?.usablePieces ? `${selectedBatch.batchVersion} has ${selectedBatch.usablePieces} sellable pieces. Override only if this costing uses a different yield.` : "Enter expected sellable pieces/units before trusting cost per piece."}
         />
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <p className="text-sm font-semibold">Labor timing</p>
@@ -3915,6 +3966,7 @@ function CostingForm({
         overheadRows={overheadRows}
         packagingCost={packagingCost}
         packagingRows={packagingRows}
+        batchVersion={selectedBatch?.batchVersion ?? ""}
         productId={selectedProductId}
         suggestedPrice={suggestedPrice}
         suggestedTargetPrice={suggestedTargetPrice}
@@ -3959,6 +4011,7 @@ function NamedCostTable({ emptyLabel, rows, title, total }: { emptyLabel: string
 }
 
 function CostingPrintReport({
+  batchVersion,
   breakEvenUnits,
   contributionMarginPerPiece,
   costPerPiece,
@@ -4001,6 +4054,7 @@ function CostingPrintReport({
   waterCostDetail,
   waterDetail,
 }: {
+  batchVersion: string;
   breakEvenUnits: number | null;
   contributionMarginPerPiece: number | null;
   costPerPiece: number | null;
@@ -4049,7 +4103,7 @@ function CostingPrintReport({
   return (
     <div className="print-report" id="costing-print-report">
       <h1>Aly & Shin Costing Sheet</h1>
-      <p>{productName(productId)} / Generated {today}</p>
+      <p>{productName(productId)}{batchVersion ? ` ${batchVersion}` : ""} / Generated {today}</p>
 
       <h2>Summary</h2>
       <table>

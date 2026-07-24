@@ -48,6 +48,7 @@ export type BatchPhoto = {
 export type CostingSummary = {
   id: string;
   productId: string;
+  batchId: string;
   ingredientCost: number;
   packagingCost: number;
   laborEstimate: number;
@@ -66,6 +67,7 @@ export type CostingSummary = {
 export type CostingEntry = {
   id: string;
   productId: string;
+  batchId: string;
   brandName: string;
   ingredientName: string;
   quantityUsed: number;

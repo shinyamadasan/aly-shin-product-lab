@@ -184,6 +184,13 @@ Important:
 
 Purpose: calculate whether a product can make money.
 
+Costing is scoped to a specific proof batch/version (e.g. "Brownies V3"), not just a product —
+picking a batch from the selector sets both the product and the version in one step, so the same
+product can carry separate costing per version instead of only ever reflecting whichever batch
+happened to be most recent. A product with no proof batches yet can't be costed, by design —
+prove it first, then cost it. Recent Entries, print, and CSV all show the batch version alongside
+the product name so it's clear which version a saved costing belongs to.
+
 Use when:
 - Formula is close enough to cost.
 - Supplies have actual purchase prices.
