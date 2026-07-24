@@ -33,6 +33,7 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+!.env.advisor.local.example
 
 # vercel
 .vercel
@@ -46,3 +47,12 @@ next-env.d.ts
 claude-session.log
 automation.lock
 .last-phase-result.txt
+
+# Daily AI Advisor -- generated reports are never committed to main (see DAILY_AI_ADVISOR.md
+# section on git publishing); daily-advisor.ps1 copies them into a dedicated worktree that
+# publishes to the automation/daily-advisor branch instead. This local output/ dir and worktree
+# are just staging areas.
+daily-advisor-session.log
+/daily-advisor/output/
+/daily-advisor/.run.lock
+/.worktrees/
