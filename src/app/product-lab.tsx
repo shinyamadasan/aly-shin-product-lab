@@ -3328,11 +3328,34 @@ function CostingForm({
     ? ingredientEntries.filter((entry) => (costing.batchId ? entry.batchId === costing.batchId : entry.productId === costing.productId && !entry.batchId))
     : [];
   const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
-  const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() =>
-    savedIngredients.length > 0
-      ? savedIngredients.map((entry) => ({ ...entry, rowId: entry.id }))
-      : [{ batchId: costing?.batchId ?? "", brandName: "", cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }],
-  );
+  // A brand-new costing has nothing saved yet to protect, so it starts pre-filled from the
+  // selected batch's formula (auto-costed against Supplies) instead of a blank row -- the "Use
+  // this batch's formula" button stays for switching batches or editing a saved costing, where
+  // auto-importing would risk silently overwriting rows the user already priced/edited.
+  const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() => {
+    if (savedIngredients.length > 0) {
+      return savedIngredients.map((entry) => ({ ...entry, rowId: entry.id }));
+    }
+
+    const formulaRows = parseBatchIngredients(selectedBatch?.ingredientsNotes ?? "")
+      .filter((row) => row.ingredient.trim())
+      .map((row) => ({
+        batchId: selectedBatchId,
+        cost: 0,
+        id: "",
+        brandName: row.brand,
+        ingredientName: row.ingredient,
+        productId: selectedProductId,
+        quantityUsed: row.quantity,
+        rowId: crypto.randomUUID(),
+        supplierNote: row.change,
+        unit: row.unit,
+      }));
+
+    return formulaRows.length > 0
+      ? autoCostRows(formulaRows)
+      : [{ batchId: costing?.batchId ?? "", brandName: "", cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }];
+  });
   const [utilityRows, setUtilityRows] = useState<CostingUtilityRow[]>(() => {
     if (structuredDetail?.utilityRows?.length) {
       return structuredDetail.utilityRows.map((row) => ({ ...row, rowId: row.rowId || crypto.randomUUID() }));
