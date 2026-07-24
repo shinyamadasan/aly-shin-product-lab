@@ -1,8 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   Beaker,
@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ClipboardCheck,
   FlaskConical,
+  GripVertical,
   NotebookPen,
   PackageCheck,
   ShieldAlert,
@@ -28,13 +29,21 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, today, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
 import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
-import { getCostingTotals } from "@/lib/costing";
+import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
+import {
+  getAutoCostedIngredientRow,
+  getConversionLabel,
+  getMatchingSupplies,
+  getSupplyLabel,
+  getSupplyUsedCost,
+  normalizeSupplyText,
+} from "@/lib/supplies";
 import { getAllocatedEquipmentCost, getEquipmentTotals, REFERENCE_COOKING_MINUTES } from "@/lib/equipment";
 
 // Keep these in sync with the file_size_limit / allowed_mime_types set on the
@@ -192,6 +201,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         brandName: row.brand_name ?? "",
         supplierName: row.supplier_name,
         purchaseDate: row.purchase_date,
+        createdAt: row.created_at ?? "",
         packQuantity: Number(row.pack_quantity ?? 0),
         unit: row.unit ?? "",
         totalCost: Number(row.total_cost ?? 0),
@@ -698,6 +708,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       brandName: String(formData.get("brandName") || "").trim(),
       supplierName: String(formData.get("supplierName") || "").trim(),
       purchaseDate: String(formData.get("purchaseDate") || today),
+      createdAt: new Date().toISOString(),
       packQuantity: Number(formData.get("packQuantity") || 0),
       unit: String(formData.get("unit") || "").trim(),
       totalCost: Number(formData.get("totalCost") || 0),
@@ -2159,6 +2170,8 @@ function BatchForm({
     }
     return [{ rowId: crypto.randomUUID(), text: "" }];
   });
+  const [draggingStepId, setDraggingStepId] = useState<string | null>(null);
+  const stepRowElements = useRef(new Map<string, HTMLDivElement>());
 
   const stepNameSuggestions = Array.from(
     new Set([
@@ -2166,6 +2179,11 @@ function BatchForm({
       ...batches.flatMap((item) => parseBatchIngredients(item.ingredientsNotes).map((row) => row.step)),
     ]),
   ).filter(Boolean).sort();
+
+  // Sourced from this batch's own formula, not all-time ingredient history, so a process step
+  // can only suggest an ingredient name that actually matches what's in the formula right now --
+  // that's what keeps the wording in Process Steps from drifting from the Ingredients list.
+  const ingredientNameSuggestions = Array.from(new Set(formulaRows.map((row) => row.ingredient))).filter(Boolean).sort();
 
   function addFormulaRow() {
     setFormulaRows((current) => [...current, { brand: "", change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), step: "", unit: "" }]);
@@ -2188,6 +2206,47 @@ function BatchForm({
 
   function updateProcessStepRow(rowId: string, text: string) {
     setProcessStepRows((current) => current.map((row) => (row.rowId === rowId ? { ...row, text } : row)));
+  }
+
+  // Reorders live as the pointer crosses each row's midpoint, so forgetting a step and dragging
+  // it into place feels immediate instead of drop-to-commit. Pointer Events (not HTML5 DnD) so
+  // this works the same with a mouse or a finger on the phone Aly actually uses in the kitchen.
+  function startStepDrag(event: ReactPointerEvent<HTMLButtonElement>, rowId: string) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDraggingStepId(rowId);
+  }
+
+  function dragStep(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!draggingStepId) {
+      return;
+    }
+    const pointerY = event.clientY;
+    const others = processStepRows.filter((row) => row.rowId !== draggingStepId);
+    let targetIndex = others.length;
+    for (let index = 0; index < others.length; index += 1) {
+      const element = stepRowElements.current.get(others[index].rowId);
+      if (!element) {
+        continue;
+      }
+      const rect = element.getBoundingClientRect();
+      if (pointerY < rect.top + rect.height / 2) {
+        targetIndex = index;
+        break;
+      }
+    }
+
+    const draggingRow = processStepRows.find((row) => row.rowId === draggingStepId);
+    if (!draggingRow) {
+      return;
+    }
+    others.splice(targetIndex, 0, draggingRow);
+    if (others.some((row, index) => row.rowId !== processStepRows[index]?.rowId)) {
+      setProcessStepRows(others);
+    }
+  }
+
+  function endStepDrag() {
+    setDraggingStepId(null);
   }
 
   async function pasteFormulaFromClipboard() {
@@ -2227,6 +2286,9 @@ function BatchForm({
         <input name="batchProcessStepRowIds" type="hidden" value={processStepRows.map((row) => row.rowId).join(",")} />
         <datalist id="formulaStepSuggestions">
           {stepNameSuggestions.map((step) => <option key={step} value={step} />)}
+        </datalist>
+        <datalist id="processStepIngredientSuggestions">
+          {ingredientNameSuggestions.map((ingredient) => <option key={ingredient} value={ingredient} />)}
         </datalist>
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
@@ -2282,8 +2344,29 @@ function BatchForm({
           </div>
           <div className="mt-3 grid gap-2">
             {processStepRows.map((row, index) => (
-              <div className="grid gap-2 lg:grid-cols-[1fr_70px]" key={row.rowId}>
-                <Input name={`batchProcessStep-${row.rowId}`} label={`Step ${index + 1}`} placeholder="Cream butter and sugar for 3 minutes" value={row.text} onChange={(event) => updateProcessStepRow(row.rowId, event.target.value)} />
+              <div
+                className={`grid grid-cols-[28px_1fr_70px] gap-2 rounded-md ${draggingStepId === row.rowId ? "bg-white/60 opacity-70" : ""}`}
+                key={row.rowId}
+                ref={(element) => {
+                  if (element) {
+                    stepRowElements.current.set(row.rowId, element);
+                  } else {
+                    stepRowElements.current.delete(row.rowId);
+                  }
+                }}
+              >
+                <button
+                  aria-label={`Drag to reorder step ${index + 1}`}
+                  className="mt-6 flex h-10 cursor-grab items-center justify-center rounded-md border border-[#d8c7b7] bg-white text-[#8a6a54] touch-none active:cursor-grabbing"
+                  onPointerDown={(event) => startStepDrag(event, row.rowId)}
+                  onPointerMove={dragStep}
+                  onPointerUp={endStepDrag}
+                  onPointerCancel={endStepDrag}
+                  type="button"
+                >
+                  <GripVertical size={16} />
+                </button>
+                <Input list="processStepIngredientSuggestions" name={`batchProcessStep-${row.rowId}`} label={`Step ${index + 1}`} placeholder="Cream butter and sugar for 3 minutes" value={row.text} onChange={(event) => updateProcessStepRow(row.rowId, event.target.value)} />
                 <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setProcessStepRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
               </div>
             ))}
@@ -2427,7 +2510,6 @@ function ProofDayChecklist() {
   );
 }
 
-type CostingIngredientRow = CostingEntry & { brandName: string; isManualCost?: boolean; rowId: string };
 type CostingUtilityRow = { cost: number; name: string; note: string; rowId: string };
 type CostingNamedCostRow = { cost: number; name: string; note: string; rowId: string };
 type CostingGasDetail = { equipmentName: string; gasKg: number; gasPrice: number; gasUseKgPerHour: number };
@@ -2447,121 +2529,6 @@ const defaultPackagingComponents = ["Box", "Sticker", "Cup", "Lid", "Sleeve", "L
 const defaultOverheadRows = ["Rent", "Internet", "POS Subscription", "Cleaning Supplies", "Equipment Maintenance", "Business Permits", "Accounting", "Miscellaneous"];
 const defaultWasteRows = ["Ingredient Waste", "Production Waste", "Packaging Waste", "Unsold Inventory", "Spoilage", "Returned Products"];
 
-function normalizeSupplyText(value: string) {
-  return value.trim().toLowerCase();
-}
-
-function normalizeUnit(value: string) {
-  const unit = normalizeSupplyText(value);
-  if (unit === "gram" || unit === "grams") {
-    return "g";
-  }
-  if (unit === "milliliter" || unit === "milliliters") {
-    return "ml";
-  }
-  if (unit === "tablespoon" || unit === "tablespoons") {
-    return "tbsp";
-  }
-  if (unit === "teaspoon" || unit === "teaspoons") {
-    return "tsp";
-  }
-  return unit;
-}
-
-function getMatchingSupplies(supplies: SupplyEntry[], brandName: string, ingredientName: string, unit: string) {
-  return supplies
-    .filter((supply) => {
-      const brandMatches = !brandName.trim() || normalizeSupplyText(supply.brandName) === normalizeSupplyText(brandName);
-      const ingredientMatches = normalizeSupplyText(supply.ingredientName) === normalizeSupplyText(ingredientName);
-      const exactUnitMatch = normalizeUnit(supply.unit) === normalizeUnit(unit);
-      const convertibleUnitMatch = Boolean(getConvertedQuantityForSupply(1, unit, supply));
-      return brandMatches && ingredientMatches && (exactUnitMatch || convertibleUnitMatch);
-    })
-    .sort((a, b) => {
-      const aUnitCost = a.packQuantity > 0 ? a.totalCost / a.packQuantity : Number.MAX_SAFE_INTEGER;
-      const bUnitCost = b.packQuantity > 0 ? b.totalCost / b.packQuantity : Number.MAX_SAFE_INTEGER;
-      return aUnitCost - bUnitCost;
-    });
-}
-
-function getSupplyUsedCost(supply: SupplyEntry, quantityUsed: number, usedUnit = supply.unit) {
-  const convertedQuantity = getConvertedQuantityForSupply(quantityUsed, usedUnit, supply);
-  if (supply.packQuantity <= 0 || supply.totalCost <= 0 || convertedQuantity <= 0) {
-    return 0;
-  }
-
-  return (supply.totalCost / supply.packQuantity) * convertedQuantity;
-}
-
-const volumeUnitMl: Record<string, number> = {
-  cup: 240,
-  cups: 240,
-  tbsp: 15,
-  tablespoon: 15,
-  tablespoons: 15,
-  tsp: 5,
-  teaspoon: 5,
-  teaspoons: 5,
-};
-
-const gramPerMlByIngredient: Array<{ keywords: string[]; gramPerMl: number }> = [
-  { keywords: ["water", "milk", "coffee", "espresso", "cream"], gramPerMl: 1 },
-  { keywords: ["oil"], gramPerMl: 0.92 },
-  { keywords: ["honey", "syrup"], gramPerMl: 1.4 },
-  { keywords: ["butter"], gramPerMl: 0.96 },
-  { keywords: ["sugar"], gramPerMl: 0.85 },
-  { keywords: ["flour"], gramPerMl: 0.53 },
-  { keywords: ["cocoa", "cacao"], gramPerMl: 0.42 },
-  { keywords: ["powder"], gramPerMl: 0.5 },
-  { keywords: ["salt"], gramPerMl: 1.2 },
-];
-
-function getIngredientGramPerMl(ingredientName: string) {
-  const normalizedIngredient = normalizeSupplyText(ingredientName);
-  return gramPerMlByIngredient.find((entry) => entry.keywords.some((keyword) => normalizedIngredient.includes(keyword)))?.gramPerMl;
-}
-
-function getConvertedQuantity(quantity: number, fromUnit: string, toUnit: string, ingredientName: string) {
-  const normalizedFrom = normalizeUnit(fromUnit);
-  const normalizedTo = normalizeUnit(toUnit);
-  if (!quantity || normalizedFrom === normalizedTo) {
-    return quantity;
-  }
-
-  const ml = volumeUnitMl[normalizedFrom] ? quantity * volumeUnitMl[normalizedFrom] : 0;
-  if (!ml) {
-    return 0;
-  }
-
-  if (normalizedTo === "ml") {
-    return ml;
-  }
-
-  if (normalizedTo === "g" || normalizedTo === "gram" || normalizedTo === "grams") {
-    const gramPerMl = getIngredientGramPerMl(ingredientName);
-    return gramPerMl ? ml * gramPerMl : 0;
-  }
-
-  return 0;
-}
-
-function getConvertedQuantityForSupply(quantity: number, usedUnit: string, supply: SupplyEntry) {
-  return getConvertedQuantity(quantity, usedUnit, supply.unit, supply.ingredientName);
-}
-
-function getConversionLabel(quantity: number, fromUnit: string, supply: SupplyEntry) {
-  const convertedQuantity = getConvertedQuantityForSupply(quantity, fromUnit, supply);
-  if (!convertedQuantity || normalizeUnit(fromUnit) === normalizeUnit(supply.unit)) {
-    return "";
-  }
-
-  const isEstimate = normalizeUnit(supply.unit) !== "ml";
-  return `${quantity}${fromUnit} = ${convertedQuantity.toFixed(1)}${supply.unit}${isEstimate ? " estimate" : ""}`;
-}
-
-function getSupplyLabel(supply: Pick<SupplyEntry, "brandName" | "ingredientName" | "unit">) {
-  return `${supply.brandName ? `${supply.brandName} - ` : ""}${supply.ingredientName}${supply.unit ? ` (${supply.unit})` : ""}`;
-}
 
 function getBrandFromCostingNote(note: string) {
   return note.match(/^Brand: ([^/]+)/)?.[1]?.trim() ?? "";
@@ -3466,18 +3433,19 @@ function CostingForm({
   const directCost = ingredientTotal + packagingCost + laborEstimate + utilityTotal + wasteAllowance;
   const indirectCost = overheadCost + equipmentDepreciationCost + equipmentMaintenanceCost;
   const totalBatchCost = directCost + indirectCost;
-  const costPerPiece = costingYield > 0 ? totalBatchCost / costingYield : 0;
-  const grossProfit = suggestedPrice - costPerPiece;
-  const margin = suggestedPrice > 0 ? (grossProfit / suggestedPrice) * 100 : 0;
-  const foodCostPercent = suggestedPrice > 0 ? (costPerPiece / suggestedPrice) * 100 : 0;
-  const markup = costPerPiece > 0 ? ((suggestedPrice - costPerPiece) / costPerPiece) * 100 : 0;
-  const suggestedTargetPrice = targetFoodCost > 0 ? costPerPiece / targetFoodCost : 0;
   // Break-even units: how many pieces of THIS batch need to sell to cover this batch's fixed-cost
   // allocation (overhead + equipment). Direct costs (ingredients/packaging/labor/utilities/waste)
   // scale per piece, so only indirectCost is "fixed" at the batch level here.
-  const variableCostPerPiece = costingYield > 0 ? directCost / costingYield : 0;
-  const contributionMarginPerPiece = suggestedPrice - variableCostPerPiece;
-  const breakEvenUnits = contributionMarginPerPiece > 0 ? Math.ceil(indirectCost / contributionMarginPerPiece) : 0;
+  const {
+    costPerPiece,
+    grossProfit,
+    margin,
+    foodCostPercent,
+    markup,
+    targetPrice: suggestedTargetPrice,
+    contributionMarginPerPiece,
+    breakEvenUnits,
+  } = getCostingMetrics({ costingYield, directCost, indirectCost, suggestedPrice, targetFoodCost, totalBatchCost });
   const appliedMessage = message || localMessage;
   const appliedMessageTone = message ? messageTone : localMessageTone;
   const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...customGasEquipmentNames, ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
@@ -3550,31 +3518,8 @@ function CostingForm({
     }
   }
 
-  function getBestSupplyMatch(row: CostingIngredientRow) {
-    return getMatchingSupplies(supplies, row.brandName, row.ingredientName, row.unit)[0];
-  }
-
-  function getAutoCostedRow(row: CostingIngredientRow) {
-    if (row.isManualCost) {
-      return row;
-    }
-
-    const supply = getBestSupplyMatch(row);
-    if (!supply) {
-      return row;
-    }
-
-    return {
-      ...row,
-      brandName: supply.brandName,
-      cost: Number(getSupplyUsedCost(supply, row.quantityUsed, row.unit).toFixed(2)),
-      ingredientName: supply.ingredientName,
-      supplierNote: [supply.supplierName, supply.purchaseDate, `quality ${supply.qualityRating || 0}/5`, getConversionLabel(row.quantityUsed, row.unit, supply)].filter(Boolean).join(" / "),
-    };
-  }
-
   function autoCostRows(rows: CostingIngredientRow[]) {
-    return rows.map((row) => getAutoCostedRow(row));
+    return rows.map((row) => getAutoCostedIngredientRow(row, supplies));
   }
 
   function updateIngredientRow(rowId: string, changes: Partial<CostingIngredientRow>, isManualCost = false) {
@@ -3601,10 +3546,10 @@ function CostingForm({
         ["Waste", "Waste allowance", "", "", wasteAllowance, ""],
         ["Summary", "Batch cost", "", "", totalBatchCost, ""],
         ["Summary", "Yield", costingYield, "pieces/units", "", ""],
-        ["Summary", "Cost per piece", "", "", costPerPiece, ""],
+        ["Summary", "Cost per piece", "", "", formatCostingMetric(costPerPiece, (value) => value.toFixed(2)), ""],
         ["Summary", "Selling price", "", "", suggestedPrice, ""],
-        ["Summary", "Gross profit per unit", "", "", grossProfit, ""],
-        ["Summary", "Margin %", "", "", margin.toFixed(1), ""],
+        ["Summary", "Operating profit per unit", "", "", formatCostingMetric(grossProfit, (value) => value.toFixed(2)), ""],
+        ["Summary", "Operating margin %", "", "", formatCostingMetric(margin, (value) => value.toFixed(1)), ""],
       ],
     );
   }
@@ -3657,16 +3602,17 @@ function CostingForm({
                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">Matching supplies</p>
                     {matches.length === 0 ? <p className="mt-2 text-sm text-[#6f5a4c]">No exact supply match yet. Brand, ingredient, and unit must match Supplies.</p> : null}
                     <div className="mt-2 grid gap-2">
-                      {matches.map((supply) => {
+                      {matches.map((supply, matchIndex) => {
                         const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
                         const usedCost = getSupplyUsedCost(supply, row.quantityUsed, row.unit);
                         const conversionLabel = getConversionLabel(row.quantityUsed, row.unit, supply);
+                        const isAutoSelected = matchIndex === 0 && !row.isManualCost;
                         return (
                           <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-2 text-sm md:grid-cols-[1fr_140px]" key={supply.id}>
                             <div className="text-[#5f4a3d]">
-                              <p className="font-semibold">{getSupplyLabel(supply)}</p>
-                              <p>{supply.supplierName}</p>
-                              <p>PHP {unitCost.toFixed(4)} / {supply.unit || "unit"} · quality {supply.qualityRating || 0}/5</p>
+                              <p className="font-semibold">{getSupplyLabel(supply)}{isAutoSelected ? <span className="ml-2 rounded-full bg-[#231813] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">Auto-selected</span> : null}</p>
+                              <p>{supply.supplierName} · bought {supply.purchaseDate || "date unknown"}</p>
+                              <p>PHP {supply.totalCost.toFixed(2)} total · PHP {unitCost.toFixed(4)} / {supply.unit || "unit"} · quality {supply.qualityRating || 0}/5</p>
                               {conversionLabel ? <p className="text-xs text-[#8a6a54]">{conversionLabel}</p> : null}
                             </div>
                             <p className="self-center font-semibold">Used: PHP {usedCost.toFixed(2)}</p>
@@ -3825,13 +3771,13 @@ function CostingForm({
         </div>
         <div className="grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
           <CostingMetric label="Batch cost" value={`PHP ${totalBatchCost.toFixed(2)}`} />
-          <CostingMetric label="Cost per piece" value={costingYield > 0 ? `PHP ${costPerPiece.toFixed(2)}` : "Need yield"} />
-          <CostingMetric label="Gross profit/unit" value={costingYield > 0 ? `PHP ${grossProfit.toFixed(2)}` : "Need yield"} />
-          <CostingMetric label="Food cost" value={costingYield > 0 ? `${foodCostPercent.toFixed(1)}%` : "Need yield"} />
-          <CostingMetric label="Gross margin" value={costingYield > 0 ? `${margin.toFixed(1)}%` : "Need yield"} />
-          <CostingMetric label="Markup" value={costingYield > 0 ? `${markup.toFixed(1)}%` : "Need yield"} />
-          <CostingMetric label="Break-even" value={costingYield === 0 ? "Need yield" : contributionMarginPerPiece > 0 ? `${breakEvenUnits} pcs` : "Price below cost"} />
-          <CostingMetric label="Target price" value={costingYield > 0 ? `PHP ${suggestedTargetPrice.toFixed(2)}` : "Need yield"} />
+          <CostingMetric label="Cost per piece" value={formatCostingMetric(costPerPiece, (value) => `PHP ${value.toFixed(2)}`)} />
+          <CostingMetric label="Operating profit/unit" value={formatCostingMetric(grossProfit, (value) => `PHP ${value.toFixed(2)}`)} />
+          <CostingMetric label="Food cost" value={formatCostingMetric(foodCostPercent, (value) => `${value.toFixed(1)}%`)} />
+          <CostingMetric label="Operating margin" value={formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)} />
+          <CostingMetric label="Markup" value={formatCostingMetric(markup, (value) => `${value.toFixed(1)}%`)} />
+          <CostingMetric label="Break-even" value={formatCostingMetric(breakEvenUnits, (value) => (contributionMarginPerPiece && contributionMarginPerPiece > 0 ? `${value} pcs` : "Price below cost"))} />
+          <CostingMetric label="Target price" value={formatCostingMetric(suggestedTargetPrice, (value) => `PHP ${value.toFixed(2)}`)} />
         </div>
         <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-4">
           <CostingBreakdown label="Ingredients" value={ingredientTotal} />
@@ -3970,9 +3916,9 @@ function CostingPrintReport({
   waterCostDetail,
   waterDetail,
 }: {
-  breakEvenUnits: number;
-  contributionMarginPerPiece: number;
-  costPerPiece: number;
+  breakEvenUnits: number | null;
+  contributionMarginPerPiece: number | null;
+  costPerPiece: number | null;
   costingYield: number;
   directCost: number;
   electricityCost: number;
@@ -3981,18 +3927,18 @@ function CostingPrintReport({
   equipmentAllocations: EquipmentAllocation[];
   equipmentDepreciationCost: number;
   equipmentMaintenanceCost: number;
-  foodCostPercent: number;
+  foodCostPercent: number | null;
   gasCost: number;
   gasCostDetail: { cost: number; costPerMinute: number; pricePerKg: number };
   gasDetail: CostingGasDetail;
-  grossProfit: number;
+  grossProfit: number | null;
   indirectCost: number;
   ingredientRows: CostingIngredientRow[];
   ingredientTotal: number;
   laborDetail: CostingLaborDetail;
   laborEstimate: number;
-  margin: number;
-  markup: number;
+  margin: number | null;
+  markup: number | null;
   notes: string;
   overheadCost: number;
   overheadRows: CostingNamedCostRow[];
@@ -4000,7 +3946,7 @@ function CostingPrintReport({
   packagingRows: CostingNamedCostRow[];
   productId: string;
   suggestedPrice: number;
-  suggestedTargetPrice: number;
+  suggestedTargetPrice: number | null;
   targetFoodCost: number;
   totalBatchCost: number;
   utilityBuckets: { electricity: number; gas: number; other: number; water: number };
@@ -4024,11 +3970,11 @@ function CostingPrintReport({
       <table>
         <tbody>
           <tr><th>Batch cost</th><td>PHP {totalBatchCost.toFixed(2)}</td><th>Yield</th><td>{costingYield || 0} pieces/units</td></tr>
-          <tr><th>Cost per piece</th><td>PHP {costPerPiece.toFixed(2)}</td><th>Selling price</th><td>PHP {suggestedPrice.toFixed(2)}</td></tr>
-          <tr><th>Gross profit/unit</th><td>PHP {grossProfit.toFixed(2)}</td><th>Gross margin</th><td>{margin.toFixed(1)}%</td></tr>
-          <tr><th>Food cost</th><td>{foodCostPercent.toFixed(1)}%</td><th>Markup</th><td>{markup.toFixed(1)}%</td></tr>
-          <tr><th>Target food cost</th><td>{(targetFoodCost * 100).toFixed(1)}%</td><th>Target price</th><td>PHP {suggestedTargetPrice.toFixed(2)}</td></tr>
-          <tr><th>Break-even</th><td>{contributionMarginPerPiece > 0 ? `${breakEvenUnits} pieces to cover overhead + equipment` : "Not achievable at this price"}</td><th>Contribution margin/unit</th><td>PHP {contributionMarginPerPiece.toFixed(2)}</td></tr>
+          <tr><th>Cost per piece</th><td>{formatCostingMetric(costPerPiece, (value) => `PHP ${value.toFixed(2)}`)}</td><th>Selling price</th><td>PHP {suggestedPrice.toFixed(2)}</td></tr>
+          <tr><th>Operating profit/unit</th><td>{formatCostingMetric(grossProfit, (value) => `PHP ${value.toFixed(2)}`)}</td><th>Operating margin</th><td>{formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)}</td></tr>
+          <tr><th>Food cost</th><td>{formatCostingMetric(foodCostPercent, (value) => `${value.toFixed(1)}%`)}</td><th>Markup</th><td>{formatCostingMetric(markup, (value) => `${value.toFixed(1)}%`)}</td></tr>
+          <tr><th>Target food cost</th><td>{(targetFoodCost * 100).toFixed(1)}%</td><th>Target price</th><td>{formatCostingMetric(suggestedTargetPrice, (value) => `PHP ${value.toFixed(2)}`)}</td></tr>
+          <tr><th>Break-even</th><td>{formatCostingMetric(breakEvenUnits, (value) => (contributionMarginPerPiece && contributionMarginPerPiece > 0 ? `${value} pieces to cover overhead + equipment` : "Not achievable at this price"))}</td><th>Contribution margin/unit</th><td>{formatCostingMetric(contributionMarginPerPiece, (value) => `PHP ${value.toFixed(2)}`)}</td></tr>
         </tbody>
       </table>
 

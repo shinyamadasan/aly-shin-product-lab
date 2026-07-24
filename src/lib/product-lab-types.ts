@@ -74,12 +74,15 @@ export type CostingEntry = {
   supplierNote: string;
 };
 
+export type CostingIngredientRow = CostingEntry & { brandName: string; isManualCost?: boolean; rowId: string };
+
 export type SupplyEntry = {
   id: string;
   ingredientName: string;
   brandName: string;
   supplierName: string;
   purchaseDate: string;
+  createdAt: string;
   packQuantity: number;
   unit: string;
   totalCost: number;

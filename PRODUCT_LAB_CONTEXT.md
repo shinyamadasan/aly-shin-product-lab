@@ -125,6 +125,11 @@ Important:
   uniform instead of drifting into near-duplicate variants.
 - Photos can be attached while filling out the batch, not only after it's saved. They're staged
   locally and upload automatically the moment the save succeeds, so it feels like one action.
+- Process Steps can be reordered by dragging the grip handle on each step, for when a step was
+  forgotten and needs to be inserted in the right place instead of retyped in order.
+- Process Step text autosuggests ingredient names from this batch's own formula, so a step's
+  wording matches the Ingredients list exactly instead of drifting into a slightly different name
+  for the same ingredient.
 
 ### Batches
 
@@ -169,6 +174,10 @@ Must capture:
 Important:
 - Saved brand, supplier, and unit should become easy dropdown/combobox options.
 - Supplies feed costing automatically.
+- Auto-selection uses the most recent valid matching purchase (by date bought, falling back to
+  when the record was saved if no purchase date), not the cheapest one ever recorded. A stale
+  cheap price should not undercut a real, more recent cost. Invalid or zero-cost records are
+  excluded, not just deprioritized. Manual cost overrides still take precedence.
 
 ### Costing
 
@@ -189,14 +198,20 @@ Must calculate:
 - Batch cost.
 - Cost per piece/unit.
 - Suggested price.
-- Gross profit per unit.
-- Margin / food cost.
+- Operating profit per unit (revenue minus the fully loaded batch cost — ingredients, packaging,
+  labor, utilities, waste, overhead, and equipment. Not a true accounting Gross Profit, and not
+  Net Profit either, since taxes, financing, and selling fees still aren't accounted for).
+- Operating margin / food cost.
 
 Important:
 - Do not require pointless "calculate" buttons if the app can auto-calculate.
 - Ingredient cost should update automatically from matching supply data unless manually overridden.
 - Labor is not profit. Labor pays the person doing the work.
-- Yield must be explicit. Cost per piece is meaningless without yield.
+- Yield must be explicit. Cost per piece is meaningless without yield. When yield is missing or
+  zero, cost per piece and every dependent number (margin, markup, target price, contribution
+  margin, break-even) show "Need yield" instead of a number — never the whole batch cost, never
+  zero. This is enforced by one shared helper so Costing, Product Detail, print, and CSV can't
+  drift out of sync with each other.
 - Reports should print as clean costing sheets.
 - Gas/electric equipment for the utility calculators can be added inline from the equipment
   dropdown ("+ Add new...") — no need to leave Costing and go set up a full Equipment record just to

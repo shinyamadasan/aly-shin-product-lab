@@ -1,4 +1,4 @@
-import { getCostingTotals } from "@/lib/costing";
+import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
 import type { LabState } from "@/lib/lab-state";
 import type { ContentJournalEntry, CostingSummary, ProductBatch } from "@/lib/product-lab-types";
 import { productName } from "@/components/product-controls";
@@ -54,14 +54,19 @@ export function RecentEntries({
           items={labState.costings.slice(0, 3).map((costing) => {
             const totals = getCostingTotals(costing);
             const latestBatch = labState.batches.find((batch) => batch.productId === costing.productId);
-            const costPerPiece = latestBatch?.usablePieces ? totals.totalBatchCost / latestBatch.usablePieces : 0;
-            const grossProfit = latestBatch?.usablePieces ? costing.suggestedPrice - costPerPiece : 0;
-            const margin = costing.suggestedPrice > 0 ? (grossProfit / costing.suggestedPrice) * 100 : 0;
+            const metrics = getCostingMetrics({
+              costingYield: latestBatch?.usablePieces ?? 0,
+              directCost: totals.directCost,
+              indirectCost: totals.indirectCost,
+              suggestedPrice: costing.suggestedPrice,
+              targetFoodCost: 0,
+              totalBatchCost: totals.totalBatchCost,
+            });
 
             return {
               id: costing.id,
               title: productName(costing.productId),
-              detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${latestBatch?.usablePieces ? `PHP ${costPerPiece.toFixed(2)}` : "needs yield"}. Margin ${latestBatch?.usablePieces ? `${margin.toFixed(1)}%` : "needs yield"}.`,
+              detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`, "needs yield")}. Margin ${formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`, "needs yield")}.`,
               onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
               onEdit: editCosting ? () => editCosting(costing) : undefined,
             };
