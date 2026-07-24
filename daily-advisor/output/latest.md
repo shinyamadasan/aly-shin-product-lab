@@ -1,0 +1,33 @@
+# Aly & Shin Product Lab -- Daily Briefing
+
+Date: 2026-07-24 (Asia/Manila)
+Data source: Sample data
+_Sample data mode -- this briefing reflects synthetic fixture data, not real business activity._
+
+## Portfolio summary
+27 active findings across the portfolio. 0 product(s) need no action today.
+
+## Highest-priority product
+**Brownies** -- FIN-001: Cost per piece is PHP 51.88 -- current price loses money (-3.8% margin).
+Recommendation: Raise the price to at least PHP 51.88 (breakeven), or reduce a cost driver.
+
+## Up to 3 actions for today
+1. **Brownies** (FIN-001): Raise the price to at least PHP 51.88 (breakeven), or reduce a cost driver.
+2. **Revel Bars** (LAUNCH-001): Resolve the missing input(s) before evaluating launch readiness further.
+3. **Burnt Cheesecake** (LAUNCH-001): Resolve the missing input(s) before evaluating launch readiness further.
+
+## Important warnings
+- **Brownies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
+- **Cookies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
+- **Brownies**: Break-even can't be calculated -- the selling price doesn't cover variable cost per piece.
+- **Cookies**: Only one tasting checkpoint logged -- no later-timepoint check yet.
+- **Brownies**: Packaging cost is PHP 10.00 but no test note confirms it holds up under real delivery/storage conditions.
+- **Cookies**: Packaging cost is PHP 5.00 but no test note confirms it holds up under real delivery/storage conditions.
+
+## Active experiments
+- **Brownies** (lacks recent observations): Latest batch SAMPLE-V1 (made 2026-07-01) has no tasting feedback recorded yet.
+
+## Products needing no action
+None -- every product has at least one open finding.
+
+_Deterministic fallback: this briefing was generated entirely from the Rule Engine, with no AI enrichment this run._
