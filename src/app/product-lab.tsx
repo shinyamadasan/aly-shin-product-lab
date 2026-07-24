@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import type { Dispatch, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
+import type { ChangeEvent as ReactChangeEvent, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
@@ -2172,6 +2172,11 @@ function BatchForm({
   });
   const [draggingStepId, setDraggingStepId] = useState<string | null>(null);
   const stepRowElements = useRef(new Map<string, HTMLDivElement>());
+  const processStepInputElements = useRef(new Map<string, HTMLInputElement>());
+  // Tracks the word currently being typed in a process-step field (rowId + character range),
+  // so a suggestion inserts *that word* -- not the whole field -- letting a step reference
+  // several ingredients ("25g Cocoa Powder and 100g Brown Sugar") one at a time.
+  const [ingredientSuggestion, setIngredientSuggestion] = useState<{ rowId: string; wordStart: number; wordEnd: number; query: string } | null>(null);
 
   const stepNameSuggestions = Array.from(
     new Set([
@@ -2180,10 +2185,12 @@ function BatchForm({
     ]),
   ).filter(Boolean).sort();
 
-  // Sourced from this batch's own formula, not all-time ingredient history, so a process step
-  // can only suggest an ingredient name that actually matches what's in the formula right now --
-  // that's what keeps the wording in Process Steps from drifting from the Ingredients list.
-  const ingredientNameSuggestions = Array.from(new Set(formulaRows.map((row) => row.ingredient))).filter(Boolean).sort();
+  // Sourced from this batch's own formula (with quantity/unit), not all-time ingredient history,
+  // so a suggestion can only offer an ingredient that's actually in the formula right now, with
+  // the exact quantity used -- that's what keeps Process Steps from drifting from Ingredients.
+  const ingredientSuggestionMatches = ingredientSuggestion
+    ? formulaRows.filter((row) => row.ingredient && row.ingredient.toLowerCase().startsWith(ingredientSuggestion.query.toLowerCase()))
+    : [];
 
   function addFormulaRow() {
     setFormulaRows((current) => [...current, { brand: "", change: "", ingredient: "", previousQuantity: 0, quantity: 0, rowId: crypto.randomUUID(), step: "", unit: "" }]);
@@ -2206,6 +2213,57 @@ function BatchForm({
 
   function updateProcessStepRow(rowId: string, text: string) {
     setProcessStepRows((current) => current.map((row) => (row.rowId === rowId ? { ...row, text } : row)));
+  }
+
+  function getCurrentWordRange(text: string, cursorIndex: number) {
+    const beforeCursor = text.slice(0, cursorIndex);
+    const wordStart = Math.max(beforeCursor.lastIndexOf(" "), beforeCursor.lastIndexOf(",")) + 1;
+    return { wordStart, wordEnd: cursorIndex };
+  }
+
+  function handleProcessStepChange(rowId: string, event: ReactChangeEvent<HTMLInputElement>) {
+    const text = event.target.value;
+    const cursorIndex = event.target.selectionStart ?? text.length;
+    updateProcessStepRow(rowId, text);
+
+    const { wordStart, wordEnd } = getCurrentWordRange(text, cursorIndex);
+    const query = text.slice(wordStart, wordEnd).trim();
+    setIngredientSuggestion(query.length > 0 ? { rowId, wordStart, wordEnd, query } : null);
+  }
+
+  function insertIngredientIntoStep(formulaRow: BatchFormulaRow) {
+    if (!ingredientSuggestion) {
+      return;
+    }
+    const { rowId, wordStart, wordEnd } = ingredientSuggestion;
+    const row = processStepRows.find((item) => item.rowId === rowId);
+    if (!row) {
+      return;
+    }
+
+    const insertText = `${formulaRow.quantity}${formulaRow.unit} ${formulaRow.ingredient}`;
+    const newText = `${row.text.slice(0, wordStart)}${insertText} ${row.text.slice(wordEnd)}`;
+    updateProcessStepRow(rowId, newText);
+    setIngredientSuggestion(null);
+
+    const cursorPosition = wordStart + insertText.length + 1;
+    requestAnimationFrame(() => {
+      const element = processStepInputElements.current.get(rowId);
+      element?.focus();
+      element?.setSelectionRange(cursorPosition, cursorPosition);
+    });
+  }
+
+  function handleProcessStepKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (!ingredientSuggestion || ingredientSuggestionMatches.length === 0) {
+      return;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      insertIngredientIntoStep(ingredientSuggestionMatches[0]);
+    } else if (event.key === "Escape") {
+      setIngredientSuggestion(null);
+    }
   }
 
   // Reorders live as the pointer crosses each row's midpoint, so forgetting a step and dragging
@@ -2287,9 +2345,6 @@ function BatchForm({
         <datalist id="formulaStepSuggestions">
           {stepNameSuggestions.map((step) => <option key={step} value={step} />)}
         </datalist>
-        <datalist id="processStepIngredientSuggestions">
-          {ingredientNameSuggestions.map((ingredient) => <option key={ingredient} value={ingredient} />)}
-        </datalist>
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
@@ -2366,7 +2421,37 @@ function BatchForm({
                 >
                   <GripVertical size={16} />
                 </button>
-                <Input list="processStepIngredientSuggestions" name={`batchProcessStep-${row.rowId}`} label={`Step ${index + 1}`} placeholder="Cream butter and sugar for 3 minutes" value={row.text} onChange={(event) => updateProcessStepRow(row.rowId, event.target.value)} />
+                <div className="relative">
+                  <Input
+                    name={`batchProcessStep-${row.rowId}`}
+                    label={`Step ${index + 1}`}
+                    placeholder="Cream butter and sugar for 3 minutes"
+                    value={row.text}
+                    onChange={(event) => handleProcessStepChange(row.rowId, event)}
+                    onKeyDown={handleProcessStepKeyDown}
+                    onFocus={(event) => processStepInputElements.current.set(row.rowId, event.currentTarget)}
+                    onBlur={() => setTimeout(() => setIngredientSuggestion((current) => (current?.rowId === row.rowId ? null : current)), 150)}
+                    autoComplete="off"
+                  />
+                  {ingredientSuggestion?.rowId === row.rowId && ingredientSuggestionMatches.length > 0 ? (
+                    <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-y-auto rounded-md border border-[#d8c7b7] bg-white shadow-md">
+                      {ingredientSuggestionMatches.map((formulaRow) => (
+                        <button
+                          className="block w-full px-3 py-2 text-left text-sm hover:bg-[#fffaf3]"
+                          key={formulaRow.rowId}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            insertIngredientIntoStep(formulaRow);
+                          }}
+                          type="button"
+                        >
+                          <span className="font-semibold">{formulaRow.ingredient}</span>
+                          <span className="text-[#8a6a54]"> — {formulaRow.quantity}{formulaRow.unit}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
                 <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setProcessStepRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
               </div>
             ))}

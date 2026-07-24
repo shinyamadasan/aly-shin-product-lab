@@ -127,9 +127,10 @@ Important:
   locally and upload automatically the moment the save succeeds, so it feels like one action.
 - Process Steps can be reordered by dragging the grip handle on each step, for when a step was
   forgotten and needs to be inserted in the right place instead of retyped in order.
-- Process Step text autosuggests ingredient names from this batch's own formula, so a step's
-  wording matches the Ingredients list exactly instead of drifting into a slightly different name
-  for the same ingredient.
+- Process Step text autosuggests ingredients from this batch's own formula as you type any word
+  in the step (not just from the start of the field), inserting the exact quantity and name (e.g.
+  "25g Cocoa Powder") at the cursor so several ingredients can be referenced in one step without
+  retyping, and without drifting from the Ingredients list.
 
 ### Batches
 
