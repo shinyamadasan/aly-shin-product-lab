@@ -146,6 +146,80 @@ export type AiReviewRecord = {
   createdAt: string;
 };
 
+export type IngredientBaseUnit = "g" | "kg" | "ml" | "L" | "pcs";
+
+export type Ingredient = {
+  id: string;
+  name: string;
+  baseUnit: IngredientBaseUnit;
+  currentQuantity: number;
+  lowStockThreshold: number;
+  targetStockQuantity: number;
+  nearestExpirationDate: string;
+  averageUnitCost: number;
+  notes: string;
+  isActive: boolean;
+};
+
+export type MatchMethod = "alias" | "exact" | "normalized" | "manual" | "none";
+
+export type IngredientAlias = {
+  id: string;
+  rawText: string;
+  normalizedText: string;
+  ingredientId: string;
+  source: string;
+};
+
+export type PurchaseImportStatus = "draft" | "confirmed" | "discarded";
+
+export type PurchaseImport = {
+  id: string;
+  fileName: string;
+  status: PurchaseImportStatus;
+  importedAt: string;
+  rowCount: number;
+  totalValue: number;
+};
+
+export type PurchaseImportRowStatus = "pending" | "matched" | "excluded" | "invalid";
+
+export type PurchaseImportRow = {
+  id: string;
+  importId: string;
+  rowIndex: number;
+  rawItemName: string;
+  rawQuantity: string;
+  rawUnit: string;
+  rawTotalPrice: string;
+  rawExpirationDate: string;
+  parsedQuantity: number;
+  parsedTotalPrice: number;
+  parsedExpirationDate: string;
+  ingredientId: string;
+  matchMethod: MatchMethod;
+  convertedQuantity: number;
+  rowStatus: PurchaseImportRowStatus;
+  excludeReason: string;
+  validationErrors: string;
+};
+
+export type InventoryTransactionType = "purchase" | "consume" | "adjustment" | "waste";
+export type InventoryTransactionSourceType = "purchase_import" | "bake" | "manual";
+
+export type InventoryTransaction = {
+  id: string;
+  ingredientId: string;
+  transactionType: InventoryTransactionType;
+  quantityChange: number;
+  quantityBefore: number;
+  quantityAfter: number;
+  sourceType: InventoryTransactionSourceType;
+  sourceId: string;
+  note: string;
+  createdAt: string;
+};
+
 export type EquipmentCalculationMode = "depreciation" | "replacement-reserve" | "gas-burn-rate";
 
 export type EquipmentEntry = {

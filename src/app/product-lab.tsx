@@ -5,7 +5,9 @@ import type { ChangeEvent as ReactChangeEvent, Dispatch, KeyboardEvent as ReactK
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PostgrestError, Session } from "@supabase/supabase-js";
 import {
+  AlertTriangle,
   Beaker,
+  CalendarClock,
   CalendarDays,
   CheckCircle2,
   ChevronDown,
@@ -14,6 +16,7 @@ import {
   GripVertical,
   NotebookPen,
   PackageCheck,
+  PackageX,
   ShieldAlert,
   Sparkles,
   Star,
@@ -29,14 +32,25 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, ProductBatch, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
+import { InventoryPage } from "@/components/inventory-page";
+import { InventoryTimeline } from "@/components/inventory-timeline";
+import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
+import { BakePage } from "@/components/bake-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
 import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
 import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
+import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
+import { buildAliasRecord } from "@/lib/ingredient-matching";
+import { applyPurchaseImportConfirmation } from "@/lib/purchase-import-confirm";
+import type { PurchaseImportRowDraft } from "@/lib/purchase-import";
+import { applyBakeConfirmation } from "@/lib/bake-confirm";
+import type { BakeDeduction } from "@/lib/bake-deduction";
+import { toInventoryTransactionRow } from "@/lib/inventory-transaction";
 import {
   getAutoCostedIngredientRow,
   getConversionLabel,
@@ -98,11 +112,13 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
+  const [isInventoryTableMissing, setIsInventoryTableMissing] = useState(false);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
   const [editingEquipment, setEditingEquipment] = useState<EquipmentEntry | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
+  const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
 
   useEffect(() => {
     if (!supabase) {
@@ -142,7 +158,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       return;
     }
 
-    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, aiReviewResult] = await Promise.all([
+    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
@@ -152,15 +168,30 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
       supabase.from("content_journal").select("*").order("created_at", { ascending: false }),
       supabase.from("ai_reviews").select("*").order("created_at", { ascending: false }),
+      supabase.from("ingredients").select("*").order("created_at", { ascending: false }),
+      supabase.from("ingredient_aliases").select("*").order("created_at", { ascending: false }),
+      supabase.from("purchase_imports").select("*").order("created_at", { ascending: false }),
+      supabase.from("purchase_import_rows").select("*").order("row_index", { ascending: true }),
+      supabase.from("inventory_transactions").select("*").order("created_at", { ascending: false }),
     ]);
 
     const supplyMissing = isMissingTableError(supplyResult.error);
     const equipmentMissing = isMissingTableError(equipmentResult.error);
     const aiReviewsMissing = isMissingTableError(aiReviewResult.error);
+    // All 6 inventory tables ship together in supabase-add-inventory.sql, so one shared flag
+    // (not one per table) -- there's no real scenario where only some of them exist. Uses the same
+    // error-code check as the tables above so a genuine load failure isn't misread as "not set up".
+    const ingredientsMissing =
+      isMissingTableError(ingredientResult.error) ||
+      isMissingTableError(ingredientAliasResult.error) ||
+      isMissingTableError(purchaseImportResult.error) ||
+      isMissingTableError(purchaseImportRowResult.error) ||
+      isMissingTableError(inventoryTransactionResult.error);
     setIsSuppliesTableMissing(Boolean(supplyMissing));
     setIsEquipmentTableMissing(Boolean(equipmentMissing));
     setIsAiReviewsTableMissing(Boolean(aiReviewsMissing));
-    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!aiReviewsMissing && aiReviewResult.error)) {
+    setIsInventoryTableMissing(ingredientsMissing);
+    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
       const error =
         batchResult.error?.message ||
         batchPhotoResult.error?.message ||
@@ -170,7 +201,12 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         equipmentResult.error?.message ||
         tastingResult.error?.message ||
         journalResult.error?.message ||
-        aiReviewResult.error?.message;
+        aiReviewResult.error?.message ||
+        ingredientResult.error?.message ||
+        ingredientAliasResult.error?.message ||
+        purchaseImportResult.error?.message ||
+        purchaseImportRowResult.error?.message ||
+        inventoryTransactionResult.error?.message;
       setMessage(`Could not load Supabase data: ${error}`);
       setMessageTone("bad");
       return;
@@ -295,6 +331,64 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         specialists: row.specialists ? row.specialists.split(",").filter(Boolean) : [],
         prompt: row.prompt ?? "",
         response: row.response ?? "",
+        createdAt: row.created_at ?? "",
+      })),
+      ingredients: ingredientsMissing ? [] : (ingredientResult.data ?? []).map((row) => ({
+        id: row.id,
+        name: row.name,
+        baseUnit: row.base_unit,
+        currentQuantity: Number(row.current_quantity ?? 0),
+        lowStockThreshold: Number(row.low_stock_threshold ?? 0),
+        targetStockQuantity: Number(row.target_stock_quantity ?? 0),
+        nearestExpirationDate: row.nearest_expiration_date ?? "",
+        averageUnitCost: Number(row.average_unit_cost ?? 0),
+        notes: row.notes ?? "",
+        isActive: row.is_active ?? true,
+      })),
+      ingredientAliases: ingredientsMissing ? [] : (ingredientAliasResult.data ?? []).map((row) => ({
+        id: row.id,
+        rawText: row.raw_text,
+        normalizedText: row.normalized_text,
+        ingredientId: row.ingredient_id,
+        source: row.source ?? "",
+      })),
+      purchaseImports: ingredientsMissing ? [] : (purchaseImportResult.data ?? []).map((row) => ({
+        id: row.id,
+        fileName: row.file_name,
+        status: row.status,
+        importedAt: row.imported_at ?? "",
+        rowCount: Number(row.row_count ?? 0),
+        totalValue: Number(row.total_value ?? 0),
+      })),
+      purchaseImportRows: ingredientsMissing ? [] : (purchaseImportRowResult.data ?? []).map((row) => ({
+        id: row.id,
+        importId: row.import_id,
+        rowIndex: Number(row.row_index ?? 0),
+        rawItemName: row.raw_item_name,
+        rawQuantity: row.raw_quantity,
+        rawUnit: row.raw_unit,
+        rawTotalPrice: row.raw_total_price ?? "",
+        rawExpirationDate: row.raw_expiration_date ?? "",
+        parsedQuantity: Number(row.parsed_quantity ?? 0),
+        parsedTotalPrice: Number(row.parsed_total_price ?? 0),
+        parsedExpirationDate: row.parsed_expiration_date ?? "",
+        ingredientId: row.ingredient_id ?? "",
+        matchMethod: row.match_method ?? "none",
+        convertedQuantity: Number(row.converted_quantity ?? 0),
+        rowStatus: row.row_status,
+        excludeReason: row.exclude_reason ?? "",
+        validationErrors: row.validation_errors ?? "",
+      })),
+      inventoryTransactions: ingredientsMissing ? [] : (inventoryTransactionResult.data ?? []).map((row) => ({
+        id: row.id,
+        ingredientId: row.ingredient_id,
+        transactionType: row.transaction_type,
+        quantityChange: Number(row.quantity_change ?? 0),
+        quantityBefore: Number(row.quantity_before ?? 0),
+        quantityAfter: Number(row.quantity_after ?? 0),
+        sourceType: row.source_type,
+        sourceId: row.source_id ?? "",
+        note: row.note ?? "",
         createdAt: row.created_at ?? "",
       })),
     });
@@ -876,6 +970,341 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     setMessageTone("good");
   }
 
+  // currentQuantity is only user-editable on the create path (see InventoryPage) -- on an
+  // existing ingredient the form submits a hidden input carrying the unchanged value, so this
+  // never doubles as a way to silently correct stock outside a ledgered purchase/bake flow.
+  async function saveIngredient(formData: FormData) {
+    const ingredientId = String(formData.get("id") || "");
+    const ingredient: Ingredient = {
+      id: ingredientId || crypto.randomUUID(),
+      name: String(formData.get("name") || "").trim(),
+      baseUnit: String(formData.get("baseUnit") || "g").trim() as Ingredient["baseUnit"],
+      currentQuantity: Number(formData.get("currentQuantity") || 0),
+      lowStockThreshold: Number(formData.get("lowStockThreshold") || 0),
+      targetStockQuantity: Number(formData.get("targetStockQuantity") || 0),
+      nearestExpirationDate: String(formData.get("nearestExpirationDate") || "").trim(),
+      averageUnitCost: Number(formData.get("averageUnitCost") || 0),
+      notes: String(formData.get("notes") || "").trim(),
+      isActive: true,
+    };
+
+    if (supabase && session) {
+      const payload = {
+        name: ingredient.name,
+        base_unit: ingredient.baseUnit,
+        current_quantity: ingredient.currentQuantity,
+        low_stock_threshold: ingredient.lowStockThreshold,
+        target_stock_quantity: ingredient.targetStockQuantity,
+        nearest_expiration_date: ingredient.nearestExpirationDate || null,
+        average_unit_cost: ingredient.averageUnitCost || null,
+        notes: ingredient.notes,
+      };
+      const query = ingredientId
+        ? supabase.from("ingredients").update(payload).eq("id", ingredientId)
+        : supabase.from("ingredients").insert(payload);
+      const { error } = await query;
+      setMessage(error ? `Ingredient save failed. Run supabase-add-inventory.sql first if this is your first time: ${error.message}` : "Ingredient saved.");
+      setMessageTone(error ? "bad" : "good");
+      setIsInventoryTableMissing(Boolean(error?.message.includes("ingredients")));
+      if (!error) {
+        setEditingIngredient(null);
+        await loadSupabaseData();
+      }
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      ingredients: ingredientId ? current.ingredients.map((entry) => (entry.id === ingredientId ? ingredient : entry)) : [ingredient, ...current.ingredients],
+    }));
+    setEditingIngredient(null);
+    setMessage("Ingredient saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteIngredient(ingredientId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("ingredients").delete().eq("id", ingredientId);
+      setMessage(error ? `Ingredient delete failed: ${error.message}` : "Ingredient deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingIngredient?.id === ingredientId) {
+        setEditingIngredient(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({ ...current, ingredients: current.ingredients.filter((entry) => entry.id !== ingredientId) }));
+    if (editingIngredient?.id === ingredientId) {
+      setEditingIngredient(null);
+    }
+    setMessage("Ingredient deleted locally.");
+    setMessageTone("good");
+  }
+
+  // An alias is "raw text -> ingredient id" regardless of whether the raw text came from a
+  // receipt row or (in a later milestone) a bake formula ingredient name -- one shared save
+  // path, insert-or-update by raw text rather than a DB-level upsert (avoids fighting
+  // Postgres/PostgREST's ON CONFLICT target matching against the case-insensitive unique index).
+  async function saveIngredientAlias(rawText: string, ingredientId: string, source: string) {
+    const alias = buildAliasRecord(rawText, ingredientId, source);
+    if (!alias.rawText || !alias.ingredientId) {
+      return;
+    }
+    const existingAlias = labState.ingredientAliases.find((entry) => entry.rawText.trim().toLowerCase() === alias.rawText.toLowerCase());
+
+    if (supabase && session) {
+      const payload = { raw_text: alias.rawText, normalized_text: alias.normalizedText, ingredient_id: alias.ingredientId, source: alias.source };
+      const query = existingAlias
+        ? supabase.from("ingredient_aliases").update(payload).eq("id", existingAlias.id)
+        : supabase.from("ingredient_aliases").insert(payload);
+      const { error } = await query;
+      if (error) {
+        setMessage(`Could not save ingredient alias: ${error.message}`);
+        setMessageTone("bad");
+        return;
+      }
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      ingredientAliases: existingAlias
+        ? current.ingredientAliases.map((entry) => (entry.id === existingAlias.id ? { ...entry, ingredientId: alias.ingredientId, source: alias.source } : entry))
+        : [{ id: crypto.randomUUID(), rawText: alias.rawText, normalizedText: alias.normalizedText, ingredientId: alias.ingredientId, source: alias.source }, ...current.ingredientAliases],
+    }));
+  }
+
+  // Persists a draft (header + rows) as soon as the operator finishes CSV upload + column
+  // mapping -- this only ever writes to purchase_imports/purchase_import_rows, never to
+  // `ingredients`, so CSV preview cannot change inventory even in principle (the only function
+  // that touches ingredient quantities is applyPurchaseImportConfirmation, called only from
+  // confirmPurchaseImport below). Returns the new import's id so the wizard can show its preview.
+  async function createPurchaseImportDraft(fileName: string, rowDrafts: PurchaseImportRowDraft[]): Promise<string | null> {
+    const importId = crypto.randomUUID();
+    const totalValue = rowDrafts.reduce((sum, row) => sum + (row.rowStatus !== "excluded" ? row.parsedTotalPrice : 0), 0);
+
+    if (supabase && session) {
+      const { error: importError } = await supabase.from("purchase_imports").insert({
+        id: importId,
+        file_name: fileName,
+        status: "draft",
+        row_count: rowDrafts.length,
+        total_value: totalValue,
+      });
+      if (importError) {
+        setMessage(`Could not start import: ${importError.message}`);
+        setMessageTone("bad");
+        setIsInventoryTableMissing(Boolean(importError.message.includes("purchase_imports")));
+        return null;
+      }
+
+      const { error: rowsError } = await supabase.from("purchase_import_rows").insert(
+        rowDrafts.map((row) => ({
+          import_id: importId,
+          row_index: row.rowIndex,
+          raw_item_name: row.rawItemName,
+          raw_quantity: row.rawQuantity,
+          raw_unit: row.rawUnit,
+          raw_total_price: row.rawTotalPrice,
+          raw_expiration_date: row.rawExpirationDate,
+          parsed_quantity: row.parsedQuantity,
+          parsed_total_price: row.parsedTotalPrice,
+          parsed_expiration_date: row.parsedExpirationDate || null,
+          ingredient_id: row.ingredientId || null,
+          match_method: row.matchMethod,
+          converted_quantity: row.convertedQuantity,
+          row_status: row.rowStatus,
+          exclude_reason: row.excludeReason,
+          validation_errors: row.validationErrors,
+        })),
+      );
+      if (rowsError) {
+        setMessage(`Could not save import rows: ${rowsError.message}`);
+        setMessageTone("bad");
+        return null;
+      }
+
+      await loadSupabaseData();
+      return importId;
+    }
+
+    const newImport: PurchaseImport = { id: importId, fileName, status: "draft", importedAt: "", rowCount: rowDrafts.length, totalValue };
+    const newRows: PurchaseImportRow[] = rowDrafts.map((row) => ({ ...row, id: crypto.randomUUID(), importId }));
+    setLabState((current) => ({
+      ...current,
+      purchaseImports: [newImport, ...current.purchaseImports],
+      purchaseImportRows: [...newRows, ...current.purchaseImportRows],
+    }));
+    return importId;
+  }
+
+  async function updatePurchaseImportRow(rowId: string, changes: Partial<PurchaseImportRow>) {
+    if (supabase && session) {
+      const payload: Record<string, unknown> = {};
+      if (changes.ingredientId !== undefined) payload.ingredient_id = changes.ingredientId || null;
+      if (changes.matchMethod !== undefined) payload.match_method = changes.matchMethod;
+      if (changes.convertedQuantity !== undefined) payload.converted_quantity = changes.convertedQuantity;
+      if (changes.rowStatus !== undefined) payload.row_status = changes.rowStatus;
+      if (changes.excludeReason !== undefined) payload.exclude_reason = changes.excludeReason;
+
+      const { error } = await supabase.from("purchase_import_rows").update(payload).eq("id", rowId);
+      if (error) {
+        setMessage(`Could not update row: ${error.message}`);
+        setMessageTone("bad");
+        return;
+      }
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      purchaseImportRows: current.purchaseImportRows.map((row) => (row.id === rowId ? { ...row, ...changes } : row)),
+    }));
+  }
+
+  async function discardPurchaseImport(importId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("purchase_imports").update({ status: "discarded" }).eq("id", importId);
+      setMessage(error ? `Could not discard import: ${error.message}` : "Import discarded.");
+      setMessageTone(error ? "bad" : "good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      purchaseImports: current.purchaseImports.map((item) => (item.id === importId ? { ...item, status: "discarded" } : item)),
+    }));
+    setMessage("Import discarded locally.");
+    setMessageTone("good");
+  }
+
+  // The only place a purchase import can change `ingredients` quantities. Guards against
+  // applying twice: bails immediately unless the import's current status is still "draft" (the
+  // Supabase path below re-checks the same guard against the real row, inside the atomic RPC, as
+  // defense against a stale client or a second browser tab) -- a page refresh never re-triggers
+  // this function on its own (nothing in loadSupabaseData calls it), so a reload cannot reapply
+  // an already-confirmed import.
+  async function confirmPurchaseImport(importId: string) {
+    const purchaseImport = labState.purchaseImports.find((item) => item.id === importId);
+    if (!purchaseImport) {
+      setMessage("Import not found.");
+      setMessageTone("bad");
+      return;
+    }
+    if (purchaseImport.status !== "draft") {
+      setMessage("This import has already been confirmed or discarded.");
+      setMessageTone("bad");
+      return;
+    }
+
+    const rows = labState.purchaseImportRows.filter((row) => row.importId === importId) as unknown as PurchaseImportRowDraft[];
+    const result = applyPurchaseImportConfirmation({ ingredients: labState.ingredients, rows, importId, today: new Date().toISOString() });
+
+    if ("error" in result) {
+      setMessage(result.error);
+      setMessageTone("bad");
+      return;
+    }
+
+    const { ingredients: updatedIngredients, transactions } = result;
+    const changedIngredientIds = new Set(transactions.map((transaction) => transaction.ingredientId));
+    const changedIngredients = updatedIngredients.filter((ingredient) => changedIngredientIds.has(ingredient.id));
+
+    if (supabase && session) {
+      // One atomic Postgres transaction (confirm_purchase_import in supabase-add-inventory.sql)
+      // applies every ingredient update, every ledger insert, and the import's status flip
+      // together -- replacing the sequential .update()/.insert() calls Milestones 2-4 used. The
+      // RPC persists exactly what applyPurchaseImportConfirmation already computed above; it does
+      // not recompute or re-derive any business rule.
+      const { error } = await supabase.rpc("confirm_purchase_import", {
+        p_import_id: importId,
+        p_ingredient_updates: changedIngredients.map((ingredient) => ({
+          id: ingredient.id,
+          current_quantity: ingredient.currentQuantity,
+          average_unit_cost: ingredient.averageUnitCost || null,
+          nearest_expiration_date: ingredient.nearestExpirationDate || null,
+        })),
+        p_transactions: transactions.map((transaction) => toInventoryTransactionRow(transaction)),
+      });
+
+      if (error) {
+        setMessage(`Import confirm failed: ${error.message}`);
+        setMessageTone("bad");
+        return;
+      }
+
+      setMessage("Purchase import confirmed. Inventory updated.");
+      setMessageTone("good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      ingredients: current.ingredients.map((ingredient) => changedIngredients.find((updated) => updated.id === ingredient.id) ?? ingredient),
+      inventoryTransactions: [...transactions, ...current.inventoryTransactions],
+      purchaseImports: current.purchaseImports.map((item) => (item.id === importId ? { ...item, status: "confirmed", importedAt: new Date().toISOString() } : item)),
+    }));
+    setMessage("Purchase import confirmed locally. Inventory updated.");
+    setMessageTone("good");
+  }
+
+  // The only place a bake can change `ingredients` quantities. Unlike purchase import, there is
+  // no persisted "draft" row to guard against reapplying on refresh -- a bake's selection
+  // (batch, multiplier, resolved rows) lives only in BakePage's own component state until this
+  // function is called, so a reload simply loses the in-progress selection with nothing to
+  // reapply. The re-entrancy risk this function does face is a fast double-click firing it twice
+  // before the first call's response lands -- guarded synchronously in BakePage itself
+  // (handleConfirm's isConfirming check), the same pattern used for Confirm Import.
+  async function confirmBake(batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean) {
+    const result = applyBakeConfirmation({ ingredients: labState.ingredients, deductions, batchId, batchLabel, multiplier, allowNegative, today: new Date().toISOString() });
+
+    if ("error" in result) {
+      setMessage(result.error);
+      setMessageTone("bad");
+      return;
+    }
+
+    const { ingredients: updatedIngredients, transactions } = result;
+    const changedIngredientIds = new Set(transactions.map((transaction) => transaction.ingredientId));
+    const changedIngredients = updatedIngredients.filter((ingredient) => changedIngredientIds.has(ingredient.id));
+
+    if (supabase && session) {
+      // One atomic Postgres transaction (confirm_bake in supabase-add-inventory.sql) applies
+      // every ingredient update and every ledger insert together -- replacing the sequential
+      // .update()/.insert() calls Milestones 2-4 used. The RPC persists exactly what
+      // applyBakeConfirmation already computed above; it does not recompute or re-derive any
+      // business rule (insufficient-stock checking stays entirely in applyBakeConfirmation).
+      const { error } = await supabase.rpc("confirm_bake", {
+        p_ingredient_updates: changedIngredients.map((ingredient) => ({ id: ingredient.id, current_quantity: ingredient.currentQuantity })),
+        p_transactions: transactions.map((transaction) => toInventoryTransactionRow(transaction)),
+      });
+
+      if (error) {
+        setMessage(`Bake confirm failed: ${error.message}`);
+        setMessageTone("bad");
+        return;
+      }
+
+      setMessage("Bake confirmed. Inventory updated.");
+      setMessageTone("good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      ingredients: current.ingredients.map((ingredient) => changedIngredients.find((updated) => updated.id === ingredient.id) ?? ingredient),
+      inventoryTransactions: [...transactions, ...current.inventoryTransactions],
+    }));
+    setMessage("Bake confirmed locally. Inventory updated.");
+    setMessageTone("good");
+  }
+
   async function saveEquipment(formData: FormData) {
     const equipmentId = String(formData.get("id") || "");
     const equipment: EquipmentEntry = {
@@ -1136,6 +1565,21 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
 
           {view === "supplies" ? <SuppliesPage cancelEdit={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={editingSupply} /> : null}
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
+          {view === "inventory" ? <InventoryPage cancelEdit={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredient={saveIngredient} /> : null}
+          {view === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
+          {view === "purchase-import" ? (
+            <PurchaseImportWizard
+              confirmPurchaseImport={confirmPurchaseImport}
+              createPurchaseImportDraft={createPurchaseImportDraft}
+              discardPurchaseImport={discardPurchaseImport}
+              isInventoryTableMissing={isInventoryTableMissing}
+              labState={labState}
+              saveIngredientAlias={saveIngredientAlias}
+              updatePurchaseImportRow={updatePurchaseImportRow}
+            />
+          ) : null}
+          {view === "bake" ? <BakePage confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
+          {view === "inventory-timeline" ? <InventoryTimeline labState={labState} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
@@ -2022,6 +2466,7 @@ function DashboardPage({
   const proofDayCopy = productsNeedingProof.length
     ? `Test ${productsNeedingProof.map((product) => product.name).join(", ")}. Capture yield, timing, texture, packaging behavior, freshness after 12/24 hours, and willingness to pay.`
     : "Every product has at least one proof batch logged. Pick the weakest formula and run a focused retest.";
+  const inventoryCounts = getInventorySummaryCounts(labState.ingredients, getToday());
 
   return (
     <div className="space-y-5">
@@ -2032,6 +2477,11 @@ function DashboardPage({
             <MetricCard icon={<ClipboardCheck size={20} />} label="Launch-ready" value={metrics.launchCandidates} detail="Target after proof" />
             <MetricCard icon={<FlaskConical size={20} />} label="Need batches" value={metrics.needsProof} detail="Proof logs missing" />
             <MetricCard icon={<Star size={20} />} label="Taste entries" value={metrics.tastingEntries} detail="Target: 5 each" />
+          </div>
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            <MetricCard icon={<AlertTriangle size={20} />} label="Low stock" value={inventoryCounts.lowCount} detail="Ingredients running low" />
+            <MetricCard icon={<PackageX size={20} />} label="Out of stock" value={inventoryCounts.outCount} detail="Ingredients at zero" />
+            <MetricCard icon={<CalendarClock size={20} />} label="Expiring" value={inventoryCounts.expiringCount} detail={`Within ${DEFAULT_EXPIRES_SOON_DAYS} days or already past`} />
           </div>
           <div className="mt-5 rounded-md border border-[#e7d8c9] bg-white p-4">
             <div className="flex items-start gap-3">
@@ -2900,6 +3350,39 @@ function SupplyItemPicker({
         </div>
       ) : null}
     </label>
+  );
+}
+
+function NeedToBuyPage({ labState }: { labState: LabState }) {
+  const items = getNeedToBuyList(labState.ingredients);
+
+  return (
+    <div className="rounded-lg border border-[#e1d4c4] bg-white">
+      <div className="border-b border-[#eaded2] p-5">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Buy List</p>
+        <h3 className="mt-1 text-xl font-semibold">Need to buy</h3>
+        <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Ingredients at or below their low-stock threshold, with a suggested purchase quantity: target stock minus current, never below zero.</p>
+      </div>
+      <div className="divide-y divide-[#f0e4d8]">
+        {items.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">Nothing needs buying right now.</p> : null}
+        {items.map((item) => (
+          <article className="grid gap-4 p-5 sm:grid-cols-[1fr_140px_160px]" key={item.id}>
+            <div>
+              <Tag tone={item.status === "out" ? "danger" : "warm"}>{item.status === "out" ? "Out" : "Low"}</Tag>
+              <h4 className="mt-2 font-semibold">{item.name}</h4>
+            </div>
+            <div className="text-sm">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Current</p>
+              <p className="mt-1 font-semibold">{item.currentQuantity} {item.baseUnit}</p>
+            </div>
+            <div className="text-sm">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Suggested buy</p>
+              <p className="mt-1 font-semibold">{item.suggestedBuyQuantity} {item.baseUnit}</p>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -156,6 +156,28 @@
 - status:      implemented-partial (2026-07-25) — live `getToday()` shipped; `"type": "module"`
   intentionally skipped (see triage note above: risks `next start` for a cosmetic-only gain).
 
+### PROP-008 — `brace-expansion` dev-only DoS advisory (needs a scoped fix, not a blunt override)
+- ▶ Decision: Park — real but dev/build-time only; the easy fixes are both bad.
+- ▶ Risk: High — the remediation surface (eslint toolchain) is what broke on the first attempt.
+- type:        chore
+- source captures: audit (`npm audit`, surfaced during the 2026-07-25 main merge)
+- goal alignment:  neutral — security hygiene, no user-facing surface.
+- expected user value: dev/ops — clears 9 high `brace-expansion` advisories (GHSA-mh99-v99m-4gvg).
+- evidence:    A newly-published `brace-expansion` DoS advisory (`<=5.0.7`) reaches us only through
+  the **eslint** dev toolchain (`minimatch` → `@eslint/config-array`); it is not in any runtime
+  path and affects `main` independently (not introduced by the audit branch). Two tempting fixes
+  both fail: `npm audit fix --force` installs `eslint@10` (semver-major); an `overrides` pin of
+  `brace-expansion@^5.0.8` reaches 0 vulns **but breaks `eslint`** (config-array relies on the 1.x
+  behavior — verified 2026-07-25). Correct path is a *scoped* nested override that patches only the
+  flagged 5.x instance, or waiting for `eslint-config-next` to bump its transitive pin.
+- effort:      M
+- dependencies: none
+- confidence:  med
+- ambiguity:   scoped-override syntax vs waiting for upstream — needs a quick spike.
+- why now vs later: low real exposure (build-time), so fine to wait for a clean upstream bump.
+- AI-recommended priority: P3
+- status:      pending
+
 ## Proposal contract
 *(the structured shape triage produces — keep this shape so downstream stages stay swappable)*
 ```

@@ -102,6 +102,263 @@ extraction):
   Next.js/Turbopack bundler which resolves either way. Verified this doesn't change bundler
   output: `npm run build` passes before and after.
 
+## Inventory (`src/lib/inventory-*.ts`, `src/components/inventory-page.tsx`)
+
+The Supply Inventory Loop: purchase receipt CSV import → inventory increases → baking deducts
+ingredients → low-stock/expiring alerts → a buy list. Shipping incrementally as 5 milestones,
+each fully working and tested before the next starts (see `planning/DONE.md` for what's landed).
+This is new, parallel infrastructure -- **not** an extension of Supplies (`src/lib/supplies.ts`
+/ `supply_entries`, a pure price-history log with no running quantity or ingredient master) and
+**not** an extension of "recipes" (no Recipe entity exists; a later milestone reads a Proof Day
+batch's existing formula directly via `parseBatchIngredients()` in `src/lib/batches.ts`).
+
+### Milestone 1 -- Ingredient master, Inventory page, Need to Buy
+
+**Schema** (`supabase-add-inventory.sql`): `ingredients` table -- `name` (unique), `base_unit`
+(`g|kg|ml|L|pcs`, plain `text`, no `check` constraint -- matches this app's existing convention
+for classification columns, e.g. `product_batches.launch_decision`; the TypeScript type is the
+source of truth for allowed values), `current_quantity`, `low_stock_threshold`,
+`target_stock_quantity`, `nearest_expiration_date`, `average_unit_cost`, `notes`, `is_active`.
+Same RLS/grant template as `supabase-add-supplies.sql`.
+
+**`src/lib/inventory-status.ts`** -- `getStockStatus(ingredient)`: `"out"` at quantity `<= 0`,
+`"low"` at quantity `<= lowStockThreshold` (inclusive), `"good"` otherwise.
+`getSuggestedBuyQuantity(ingredient)`: `max(targetStockQuantity - currentQuantity, 0)`.
+`getNeedToBuyList(ingredients)`: active, non-good ingredients, out-of-stock sorted before
+low-stock, each alphabetical within its tier.
+
+**`src/lib/inventory-cost.ts`** -- `getInventoryValue(ingredient)`: `currentQuantity *
+(averageUnitCost || 0)`. `getTotalInventoryValue(ingredients)`: sum across all ingredients.
+`average_unit_cost` becomes a real weighted average once purchases exist (a later milestone);
+for now it's a plain manually-entered field.
+
+**UI:** `src/components/inventory-page.tsx` (`InventoryPage`) -- add/edit form + list with the
+stock-status pill and computed value. `current_quantity` is only user-editable when creating a
+brand-new ingredient (no history exists yet to explain a change); on an existing ingredient it
+renders as a locked, read-only value with a hidden input carrying the unchanged number forward
+on save, so an edit to (say) the low-stock threshold can never silently move stock as a side
+effect. This is the interim shape of a rule that becomes load-bearing once purchases and baking
+exist: every post-creation quantity change must go through a ledgered flow, not a direct field
+edit. Need to Buy is a simple inline read-only report (`NeedToBuyPage` in `product-lab.tsx`)
+over `getNeedToBuyList()`.
+
+**Wiring:** `saveIngredient`/`deleteIngredient` in `product-lab.tsx`, dual-mode (Supabase +
+`window.localStorage` fallback), following the exact `saveSupply`/`deleteSupply` pattern.
+`isInventoryTableMissing` detected the same way as `isSuppliesTableMissing`/
+`isEquipmentTableMissing` -- a missing `ingredients` table degrades to a banner, not a crash.
+
+### Milestone 2 -- CSV import, ingredient aliases, inventory increase, ledger, weighted-average cost
+
+**Schema additions** (`supabase-add-inventory.sql`, appended -- same file, still additive/
+idempotent): `ingredient_aliases` (`raw_text` unique, `normalized_text`, `ingredient_id`, `source`
+-- free-text origin tag, not a constrained enum), `purchase_imports` (header: `file_name`,
+`status` `draft|confirmed|discarded`, `row_count`, `total_value`), `purchase_import_rows` (line
+items + full preview state: raw + parsed fields, `ingredient_id`, `match_method`,
+`converted_quantity`, `row_status` `pending|matched|excluded|invalid`), `inventory_transactions`
+(the append-only ledger -- `transaction_type` `purchase|consume|adjustment|waste`, only
+`purchase` produced so far; `source_type` `purchase_import|bake|manual`, only `purchase_import`
+produced so far; `quantity_change`/`quantity_before`/`quantity_after`). No `check` constraints on
+any classification column, matching M1's documented convention.
+
+**Ingredient resolution** (`src/lib/ingredient-matching.ts`) -- `resolveIngredientReference(rawText,
+ingredients, aliases)`: saved alias → exact name match → normalized name match → `none` (manual
+required). No fuzzy/suggested tier. `normalizeIngredientName`/`normalizeUnitText`
+(`src/lib/ingredient-normalization.ts`) strip case/punctuation/package-size fragments and unit
+synonyms. Named generically (not receipt-specific) because it's meant to be reused by Bake's
+formula-row resolution in a later milestone -- same function, same alias table.
+
+**Unit conversion** (`src/lib/unit-conversion.ts`) -- `convertToBaseUnit(qty, fromUnit,
+ingredient)`: same-unit identity, or the two fixed metric-family conversions (`g<->kg`,
+`ml<->L`). Nothing else -- an unsupported unit returns `null`, which blocks that row for manual
+fix rather than guessing. No saved per-ingredient package conversions in this milestone.
+
+**Weighted-average cost** (`src/lib/inventory-cost.ts` `computeWeightedAverageUnitCost`) --
+`new_average = (current_qty * current_avg + added_qty * added_unit_cost) / (current_qty +
+added_qty)`. A purchase row with no price is valued at the ingredient's current average, so it
+adds quantity without skewing the cost. Consume/bake (a later milestone) never touches this field
+-- deducting stock changes quantity and derived value, not the per-unit cost basis.
+
+**The confirmation pipeline** (`src/lib/purchase-import.ts`, `src/lib/purchase-import-confirm.ts`)
+-- `buildPurchaseImportRowDrafts(mappedRows, ingredients, aliases)`: validate → resolve → convert
+→ classify, pure and synchronous, proven not to mutate its inputs (see
+`tests/purchase-import.test.ts`'s preview-never-mutates test) -- this is what makes "CSV preview
+cannot change inventory" true by construction, not by convention. `applyPurchaseImportConfirmation
+({ ingredients, rows, importId, today })` is the single implementation of "what does confirming an
+import do": rejects if any non-excluded row isn't `matched`; groups rows by ingredient (after
+per-row unit conversion, never before -- summing raw mismatched units would be meaningless);
+computes the new quantity, weighted-average cost, and earliest-applicable expiration date per
+ingredient; builds one `inventory_transactions` record per affected ingredient. Called from
+exactly one place, `confirmPurchaseImport` in `product-lab.tsx` -- never from the draft-creation
+or row-editing paths, so it's the only code that can change `ingredients` quantities as a result
+of an import.
+
+**Draft lifecycle** -- `createPurchaseImportDraft` persists the header + all rows (status
+`draft`) as soon as CSV upload + column mapping finish, before the operator does any manual
+resolution -- this is why CSV preview only ever writes to `purchase_imports`/
+`purchase_import_rows`, tables `inventory_transactions`/`ingredients` never see. `confirmPurchaseImport`
+guards against double-apply by checking `status === 'draft'` before doing anything, then flips
+status to `confirmed` as one of its writes -- a page refresh never re-triggers confirmation on
+its own (nothing in `loadSupabaseData()` calls it), so reloading cannot reapply an already-confirmed
+import. The Supabase path persists via **sequential** `.update()`/`.insert()` calls in this
+milestone -- a known, accepted non-atomicity (a failure mid-sequence could leave a partial
+write) -- a later milestone wraps this exact same computation in a Postgres RPC for real
+transaction atomicity; the pure function itself doesn't change.
+
+**Aliases** -- `buildAliasRecord(rawText, ingredientId, source)` (pure payload builder) +
+`saveIngredientAlias` (`product-lab.tsx`, impure insert-or-update by raw text -- not a DB-level
+`upsert()`, to avoid fighting Postgres/PostgREST's `ON CONFLICT` target matching against the
+case-insensitive expression index). Saved automatically whenever the operator manually assigns a
+receipt row to an ingredient, so the same raw text auto-resolves (`matchMethod: "alias"`) on a
+later import without any manual step.
+
+**UI:** `src/components/purchase-import-wizard.tsx` (`PurchaseImportWizard`) -- Upload
+(`src/lib/csv-parser.ts`'s dependency-free RFC4180-ish parser) → column mapping (only shown when
+`suggestColumnMapping()` doesn't already cover the 3 required fields, via
+`src/lib/csv-column-mapping.ts`) → preview/match/confirm (per-row assign via
+`src/components/ingredient-picker.tsx`, exclude/re-include, Confirm disabled until every row is
+matched or excluded) → confirmed/discarded read-only state. `src/components/inventory-timeline.tsx`
+(`InventoryTimeline`) -- one reverse-chronological feed over `inventory_transactions`, grouped by
+date, resolving `source_id` to a human label (import file name). Introduced this milestone
+showing `purchase` entries; automatically shows `consume` entries too once a later milestone
+starts writing them, with no changes needed to this component.
+
+### Milestone 3 -- Bake (consume), insufficient-stock warnings, ledger
+
+**Schema:** none new -- reuses `ingredients`, `ingredient_aliases`, and `inventory_transactions`
+from M1/M2. This milestone is the first to produce `transaction_type: 'consume'` and
+`source_type: 'bake'` (both reserved in the schema/types since M2).
+
+**Formula resolution** (`src/lib/bake-deduction.ts`) -- `resolveBakeFormula(formula, ingredients,
+aliases)` resolves a Proof Day batch's formula (`parseBatchIngredients()`, `src/lib/batches.ts`)
+row by row through the *exact same* `resolveIngredientReference()`/`convertToBaseUnit()` CSV
+import uses (`src/lib/ingredient-matching.ts`/`src/lib/unit-conversion.ts` -- not reimplemented),
+sharing the same alias table: an alias saved while resolving a bake formula auto-resolves a later
+CSV import row referencing the same raw text, and vice versa. Rows stay one-to-one with the
+formula (never pre-grouped) so the same ingredient used in two different steps renders as two
+separate rows during resolution, matching Proof Day's own step-aware model.
+`groupDeductionsByIngredient(resolved, multiplier)` groups strictly *after* every row has already
+converted to its ingredient's base unit -- the same "convert before grouping" discipline as
+purchase-import row grouping. `isBakeFormulaFullyResolved()` and `getInsufficientDeductions()`
+gate confirmation: an unresolved ingredient, an unsupported unit, and insufficient stock (absent
+an explicit override) all block the normal path.
+
+**Confirmation** (`src/lib/bake-confirm.ts` `applyBakeConfirmation`) -- the single implementation
+of "what does confirming a bake do", mirroring `applyPurchaseImportConfirmation`'s shape: rejects
+a non-positive/non-finite multiplier, rejects insufficient-stock deductions unless
+`allowNegative`, deducts each affected ingredient exactly once, and inserts one
+`inventory_transactions` row per ingredient (`transaction_type: 'consume'`, `source_type: 'bake'`,
+`source_id`: the batch id, `note`: `` `Bake: ${batchLabel} ×${multiplier}` ``). **Never
+modifies `average_unit_cost`** -- deducting stock changes quantity and derived value, not the
+per-unit cost basis a purchase established. Called from exactly one place, `confirmBake` in
+`product-lab.tsx`.
+
+**No persisted draft, unlike purchase import** -- a bake's in-progress selection (batch,
+multiplier, resolved rows) lives only in `BakePage`'s own component state until confirm is
+clicked, so there is nothing to reapply on refresh (a reload just loses the in-progress
+selection); the reload-safety guarantee purchase import gets from its `status` column, Bake gets
+for free from having no persisted intermediate state at all.
+
+**Re-entrancy guard, and why it's a `useRef`, not just `useState`** -- `BakePage.handleConfirm`
+(and, retrofitted the same way, `PurchaseImportWizard.handleConfirm`) checks and sets a
+`useRef<boolean>` synchronously as the very first statement, before the `disabled`-driving
+`isConfirming` state update. A state-only guard was tried first and empirically failed a real
+double-click test (two native `button.click()` calls dispatched in the same JS tick still both
+ran to completion, doubling the deduction) -- `setState`'s effect on both the closure's own value
+and the rendered `disabled` attribute only lands on the next render, which is not synchronous
+with a second click arriving in the same tick. A ref mutates immediately, so a second
+near-simultaneous invocation sees the guard before doing anything else. Verified against the live
+Supabase project with a true synchronous double-click: exactly one deduction, exactly one new
+transaction. (A *Playwright*-driven double `.click()` is not an equivalent test -- Playwright's
+own actionability wait/retry ends up queuing the second click until the button legitimately
+re-enables after the first bake finishes, which is then a real second action, not a race; this
+cost real debugging time before the true test was found.)
+
+**UI:** `src/components/bake-page.tsx` (`BakePage`) -- batch selector reusing `CostingForm`'s
+`batchesByProduct`/`<optgroup>` pattern; "Batches made" numeric input (default 1, decimals
+allowed, must be `> 0`) with a computed, read-only `usablePieces × multiplier` readout;
+every formula row visible during resolution with `src/components/ingredient-picker.tsx` for
+manual assignment; a grouped deduction summary showing current/needed/resulting quantity per
+ingredient with an insufficient-stock highlight; Confirm disabled until every row resolves,
+relabeling to an explicit-override state when confirming would take any ingredient negative.
+
+**Inventory Timeline gap closed:** `sourceLabel()` (`src/components/inventory-timeline.tsx`) was
+returning a generic `"Bake"` string for consume entries -- fixed to surface the transaction's own
+`note` (already carrying the full `"Bake: <label> ×<multiplier>"` text set once in
+`applyBakeConfirmation`), so the Timeline shows which batch/product actually consumed the stock,
+the same way purchase entries already show which file.
+
+### Milestone 4 -- Expiration status, Dashboard cards
+
+**Schema:** none new -- `nearest_expiration_date` has existed on `ingredients` since M1; this
+milestone only adds the derived-status logic and UI on top of it.
+
+**`src/lib/inventory-status.ts`** -- `getExpirationStatus(nearestExpirationDate, today,
+expiresSoonDays?)`: `"none"` when no date is set or it doesn't parse, `"expired"` when in the
+past, `"expires-today"` on an exact match, `"expires-soon"` within `expiresSoonDays` (inclusive),
+`"good"` beyond that. `DEFAULT_EXPIRES_SOON_DAYS = 3` is a documented, named constant rather than
+a settings-page field -- this app has no runtime settings surface anywhere, so "configurable"
+means editing this one constant, not a UI. `getExpiringIngredients()` (active ingredients only,
+soonest-first) and `getInventorySummaryCounts()` (low/out/expiring counts in one pass over the
+ingredient list) both build on it.
+
+**Two independent badges, enforced in the UI, not just documented:** `InventoryPage` renders
+`getStockStatus()`'s pill and `getExpirationStatus()`'s pill as two separate `<Tag>` elements
+side by side -- verified in both localStorage and real-Supabase browser passes via a DOM query
+scoped to each ingredient's row, confirming e.g. a low-stock, soon-expiring ingredient shows
+`["Low", "Expires soon"]` as two elements, never one combined string. An ingredient with no
+expiration date renders only its stock badge.
+
+**Dashboard:** 3 new `MetricCard`s (Low stock / Out of stock / Expiring) in `DashboardPage`,
+driven by one `getInventorySummaryCounts(labState.ingredients, today)` call, in the same pattern
+as the page's existing metric-card row.
+
+### Milestone 5 -- RPC atomicity
+
+**Schema:** two new functions appended to `supabase-add-inventory.sql` -- `confirm_purchase_import
+(p_import_id, p_ingredient_updates, p_transactions)` and `confirm_bake(p_ingredient_updates,
+p_transactions)`, both `plpgsql`/`security invoker`. No table, column, or policy changed. First
+`supabase.rpc()` usage anywhere in this codebase.
+
+**What moved, and what deliberately didn't:** M2-M4's Supabase path persisted a confirmation's
+result as **sequential** `.update()`/`.insert()` calls -- a known, accepted non-atomicity (a
+failure mid-sequence could leave inventory partially updated). This milestone replaces those
+sequential calls with one `supabase.rpc(...)` call each. The RPC functions do **not** reimplement
+matching, unit conversion, weighted-average cost, or insufficient-stock logic in SQL --
+`applyPurchaseImportConfirmation`/`applyBakeConfirmation` (`src/lib`) are unchanged and remain the
+only place those rules are decided. Each RPC receives that function's *already-computed* result
+(ingredient updates + `toInventoryTransactionRow`-shaped ledger rows) as `jsonb` and applies it as
+one Postgres transaction -- a `plpgsql` function body is atomic by default, so any unhandled
+exception rolls back every statement the function already ran, including earlier iterations of
+its own loops. Verified directly against the live project: a deliberately malformed second
+ingredient-update entry forced `confirm_bake` to fail after its first (valid) `update` had already
+executed, and that first update did not persist. `confirm_purchase_import` also re-checks its
+`status = 'draft'` guard server-side (`select ... for update`, locking the row), the same guard
+`confirmPurchaseImport` already applied client-side since M2, now also enforced at the true point
+of writing. `localStorage` mode calls the same pure functions directly with nothing to make atomic
+(a React state update is already all-or-nothing) and was left untouched.
+
+**Trust boundary, made explicit rather than assumed:** neither RPC re-validates the business rules
+it's given -- `confirm_bake` does not re-check insufficient stock; both will faithfully apply
+whatever ingredient quantities and ledger rows they're passed. This is not a new gap introduced
+here: this app's RLS already grants any authenticated user unrestricted `select/insert/update/
+delete` on every table involved (`using (true) / with check (true)`, the same template used
+everywhere in this codebase), so a client could always write arbitrary inventory values directly.
+The RPCs intentionally trust the application layer because, today, only this first-party client
+writes inventory. **Future hardening:** if an external client is ever introduced -- a mobile app,
+a public API, a third-party integration, anything that isn't this app's own `"use client"`
+bundle -- server-side validation must become authoritative at that point, not just convenient. The
+natural shape for that is the same one the AI Advisor's "Future provider support" section above
+already identifies as this app's missing piece: a real server-side execution boundary (a Route
+Handler or equivalent) sitting in front of Supabase, re-deriving or re-checking business rules
+instead of trusting a caller-supplied `jsonb` payload. Not needed while the trusted-first-party
+assumption holds; the assumption itself is the thing to watch.
+
+### Not yet built (later milestones)
+
+Manual stock adjustment/waste recording (`adjustment`/`waste` transaction types already reserved
+in the schema/types since M2/M3). No further Supply Inventory Loop milestones are planned beyond
+M5 unless requested.
+
 ## AI Advisor (`src/services/ai/`)
 
 A Copy-Prompt tool, not a live AI integration. It assembles a deterministic, self-contained
