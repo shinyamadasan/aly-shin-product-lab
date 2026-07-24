@@ -1,35 +1,41 @@
-import type { CostingSummary, Product, ProductBatch, TastingFeedback } from "./product-lab-types";
+import { evaluateProduct } from "./rule-engine/index.ts";
+import type { CostingSummary, Product, ProductBatch, TastingFeedback } from "./product-lab-types.ts";
 
+// Delegates to the Rule Engine (src/lib/rule-engine) instead of the original fixed 6-check,
+// unweighted pass count -- readinessPercentage is now severity-weighted (a Blocker counts for
+// more than an Info), and rules with insufficient data are excluded rather than counted as
+// failures. Return shape is unchanged so every existing call site (Dashboard, Products,
+// Product Detail) keeps working without modification; `passed`/`total` now reflect however
+// many of the engine's ~26 routine-mode rules are applicable, not a fixed 6 -- more granular,
+// not less accurate. supplies: [] because none of the routine readiness call sites currently
+// load supply data; Supply rules degrade gracefully to "insufficient data" in that case.
 export function getReadinessScore(
   product: Product,
   batches: ProductBatch[] = [],
   costings: CostingSummary[] = [],
   tastings: TastingFeedback[] = [],
 ) {
-  const productBatches = batches.filter((batch) => batch.productId === product.id);
-  const productCosting = costings.find((costing) => costing.productId === product.id);
-  const productTastings = tastings.filter((tasting) => tasting.productId === product.id);
-  const latestBatch = productBatches[0];
-  const averageRating =
-    productTastings.length > 0
-      ? productTastings.reduce((total, tasting) => total + tasting.rating, 0) / productTastings.length
-      : 0;
-  const checks = [
-    productBatches.length > 0,
-    Boolean(productCosting && productCosting.ingredientCost > 0),
-    Boolean(productCosting && productCosting.packagingCost > 0),
-    productTastings.length >= 5,
-    averageRating >= 8,
-    latestBatch?.launchDecision === "launch",
-  ];
+  const result = evaluateProduct(product, { batches, costings, tastings, supplies: [], now: Date.now() });
+  const applicable = result.ruleResults.filter((rule) => rule.passed !== null);
+  const passed = applicable.filter((rule) => rule.passed === true).length;
 
   return {
-    passed: checks.filter(Boolean).length,
-    total: checks.length,
-    percent: Math.round((checks.filter(Boolean).length / checks.length) * 100),
+    passed,
+    total: applicable.length,
+    percent: result.readinessPercentage,
   };
 }
 
+// Deliberately NOT delegated to the Rule Engine, unlike getReadinessScore above. costingDone/
+// packagingDone here mean "a cost was entered" (presence), which getProductGap and
+// getShinReviewItems branch on with that exact meaning ("Needs costing" / "Needs packaging
+// cost"). The Rule Engine's equivalent checks (FIN-001, QUAL-002) are deliberately stricter --
+// margin viability and tested-packaging-evidence, not just presence -- so swapping them in here
+// would silently change what "costingDone" means to code that already depends on the narrower
+// meaning (e.g. a product with a real but unprofitable costing would wrongly show "Needs
+// costing" instead of surfacing the real problem). Kept as its own presence-check
+// implementation on purpose; the richer checks are available via getReadinessScore/
+// evaluateProduct for anything that wants them.
 export function getProductStats(
   product: Product,
   batches: ProductBatch[],

@@ -65,13 +65,32 @@ export function formatCostingMetric(value: number | null, format: (value: number
   return value === null ? unavailableLabel : format(value);
 }
 
+// Reads just the one field the Rule Engine and getCostingTotals need from the "Professional
+// costing detail" JSON blob in costing.notes, without depending on the full structured-detail
+// shape (CostingLaborDetail, CostingGasDetail, etc.) that only src/app/product-lab.tsx's form
+// needs -- keeps this module free of any dependency on the page file.
+function getTargetFoodCostFromNotes(notes: string): number {
+  const rawJson = notes.match(/^Professional costing detail: (.+)$/m)?.[1];
+  if (!rawJson) {
+    return 0;
+  }
+
+  try {
+    const parsed = JSON.parse(rawJson) as { targetFoodCost?: number };
+    return Number(parsed.targetFoodCost ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
 export function getCostingTotals(costing: CostingSummary) {
   const utilityTotal = costing.waterCost + costing.gasCost + costing.ovenElectricCost + costing.refrigerationCost + costing.coffeeEquipmentCost;
   const directCost = costing.ingredientCost + costing.packagingCost + costing.laborEstimate + utilityTotal + costing.wasteAllowance;
   const indirectCost = costing.overheadCost + costing.equipmentCost;
   const totalBatchCost = directCost + indirectCost;
   const costingYield = Number(costing.notes.match(/^Costing yield: ([\d.]+)/m)?.[1] ?? 0);
-  const metrics = getCostingMetrics({ costingYield, directCost, indirectCost, suggestedPrice: costing.suggestedPrice, targetFoodCost: 0, totalBatchCost });
+  const targetFoodCost = getTargetFoodCostFromNotes(costing.notes);
+  const metrics = getCostingMetrics({ costingYield, directCost, indirectCost, suggestedPrice: costing.suggestedPrice, targetFoodCost, totalBatchCost });
 
-  return { ...metrics, costingYield, directCost, indirectCost, totalBatchCost, utilityTotal };
+  return { ...metrics, costingYield, directCost, indirectCost, targetFoodCost, totalBatchCost, utilityTotal };
 }
