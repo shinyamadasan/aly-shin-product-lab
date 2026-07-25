@@ -156,7 +156,18 @@ Use when:
 Should not be a duplicate live-entry page. Proof Day is for recording; Batches is for reviewing —
 and, now, for logging tasting checkpoints and photos as they happen over the following hours/days.
 
+Baking is initiated from here, not from a separate tab: use the **Bake a batch** button in the
+header, or a record's **Bake this** link, to open the bake flow (which deducts that batch's
+ingredients from inventory) with the batch already selected. There is no top-level Bake tab; the
+`/bake` route still works as a deep link.
+
 ### Supplies
+
+Navigation note: Supplies is no longer its own top-level tab. It lives under the single
+**Inventory & Supplies** tab, on the **Supplier prices** toggle (the other toggle, **Current
+stock**, is the Inventory page). Old `/supplies` links still work and open on the Supplier-prices
+toggle. This is purely a navigation grouping — the purchase-log data and its role below are
+unchanged.
 
 Purpose: actual purchase log and supplier comparison.
 
@@ -341,6 +352,7 @@ Important implementation preference:
 1. Make the Guide page a real context/manual page using this document.
 2. Stabilize Costing so it feels like a professional costing sheet, not a form.
 3. Keep Proof Day and Supplies low-friction because they matter most at the current stage.
+   (Supplies now lives under the Inventory & Supplies tab → Supplier prices toggle.)
 4. Improve local contextual feedback per page and per action.
 5. Add clean exports/reports only when they are useful and compact.
 6. Avoid broad refactors while the user is actively testing workflows.

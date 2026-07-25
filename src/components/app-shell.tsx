@@ -9,7 +9,7 @@ const titles = {
   "proof-day": "Proof day mode",
   batches: "Product proof batches",
   costing: "Costing and pricing",
-  supplies: "Supplies and supplier prices",
+  supplies: "Inventory & supplies",
   equipment: "Equipment and depreciation",
   inventory: "Inventory & supplies",
   "need-to-buy": "Need to buy",

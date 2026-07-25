@@ -6,7 +6,7 @@ import { products } from "@/lib/sample-data";
 import type { LabState } from "@/lib/lab-state";
 import { parseBatchIngredients } from "@/lib/batches";
 import { productName } from "@/components/product-controls";
-import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
+import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, resolveInitialBatchId, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { FormPanel, Tag } from "@/components/ui";
 
@@ -29,14 +29,15 @@ export function BakePage({
     .filter((group) => group.productBatches.length > 0);
 
   // Preselect the batch passed via ?batch=<id> (the "Bake this" links on Proof Batches deep-link
-  // here with the batch already chosen); fall back to the most recent batch otherwise.
+  // here with the batch already chosen); fall back to the most recent batch otherwise. Validated
+  // against the dropdown's own options so the shown selection and the preview can't disagree.
   const [selectedBatchId, setSelectedBatchId] = useState(() => {
-    const fallback = batchesByProduct[0]?.productBatches[0]?.id ?? "";
+    const selectableBatchIds = batchesByProduct.flatMap((group) => group.productBatches.map((item) => item.id));
+    const fallback = selectableBatchIds[0] ?? "";
     if (typeof window === "undefined") {
       return fallback;
     }
-    const requested = new URLSearchParams(window.location.search).get("batch");
-    return requested && labState.batches.some((item) => item.id === requested) ? requested : fallback;
+    return resolveInitialBatchId(window.location.search, selectableBatchIds, fallback);
   });
   const [multiplierText, setMultiplierText] = useState("1");
   const [allowNegative, setAllowNegative] = useState(false);

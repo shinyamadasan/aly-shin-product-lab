@@ -1005,7 +1005,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
       const { error } = await query;
       setMessage(error ? `Ingredient save failed. Run supabase-add-inventory.sql first if this is your first time: ${error.message}` : "Ingredient saved.");
       setMessageTone(error ? "bad" : "good");
-      setIsInventoryTableMissing(Boolean(error?.message.includes("ingredients")));
+      setIsInventoryTableMissing(isMissingTableError(error));
       if (!error) {
         setEditingIngredient(null);
         await loadSupabaseData();
@@ -1525,6 +1525,24 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     return <LoginScreen message={message} signIn={signIn} />;
   }
 
+  // Shared by both the "inventory" and "supplies" views (they render the same merged page, differing
+  // only in which toggle opens first) so the two call sites can't drift out of sync.
+  const inventorySuppliesProps = {
+    cancelEditIngredient: () => setEditingIngredient(null),
+    deleteIngredient,
+    editIngredient: setEditingIngredient,
+    ingredient: editingIngredient,
+    isInventoryTableMissing,
+    saveIngredient,
+    cancelEditSupply: () => setEditingSupply(null),
+    deleteSupply,
+    editSupply: setEditingSupply,
+    isSuppliesTableMissing,
+    saveSupply,
+    supply: editingSupply,
+    labState,
+  };
+
   return (
     <AppShell view={view}>
           {message && view !== "dashboard" && view !== "costing" ? <MessageBox message={message} tone={messageTone} /> : null}
@@ -1563,9 +1581,9 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
-          {view === "supplies" ? <InventorySuppliesPage initialTab="supplies" cancelEditIngredient={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} saveIngredient={saveIngredient} cancelEditSupply={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} saveSupply={saveSupply} supply={editingSupply} labState={labState} /> : null}
+          {view === "supplies" ? <InventorySuppliesPage initialTab="supplies" {...inventorySuppliesProps} /> : null}
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
-          {view === "inventory" ? <InventorySuppliesPage initialTab="stock" cancelEditIngredient={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} saveIngredient={saveIngredient} cancelEditSupply={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} saveSupply={saveSupply} supply={editingSupply} labState={labState} /> : null}
+          {view === "inventory" ? <InventorySuppliesPage initialTab="stock" {...inventorySuppliesProps} /> : null}
           {view === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
           {view === "purchase-import" ? (
             <PurchaseImportWizard

@@ -3,6 +3,15 @@ import type { Ingredient, IngredientAlias, MatchMethod } from "./product-lab-typ
 import { resolveIngredientReference } from "./ingredient-matching.ts";
 import { convertToBaseUnit } from "./unit-conversion.ts";
 
+// Picks which batch the Bake page should open with. The "Bake this" links on Proof Batches
+// deep-link here as /bake?batch=<id>; honor that id ONLY when it's one of the batches actually
+// offered in the dropdown (selectableBatchIds), so the shown selection and the deduction preview
+// can never disagree. Anything missing or unrecognized falls back to the default (most recent).
+export function resolveInitialBatchId(search: string, selectableBatchIds: string[], fallback: string): string {
+  const requested = new URLSearchParams(search).get("batch");
+  return requested && selectableBatchIds.includes(requested) ? requested : fallback;
+}
+
 export type ResolvedBakeRow = {
   rowId: string;
   ingredientName: string;
