@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, resolveInitialBatchId } from "../src/lib/bake-deduction.ts";
+import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula } from "../src/lib/bake-deduction.ts";
 import type { BatchFormulaRow } from "../src/lib/batches.ts";
 import type { Ingredient, IngredientAlias } from "../src/lib/product-lab-types.ts";
 
@@ -186,22 +186,4 @@ test("getInsufficientDeductions reports nothing when stock is sufficient", () =>
   const flour = ingredient({ id: "flour-id", name: "Flour", currentQuantity: 500 });
 
   assert.deepEqual(getInsufficientDeductions([{ ingredientId: "flour-id", quantity: 150 }], [flour]), []);
-});
-
-test("resolveInitialBatchId honors ?batch= when the id is a selectable batch", () => {
-  assert.equal(resolveInitialBatchId("?batch=b2", ["b1", "b2", "b3"], "b1"), "b2");
-});
-
-test("resolveInitialBatchId falls back when ?batch= is missing", () => {
-  assert.equal(resolveInitialBatchId("", ["b1", "b2"], "b1"), "b1");
-});
-
-test("resolveInitialBatchId falls back when ?batch= is not one of the dropdown's options", () => {
-  // Guards the select-vs-state mismatch: an id that exists somewhere but isn't offered in the
-  // dropdown must not be selected, or the shown option and the deduction preview would disagree.
-  assert.equal(resolveInitialBatchId("?batch=missing", ["b1", "b2"], "b1"), "b1");
-});
-
-test("resolveInitialBatchId returns the empty fallback when there are no selectable batches", () => {
-  assert.equal(resolveInitialBatchId("?batch=b1", [], ""), "");
 });

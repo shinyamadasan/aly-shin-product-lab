@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import type { ChangeEvent as ReactChangeEvent, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
+import type { ChangeEvent as ReactChangeEvent, ComponentProps, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PostgrestError, Session } from "@supabase/supabase-js";
 import {
@@ -37,7 +37,6 @@ import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { InventoryPage } from "@/components/inventory-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
-import { BakePage } from "@/components/bake-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -49,7 +48,7 @@ import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation } from "@/lib/purchase-import-confirm";
 import type { PurchaseImportRowDraft } from "@/lib/purchase-import";
 import { applyBakeConfirmation } from "@/lib/bake-confirm";
-import type { BakeDeduction } from "@/lib/bake-deduction";
+import { groupDeductionsByIngredient, resolveBakeFormula, type BakeDeduction } from "@/lib/bake-deduction";
 import { toInventoryTransactionRow } from "@/lib/inventory-transaction";
 import {
   getAutoCostedIngredientRow,
@@ -1253,13 +1252,11 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     setMessageTone("good");
   }
 
-  // The only place a bake can change `ingredients` quantities. Unlike purchase import, there is
-  // no persisted "draft" row to guard against reapplying on refresh -- a bake's selection
-  // (batch, multiplier, resolved rows) lives only in BakePage's own component state until this
-  // function is called, so a reload simply loses the in-progress selection with nothing to
-  // reapply. The re-entrancy risk this function does face is a fast double-click firing it twice
-  // before the first call's response lands -- guarded synchronously in BakePage itself
-  // (handleConfirm's isConfirming check), the same pattern used for Confirm Import.
+  // The only place a bake can change `ingredients` quantities. Called from bakeBatch (the one-click
+  // "Bake this" action on Proof Batches). There is no persisted "draft" to reapply on refresh, so a
+  // reload simply does nothing. Accidental double-application is guarded by the window.confirm() in
+  // bakeBatch, which blocks synchronously -- a second click can't be handled until the first
+  // confirm is dismissed, so each deduction requires its own explicit confirmation.
   async function confirmBake(batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean) {
     const result = applyBakeConfirmation({ ingredients: labState.ingredients, deductions, batchId, batchLabel, multiplier, allowNegative, today: new Date().toISOString() });
 
@@ -1525,23 +1522,56 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     return <LoginScreen message={message} signIn={signIn} />;
   }
 
-  // Shared by both the "inventory" and "supplies" views (they render the same merged page, differing
-  // only in which toggle opens first) so the two call sites can't drift out of sync.
-  const inventorySuppliesProps = {
-    cancelEditIngredient: () => setEditingIngredient(null),
+  // Every view that lands in the Inventory & Supplies hub shares these sub-page prop bundles, so the
+  // hub's call sites can't drift and each sub-page keeps the exact props it already expected.
+  const inventoryProps = {
+    cancelEdit: () => setEditingIngredient(null),
     deleteIngredient,
     editIngredient: setEditingIngredient,
     ingredient: editingIngredient,
     isInventoryTableMissing,
+    labState,
     saveIngredient,
-    cancelEditSupply: () => setEditingSupply(null),
+  };
+  const suppliesProps = {
+    cancelEdit: () => setEditingSupply(null),
     deleteSupply,
     editSupply: setEditingSupply,
     isSuppliesTableMissing,
+    labState,
     saveSupply,
     supply: editingSupply,
-    labState,
   };
+  const purchaseImportProps = {
+    confirmPurchaseImport,
+    createPurchaseImportDraft,
+    discardPurchaseImport,
+    isInventoryTableMissing,
+    labState,
+    saveIngredientAlias,
+    updatePurchaseImportRow,
+  };
+  const inventoryHubProps = { inventoryProps, suppliesProps, purchaseImportProps, labState };
+
+  // One-click bake: deduct exactly one batch's resolved formula from inventory. No form, no
+  // multiplier -- clicking "Bake this" on a proof batch just decreases stock (with a confirm so it
+  // can't happen by accident). Reuses the same confirmBake path (atomic RPC in Supabase mode,
+  // ledger entries, weighted-cost rules) the old Bake page used; only the UI ceremony is gone.
+  async function bakeBatch(batch: ProductBatch) {
+    const label = `${productName(batch.productId)} ${batch.batchVersion}`;
+    const formula = parseBatchIngredients(batch.ingredientsNotes);
+    const resolved = resolveBakeFormula(formula, labState.ingredients, labState.ingredientAliases);
+    const deductions = groupDeductionsByIngredient(resolved, 1);
+    if (deductions.length === 0) {
+      setMessage(`Couldn't bake ${label}: none of its formula ingredients match your inventory yet. Add them under Inventory & Supplies first.`);
+      setMessageTone("bad");
+      return;
+    }
+    if (!window.confirm(`Bake ${label}? This deducts one batch's ingredients from your inventory.`)) {
+      return;
+    }
+    await confirmBake(batch.id, label, 1, deductions, true);
+  }
 
   return (
     <AppShell view={view}>
@@ -1568,7 +1598,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           ) : null}
 
           {view === "batches" ? (
-            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} />
+            <BatchHistoryPage bakeBatch={bakeBatch} batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} />
           ) : null}
 
           {view === "costing" ? (
@@ -1581,23 +1611,12 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
-          {view === "supplies" ? <InventorySuppliesPage initialTab="supplies" {...inventorySuppliesProps} /> : null}
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
-          {view === "inventory" ? <InventorySuppliesPage initialTab="stock" {...inventorySuppliesProps} /> : null}
-          {view === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
-          {view === "purchase-import" ? (
-            <PurchaseImportWizard
-              confirmPurchaseImport={confirmPurchaseImport}
-              createPurchaseImportDraft={createPurchaseImportDraft}
-              discardPurchaseImport={discardPurchaseImport}
-              isInventoryTableMissing={isInventoryTableMissing}
-              labState={labState}
-              saveIngredientAlias={saveIngredientAlias}
-              updatePurchaseImportRow={updatePurchaseImportRow}
-            />
-          ) : null}
-          {view === "bake" ? <BakePage confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
-          {view === "inventory-timeline" ? <InventoryTimeline labState={labState} /> : null}
+          {view === "inventory" ? <InventorySuppliesPage initialTab="stock" {...inventoryHubProps} /> : null}
+          {view === "supplies" ? <InventorySuppliesPage initialTab="supplies" {...inventoryHubProps} /> : null}
+          {view === "need-to-buy" ? <InventorySuppliesPage initialTab="need-to-buy" {...inventoryHubProps} /> : null}
+          {view === "purchase-import" ? <InventorySuppliesPage initialTab="import" {...inventoryHubProps} /> : null}
+          {view === "inventory-timeline" ? <InventorySuppliesPage initialTab="timeline" {...inventoryHubProps} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
@@ -2084,6 +2103,7 @@ function OperatingGuide({ labState }: { labState: LabState }) {
 }
 
 function BatchHistoryPage({
+  bakeBatch,
   batch,
   cancelEdit,
   deleteBatch,
@@ -2095,6 +2115,7 @@ function BatchHistoryPage({
   saveTasting,
   uploadBatchPhotos,
 }: {
+  bakeBatch: (batch: ProductBatch) => void;
   batch: ProductBatch | null;
   cancelEdit: () => void;
   deleteBatch: (batchId: string) => void;
@@ -2155,12 +2176,11 @@ function BatchHistoryPage({
           <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <h3 className="text-xl font-semibold">Proof batch records</h3>
             <div className="flex flex-wrap gap-2">
-              <a className="flex h-9 items-center rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" href="/bake">Bake a batch</a>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("proof-batches-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadBatches} type="button">Download CSV</button>
             </div>
           </div>
-          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Review formulas, adjustments, issues, and next tests. Create new experiments from Proof Day. When you actually bake one, use <strong>Bake a batch</strong> (or a record&apos;s <strong>Bake this</strong> link) to deduct its ingredients from inventory.</p>
+          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Review formulas, adjustments, issues, and next tests. Create new experiments from Proof Day. When you actually bake one, use a record&apos;s <strong>Bake this</strong> button to deduct its ingredients from inventory.</p>
         </div>
         <div className="divide-y divide-[#f0e4d8]">
           {labState.batches.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No proof batches yet.</p> : null}
@@ -2174,7 +2194,7 @@ function BatchHistoryPage({
                     <p className="mt-1 text-sm text-[#6f5a4c]">{batch.dateMade} / {batch.launchDecision}</p>
                   </div>
                   <div className="flex gap-2">
-                    <a className="text-sm font-semibold text-[#8f5632] underline" href={`/bake?batch=${batch.id}`}>Bake this</a>
+                    <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => bakeBatch(batch)} type="button">Bake this</button>
                     <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => copyFormula(batch.id, formula)} type="button">{copiedBatchId === batch.id ? "Copied" : "Copy formula"}</button>
                     <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => editBatch(batch)} type="button">Edit</button>
                     <button className="text-sm font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${batch.batchVersion}?`) ? deleteBatch(batch.id) : undefined} type="button">Delete</button>
@@ -3406,66 +3426,54 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
   );
 }
 
-// One tab, two related jobs: "Current stock" is what you physically have on hand right now
-// (Ingredient inventory, deducted when you bake), "Supplier prices" is the price/quality history
-// you paid per purchase (SupplyEntry, used for costing). They were separate nav tabs; merged here
-// behind a lightweight in-page toggle so both live under a single "Inventory & Supplies" tab.
+type InventoryTab = "stock" | "supplies" | "need-to-buy" | "import" | "timeline";
+
+// The single "Inventory & Supplies" hub. Everything about what you have, what you paid, what to
+// buy, importing receipts, and the movement history lives here behind one set of sub-tabs, instead
+// of five separate sidebar tabs. Sub-page props are passed as whole objects (typed via
+// ComponentProps) so this hub never has to re-declare each sub-page's prop shape by hand.
 function InventorySuppliesPage({
   initialTab,
-  cancelEditIngredient,
-  deleteIngredient,
-  editIngredient,
-  ingredient,
-  isInventoryTableMissing,
-  saveIngredient,
-  cancelEditSupply,
-  deleteSupply,
-  editSupply,
-  isSuppliesTableMissing,
-  saveSupply,
-  supply,
   labState,
+  inventoryProps,
+  suppliesProps,
+  purchaseImportProps,
 }: {
-  initialTab: "stock" | "supplies";
-  cancelEditIngredient: () => void;
-  deleteIngredient: (ingredientId: string) => void;
-  editIngredient: (ingredient: Ingredient) => void;
-  ingredient: Ingredient | null;
-  isInventoryTableMissing: boolean;
-  saveIngredient: (formData: FormData) => void;
-  cancelEditSupply: () => void;
-  deleteSupply: (supplyId: string) => void;
-  editSupply: (supply: SupplyEntry) => void;
-  isSuppliesTableMissing: boolean;
-  saveSupply: (formData: FormData) => void;
-  supply: SupplyEntry | null;
+  initialTab: InventoryTab;
   labState: LabState;
+  inventoryProps: ComponentProps<typeof InventoryPage>;
+  suppliesProps: ComponentProps<typeof SuppliesPage>;
+  purchaseImportProps: ComponentProps<typeof PurchaseImportWizard>;
 }) {
-  const [tab, setTab] = useState<"stock" | "supplies">(initialTab);
+  const [tab, setTab] = useState<InventoryTab>(initialTab);
+
+  const tabs: Array<{ id: InventoryTab; label: string }> = [
+    { id: "stock", label: "Current stock" },
+    { id: "supplies", label: "Supplier prices" },
+    { id: "need-to-buy", label: "Need to buy" },
+    { id: "import", label: "Import CSV" },
+    { id: "timeline", label: "Timeline" },
+  ];
 
   return (
     <div className="grid gap-5">
-      <div className="inline-flex w-fit rounded-md border border-[#d8c7b7] bg-white p-1">
-        <button
-          className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === "stock" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-          onClick={() => setTab("stock")}
-          type="button"
-        >
-          Current stock
-        </button>
-        <button
-          className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === "supplies" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-          onClick={() => setTab("supplies")}
-          type="button"
-        >
-          Supplier prices
-        </button>
+      <div className="inline-flex w-fit flex-wrap gap-1 rounded-md border border-[#d8c7b7] bg-white p-1">
+        {tabs.map((entry) => (
+          <button
+            className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === entry.id ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+            key={entry.id}
+            onClick={() => setTab(entry.id)}
+            type="button"
+          >
+            {entry.label}
+          </button>
+        ))}
       </div>
-      {tab === "stock" ? (
-        <InventoryPage cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredient={saveIngredient} />
-      ) : (
-        <SuppliesPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={supply} />
-      )}
+      {tab === "stock" ? <InventoryPage {...inventoryProps} /> : null}
+      {tab === "supplies" ? <SuppliesPage {...suppliesProps} /> : null}
+      {tab === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
+      {tab === "import" ? <PurchaseImportWizard {...purchaseImportProps} /> : null}
+      {tab === "timeline" ? <InventoryTimeline labState={labState} /> : null}
     </div>
   );
 }

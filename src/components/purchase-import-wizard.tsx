@@ -53,7 +53,7 @@ export function PurchaseImportWizard({
   // A ref, not just the isConfirming state, guards re-entrancy -- a setState-only guard doesn't
   // reliably block two clicks dispatched in the same tight window (verified empirically while
   // building Bake's identical guard: state updates only land on the next render, a ref mutates
-  // immediately). See src/components/bake-page.tsx for the full note.
+  // immediately).
   const isConfirmingRef = useRef(false);
   const [uploadError, setUploadError] = useState("");
 

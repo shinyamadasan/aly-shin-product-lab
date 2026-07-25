@@ -156,18 +156,21 @@ Use when:
 Should not be a duplicate live-entry page. Proof Day is for recording; Batches is for reviewing —
 and, now, for logging tasting checkpoints and photos as they happen over the following hours/days.
 
-Baking is initiated from here, not from a separate tab: use the **Bake a batch** button in the
-header, or a record's **Bake this** link, to open the bake flow (which deducts that batch's
-ingredients from inventory) with the batch already selected. There is no top-level Bake tab; the
-`/bake` route still works as a deep link.
+Baking is a one-click action here, not a separate page: each batch record has a **Bake this**
+button that, after a confirm, deducts exactly one batch's worth of that formula's ingredients from
+inventory (records the ledger entries the same way the old Bake page did). No form, no multiplier —
+"bake" just means "decrease the supply." Ingredients that don't match anything in inventory are
+reported, not silently skipped. There is no Bake tab or `/bake` page.
 
 ### Supplies
 
 Navigation note: Supplies is no longer its own top-level tab. It lives under the single
-**Inventory & Supplies** tab, on the **Supplier prices** toggle (the other toggle, **Current
-stock**, is the Inventory page). Old `/supplies` links still work and open on the Supplier-prices
-toggle. This is purely a navigation grouping — the purchase-log data and its role below are
-unchanged.
+**Inventory & Supplies** hub as one of five sub-tabs: **Current stock** (Inventory), **Supplier
+prices** (this page), **Need to buy**, **Import CSV**, and **Timeline**. Need to Buy, Import
+Purchase CSV, and Inventory Timeline are likewise sub-tabs here rather than separate sidebar tabs.
+Old `/supplies`, `/need-to-buy`, `/purchase-import`, and `/inventory-timeline` links still work and
+open the hub on the matching sub-tab. This is purely a navigation grouping — the underlying data
+and each page's role are unchanged.
 
 Purpose: actual purchase log and supplier comparison.
 

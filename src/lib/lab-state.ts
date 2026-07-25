@@ -13,7 +13,6 @@ export type LabView =
   | "need-to-buy"
   | "purchase-import"
   | "inventory-timeline"
-  | "bake"
   | "journal"
   | "admin"
   | "launch"
@@ -29,9 +28,6 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Costing", href: "/costing", view: "costing" },
   { label: "Equipment", href: "/equipment", view: "equipment" },
   { label: "Inventory & Supplies", href: "/inventory", view: "inventory" },
-  { label: "Need to Buy", href: "/need-to-buy", view: "need-to-buy" },
-  { label: "Import Purchase CSV", href: "/purchase-import", view: "purchase-import" },
-  { label: "Inventory Timeline", href: "/inventory-timeline", view: "inventory-timeline" },
   { label: "Content Journal", href: "/journal", view: "journal" },
   { label: "Product Admin", href: "/admin", view: "admin" },
   { label: "Launch Offer", href: "/launch", view: "launch" },
