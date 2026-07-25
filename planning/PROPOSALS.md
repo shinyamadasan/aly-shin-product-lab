@@ -178,6 +178,22 @@
 - AI-recommended priority: P3
 - status:      pending
 
+### PROP-009 — Inventory data recovery: soft delete / trash / recoverable dev database
+- ▶ Decision: Approve — already built independently on `feat/recycle-bin`; merge as its own PR once the Inventory nav settles.
+- ▶ Risk: High — touches data/storage semantics (delete becomes non-destructive); merge separately from nav work, not bundled.
+- type:        feature
+- source captures: user request (2026-07-25, raised while consolidating the Inventory tabs; deferred out of that PR's scope). Update 2026-07-25: while checking branches before merging the Inventory nav work, found Aly had already built this in parallel — `feat/recycle-bin` (commit `87c4429`, stacked on the now-superseded `feat/inventory-hub-oneclick-bake`).
+- goal alignment:  supports — protects Aly/Shin from an accidental delete during active proof-day testing, where the deleted records (real ingredients, real cost data) aren't reproducible from memory.
+- expected user value: Aly/Shin — a recoverable "delete ingredient" / "delete supply" instead of the current hard `.delete()` behind a `window.confirm()`, plus a way to restore state during dev/testing without wiping Supabase.
+- evidence:    `feat/recycle-bin` implements this: nullable `deleted_at` on `product_batches`, `supply_entries`, `equipment`, `tasting_feedback`, `content_journal` (`supabase-add-recycle-bin.sql`, idempotent — run once in the Supabase SQL editor); a `/recycle-bin` tab/route with Restore / Delete forever; `src/lib/recycle-bin.ts` for the localStorage-mode path. v1 scope is single-row records only — ingredients/inventory, costing, batch photos, and AI reviews are still hard-deleted (documented as a known gap, not silently inconsistent). Verified on that branch: typecheck ✓, lint ✓, tests ✓ (284 pass, +7), build ✓.
+- effort:      done (branch exists) — remaining work is rebasing off the merged Inventory nav (not `feat/inventory-hub-oneclick-bake`, which isn't being adopted) and running the SQL once.
+- dependencies: sequence after the Inventory tab-consolidation PR merges, since `feat/recycle-bin` currently sits on top of the superseded inventory-hub branch and will need to move.
+- confidence:  high — implementation exists and is tested; only the rebase target changed.
+- ambiguity:   none on scope; ingredients/inventory soft-delete (this session's original ask) is still open — v1 explicitly excludes it.
+- why now vs later: don't bundle with nav — merge right after nav settles so the rebase is small.
+- AI-recommended priority: P1
+- status:      approved — pending rebase off the merged inventory nav, then merge; SQL to be run once at merge time.
+
 ## Proposal contract
 *(the structured shape triage produces — keep this shape so downstream stages stay swappable)*
 ```

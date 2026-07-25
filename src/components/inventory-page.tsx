@@ -7,13 +7,13 @@ import { Button, FormPanel, Input, Select, SecondaryButton, Tag, Textarea } from
 
 const baseUnitOptions = ["g", "kg", "ml", "L", "pcs"];
 
-const stockStatusTone = { out: "danger", low: "warm", good: "green" } as const;
-const stockStatusLabel = { out: "Out", low: "Low", good: "Good" } as const;
+export const stockStatusTone = { out: "danger", low: "warm", good: "green" } as const;
+export const stockStatusLabel = { out: "Out", low: "Low", good: "Good" } as const;
 
 // A separate tone/label map from stock status, rendered as its own badge -- never merged into
 // one pill. "none" (no expiration date set) renders nothing.
-const expirationStatusTone = { expired: "danger", "expires-today": "danger", "expires-soon": "warm", good: "green" } as const;
-const expirationStatusLabel = { expired: "Expired", "expires-today": "Expires today", "expires-soon": "Expires soon", good: "Good" } as const;
+export const expirationStatusTone = { expired: "danger", "expires-today": "danger", "expires-soon": "warm", good: "green" } as const;
+export const expirationStatusLabel = { expired: "Expired", "expires-today": "Expires today", "expires-soon": "Expires soon", good: "Good" } as const;
 
 export function InventoryPage({
   cancelEdit,

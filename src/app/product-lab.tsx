@@ -35,7 +35,9 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { InventoryPage } from "@/components/inventory-page";
+import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
+import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
 import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
 import { BakePage } from "@/components/bake-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
@@ -84,7 +86,7 @@ function isMissingTableError(error: PostgrestError | null): boolean {
   return error?.code === "PGRST205" || error?.code === "42P01";
 }
 
-export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
+export default function ProductLab({ view = "dashboard", initialInventoryTab }: { view?: LabView; initialInventoryTab?: InventoryTab }) {
   const [labState, setLabState] = useState<LabState>(() => {
     if (typeof window === "undefined") {
       return emptyState;
@@ -1563,23 +1565,31 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
-          {view === "supplies" ? <InventorySuppliesPage initialTab="supplies" cancelEditIngredient={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} saveIngredient={saveIngredient} cancelEditSupply={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} saveSupply={saveSupply} supply={editingSupply} labState={labState} /> : null}
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
-          {view === "inventory" ? <InventorySuppliesPage initialTab="stock" cancelEditIngredient={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} saveIngredient={saveIngredient} cancelEditSupply={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} saveSupply={saveSupply} supply={editingSupply} labState={labState} /> : null}
-          {view === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
-          {view === "purchase-import" ? (
-            <PurchaseImportWizard
+          {view === "inventory" ? (
+            <InventoryWorkspace
+              cancelEditIngredient={() => setEditingIngredient(null)}
+              cancelEditSupply={() => setEditingSupply(null)}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
+              deleteIngredient={deleteIngredient}
+              deleteSupply={deleteSupply}
               discardPurchaseImport={discardPurchaseImport}
+              editIngredient={setEditingIngredient}
+              editSupply={setEditingSupply}
+              ingredient={editingIngredient}
+              initialTab={initialInventoryTab}
               isInventoryTableMissing={isInventoryTableMissing}
+              isSuppliesTableMissing={isSuppliesTableMissing}
               labState={labState}
+              saveIngredient={saveIngredient}
               saveIngredientAlias={saveIngredientAlias}
+              saveSupply={saveSupply}
+              supply={editingSupply}
               updatePurchaseImportRow={updatePurchaseImportRow}
             />
           ) : null}
           {view === "bake" ? <BakePage confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
-          {view === "inventory-timeline" ? <InventoryTimeline labState={labState} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
@@ -3388,11 +3398,12 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
   );
 }
 
-// One tab, two related jobs: "Current stock" is what you physically have on hand right now
-// (Ingredient inventory, deducted when you bake), "Supplier prices" is the price/quality history
-// you paid per purchase (SupplyEntry, used for costing). They were separate nav tabs; merged here
-// behind a lightweight in-page toggle so both live under a single "Inventory & Supplies" tab.
-function InventorySuppliesPage({
+// One Inventory page, five jobs that used to be five separate nav entries: Current Stock (what's
+// on hand), Purchases (Supplier prices log + CSV import -- both are ways of recording a purchase),
+// Need to Buy, History (the inventory transaction timeline), and Manage Items (the ingredient
+// master: add/edit/delete). Nothing here recomputes state; every tab renders the same components
+// and callbacks that used to live behind their own routes.
+function InventoryWorkspace({
   initialTab,
   cancelEditIngredient,
   deleteIngredient,
@@ -3406,9 +3417,14 @@ function InventorySuppliesPage({
   isSuppliesTableMissing,
   saveSupply,
   supply,
+  confirmPurchaseImport,
+  createPurchaseImportDraft,
+  discardPurchaseImport,
+  saveIngredientAlias,
+  updatePurchaseImportRow,
   labState,
 }: {
-  initialTab: "stock" | "supplies";
+  initialTab?: InventoryTab;
   cancelEditIngredient: () => void;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
@@ -3421,33 +3437,74 @@ function InventorySuppliesPage({
   isSuppliesTableMissing: boolean;
   saveSupply: (formData: FormData) => void;
   supply: SupplyEntry | null;
+  confirmPurchaseImport: (importId: string) => Promise<void>;
+  createPurchaseImportDraft: (fileName: string, rows: PurchaseImportRowDraft[]) => Promise<string | null>;
+  discardPurchaseImport: (importId: string) => void;
+  saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
+  updatePurchaseImportRow: (rowId: string, changes: Partial<PurchaseImportRow>) => void;
   labState: LabState;
 }) {
-  const [tab, setTab] = useState<"stock" | "supplies">(initialTab);
+  const [tab, setTab] = useState<InventoryTab>(initialTab ?? "stock");
+  const [purchasesTab, setPurchasesTab] = useState<"manual" | "csv">("manual");
 
   return (
     <div className="grid gap-5">
-      <div className="inline-flex w-fit rounded-md border border-[#d8c7b7] bg-white p-1">
-        <button
-          className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === "stock" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-          onClick={() => setTab("stock")}
-          type="button"
-        >
-          Current stock
-        </button>
-        <button
-          className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === "supplies" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-          onClick={() => setTab("supplies")}
-          type="button"
-        >
-          Supplier prices
-        </button>
+      <div className="inline-flex w-fit flex-wrap rounded-md border border-[#d8c7b7] bg-white p-1">
+        {inventoryTabs.map((item) => (
+          <button
+            className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+            key={item.key}
+            onClick={() => setTab(item.key)}
+            type="button"
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
-      {tab === "stock" ? (
+
+      {tab === "stock" ? <InventoryStockPage goToManageItems={() => setTab("ingredients")} labState={labState} /> : null}
+
+      {tab === "purchases" ? (
+        <div className="grid gap-4">
+          <div className="inline-flex w-fit rounded-md border border-[#d8c7b7] bg-white p-1">
+            <button
+              className={`rounded px-4 py-1.5 text-sm font-semibold ${purchasesTab === "manual" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+              onClick={() => setPurchasesTab("manual")}
+              type="button"
+            >
+              Log a purchase
+            </button>
+            <button
+              className={`rounded px-4 py-1.5 text-sm font-semibold ${purchasesTab === "csv" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+              onClick={() => setPurchasesTab("csv")}
+              type="button"
+            >
+              Import CSV
+            </button>
+          </div>
+          {purchasesTab === "manual" ? (
+            <SuppliesPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={supply} />
+          ) : (
+            <PurchaseImportWizard
+              confirmPurchaseImport={confirmPurchaseImport}
+              createPurchaseImportDraft={createPurchaseImportDraft}
+              discardPurchaseImport={discardPurchaseImport}
+              isInventoryTableMissing={isInventoryTableMissing}
+              labState={labState}
+              saveIngredientAlias={saveIngredientAlias}
+              updatePurchaseImportRow={updatePurchaseImportRow}
+            />
+          )}
+        </div>
+      ) : null}
+
+      {tab === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
+
+      {tab === "history" ? <InventoryTimeline labState={labState} /> : null}
+
+      {tab === "ingredients" ? (
         <InventoryPage cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredient={saveIngredient} />
-      ) : (
-        <SuppliesPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={supply} />
-      )}
+      ) : null}
     </div>
   );
 }
