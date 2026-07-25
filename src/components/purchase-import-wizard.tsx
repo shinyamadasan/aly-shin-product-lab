@@ -153,7 +153,12 @@ export function PurchaseImportWizard({
 
       {!activeImportId ? (
         <FormPanel icon={<UploadCloud size={18} />} title="Upload a purchase receipt CSV">
-          <input accept=".csv,text/csv" className="block w-full text-sm" onChange={handleFileChange} type="file" />
+          <input
+            accept=".csv,text/csv"
+            className="block w-full cursor-pointer text-sm text-[#6f5a4c] file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-[#8f5632] file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-[#7a4827]"
+            onChange={handleFileChange}
+            type="file"
+          />
           <p className="mt-2 text-xs leading-5 text-[#6f5a4c]">Required columns: item name, quantity, unit. Optional: total price, expiration date. Uploading does not change inventory -- you&apos;ll see a preview first.</p>
           {uploadError ? <p className="mt-2 text-sm text-[#8a3827]">{uploadError}</p> : null}
 

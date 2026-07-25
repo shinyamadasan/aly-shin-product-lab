@@ -11,7 +11,7 @@ const titles = {
   costing: "Costing and pricing",
   supplies: "Supplies and supplier prices",
   equipment: "Equipment and depreciation",
-  inventory: "Ingredient inventory",
+  inventory: "Inventory & supplies",
   "need-to-buy": "Need to buy",
   "purchase-import": "Import purchase CSV",
   bake: "Bake and deduct inventory",

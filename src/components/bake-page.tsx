@@ -28,7 +28,16 @@ export function BakePage({
     }))
     .filter((group) => group.productBatches.length > 0);
 
-  const [selectedBatchId, setSelectedBatchId] = useState(() => batchesByProduct[0]?.productBatches[0]?.id ?? "");
+  // Preselect the batch passed via ?batch=<id> (the "Bake this" links on Proof Batches deep-link
+  // here with the batch already chosen); fall back to the most recent batch otherwise.
+  const [selectedBatchId, setSelectedBatchId] = useState(() => {
+    const fallback = batchesByProduct[0]?.productBatches[0]?.id ?? "";
+    if (typeof window === "undefined") {
+      return fallback;
+    }
+    const requested = new URLSearchParams(window.location.search).get("batch");
+    return requested && labState.batches.some((item) => item.id === requested) ? requested : fallback;
+  });
   const [multiplierText, setMultiplierText] = useState("1");
   const [allowNegative, setAllowNegative] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);

@@ -1563,9 +1563,9 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
             </section>
           ) : null}
 
-          {view === "supplies" ? <SuppliesPage cancelEdit={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={editingSupply} /> : null}
+          {view === "supplies" ? <InventorySuppliesPage initialTab="supplies" cancelEditIngredient={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} saveIngredient={saveIngredient} cancelEditSupply={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} saveSupply={saveSupply} supply={editingSupply} labState={labState} /> : null}
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
-          {view === "inventory" ? <InventoryPage cancelEdit={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredient={saveIngredient} /> : null}
+          {view === "inventory" ? <InventorySuppliesPage initialTab="stock" cancelEditIngredient={() => setEditingIngredient(null)} deleteIngredient={deleteIngredient} editIngredient={setEditingIngredient} ingredient={editingIngredient} isInventoryTableMissing={isInventoryTableMissing} saveIngredient={saveIngredient} cancelEditSupply={() => setEditingSupply(null)} deleteSupply={deleteSupply} editSupply={setEditingSupply} isSuppliesTableMissing={isSuppliesTableMissing} saveSupply={saveSupply} supply={editingSupply} labState={labState} /> : null}
           {view === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
           {view === "purchase-import" ? (
             <PurchaseImportWizard
@@ -2137,11 +2137,12 @@ function BatchHistoryPage({
           <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <h3 className="text-xl font-semibold">Proof batch records</h3>
             <div className="flex flex-wrap gap-2">
+              <a className="flex h-9 items-center rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" href="/bake">Bake a batch</a>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("proof-batches-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadBatches} type="button">Download CSV</button>
             </div>
           </div>
-          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Review formulas, adjustments, issues, and next tests. Create new experiments from Proof Day.</p>
+          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Review formulas, adjustments, issues, and next tests. Create new experiments from Proof Day. When you actually bake one, use <strong>Bake a batch</strong> (or a record&apos;s <strong>Bake this</strong> link) to deduct its ingredients from inventory.</p>
         </div>
         <div className="divide-y divide-[#f0e4d8]">
           {labState.batches.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No proof batches yet.</p> : null}
@@ -2155,6 +2156,7 @@ function BatchHistoryPage({
                     <p className="mt-1 text-sm text-[#6f5a4c]">{batch.dateMade} / {batch.launchDecision}</p>
                   </div>
                   <div className="flex gap-2">
+                    <a className="text-sm font-semibold text-[#8f5632] underline" href={`/bake?batch=${batch.id}`}>Bake this</a>
                     <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => copyFormula(batch.id, formula)} type="button">{copiedBatchId === batch.id ? "Copied" : "Copy formula"}</button>
                     <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => editBatch(batch)} type="button">Edit</button>
                     <button className="text-sm font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${batch.batchVersion}?`) ? deleteBatch(batch.id) : undefined} type="button">Delete</button>
@@ -3382,6 +3384,70 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
           </article>
         ))}
       </div>
+    </div>
+  );
+}
+
+// One tab, two related jobs: "Current stock" is what you physically have on hand right now
+// (Ingredient inventory, deducted when you bake), "Supplier prices" is the price/quality history
+// you paid per purchase (SupplyEntry, used for costing). They were separate nav tabs; merged here
+// behind a lightweight in-page toggle so both live under a single "Inventory & Supplies" tab.
+function InventorySuppliesPage({
+  initialTab,
+  cancelEditIngredient,
+  deleteIngredient,
+  editIngredient,
+  ingredient,
+  isInventoryTableMissing,
+  saveIngredient,
+  cancelEditSupply,
+  deleteSupply,
+  editSupply,
+  isSuppliesTableMissing,
+  saveSupply,
+  supply,
+  labState,
+}: {
+  initialTab: "stock" | "supplies";
+  cancelEditIngredient: () => void;
+  deleteIngredient: (ingredientId: string) => void;
+  editIngredient: (ingredient: Ingredient) => void;
+  ingredient: Ingredient | null;
+  isInventoryTableMissing: boolean;
+  saveIngredient: (formData: FormData) => void;
+  cancelEditSupply: () => void;
+  deleteSupply: (supplyId: string) => void;
+  editSupply: (supply: SupplyEntry) => void;
+  isSuppliesTableMissing: boolean;
+  saveSupply: (formData: FormData) => void;
+  supply: SupplyEntry | null;
+  labState: LabState;
+}) {
+  const [tab, setTab] = useState<"stock" | "supplies">(initialTab);
+
+  return (
+    <div className="grid gap-5">
+      <div className="inline-flex w-fit rounded-md border border-[#d8c7b7] bg-white p-1">
+        <button
+          className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === "stock" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+          onClick={() => setTab("stock")}
+          type="button"
+        >
+          Current stock
+        </button>
+        <button
+          className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === "supplies" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+          onClick={() => setTab("supplies")}
+          type="button"
+        >
+          Supplier prices
+        </button>
+      </div>
+      {tab === "stock" ? (
+        <InventoryPage cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredient={saveIngredient} />
+      ) : (
+        <SuppliesPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={supply} />
+      )}
     </div>
   );
 }
