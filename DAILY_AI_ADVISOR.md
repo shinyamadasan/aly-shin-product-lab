@@ -1,17 +1,47 @@
 # Daily AI Advisor — Investigation & Proposed Architecture
 
-**Status: implemented.** This document is the original investigation and design; it is kept as
-the historical record of the reasoning, not rewritten to match the final build. Where the
-approved implementation amended this design, the amendment wins — see
-`scripts/daily-advisor/README.md` for the operator-facing reality. The three amendments worth
-knowing before reading the rest of this file: (1) generated briefings are **never committed to
-`main`** — they publish to a dedicated `automation/daily-advisor` branch via a separate git
-worktree, not `planning/DIGEST.md`-style commits; (2) output lives at
-`daily-advisor/output/{latest.md,YYYY-MM-DD.md}`, not `planning/PRODUCT_LAB_BRIEFING.md`; (3) no
-`ai_briefings` Supabase table was created — persistence is local files only this phase, behind a
-`BriefingWriter` interface a future Supabase writer could implement without touching ranking or
-rendering. The data-source explicitness requirement (`--source supabase|sample`, no silent
-fallback) was added during implementation and is not in the original investigation below.
+**Status: implemented.** This document is the original investigation and design; the reasoning in
+§1 (prior-art investigation), §5 (ranking-tier design), §6 (security model), and §8 (fallback
+behavior table) was spot-checked against the shipped code and substantially held — those sections
+are not marked stale below. The concrete architecture in §2, the file list in §3, the diagram in
+§4, the scheduling approach in §7, and the delivery-time proposal in §9 item 2 did **not** ship as
+written — each is marked inline. **`scripts/daily-advisor/README.md` is the accurate,
+operator-facing source of truth for the current implementation**; this file is kept as the
+historical record of the reasoning, not rewritten line-by-line to match the final build.
+
+**Complete reconciliation, verified against the repo (not assumed):**
+
+1. **Delivery workflow file:** `n8n-telegram-daily-advisor.json` (repo root) — not
+   `n8n-telegram-product-lab-briefing.json` as §2/§3 name it.
+2. **Output location:** `daily-advisor/output/{latest.md, YYYY-MM-DD.md}`, published via a
+   dedicated git worktree to the `automation/daily-advisor` branch — never `main`, never
+   `planning/PRODUCT_LAB_BRIEFING.md`/`.meta.json` as §2/§3/§4 describe. `latest.md` is written
+   for convenience but deliberately never read by the delivery workflow, to avoid resending stale
+   content on a missed run — the workflow reads the dated file only.
+3. **Schedule:** the worker generates at **9:00 AM Asia/Manila**, registered as a Windows
+   Scheduled Task firing 6:00 PM the previous day in this host's own timezone (`US Mountain
+   Standard Time` / Arizona, UTC-7 — Task Scheduler triggers fire in the host's OS timezone, not
+   Manila's). The n8n delivery workflow's own Schedule Trigger fires at cron `20 9 * * *` (09:20,
+   a 20-minute buffer). Not the "06:00 generation / ~06:30 send" §2/§7/§9 propose.
+4. **File layout:** all worker logic lives under `scripts/daily-advisor/` — `run.ts`
+   (orchestration), `supabase-read.ts`, `claude-invoke.ts`, `render-briefing.ts`,
+   `portfolio-ranking.ts` (the §5 ranking design, shipped essentially as designed, just not under
+   `src/services/ai/`), `prompt.ts` (the §5 Claude-enrichment prompt), `persistence.ts`, `env.ts`,
+   `lock.ts` (concurrency guard), `orphan-check.ts`, `sample-fixtures.ts`. **No**
+   `src/services/ai/daily-brief*.ts` files were created (§3), and **no**
+   `src/lib/supabase-mappers.ts` extraction happened (§3/§10 step 1) — the worker reads and maps
+   Supabase rows itself, inside `scripts/daily-advisor/supabase-read.ts`, rather than sharing a
+   mapper with `product-lab.tsx`.
+5. **Scheduler registration:** there is **no** `setup-daily-advisor-scheduler.ps1` script (§3/§7)
+   — the Windows Scheduled Task is registered directly via the `Register-ScheduledTask`
+   PowerShell block documented in `scripts/daily-advisor/README.md`'s "Scheduling" section.
+6. **`npm run advisor`** (§7 says "not made yet") now exists (`package.json`), running
+   `node scripts/daily-advisor/run.ts`.
+7. No `ai_briefings` Supabase table was created — persistence is local files only this phase,
+   behind a `BriefingWriter` interface a future Supabase writer could implement without touching
+   ranking or rendering (§9 item 3's "propose only" option was the one taken).
+8. The data-source explicitness requirement (`--source supabase|sample`, no silent fallback) was
+   added during implementation and is not in the original investigation below.
 
 ## 1. What already exists (inspected before proposing anything)
 
@@ -79,6 +109,14 @@ memory:**
 
 ## 2. Recommended architecture
 
+> **⚠ Superseded — file names, paths, and schedule below are the ORIGINAL plan, not what
+> shipped.** See the reconciliation at the top of this document, or
+> `scripts/daily-advisor/README.md`, for the current file layout, output location, and schedule.
+> The pipeline *shape* (Task Scheduler → PowerShell launcher → Node worker → Rule Engine per
+> product → portfolio ranking → deterministic render → optional Claude enrichment → write output
+> → git publish → n8n reads GitHub raw → Telegram) is accurate; the specific paths/names in the
+> diagram are not.
+
 ```
 Windows Task Scheduler ("Aly & Shin Product Lab Daily Advisor", configurable time)
     │
@@ -143,37 +181,43 @@ origin-validation / request-schema / health-check machinery is needed here — t
 a *browser* calling a *local server on demand*; this worker has no caller to authenticate against
 at all, it runs on a timer and talks to nothing but Supabase, the `claude` binary, and git.
 
-## 3. Expected files (none created yet)
+## 3. Files actually shipped (corrected — this section originally read "Expected files, none
+created yet"; the list below is verified against the repo, not the original plan)
 
 ```
 daily-advisor.ps1                          -- Task Scheduler launcher (preflight, invoke, commit, log)
-setup-daily-advisor-scheduler.ps1           -- registers the Windows Scheduled Task, -At <time> configurable
 scripts/daily-advisor/run.ts                -- orchestration entry point
-scripts/daily-advisor/supabase-read.ts      -- authenticate + load the 4 tables the Rule Engine needs
+scripts/daily-advisor/supabase-read.ts      -- authenticate + load the tables the Rule Engine needs
 scripts/daily-advisor/claude-invoke.ts      -- spawn() wrapper: fixed argv, timeout, JSON parse, error classes
 scripts/daily-advisor/render-briefing.ts    -- ranked findings -> markdown (deterministic + Claude-enriched variants)
-src/lib/supabase-mappers.ts                 -- NEW: snake_case row -> camelCase mappers, extracted from
-                                                product-lab.tsx's loadSupabaseData() so the worker and the
-                                                app share one mapping instead of two (see §5)
-src/services/ai/daily-brief-types.ts        -- PortfolioFinding, PortfolioRanking, DailyBriefInput types
-src/services/ai/daily-brief.ts              -- rankPortfolio() (deterministic ranking, pure, unit-testable)
-src/services/ai/daily-brief-prompt.ts       -- buildPortfolioPrompt() (pure string assembly, mirrors prompts.ts)
-n8n-telegram-product-lab-briefing.json      -- new n8n workflow (cloned shape, new schedule + file path)
-supabase-add-ai-briefings.sql               -- PROPOSED, NOT applied (requirement: no Supabase changes yet)
+scripts/daily-advisor/portfolio-ranking.ts  -- rankPortfolio()-equivalent: the §5 tier design, shipped here
+scripts/daily-advisor/prompt.ts             -- Claude-enrichment prompt assembly, the §5/§6 design
+scripts/daily-advisor/persistence.ts        -- BriefingWriter -- writes latest.md + YYYY-MM-DD.md
+scripts/daily-advisor/env.ts                -- loads/validates ADVISOR_SUPABASE_* env vars (§6's credential model)
+scripts/daily-advisor/lock.ts               -- concurrency guard (not in the original plan)
+scripts/daily-advisor/orphan-check.ts       -- stale-lock/orphan-run detection (not in the original plan)
+scripts/daily-advisor/sample-fixtures.ts    -- fixture data for `--source sample` (not in the original plan)
+n8n-telegram-daily-advisor.json             -- the n8n workflow (cloned shape, dated-file fetch, Telegram send)
 tests/daily-advisor.test.ts                 -- ranking, prompt assembly, fallback, idempotency, no-mutation
-tests/daily-advisor.smoke.test.ts           -- opt-in, one real Claude call, excluded from `npm test`'s glob
-planning/PRODUCT_LAB_BRIEFING.md            -- generated output (committed each run)
-planning/PRODUCT_LAB_BRIEFING.meta.json     -- generated idempotency marker (committed each run)
+tests/smoke/daily-advisor.test.ts           -- opt-in, real Claude call, excluded from `npm test`'s glob
+daily-advisor/output/latest.md              -- generated output, published to automation/daily-advisor
+daily-advisor/output/YYYY-MM-DD.md          -- generated output, published to automation/daily-advisor
 ```
 
-`scripts/daily-advisor/*` holds worker-specific plumbing (CLI invocation, file I/O, git, Supabase
-auth). `src/services/ai/daily-brief*.ts` holds domain logic (ranking, prompt text) — placed
-alongside the existing AI service layer, not under `scripts/`, so it's reachable by
-`node --test` the same way `rule-engine/*` and the existing `services/ai/*` already are, and so a
-future in-app "portfolio view" (if ever wanted) could import the same ranking function instead of
-a third implementation.
+**Not built, by design or by different choice than §9 anticipated:** `src/lib/supabase-mappers.ts`
+(no shared mapper extraction — the worker maps rows itself), `src/services/ai/daily-brief*.ts` (the
+ranking/prompt logic that would have lived there instead lives in `scripts/daily-advisor/` — see
+above), `setup-daily-advisor-scheduler.ps1` (the Windows Task is registered via the
+`Register-ScheduledTask` block in `scripts/daily-advisor/README.md`, not a standalone script),
+`supabase-add-ai-briefings.sql` (no `ai_briefings` table was proposed or created).
 
 ## 4. Data flow (detail)
+
+> **⚠ Superseded — the `planning/PRODUCT_LAB_BRIEFING.md` path below is the ORIGINAL plan, not
+> what shipped.** The real output path is `daily-advisor/output/{latest.md, YYYY-MM-DD.md}`,
+> published to the `automation/daily-advisor` branch (see the reconciliation at the top of this
+> document). The rest of the flow below — ranking, deterministic render, optional Claude
+> enrichment, n8n GitHub-raw read, Telegram send — is accurate.
 
 ```
 sample-data.ts products[]  ──┐
@@ -315,6 +359,13 @@ An opt-in verbose flag could log the full prompt for local debugging only — no
 
 ## 7. Scheduling approach
 
+> **⚠ Superseded — no `setup-daily-advisor-scheduler.ps1` script exists.** The Windows Scheduled
+> Task is registered directly via the `Register-ScheduledTask` PowerShell block in
+> `scripts/daily-advisor/README.md`'s "Scheduling" section, at 6:00 PM Arizona time (= 9:00 AM
+> Asia/Manila) on this host — not the "06:00" default this section proposes. Adjusting the time
+> means editing and re-running that block, not an `-At` flag. The reasoning below (new/separate
+> task from the AI-DEV-OS pipeline, `-WakeToRun` for offline-at-trigger-time) held.
+
 Windows Task Scheduler, a **new, separate task** from the existing "Aly & Shin Product Lab Claude
 Overnight" one — different concern (product/business briefing vs. code-build pipeline), same
 reasoning the earlier `ai-review/` investigation already applied when it kept that framework
@@ -325,7 +376,7 @@ separate from AI-DEV-OS.
   the existing 07:00 proposal-digest send and the new briefing workflow's own read at ~06:30).
   Configurable per the task's requirement — re-run the setup script with a different `-At` to
   change it, same pattern as the existing scheduler script's own comment ("To change the time:
-  edit the `-At` parameter and re-run").
+  edit the `-At` parameter and re-run"). *(Not what shipped — see the note above.)*
 - **Manual run:** `node scripts/daily-advisor/run.ts` directly, or an `npm run advisor` script
   (package.json addition, not made yet).
 - **Force flag:** `--force` bypasses the idempotency check (§below) for testing — generates and
@@ -387,9 +438,10 @@ elsewhere in this app — extended here rather than special-cased away.
    Manager) would be more robust but is more work and isn't this repo's existing convention
    anywhere else (the app itself just uses a plain `.env.local`). Recommend matching existing
    convention unless you want to raise the bar generally.
-2. **Delivery time.** Proposed 06:00 generation / ~06:30 Telegram send, ahead of the existing
-   07:00 proposal digest so the two don't compete for your morning attention at the same instant.
-   Confirm or pick a different time via `-At`.
+2. **Delivery time — resolved, not what was proposed here.** Shipped as 9:00 AM Asia/Manila
+   generation (registered 6:00 PM Arizona time on this host) / 9:20 AM Asia/Manila Telegram send
+   (n8n cron `20 9 * * *`), not the "06:00 / ~06:30" proposed below. See the reconciliation at the
+   top of this document.
 3. **`ai_briefings` persistence — build it now or skip it?** The task says "optionally save to
    Supabase." Recommend the same additive, not-yet-applied SQL file pattern as `ai_reviews`
    (`supabase-add-ai-briefings.sql`, proposed only) so history exists once you choose to run it,
@@ -403,6 +455,9 @@ elsewhere in this app — extended here rather than special-cased away.
    similarly narrow (two generated files, allow-listed), but it's your call whether a daily
    automated push to `main` — even of a docs-only file — needs the same trust bar as the code
    pipeline's red-zone gate, or is closer to the digest's "reversible, low-stakes" tier.
+   **Resolved, and neither literal option:** the worker never touches `main` at all — output
+   publishes to a dedicated `automation/daily-advisor` branch via a separate git worktree, which
+   is never merged. See the reconciliation at the top of this document.
 
 ## 10. Smallest implementation sequence (for when you approve)
 

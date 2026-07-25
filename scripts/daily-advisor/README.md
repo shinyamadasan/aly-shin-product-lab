@@ -186,15 +186,55 @@ before interpolating free text, and this briefing includes Claude's unconstraine
 is more likely than the Digest's templated content to contain a character that breaks Markdown
 parsing outright.
 
-Import it into n8n and follow its `_setup_notes` (credentials, the manual-test sequence, the
-Error Workflow step below) **while leaving it inactive** -- activation is its own explicit step,
-only after a real Supabase briefing has actually been published and manually verified. Not yet
-imported or activated by this change. The worker itself never holds a Telegram credential or
+Import it into n8n and follow the Deployment Checklist below (credentials, the manual-test
+sequence, the Error Workflow step) **while leaving it inactive** -- activation is its own explicit
+step, only after a real Supabase briefing has actually been published and manually verified. Not
+yet imported or activated by this change. The worker itself never holds a Telegram credential or
 makes an outbound call beyond Supabase and the local `claude` binary -- n8n owns delivery
 entirely. Also not done by this file: n8n's per-workflow Error Workflow setting isn't portable
 through JSON import/export, so pointing this workflow at the existing
-`[Aly & Shin Product Lab] Error Alert` workflow (the same alerting the other three
+`[Aly & Shin Product Lab] Error Alert -> Telegram` workflow (the same alerting the other three
 `n8n-telegram-*.json` workflows already use) has to be set by hand in the n8n UI after import.
+
+## Deployment checklist
+
+Do these in order. The workflow stays **inactive** in n8n until the last step.
+
+1. **Run the worker once for real** against Supabase (`npm run advisor`, or
+   `pwsh ./daily-advisor.ps1 -Source supabase`) and confirm today's dated file --
+   `daily-advisor/output/YYYY-MM-DD.md`, not just `latest.md` -- exists on the
+   `automation/daily-advisor` branch.
+2. **Import `n8n-telegram-daily-advisor.json`** into n8n.
+3. **Configure credentials** on both nodes that need them: the GitHub fetch node's
+   `GitHub PAT - Aly & Shin Product Lab` credential (Contents: read on this repo -- reusable as-is
+   from the Morning Digest workflow), and both Telegram send nodes' `Telegram Bot - Aly & Shin
+   Product Lab` credential.
+4. **Set both chat IDs** -- replace `REPLACE_WITH_YOUR_TELEGRAM_USER_ID` and
+   `REPLACE_WITH_WIFE_TELEGRAM_USER_ID` on the two Telegram nodes with real numeric Telegram user
+   IDs (findable via a bot like @userinfobot, or from this workflow's own execution data after a
+   recipient messages the bot). Your wife must have sent the bot at least one message (e.g.
+   `/start`) before her chat ID will work -- a bot cannot message a chat that hasn't contacted it
+   first.
+5. **Verify the n8n server's own timezone against the Schedule Trigger.** The GitHub-fetch node's
+   date expression (`$now.setZone('Asia/Manila')`) is timezone-explicit and needs no adjustment,
+   but the Schedule Trigger's cron (`20 9 * * *`) fires in whatever timezone the n8n
+   server/instance itself is configured in -- confirm that resolves to after 9:00 AM Asia/Manila,
+   or set an explicit timezone on the Schedule Trigger node if your n8n version supports one.
+   Unlike the Windows-side trigger (step 8), this has not been separately verified.
+6. **Set the Error Workflow.** In the n8n UI, set this workflow's Error Workflow to the existing
+   `[Aly & Shin Product Lab] Error Alert -> Telegram` workflow -- not portable through JSON
+   import/export, so this must be set by hand every time the workflow is (re-)imported.
+7. **Manual test run.** With the workflow still inactive, use n8n's "Execute workflow" to run it
+   once by hand. Confirm both recipients receive the Telegram message(s), the content reads
+   correctly, and -- if the briefing was long enough to split -- the `(i/N)` chunk numbering on
+   each recipient's messages is correct and complete.
+8. **Confirm the Windows Task Scheduler registration**, independently of the workflow above:
+   `schtasks /query /tn "Aly & Shin Product Lab Daily Advisor" /v /fo list` (or
+   `Get-ScheduledTask` in PowerShell) and check the trigger time, the exact command line, and that
+   `WakeToRun` is set. This confirms registration, not that it has fired -- Task Scheduler's own
+   "Last Run Time"/"Last Result" fields (or `Get-ScheduledTaskInfo`) show a real prior run only
+   after the trigger has actually fired at least once.
+9. **Only then activate** the n8n workflow on its schedule.
 
 ## Environment variables (`.env.advisor.local`)
 
