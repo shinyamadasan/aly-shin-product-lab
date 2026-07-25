@@ -32,13 +32,14 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, DeletedRecord, DeletedRecordKind, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { InventoryPage } from "@/components/inventory-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
+import { buildDeletedLabel, KIND_TO_TABLE, purgeFromState, restoreToState, softDeleteFromState } from "@/lib/recycle-bin";
 import { AppShell } from "@/components/app-shell";
 import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
@@ -212,7 +213,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
     }
 
     setLabState({
-      batches: (batchResult.data ?? []).map((row) => ({
+      batches: (batchResult.data ?? []).filter((row) => !row.deleted_at).map((row) => ({
         id: row.id,
         productId: row.product_id,
         batchVersion: row.batch_version,
@@ -267,7 +268,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         suggestedPrice: Number(row.suggested_price ?? 0),
         notes: row.notes ?? "",
       })),
-      supplies: supplyMissing ? [] : (supplyResult.data ?? []).map((row) => ({
+      supplies: supplyMissing ? [] : (supplyResult.data ?? []).filter((row) => !row.deleted_at).map((row) => ({
         id: row.id,
         ingredientName: row.ingredient_name,
         brandName: row.brand_name ?? "",
@@ -280,7 +281,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         qualityRating: Number(row.quality_rating ?? 0),
         notes: row.notes ?? "",
       })),
-      equipment: equipmentMissing ? [] : (equipmentResult.data ?? []).map((row) => ({
+      equipment: equipmentMissing ? [] : (equipmentResult.data ?? []).filter((row) => !row.deleted_at).map((row) => ({
         id: row.id,
         name: row.name,
         brand: row.brand ?? "",
@@ -298,7 +299,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         notes: row.notes ?? "",
         isActive: row.is_active ?? true,
       })),
-      tastings: (tastingResult.data ?? []).map((row) => ({
+      tastings: (tastingResult.data ?? []).filter((row) => !row.deleted_at).map((row) => ({
         id: row.id,
         productId: row.product_id,
         batchId: row.batch_id ?? "",
@@ -312,7 +313,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         wouldReorder: row.would_reorder,
         packagingReaction: row.packaging_reaction ?? "",
       })),
-      journal: (journalResult.data ?? []).map((row) => ({
+      journal: (journalResult.data ?? []).filter((row) => !row.deleted_at).map((row) => ({
         id: row.id,
         productId: row.product_id,
         entryDate: row.entry_date,
@@ -332,6 +333,16 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
         response: row.response ?? "",
         createdAt: row.created_at ?? "",
       })),
+      // Recycle Bin: the soft-deleted rows (deleted_at set) from the five covered tables, as
+      // lightweight tombstones. Restore/permanent-delete work off id + kind, so no full record
+      // payload is mapped here (see DeletedRecord.data). Newest deletions first.
+      deletedRecords: [
+        ...(batchResult.data ?? []).filter((row) => row.deleted_at).map((row) => ({ id: row.id, kind: "batch" as const, label: `${productName(row.product_id)} ${row.batch_version ?? ""}`.trim(), deletedAt: row.deleted_at as string })),
+        ...(supplyMissing ? [] : (supplyResult.data ?? []).filter((row) => row.deleted_at).map((row) => ({ id: row.id, kind: "supply" as const, label: [row.brand_name, row.ingredient_name].filter(Boolean).join(" ") || "Supply", deletedAt: row.deleted_at as string }))),
+        ...(equipmentMissing ? [] : (equipmentResult.data ?? []).filter((row) => row.deleted_at).map((row) => ({ id: row.id, kind: "equipment" as const, label: row.name ?? "Equipment", deletedAt: row.deleted_at as string }))),
+        ...(tastingResult.data ?? []).filter((row) => row.deleted_at).map((row) => ({ id: row.id, kind: "tasting" as const, label: `${productName(row.product_id)} — ${row.taster_name ?? "taster"}`, deletedAt: row.deleted_at as string })),
+        ...(journalResult.data ?? []).filter((row) => row.deleted_at).map((row) => ({ id: row.id, kind: "journal" as const, label: `${productName(row.product_id)} — ${row.what_was_made || row.entry_date || "journal entry"}`, deletedAt: row.deleted_at as string })),
+      ].sort((a, b) => (b.deletedAt ?? "").localeCompare(a.deletedAt ?? "")),
       ingredients: ingredientsMissing ? [] : (ingredientResult.data ?? []).map((row) => ({
         id: row.id,
         name: row.name,
@@ -525,21 +536,26 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   }
 
   async function deleteBatch(batchId: string) {
+    const now = new Date().toISOString();
     if (supabase && session) {
-      const { error } = await supabase.from("product_batches").delete().eq("id", batchId);
-      setMessage(error ? `Batch delete failed: ${error.message}` : "Batch deleted.");
+      const { error } = await supabase.from("product_batches").update({ deleted_at: now }).eq("id", batchId);
+      setMessage(error ? `Batch delete failed: ${error.message}` : "Batch moved to Recycle Bin.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingBatch?.id === batchId) {
         setEditingBatch(null);
       }
-      await loadSupabaseData();
+      if (!error) {
+        await loadSupabaseData();
+      }
       return;
     }
-    setLabState((current) => ({ ...current, batches: current.batches.filter((batch) => batch.id !== batchId) }));
+    const record = labState.batches.find((batch) => batch.id === batchId);
+    const label = record ? buildDeletedLabel("batch", record, productName) : "Batch";
+    setLabState((current) => softDeleteFromState(current, "batch", batchId, label, now));
     if (editingBatch?.id === batchId) {
       setEditingBatch(null);
     }
-    setMessage("Batch deleted locally.");
+    setMessage("Batch moved to Recycle Bin.");
     setMessageTone("good");
   }
 
@@ -950,22 +966,27 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   }
 
   async function deleteSupply(supplyId: string) {
+    const now = new Date().toISOString();
     if (supabase && session) {
-      const { error } = await supabase.from("supply_entries").delete().eq("id", supplyId);
-      setMessage(error ? `Supply delete failed: ${error.message}` : "Supply deleted.");
+      const { error } = await supabase.from("supply_entries").update({ deleted_at: now }).eq("id", supplyId);
+      setMessage(error ? `Supply delete failed: ${error.message}` : "Supply moved to Recycle Bin.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingSupply?.id === supplyId) {
         setEditingSupply(null);
       }
-      await loadSupabaseData();
+      if (!error) {
+        await loadSupabaseData();
+      }
       return;
     }
 
-    setLabState((current) => ({ ...current, supplies: current.supplies.filter((entry) => entry.id !== supplyId) }));
+    const record = labState.supplies.find((entry) => entry.id === supplyId);
+    const label = record ? buildDeletedLabel("supply", record, productName) : "Supply";
+    setLabState((current) => softDeleteFromState(current, "supply", supplyId, label, now));
     if (editingSupply?.id === supplyId) {
       setEditingSupply(null);
     }
-    setMessage("Supply deleted locally.");
+    setMessage("Supply moved to Recycle Bin.");
     setMessageTone("good");
   }
 
@@ -1370,22 +1391,27 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   }
 
   async function deleteEquipment(equipmentId: string) {
+    const now = new Date().toISOString();
     if (supabase && session) {
-      const { error } = await supabase.from("equipment").delete().eq("id", equipmentId);
-      setMessage(error ? `Equipment delete failed: ${error.message}` : "Equipment deleted.");
+      const { error } = await supabase.from("equipment").update({ deleted_at: now }).eq("id", equipmentId);
+      setMessage(error ? `Equipment delete failed: ${error.message}` : "Equipment moved to Recycle Bin.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingEquipment?.id === equipmentId) {
         setEditingEquipment(null);
       }
-      await loadSupabaseData();
+      if (!error) {
+        await loadSupabaseData();
+      }
       return;
     }
 
-    setLabState((current) => ({ ...current, equipment: current.equipment.filter((entry) => entry.id !== equipmentId) }));
+    const record = labState.equipment.find((entry) => entry.id === equipmentId);
+    const label = record ? buildDeletedLabel("equipment", record, productName) : "Equipment";
+    setLabState((current) => softDeleteFromState(current, "equipment", equipmentId, label, now));
     if (editingEquipment?.id === equipmentId) {
       setEditingEquipment(null);
     }
-    setMessage("Equipment deleted locally.");
+    setMessage("Equipment moved to Recycle Bin.");
     setMessageTone("good");
   }
 
@@ -1437,15 +1463,20 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   }
 
   async function deleteTasting(tastingId: string) {
+    const now = new Date().toISOString();
     if (supabase && session) {
-      const { error } = await supabase.from("tasting_feedback").delete().eq("id", tastingId);
-      setMessage(error ? `Feedback delete failed: ${error.message}` : "Feedback deleted.");
+      const { error } = await supabase.from("tasting_feedback").update({ deleted_at: now }).eq("id", tastingId);
+      setMessage(error ? `Feedback delete failed: ${error.message}` : "Feedback moved to Recycle Bin.");
       setMessageTone(error ? "bad" : "good");
-      await loadSupabaseData();
+      if (!error) {
+        await loadSupabaseData();
+      }
       return;
     }
-    setLabState((current) => ({ ...current, tastings: current.tastings.filter((entry) => entry.id !== tastingId) }));
-    setMessage("Feedback deleted locally.");
+    const record = labState.tastings.find((entry) => entry.id === tastingId);
+    const label = record ? buildDeletedLabel("tasting", record, productName) : "Tasting feedback";
+    setLabState((current) => softDeleteFromState(current, "tasting", tastingId, label, now));
+    setMessage("Feedback moved to Recycle Bin.");
     setMessageTone("good");
   }
 
@@ -1496,21 +1527,62 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
   }
 
   async function deleteJournal(journalId: string) {
+    const now = new Date().toISOString();
     if (supabase && session) {
-      const { error } = await supabase.from("content_journal").delete().eq("id", journalId);
-      setMessage(error ? `Journal delete failed: ${error.message}` : "Journal deleted.");
+      const { error } = await supabase.from("content_journal").update({ deleted_at: now }).eq("id", journalId);
+      setMessage(error ? `Journal delete failed: ${error.message}` : "Journal moved to Recycle Bin.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingJournal?.id === journalId) {
         setEditingJournal(null);
       }
-      await loadSupabaseData();
+      if (!error) {
+        await loadSupabaseData();
+      }
       return;
     }
-    setLabState((current) => ({ ...current, journal: current.journal.filter((entry) => entry.id !== journalId) }));
+    const record = labState.journal.find((entry) => entry.id === journalId);
+    const label = record ? buildDeletedLabel("journal", record, productName) : "Journal entry";
+    setLabState((current) => softDeleteFromState(current, "journal", journalId, label, now));
     if (editingJournal?.id === journalId) {
       setEditingJournal(null);
     }
-    setMessage("Journal deleted locally.");
+    setMessage("Journal moved to Recycle Bin.");
+    setMessageTone("good");
+  }
+
+  // Recycle Bin actions, shared by every deleted-record kind. Restore clears deleted_at (Supabase)
+  // or moves the tombstoned record back into its active array (localStorage); permanent delete does
+  // a real DELETE / drops the tombstone. KIND_TO_TABLE keeps the kind->table mapping in one place.
+  async function restoreRecord(record: DeletedRecord) {
+    if (supabase && session) {
+      const { error } = await supabase.from(KIND_TO_TABLE[record.kind]).update({ deleted_at: null }).eq("id", record.id);
+      setMessage(error ? `Restore failed: ${error.message}` : `Restored ${record.label}.`);
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        await loadSupabaseData();
+      }
+      return;
+    }
+    setLabState((current) => restoreToState(current, record.id));
+    setMessage(`Restored ${record.label}.`);
+    setMessageTone("good");
+  }
+
+  async function purgeRecord(record: DeletedRecord) {
+    if (!window.confirm(`Permanently delete ${record.label}? This cannot be undone.`)) {
+      return;
+    }
+    if (supabase && session) {
+      const { error } = await supabase.from(KIND_TO_TABLE[record.kind]).delete().eq("id", record.id);
+      setMessage(error ? `Delete failed: ${error.message}` : `Permanently deleted ${record.label}.`);
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        await loadSupabaseData();
+      }
+      return;
+    }
+    setLabState((current) => purgeFromState(current, record.id));
+    setMessage(`Permanently deleted ${record.label}.`);
     setMessageTone("good");
   }
 
@@ -1633,6 +1705,7 @@ export default function ProductLab({ view = "dashboard" }: { view?: LabView }) {
           {view === "launch" ? <LaunchOfferBuilder labState={labState} /> : null}
 
           {view === "content-studio" ? <ContentStudio labState={labState} /> : null}
+          {view === "recycle-bin" ? <RecycleBinPage labState={labState} purgeRecord={purgeRecord} restoreRecord={restoreRecord} /> : null}
 
           {view === "guide" ? <OperatingGuide labState={labState} /> : null}
     </AppShell>
@@ -3423,6 +3496,55 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
         ))}
       </div>
     </div>
+  );
+}
+
+function RecycleBinPage({
+  labState,
+  purgeRecord,
+  restoreRecord,
+}: {
+  labState: LabState;
+  purgeRecord: (record: DeletedRecord) => void;
+  restoreRecord: (record: DeletedRecord) => void;
+}) {
+  const kindLabels: Record<DeletedRecordKind, string> = {
+    batch: "Proof batch",
+    supply: "Supply",
+    equipment: "Equipment",
+    tasting: "Tasting feedback",
+    journal: "Journal entry",
+  };
+  const records = labState.deletedRecords;
+
+  return (
+    <section className="grid gap-5">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white">
+        <div className="border-b border-[#eaded2] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Recycle Bin</p>
+          <h3 className="mt-1 text-xl font-semibold">Recently deleted</h3>
+          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Restore a record to bring it back exactly as it was, or delete it forever. Covers proof batches, supplies, equipment, tasting feedback, and journal entries. (Costing, ingredients/inventory, and photos aren&apos;t covered yet.)</p>
+        </div>
+        <div className="divide-y divide-[#f0e4d8]">
+          {records.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">Nothing deleted. When you delete a record, it lands here so you can recover it.</p> : null}
+          {records.map((record) => (
+            <article className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between" key={`${record.kind}-${record.id}`}>
+              <div>
+                <p className="font-semibold">{record.label}</p>
+                <p className="mt-1 text-sm text-[#6f5a4c]">
+                  {kindLabels[record.kind]}
+                  {record.deletedAt ? ` · deleted ${new Date(record.deletedAt).toLocaleString()}` : ""}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button className="h-9 rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" onClick={() => restoreRecord(record)} type="button">Restore</button>
+                <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => purgeRecord(record)} type="button">Delete forever</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 

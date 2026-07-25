@@ -1,4 +1,4 @@
-import type { AiReviewRecord, BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, ProductBatch, PurchaseImport, PurchaseImportRow, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { AiReviewRecord, BatchPhoto, ContentJournalEntry, CostingEntry, CostingSummary, DeletedRecord, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, ProductBatch, PurchaseImport, PurchaseImportRow, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -17,6 +17,7 @@ export type LabView =
   | "admin"
   | "launch"
   | "content-studio"
+  | "recycle-bin"
   | "guide";
 
 export const navItems: Array<{ label: string; href: string; view: LabView }> = [
@@ -32,6 +33,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Product Admin", href: "/admin", view: "admin" },
   { label: "Launch Offer", href: "/launch", view: "launch" },
   { label: "Content Studio", href: "/content-studio", view: "content-studio" },
+  { label: "Recycle Bin", href: "/recycle-bin", view: "recycle-bin" },
   { label: "How To Use", href: "/guide", view: "guide" },
 ];
 
@@ -52,6 +54,7 @@ export type LabState = {
   tastings: TastingFeedback[];
   journal: ContentJournalEntry[];
   aiReviews: AiReviewRecord[];
+  deletedRecords: DeletedRecord[];
 };
 
 export const emptyState: LabState = {
@@ -69,6 +72,7 @@ export const emptyState: LabState = {
   tastings: [],
   journal: [],
   aiReviews: [],
+  deletedRecords: [],
 };
 
 // Evaluated at call time, not once at module load: a computed-at-import constant goes stale in a

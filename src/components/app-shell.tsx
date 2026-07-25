@@ -19,6 +19,7 @@ const titles = {
   admin: "Product admin",
   launch: "Launch offer builder",
   "content-studio": "Content studio",
+  "recycle-bin": "Recycle Bin",
   guide: "How to use Product Lab",
 };
 

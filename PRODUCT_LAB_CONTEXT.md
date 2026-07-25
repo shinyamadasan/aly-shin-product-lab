@@ -294,6 +294,20 @@ Should eventually include:
 - What is missing.
 - Next best action.
 
+### Recycle Bin
+
+Purpose: recover accidentally deleted records.
+
+Deleting a record is a soft delete — it moves to the Recycle Bin instead of being erased, and can be
+**Restored** or **Deleted forever** there. In Supabase mode this is a `deleted_at` timestamp
+(run `supabase-add-recycle-bin.sql` once); in localStorage mode the record is parked in a
+`deletedRecords` bucket. Deleted records are hidden from every normal view.
+
+v1 covers single-row user records: **proof batches, supplies, equipment, tasting feedback, and
+journal entries**. Not yet covered (still hard-deleted): **costing** (two-table scoped delete),
+**ingredients/inventory**, **batch photos**, and AI reviews — documented so it's a known gap, not a
+silent inconsistency.
+
 ## Current Known Frictions To Avoid
 
 - Do not make users click a button for math that can update automatically.

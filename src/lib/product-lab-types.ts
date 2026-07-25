@@ -1,3 +1,18 @@
+// The record types the Recycle Bin (soft delete) covers in v1 -- single-row user records only.
+// Costing, ingredients/inventory, and batch photos are intentionally not covered yet.
+export type DeletedRecordKind = "batch" | "supply" | "equipment" | "tasting" | "journal";
+
+// A soft-deleted record awaiting restore or permanent removal. `label` is a human name for the bin
+// list. `data` carries the full original record so localStorage mode can put it back exactly; it is
+// omitted for Supabase-loaded tombstones, which restore by clearing deleted_at on the row by id.
+export type DeletedRecord = {
+  id: string;
+  kind: DeletedRecordKind;
+  label: string;
+  deletedAt: string;
+  data?: ProductBatch | SupplyEntry | EquipmentEntry | TastingFeedback | ContentJournalEntry;
+};
+
 export type ProductStatus = "testing" | "costed" | "tasting" | "launch_candidate" | "paused";
 
 export type ProductRole =
