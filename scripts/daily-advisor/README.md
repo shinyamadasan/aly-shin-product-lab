@@ -94,24 +94,31 @@ pwsh ./daily-advisor.ps1 -Source sample -SkipClaude
 
 ## Scheduling
 
-Not registered automatically by this implementation -- register it yourself once you're happy
-with a few manual runs (matches `run-claude.ps1`'s own "watch one run before enabling" caution).
-Recommended: **9:00 AM Asia/Manila**, Windows Task Scheduler:
+**Registered.** Task Scheduler triggers fire in the *scheduling machine's local OS timezone*
+(Task Scheduler has no timezone concept of its own) -- this machine is confirmed set to
+**Arizona time (`US Mountain Standard Time`, UTC-7, no DST)**, not Asia/Manila (UTC+8), a 15-hour
+offset. Verified with `Get-TimeZone` before registering, after almost registering the naive
+`9:00AM` value below and having it silently fire at 9:00 AM *Arizona* -- i.e. midnight Manila,
+not the intended morning run. **9:00 AM Asia/Manila = 6:00 PM the previous day, Arizona time.**
 
 ```
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
   -Argument '-NonInteractive -ExecutionPolicy Bypass -File "C:\Users\Admin\Desktop\Vibe code\Coffee and Bakery business\05_App_And_Tech\aly-shin-product-lab\daily-advisor.ps1" -Source supabase'
-$trigger = New-ScheduledTaskTrigger -Daily -At "9:00AM"
+# 6:00 PM Arizona (UTC-7) = 9:00 AM Manila (UTC+8) the next calendar day.
+$trigger = New-ScheduledTaskTrigger -Daily -At "6:00PM"
 Register-ScheduledTask -TaskName "Aly & Shin Product Lab Daily Advisor" -Action $action -Trigger $trigger `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew) `
-  -Description "Generates the daily Product Lab briefing and publishes it to automation/daily-advisor."
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun) `
+  -Description "Generates the daily Product Lab briefing (9:00 AM Asia/Manila = 6:00 PM Arizona previous day) and publishes it to automation/daily-advisor."
 ```
 
-Note the trigger time is in the *scheduling machine's local OS timezone* (Task Scheduler has no
-timezone concept of its own) -- if the machine's OS timezone is already Asia/Manila, `9:00AM`
-above is correct as written; otherwise adjust the `-At` value so it fires at 9:00 AM Manila time.
-This is separate from `-Timezone`/`ADVISOR_TIMEZONE`, which only controls what calendar date the
-*briefing* is dated for, not when the task fires.
+`-WakeToRun` is included deliberately: this is meant to run genuinely unattended now, so a
+sleeping PC should wake for it rather than silently skip the day.
+
+**If you ever run this setup on a different machine**, don't reuse `6:00PM` blindly -- check that
+machine's real timezone first (`Get-TimeZone` in PowerShell) and recompute the offset from
+Asia/Manila (UTC+8). This is separate from `-Timezone`/`ADVISOR_TIMEZONE`, which only controls
+what calendar date the *briefing* is dated for (always computed correctly regardless of the host
+machine's timezone), not when the task fires.
 
 Idempotent by design: if `daily-advisor/output/YYYY-MM-DD.md` (for "today" in the configured
 timezone) already exists, a run without `-Force` logs and exits 0 without touching Supabase,
@@ -147,18 +154,87 @@ feature-branch work is never touched, staged, or blocked by this.
 
 ## Consuming the briefing (n8n / GitHub raw)
 
-Same pattern already used by `n8n-telegram-digest.json` for the AI-DEV-OS proposal digest --
-GitHub's raw-content API, pointed at the artifact branch instead of `main`:
+`../../n8n-telegram-daily-advisor.json` (repo root) is the delivery workflow, structurally cloned
+from `n8n-telegram-digest.json`'s proven shape (same credential names, same node types/versions,
+same raw-content GitHub fetch pattern) but reading from the **dated** file, not `latest.md`:
 
 ```
-GET https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/daily-advisor/output/latest.md?ref=automation/daily-advisor
+GET https://api.github.com/repos/shinyamadasan/aly-shin-product-lab/contents/daily-advisor/output/{today in Asia/Manila, YYYY-MM-DD}.md?ref=automation/daily-advisor
 Accept: application/vnd.github.raw
 ```
 
-No n8n workflow JSON was created in this implementation (out of scope for this pass) -- cloning
-`n8n-telegram-digest.json` with the URL above and a new schedule is the remaining step whenever
-you want it delivered to Telegram. The worker itself never holds a Telegram credential or makes an
-outbound call beyond Supabase and the local `claude` binary.
+**`latest.md` is deliberately not used for scheduled delivery.** An earlier draft of this workflow
+fetched `latest.md` and gated sending on a placeholder-text check -- an independent pre-import
+review found that design had no freshness protection: if the worker failed or never ran on a
+given day, `latest.md` still holds a real, non-placeholder briefing from whenever it last
+succeeded, and that stale content would pass the placeholder check and get sent as if current.
+Fetching the Asia/Manila-dated file instead closes this by construction: **no dated file for
+today means the GitHub node 404s, the workflow halts there (default n8n behavior -- no
+`continueOnFail` is set), and nothing is sent** -- not a stale resend, not a placeholder message.
+This is computed with an explicit-timezone n8n expression,
+`{{ $now.setZone('Asia/Manila').toFormat('yyyy-LL-dd') }}`, which does not depend on or inherit
+whatever timezone the n8n host/instance itself happens to be configured with.
+
+The workflow has three nodes after the schedule trigger: the GitHub fetch above, a **Code node**
+("Prepare Telegram message chunks") that splits the raw markdown into pieces safely under
+Telegram's 4096-character limit (paragraph boundaries preferred, then line boundaries, hard
+character splitting only as a last resort -- never drops content, labels each piece `Daily
+Advisor (i/N)` only when there's more than one), and the Telegram send itself -- which n8n runs
+once per chunk automatically, in order. Telegram `parse_mode` is deliberately left unset (plain
+text): neither this workflow nor the proven Digest workflow escapes special Markdown characters
+before interpolating free text, and this briefing includes Claude's unconstrained AI note, which
+is more likely than the Digest's templated content to contain a character that breaks Markdown
+parsing outright.
+
+Import it into n8n and follow the Deployment Checklist below (credentials, the manual-test
+sequence, the Error Workflow step) **while leaving it inactive** -- activation is its own explicit
+step, only after a real Supabase briefing has actually been published and manually verified. Not
+yet imported or activated by this change. The worker itself never holds a Telegram credential or
+makes an outbound call beyond Supabase and the local `claude` binary -- n8n owns delivery
+entirely. Also not done by this file: n8n's per-workflow Error Workflow setting isn't portable
+through JSON import/export, so pointing this workflow at the existing
+`[Aly & Shin Product Lab] Error Alert -> Telegram` workflow (the same alerting the other three
+`n8n-telegram-*.json` workflows already use) has to be set by hand in the n8n UI after import.
+
+## Deployment checklist
+
+Do these in order. The workflow stays **inactive** in n8n until the last step.
+
+1. **Run the worker once for real** against Supabase (`npm run advisor`, or
+   `pwsh ./daily-advisor.ps1 -Source supabase`) and confirm today's dated file --
+   `daily-advisor/output/YYYY-MM-DD.md`, not just `latest.md` -- exists on the
+   `automation/daily-advisor` branch.
+2. **Import `n8n-telegram-daily-advisor.json`** into n8n.
+3. **Configure credentials** on both nodes that need them: the GitHub fetch node's
+   `GitHub PAT - Aly & Shin Product Lab` credential (Contents: read on this repo -- reusable as-is
+   from the Morning Digest workflow), and both Telegram send nodes' `Telegram Bot - Aly & Shin
+   Product Lab` credential.
+4. **Set both chat IDs** -- replace `REPLACE_WITH_YOUR_TELEGRAM_USER_ID` and
+   `REPLACE_WITH_WIFE_TELEGRAM_USER_ID` on the two Telegram nodes with real numeric Telegram user
+   IDs (findable via a bot like @userinfobot, or from this workflow's own execution data after a
+   recipient messages the bot). Your wife must have sent the bot at least one message (e.g.
+   `/start`) before her chat ID will work -- a bot cannot message a chat that hasn't contacted it
+   first.
+5. **Verify the n8n server's own timezone against the Schedule Trigger.** The GitHub-fetch node's
+   date expression (`$now.setZone('Asia/Manila')`) is timezone-explicit and needs no adjustment,
+   but the Schedule Trigger's cron (`20 9 * * *`) fires in whatever timezone the n8n
+   server/instance itself is configured in -- confirm that resolves to after 9:00 AM Asia/Manila,
+   or set an explicit timezone on the Schedule Trigger node if your n8n version supports one.
+   Unlike the Windows-side trigger (step 8), this has not been separately verified.
+6. **Set the Error Workflow.** In the n8n UI, set this workflow's Error Workflow to the existing
+   `[Aly & Shin Product Lab] Error Alert -> Telegram` workflow -- not portable through JSON
+   import/export, so this must be set by hand every time the workflow is (re-)imported.
+7. **Manual test run.** With the workflow still inactive, use n8n's "Execute workflow" to run it
+   once by hand. Confirm both recipients receive the Telegram message(s), the content reads
+   correctly, and -- if the briefing was long enough to split -- the `(i/N)` chunk numbering on
+   each recipient's messages is correct and complete.
+8. **Confirm the Windows Task Scheduler registration**, independently of the workflow above:
+   `schtasks /query /tn "Aly & Shin Product Lab Daily Advisor" /v /fo list` (or
+   `Get-ScheduledTask` in PowerShell) and check the trigger time, the exact command line, and that
+   `WakeToRun` is set. This confirms registration, not that it has fired -- Task Scheduler's own
+   "Last Run Time"/"Last Result" fields (or `Get-ScheduledTaskInfo`) show a real prior run only
+   after the trigger has actually fired at least once.
+9. **Only then activate** the n8n workflow on its schedule.
 
 ## Environment variables (`.env.advisor.local`)
 
