@@ -1,39 +1,36 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
 Date: 2026-07-25 (Asia/Manila)
-Product catalog: Sample fixtures
-Operational data: Sample fixtures
-_Sample data mode -- this briefing reflects synthetic fixture data, not real business activity._
+Product catalog: Static application data
+Operational data: Supabase
 
 ## Portfolio summary
-27 active findings across the portfolio. 0 product(s) need no action today.
+33 active findings across the portfolio. 0 product(s) need no action today.
 
 ## Highest-priority product
-**Brownies** -- FIN-001: Cost per piece is PHP 51.88 -- current price loses money (-3.8% margin).
-Recommendation: Raise the price to at least PHP 51.88 (breakeven), or reduce a cost driver.
+**Brownies** -- QUAL-005: V3 contains Dari Creme Butter Milk (time/temperature-sensitive) with no stated cold-chain or time-limit plan.
+Recommendation: State and test an explicit cold-chain or time-limit plan before this product goes anywhere near a real customer.
 
 ## Up to 3 actions for today
-1. **Brownies** (FIN-001): Raise the price to at least PHP 51.88 (breakeven), or reduce a cost driver.
-2. **Revel Bars** (DEV-001): Run a real kitchen test and log it on Proof Day.
-3. **Burnt Cheesecake** (DEV-001): Run a real kitchen test and log it on Proof Day.
+1. **Brownies** (QUAL-005): State and test an explicit cold-chain or time-limit plan before this product goes anywhere near a real customer.
+2. **Brownies** (FIN-001): Raise the price to at least PHP 40.28 (breakeven), or reduce a cost driver.
+3. **Brownies** (FIN-005): Enter a selling price on the Costing page.
 
 ## Important warnings
+- **Brownies**: Labor cost is PHP 0 -- either this product genuinely takes no paid time, or it hasn't been captured yet.
 - **Brownies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
-- **Cookies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
 - **Brownies**: Break-even can't be calculated -- the selling price doesn't cover variable cost per piece.
-- **Cookies**: Only one tasting checkpoint logged -- no later-timepoint check yet.
-- **Brownies**: Packaging cost is PHP 10.00 but no test note confirms it holds up under real delivery/storage conditions.
-- **Cookies**: Packaging cost is PHP 5.00 but no test note confirms it holds up under real delivery/storage conditions.
+- **Brownies**: Only one tasting checkpoint logged -- no later-timepoint check yet.
 
 ## Active experiments
-- **Brownies** (lacks recent observations): Latest batch SAMPLE-V1 (made 2026-07-01) has no tasting feedback recorded yet.
+- **Brownies** (active, no due-date data available): Latest batch V3 is marked for retest -- still an active experiment.
 
 ## Products needing no action
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-The Brownies cost issue is the most urgent because selling at a loss means every unit sold actively weakens the business — it's a foundational viability problem that has to be resolved before any growth or promotion effort makes sense.
+Cold-chain gaps are the kind of problem that only becomes visible after a customer gets sick — by then, trust is gone and the product may need to be pulled. Dairy ingredients like Dari Creme Butter Milk behave predictably, but only if you define the rules first: how long is safe at room temperature, what happens in transit, when does a batch get discarded.
 
-For sequencing: tackle the Brownies pricing decision first, since it requires no kitchen time — just a cost or price adjustment. Then batch the Revel Bars and Burnt Cheesecake kitchen tests into the same Proof Day session to make the most of one setup.
+On sequencing: fix the food-safety gap first (QUAL-005), then the price floor (FIN-001) — pricing a product that isn't safe to sell is wasted effort. FIN-005 follows naturally once you've confirmed a viable price.
 
-AI suggestion: While the kitchen is already running for those two tests, log a quick tasting note for the existing Brownies batch at the same time — it closes that open observation gap without adding a separate session.
+AI suggestion: Document your cold-chain plan in the same experiment log you're already using for tasting checkpoints — one place to review before any customer handoff.
