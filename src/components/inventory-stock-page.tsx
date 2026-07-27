@@ -2,6 +2,7 @@ import { Boxes } from "lucide-react";
 import { getToday, type LabState } from "@/lib/lab-state";
 import { getInventoryValue } from "@/lib/inventory-cost";
 import { getExpirationStatus, getStockStatus } from "@/lib/inventory-status";
+import { getPurchaseHistoryForItem } from "@/lib/purchase-history";
 import { expirationStatusLabel, expirationStatusTone, stockStatusLabel, stockStatusTone } from "@/components/inventory-page";
 import { Tag } from "@/components/ui";
 
@@ -38,11 +39,12 @@ export function InventoryStockPage({ goToManageItems, labState }: { goToManageIt
                 const status = getStockStatus(item);
                 const expirationStatus = getExpirationStatus(item.nearestExpirationDate, getToday());
                 const value = getInventoryValue(item);
+                const latestBrand = getPurchaseHistoryForItem(item, labState.supplies)[0]?.brandName.trim() ?? "";
                 return (
                   <article className="grid grid-cols-[minmax(220px,1fr)_120px_120px_150px] items-center gap-4 px-5 py-3 text-sm" key={item.id}>
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="font-semibold">{item.name}</h4>
+                        <h4 className="font-semibold">{latestBrand ? `${latestBrand} - ${item.name}` : item.name}</h4>
                         <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag>
                         {expirationStatus !== "none" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}
                       </div>
