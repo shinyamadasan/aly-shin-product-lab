@@ -21,6 +21,10 @@ export type ProductBatch = {
   id: string;
   productId: string;
   batchVersion: string;
+  status?: "draft" | "completed" | "voided" | "";
+  completedAt?: string;
+  voidedAt?: string;
+  voidReason?: string;
   dateMade: string;
   ingredientsNotes: string;
   prepTimeMinutes: number;
@@ -80,6 +84,7 @@ export type CostingIngredientRow = CostingEntry & { brandName: string; isManualC
 
 export type SupplyEntry = {
   id: string;
+  ingredientId: string;
   ingredientName: string;
   brandName: string;
   supplierName: string;
@@ -148,10 +153,15 @@ export type AiReviewRecord = {
 
 export type IngredientBaseUnit = "g" | "kg" | "ml" | "L" | "pcs";
 
+// Deliberately excludes "equipment" -- Equipment already has its own table and workflow. "" means
+// not set (existing ingredients read this way until edited; no backfill).
+export type IngredientCategory = "ingredient" | "packaging" | "consumable" | "other";
+
 export type Ingredient = {
   id: string;
   name: string;
   baseUnit: IngredientBaseUnit;
+  category: IngredientCategory | "";
   currentQuantity: number;
   lowStockThreshold: number;
   targetStockQuantity: number;
@@ -159,9 +169,13 @@ export type Ingredient = {
   averageUnitCost: number;
   notes: string;
   isActive: boolean;
+  archivedAt?: string;
 };
 
-export type MatchMethod = "alias" | "exact" | "normalized" | "manual" | "none";
+// "suggested" is a strong partial-name match -- unlike every other method here, it never resolves
+// a row to "matched" on its own. It only pre-fills the ingredient picker; the operator still has
+// to confirm it, the same way an unmatched row would otherwise require a manual pick.
+export type MatchMethod = "alias" | "exact" | "normalized" | "suggested" | "manual" | "none";
 
 export type IngredientAlias = {
   id: string;
@@ -180,6 +194,13 @@ export type PurchaseImport = {
   importedAt: string;
   rowCount: number;
   totalValue: number;
+  // Receipt-level metadata: usually one CSV upload is one receipt, so these are entered once (in
+  // the wizard's header block, auto-filled from the first row) and apply to every row -- but each
+  // row still carries its own raw value (see PurchaseImportRow) for the CSV that genuinely mixes
+  // receipts.
+  supplierName: string;
+  receiptNumber: string;
+  purchaseDate: string;
 };
 
 export type PurchaseImportRowStatus = "pending" | "matched" | "excluded" | "invalid";
@@ -189,16 +210,40 @@ export type PurchaseImportRow = {
   importId: string;
   rowIndex: number;
   rawItemName: string;
+  rawBrand: string;
   rawQuantity: string;
   rawUnit: string;
   rawTotalPrice: string;
   rawExpirationDate: string;
+  // Package-based CSVs (package_count x package_size package_unit @ unit_price) populate these
+  // instead of rawQuantity/rawUnit/rawTotalPrice; a flat CSV (quantity/unit/total_price, today's
+  // format) leaves them blank and keeps working exactly as before -- see buildPurchaseImportRowDrafts.
+  rawPackageCount: string;
+  rawPackageSize: string;
+  rawPackageUnit: string;
+  rawUnitPrice: string;
+  rawCategory: string;
+  rawSupplier: string;
+  rawReceiptNumber: string;
+  rawPurchaseDate: string;
   parsedQuantity: number;
   parsedTotalPrice: number;
   parsedExpirationDate: string;
+  parsedPackageCount: number;
+  parsedPackageSize: number;
+  parsedUnitPrice: number;
   ingredientId: string;
   matchMethod: MatchMethod;
   convertedQuantity: number;
+  // True once the operator has hand-edited "Inventory Added" directly -- once set, a later edit to
+  // package count/size stops recomputing convertedQuantity for this row, the same "manual wins"
+  // rule Costing already uses for cost overrides.
+  isQuantityOverridden: boolean;
+  // Purchase-level, not ingredient-level (see PROP-010 in planning/PROPOSALS.md for why): prefilled
+  // only when every existing SupplyEntry for the matched ingredient agrees on one brand, left blank
+  // (and required before confirming) otherwise. Every confirmed row creates a SupplyEntry, and a
+  // SupplyEntry with an empty brand is never allowed to leave the importer.
+  brandName: string;
   rowStatus: PurchaseImportRowStatus;
   excludeReason: string;
   validationErrors: string;

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
 import { FormPanel, MessageBox, SecondaryButton, Textarea } from "@/components/ui";
-import type { AiAction, AiReviewRecord, CostingSummary, Product, ProductBatch, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, AiReviewRecord, CostingSummary, Ingredient, Product, ProductBatch, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AI_ACTIONS, generateAdvisorPrompt } from "@/services/ai/advisor";
 import { SPECIALISTS } from "@/services/ai/specialists";
 import type { AiPromptResult } from "@/services/ai/types";
@@ -15,6 +15,7 @@ export function AiAdvisorPanel({
   batches,
   costings,
   deleteReview,
+  ingredients,
   isTableMissing,
   product,
   reviews,
@@ -25,6 +26,7 @@ export function AiAdvisorPanel({
   batches: ProductBatch[];
   costings: CostingSummary[];
   deleteReview: (reviewId: string) => void;
+  ingredients: Ingredient[];
   isTableMissing: boolean;
   product: Product;
   reviews: AiReviewRecord[];
@@ -39,7 +41,7 @@ export function AiAdvisorPanel({
   const latestBatchId = batches.find((batch) => batch.productId === product.id)?.id ?? "";
 
   function runAction(action: AiAction, now: number) {
-    const context = { batches, costings, now, supplies, tastings };
+    const context = { batches, costings, ingredients, now, supplies, tastings };
     setActiveResult(generateAdvisorPrompt(action, product, context));
     setResponseDraft("");
     setCopyStatus("idle");

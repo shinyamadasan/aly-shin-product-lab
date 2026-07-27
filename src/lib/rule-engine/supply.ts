@@ -1,6 +1,6 @@
 import { type BatchFormulaRow, parseBatchIngredients } from "../batches.ts";
-import { getMatchingSupplies, getSupplySortTime } from "../supplies.ts";
-import type { Product, ProductBatch, SupplyEntry } from "../product-lab-types.ts";
+import { getMatchingPurchaseHistoryForIngredient, getSupplySortTime } from "../supplies.ts";
+import type { Ingredient, Product, ProductBatch, SupplyEntry } from "../product-lab-types.ts";
 import { getLatestBatch, insufficientDataResult, type RuleEngineContext, type RuleResult } from "./types.ts";
 
 const CATEGORY = "supply" as const;
@@ -16,13 +16,17 @@ function loadBearingIngredients(formula: BatchFormulaRow[]): BatchFormulaRow[] {
 // SUP-001: missing supplier. Flags a formula ingredient with zero matching supply records --
 // reuses getMatchingSupplies exactly as Costing's auto-selection does, so this rule and the
 // live Costing form can never disagree about what counts as a match.
-function evaluateMissingSupplier(formula: BatchFormulaRow[], supplies: SupplyEntry[]): RuleResult {
-  const ingredients = loadBearingIngredients(formula);
-  if (ingredients.length === 0) {
+function getFormulaPurchases(row: BatchFormulaRow, supplies: SupplyEntry[], ingredients: Ingredient[]) {
+  return getMatchingPurchaseHistoryForIngredient(supplies, ingredients, { ingredientName: row.ingredient }, row.brand, row.unit);
+}
+
+function evaluateMissingSupplier(formula: BatchFormulaRow[], supplies: SupplyEntry[], ingredients: Ingredient[]): RuleResult {
+  const formulaRows = loadBearingIngredients(formula);
+  if (formulaRows.length === 0) {
     return insufficientDataResult("SUP-001", CATEGORY, "blocker", "No formula logged yet.", "Record a proof batch with a formula first.");
   }
 
-  const missing = ingredients.filter((row) => getMatchingSupplies(supplies, row.brand, row.ingredient, row.unit).length === 0);
+  const missing = formulaRows.filter((row) => getFormulaPurchases(row, supplies, ingredients).length === 0);
   const passed = missing.length === 0;
   return {
     id: "SUP-001",
@@ -30,23 +34,23 @@ function evaluateMissingSupplier(formula: BatchFormulaRow[], supplies: SupplyEnt
     severity: "blocker",
     passed,
     message: passed ? "Every formula ingredient has a matching supply record." : `No supply record matches: ${missing.map((row) => row.ingredient).join(", ")}.`,
-    recommendation: passed ? "No action needed." : "Log a real purchase in Supplies for each missing ingredient, or confirm a manual cost override is intentional.",
+    recommendation: passed ? "No action needed." : "Log a real purchase in Purchases for each missing ingredient, or confirm a manual cost override is intentional.",
   };
 }
 
 // SUP-002: ingredient unavailable. Flags a load-bearing ingredient whose most recent matching
 // purchase is older than a reasonable staleness window. `now` comes from the caller (see
 // RuleEngineContext) -- never read from the system clock here, so this stays pure.
-function evaluateIngredientUnavailable(formula: BatchFormulaRow[], supplies: SupplyEntry[], now: number): RuleResult {
-  const ingredients = loadBearingIngredients(formula);
-  if (ingredients.length === 0) {
+function evaluateIngredientUnavailable(formula: BatchFormulaRow[], supplies: SupplyEntry[], ingredients: Ingredient[], now: number): RuleResult {
+  const formulaRows = loadBearingIngredients(formula);
+  if (formulaRows.length === 0) {
     return insufficientDataResult("SUP-002", CATEGORY, "warning", "No formula logged yet.", "Record a proof batch with a formula first.");
   }
 
   const staleIngredients: string[] = [];
   let anyMatch = false;
-  for (const row of ingredients) {
-    const matches = getMatchingSupplies(supplies, row.brand, row.ingredient, row.unit);
+  for (const row of formulaRows) {
+    const matches = getFormulaPurchases(row, supplies, ingredients);
     const mostRecent = matches[0];
     if (!mostRecent) {
       continue;
@@ -76,13 +80,13 @@ function evaluateIngredientUnavailable(formula: BatchFormulaRow[], supplies: Sup
 // SUP-003: large recent price increase. Needs 2+ historical purchases for the same ingredient
 // to compare -- most home-proofing ingredients won't have this yet, so insufficient data is the
 // common, honest result today.
-function evaluateLargePriceIncrease(formula: BatchFormulaRow[], supplies: SupplyEntry[]): RuleResult {
-  const ingredients = loadBearingIngredients(formula);
+function evaluateLargePriceIncrease(formula: BatchFormulaRow[], supplies: SupplyEntry[], ingredients: Ingredient[]): RuleResult {
+  const formulaRows = loadBearingIngredients(formula);
   const increases: string[] = [];
   let comparablePairsFound = false;
 
-  for (const row of ingredients) {
-    const matches = getMatchingSupplies(supplies, row.brand, row.ingredient, row.unit);
+  for (const row of formulaRows) {
+    const matches = getFormulaPurchases(row, supplies, ingredients);
     if (matches.length < 2) {
       continue;
     }
@@ -112,14 +116,14 @@ function evaluateLargePriceIncrease(formula: BatchFormulaRow[], supplies: Supply
 
 // SUP-004: missing substitute. Informational at this stage -- a single-supplier ingredient is
 // a real flag, not a launch blocker, while the business is still home-proofing.
-function evaluateMissingSubstitute(formula: BatchFormulaRow[], supplies: SupplyEntry[]): RuleResult {
-  const ingredients = loadBearingIngredients(formula);
-  if (ingredients.length === 0) {
+function evaluateMissingSubstitute(formula: BatchFormulaRow[], supplies: SupplyEntry[], ingredients: Ingredient[]): RuleResult {
+  const formulaRows = loadBearingIngredients(formula);
+  if (formulaRows.length === 0) {
     return insufficientDataResult("SUP-004", CATEGORY, "info", "No formula logged yet.", "Record a proof batch with a formula first.");
   }
 
-  const singleSupplier = ingredients.filter((row) => {
-    const matches = getMatchingSupplies(supplies, row.brand, row.ingredient, row.unit);
+  const singleSupplier = formulaRows.filter((row) => {
+    const matches = getFormulaPurchases(row, supplies, ingredients);
     const suppliers = new Set(matches.map((supply) => supply.supplierName));
     return matches.length > 0 && suppliers.size === 1;
   });
@@ -138,11 +142,12 @@ function evaluateMissingSubstitute(formula: BatchFormulaRow[], supplies: SupplyE
 export function evaluateSupply(product: Product, context: RuleEngineContext): RuleResult[] {
   const latestBatch: ProductBatch | undefined = getLatestBatch(context, product);
   const formula = parseBatchIngredients(latestBatch?.ingredientsNotes ?? "");
+  const ingredients = context.ingredients ?? [];
 
   return [
-    evaluateMissingSupplier(formula, context.supplies),
-    evaluateIngredientUnavailable(formula, context.supplies, context.now),
-    evaluateLargePriceIncrease(formula, context.supplies),
-    evaluateMissingSubstitute(formula, context.supplies),
+    evaluateMissingSupplier(formula, context.supplies, ingredients),
+    evaluateIngredientUnavailable(formula, context.supplies, ingredients, context.now),
+    evaluateLargePriceIncrease(formula, context.supplies, ingredients),
+    evaluateMissingSubstitute(formula, context.supplies, ingredients),
   ];
 }

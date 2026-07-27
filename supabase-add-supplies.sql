@@ -1,5 +1,6 @@
 create table if not exists supply_entries (
   id uuid primary key default gen_random_uuid(),
+  ingredient_id uuid,
   ingredient_name text not null,
   brand_name text,
   supplier_name text not null,
@@ -15,6 +16,12 @@ create table if not exists supply_entries (
 
 alter table supply_entries
   add column if not exists brand_name text;
+
+alter table supply_entries
+  add column if not exists ingredient_id uuid;
+
+-- Refresh PostgREST/Supabase's schema cache after additive column changes.
+notify pgrst, 'reload schema';
 
 alter table supply_entries enable row level security;
 

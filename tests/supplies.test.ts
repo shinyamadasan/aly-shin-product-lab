@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAutoCostedIngredientRow, getMatchingSupplies } from "../src/lib/supplies.ts";
-import type { CostingIngredientRow, SupplyEntry } from "../src/lib/product-lab-types.ts";
+import { findReliableBrandForIngredient, findReliableSupplierForIngredient, getAutoCostedIngredientRow, getAutoCostedIngredientRowForItems, getMatchingPurchaseHistoryForIngredient, getMatchingSupplies } from "../src/lib/supplies.ts";
+import type { CostingIngredientRow, Ingredient, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 function supply(overrides: Partial<SupplyEntry> = {}): SupplyEntry {
   return {
     id: crypto.randomUUID(),
+    ingredientId: "",
     ingredientName: "Classic Cocoa Powder",
     brandName: "Beryl's",
     supplierName: "SM Supermarket",
@@ -32,6 +33,23 @@ function ingredientRow(overrides: Partial<CostingIngredientRow> = {}): CostingIn
     cost: 0,
     supplierNote: "",
     rowId: crypto.randomUUID(),
+    ...overrides,
+  };
+}
+
+function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
+  return {
+    id: "cocoa-id",
+    name: "Classic Cocoa Powder",
+    baseUnit: "g",
+    category: "ingredient",
+    currentQuantity: 0,
+    lowStockThreshold: 0,
+    targetStockQuantity: 0,
+    nearestExpirationDate: "",
+    averageUnitCost: 0,
+    notes: "",
+    isActive: true,
     ...overrides,
   };
 }
@@ -124,4 +142,145 @@ test("auto-costing applies the most recent match and records what was selected",
   assert.match(result.supplierNote, /New Supplier/);
   assert.match(result.supplierNote, /2026-06-01/);
   assert.match(result.supplierNote, /PHP 0\.45\/g/);
+});
+
+test("Item-aware auto-costing uses ingredientId despite a different historical ingredientName", () => {
+  const item = ingredient({ id: "cocoa-id", name: "Renamed Cocoa Powder" });
+  const linked = supply({ id: "linked", ingredientId: "cocoa-id", ingredientName: "Classic Cocoa Powder", purchaseDate: "2026-06-01", totalCost: 450, supplierName: "ID Supplier" });
+  const row = ingredientRow({ ingredientName: "Renamed Cocoa Powder" });
+
+  const result = getAutoCostedIngredientRowForItems(row, [linked], [item]);
+
+  assert.equal(result.cost, 11.25);
+  assert.match(result.supplierNote, /ID Supplier/);
+});
+
+test("Item-aware matching applies brand filtering only after Item association", () => {
+  const item = ingredient({ id: "cocoa-id" });
+  const matchingBrand = supply({ id: "match", ingredientId: "cocoa-id", brandName: "Beryl's" });
+  const wrongBrand = supply({ id: "wrong-brand", ingredientId: "cocoa-id", brandName: "Van Houten" });
+  const wrongItem = supply({ id: "wrong-item", ingredientId: "other-id", ingredientName: "Classic Cocoa Powder", brandName: "Beryl's" });
+
+  const matches = getMatchingPurchaseHistoryForIngredient([matchingBrand, wrongBrand, wrongItem], [item], { ingredientName: "Classic Cocoa Powder" }, "Beryl's", "g");
+
+  assert.deepEqual(matches.map((entry) => entry.id), ["match"]);
+});
+
+test("findReliableBrandForIngredient prefills when every record agrees on one brand", () => {
+  const first = supply({ ingredientName: "Dark Chocolate", brandName: "Van Houten", purchaseDate: "2026-01-01" });
+  const second = supply({ ingredientName: "Dark Chocolate", brandName: "Van Houten", purchaseDate: "2026-03-01" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate", [first, second]), "Van Houten");
+});
+
+test("findReliableBrandForIngredient refuses to guess when records disagree on brand", () => {
+  const vanHouten = supply({ ingredientName: "Dark Chocolate", brandName: "Van Houten" });
+  const beryls = supply({ ingredientName: "Dark Chocolate", brandName: "Beryl's" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate", [vanHouten, beryls]), "");
+});
+
+// Regression: real purchase logs commonly spell the same brand differently across separate manual
+// entries. Comparing raw strings (the bug: entry.brandName.trim() with no normalization) counted
+// "Vanhouten" and "Van Houten" as two disagreeing brands and refused to prefill -- even though
+// they're clearly the same brand once normalized. This is exactly the reported symptom: matching
+// succeeded, brand still came up required.
+test("findReliableBrandForIngredient treats differently-spelled entries of the same brand as agreement, not disagreement", () => {
+  const spelling1 = supply({ ingredientName: "Dark Chocolate Compound", brandName: "Vanhouten", purchaseDate: "2026-01-01" });
+  const spelling2 = supply({ ingredientName: "Dark Chocolate Compound", brandName: "Van Houten", purchaseDate: "2026-03-01" });
+  const spelling3 = supply({ ingredientName: "Dark Chocolate Compound", brandName: "VAN HOUTEN", purchaseDate: "2026-02-01" });
+
+  const result = findReliableBrandForIngredient("Dark Chocolate Compound", [spelling1, spelling2, spelling3]);
+
+  assert.notEqual(result, "");
+  // A real spelling from the records, not a normalized/compacted key like "vanhouten".
+  assert.ok(["Vanhouten", "Van Houten", "VAN HOUTEN"].includes(result));
+});
+
+test("findReliableBrandForIngredient returns the most recent entry's brand spelling when spellings vary", () => {
+  const older = supply({ ingredientName: "Dark Chocolate Compound", brandName: "Vanhouten", purchaseDate: "2026-01-01" });
+  const newer = supply({ ingredientName: "Dark Chocolate Compound", brandName: "Van Houten", purchaseDate: "2026-06-01" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate Compound", [older, newer]), "Van Houten");
+});
+
+test("findReliableBrandForIngredient returns empty for an ingredient with no purchase history", () => {
+  const unrelated = supply({ ingredientName: "Fresh Milk", brandName: "Alaska" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate", [unrelated]), "");
+});
+
+test("findReliableBrandForIngredient ignores blank brands when checking for agreement", () => {
+  const withBrand = supply({ ingredientName: "Dark Chocolate", brandName: "Van Houten" });
+  const withoutBrand = supply({ ingredientName: "Dark Chocolate", brandName: "" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate", [withBrand, withoutBrand]), "Van Houten");
+});
+
+test("findReliableBrandForIngredient matches ingredient name case-insensitively", () => {
+  const entry = supply({ ingredientName: "dark chocolate", brandName: "Van Houten" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate", [entry]), "Van Houten");
+});
+
+// A manually-logged SupplyEntry commonly carries the same real-world variance a receipt line
+// does (package size baked in, stray punctuation) -- this must still count as the same ingredient,
+// or the brand-aware suggestion tier in ingredient-matching.ts silently never fires.
+test("findReliableBrandForIngredient tolerates a package-size suffix on the supply record's ingredient name", () => {
+  const entry = supply({ ingredientName: "Dark Chocolate Compound 1kg", brandName: "Vanhouten" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate Compound", [entry]), "Vanhouten");
+});
+
+test("findReliableBrandForIngredient tolerates punctuation differences between the two names", () => {
+  const entry = supply({ ingredientName: "Dark Chocolate, Compound", brandName: "Vanhouten" });
+
+  assert.equal(findReliableBrandForIngredient("Dark Chocolate Compound", [entry]), "Vanhouten");
+});
+
+test("findReliableSupplierForIngredient prefills when every record agrees on one supplier", () => {
+  const first = supply({ ingredientName: "Dark Chocolate", supplierName: "SM Supermarket", purchaseDate: "2026-01-01" });
+  const second = supply({ ingredientName: "Dark Chocolate", supplierName: "SM Supermarket", purchaseDate: "2026-03-01" });
+
+  assert.equal(findReliableSupplierForIngredient("Dark Chocolate", [first, second]), "SM Supermarket");
+});
+
+test("findReliableSupplierForIngredient refuses to guess when records disagree on supplier", () => {
+  const smSupermarket = supply({ ingredientName: "Dark Chocolate", supplierName: "SM Supermarket" });
+  const mainStreetMarket = supply({ ingredientName: "Dark Chocolate", supplierName: "Main Street Market" });
+
+  assert.equal(findReliableSupplierForIngredient("Dark Chocolate", [smSupermarket, mainStreetMarket]), "");
+});
+
+test("findReliableSupplierForIngredient treats case/whitespace differences as agreement, not disagreement", () => {
+  const spelling1 = supply({ ingredientName: "Dark Chocolate", supplierName: "SM Supermarket", purchaseDate: "2026-01-01" });
+  const spelling2 = supply({ ingredientName: "Dark Chocolate", supplierName: "  sm supermarket  ", purchaseDate: "2026-03-01" });
+
+  assert.equal(findReliableSupplierForIngredient("Dark Chocolate", [spelling1, spelling2]), "sm supermarket");
+});
+
+test("findReliableSupplierForIngredient returns the most recent entry's supplier spelling", () => {
+  const older = supply({ ingredientName: "Dark Chocolate", supplierName: "SM Supermarket", purchaseDate: "2026-01-01" });
+  const newer = supply({ ingredientName: "Dark Chocolate", supplierName: "sm supermarket", purchaseDate: "2026-06-01" });
+
+  assert.equal(findReliableSupplierForIngredient("Dark Chocolate", [older, newer]), "sm supermarket");
+});
+
+test("findReliableSupplierForIngredient returns empty for an ingredient with no purchase history", () => {
+  const unrelated = supply({ ingredientName: "Fresh Milk", supplierName: "Alaska Depot" });
+
+  assert.equal(findReliableSupplierForIngredient("Dark Chocolate", [unrelated]), "");
+});
+
+test("findReliableSupplierForIngredient ignores blank suppliers when checking for agreement", () => {
+  const withSupplier = supply({ ingredientName: "Dark Chocolate", supplierName: "SM Supermarket" });
+  const withoutSupplier = supply({ ingredientName: "Dark Chocolate", supplierName: "" });
+
+  assert.equal(findReliableSupplierForIngredient("Dark Chocolate", [withSupplier, withoutSupplier]), "SM Supermarket");
+});
+
+test("findReliableSupplierForIngredient tolerates a package-size suffix on the supply record's ingredient name", () => {
+  const entry = supply({ ingredientName: "Dark Chocolate Compound 1kg", supplierName: "SM Supermarket" });
+
+  assert.equal(findReliableSupplierForIngredient("Dark Chocolate Compound", [entry]), "SM Supermarket");
 });

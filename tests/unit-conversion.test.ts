@@ -27,8 +27,32 @@ test("an unsupported conversion (e.g. pcs into a g-based ingredient) returns nul
   assert.equal(convertToBaseUnit(5, "pcs", { baseUnit: "g" }), null);
 });
 
-test("a vague unit like tbsp with no defined conversion returns null", () => {
-  assert.equal(convertToBaseUnit(2, "tbsp", { baseUnit: "ml" }), null);
+test("converts tbsp to a ml-based ingredient (1 tbsp = 15ml, no density guessing needed)", () => {
+  assert.equal(convertToBaseUnit(5, "tbsp", { baseUnit: "ml" }), 75);
+  assert.equal(convertToBaseUnit(5, "Tbsp", { baseUnit: "ml" }), 75);
+});
+
+test("converts tsp to a ml-based ingredient (1 tsp = 5ml)", () => {
+  assert.equal(convertToBaseUnit(3, "tsp", { baseUnit: "ml" }), 15);
+  assert.equal(convertToBaseUnit(3, "teaspoons", { baseUnit: "ml" }), 15);
+});
+
+test("converts cup to a ml-based ingredient (1 cup = 240ml)", () => {
+  assert.equal(convertToBaseUnit(1.5, "cup", { baseUnit: "ml" }), 360);
+});
+
+test("converts tbsp/tsp/cup to an L-based ingredient", () => {
+  assert.equal(convertToBaseUnit(4, "tbsp", { baseUnit: "L" }), 0.06);
+  assert.equal(convertToBaseUnit(2, "cup", { baseUnit: "L" }), 0.48);
+});
+
+// tbsp/tsp/cup are volume units -- converting them into a mass-based (g/kg) ingredient still
+// requires guessing that ingredient's density (how much a tablespoon of it actually weighs), which
+// this function refuses to do, same as any other unsupported conversion.
+test("tbsp/tsp/cup still return null into a g/kg-based ingredient -- volume-to-mass needs a density guess this function refuses to make", () => {
+  assert.equal(convertToBaseUnit(3, "tsp", { baseUnit: "g" }), null);
+  assert.equal(convertToBaseUnit(1, "tbsp", { baseUnit: "kg" }), null);
+  assert.equal(convertToBaseUnit(1, "cup", { baseUnit: "g" }), null);
 });
 
 test("does not cross metric families (g/kg cannot convert into ml/L)", () => {

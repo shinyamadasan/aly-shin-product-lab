@@ -1,4 +1,4 @@
-import type { Ingredient, InventoryTransaction } from "./product-lab-types";
+import type { Ingredient, InventoryTransaction, SupplyEntry } from "./product-lab-types";
 import type { PurchaseImportRowDraft } from "./purchase-import";
 import { computeWeightedAverageUnitCost } from "./inventory-cost.ts";
 import { buildInventoryTransaction } from "./inventory-transaction.ts";
@@ -100,4 +100,81 @@ export function applyPurchaseImportConfirmation({ ingredients, rows, importId, t
   });
 
   return { ingredients: updatedIngredients, transactions };
+}
+
+export type BuildSupplyEntriesInput = {
+  rows: PurchaseImportRowDraft[];
+  ingredients: Ingredient[];
+  // The receipt-level header (see PurchaseImport.supplierName/receiptNumber/purchaseDate) -- used
+  // per row only when that row didn't carry its own value from the CSV.
+  importSupplierName: string;
+  importReceiptNumber: string;
+  importPurchaseDate: string;
+  today: string;
+};
+
+export type BuildSupplyEntriesResult = { supplyEntries: SupplyEntry[] } | { error: string };
+
+// A second, independent function from applyPurchaseImportConfirmation on purpose: that function's
+// only job is inventory quantity/cost correctness, and stays completely untouched by this feature.
+// This one's only job is "what SupplyEntry rows does this import produce" -- every confirmed
+// (matched, non-excluded) row becomes one, so a CSV import is priced into Costing and shows up in
+// Purchases > Supplier Comparison exactly like a manually logged purchase. Brand is required here
+// (not in applyPurchaseImportConfirmation) because it's a SupplyEntry-only concern -- see PROP-010
+// in planning/PROPOSALS.md for why brand lives on the purchase, not the ingredient.
+export function buildSupplyEntriesFromPurchaseImport({ rows, ingredients, importSupplierName, importReceiptNumber, importPurchaseDate, today }: BuildSupplyEntriesInput): BuildSupplyEntriesResult {
+  const applicableRows = rows.filter((row) => row.rowStatus !== "excluded");
+  const unresolvedRow = applicableRows.find((row) => row.rowStatus !== "matched");
+  if (unresolvedRow) {
+    return { error: `Row "${unresolvedRow.rawItemName}" still needs to be resolved (or excluded) before this import can be confirmed.` };
+  }
+
+  const missingBrandRow = applicableRows.find((row) => !row.brandName.trim());
+  if (missingBrandRow) {
+    return { error: `Row "${missingBrandRow.rawItemName}" needs a brand before this import can be confirmed.` };
+  }
+
+  if (applicableRows.length === 0) {
+    return { error: "No rows to confirm -- every row was excluded." };
+  }
+
+  const supplyEntries: SupplyEntry[] = applicableRows.map((row) => {
+    const ingredient = ingredients.find((item) => item.id === row.ingredientId);
+    const unit = row.rawPackageUnit.trim() || row.rawUnit.trim();
+    const receiptNumber = row.rawReceiptNumber.trim() || importReceiptNumber.trim();
+
+    return {
+      id: crypto.randomUUID(),
+      ingredientId: row.ingredientId,
+      ingredientName: ingredient?.name ?? row.rawItemName,
+      brandName: row.brandName.trim(),
+      supplierName: row.rawSupplier.trim() || importSupplierName.trim(),
+      purchaseDate: row.rawPurchaseDate.trim() || importPurchaseDate.trim() || today,
+      createdAt: today,
+      packQuantity: row.parsedQuantity,
+      unit,
+      totalCost: row.parsedTotalPrice,
+      qualityRating: 0,
+      notes: ["Imported via CSV", row.rawCategory.trim(), receiptNumber ? `receipt ${receiptNumber}` : ""].filter(Boolean).join(" -- "),
+    };
+  });
+
+  return { supplyEntries };
+}
+
+// The Supabase insert-payload mirror of a built SupplyEntry -- `id`/`created_at` are omitted, the
+// same convention toInventoryTransactionRow uses, since Postgres's own defaults
+// (gen_random_uuid()/now()) apply server-side.
+export function toSupplyEntryRow(entry: SupplyEntry) {
+  return {
+    ingredient_id: entry.ingredientId || null,
+    ingredient_name: entry.ingredientName,
+    brand_name: entry.brandName,
+    supplier_name: entry.supplierName,
+    purchase_date: entry.purchaseDate,
+    pack_quantity: entry.packQuantity,
+    unit: entry.unit,
+    total_cost: entry.totalCost,
+    notes: entry.notes,
+  };
 }

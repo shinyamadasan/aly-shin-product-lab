@@ -5,8 +5,8 @@ import { getExpirationStatus, getStockStatus } from "@/lib/inventory-status";
 import { expirationStatusLabel, expirationStatusTone, stockStatusLabel, stockStatusTone } from "@/components/inventory-page";
 import { Tag } from "@/components/ui";
 
-// Read-only: what's on hand right now. Adding, editing, and deleting ingredients lives in Manage
-// Items -- this tab is for a fast "how much do we have" glance, not ingredient setup.
+// Read-only: what's on hand right now. Adding, editing, and deleting ingredients lives in Items --
+// this tab is for a fast "how much do we have" glance, not ingredient setup.
 export function InventoryStockPage({ goToManageItems, labState }: { goToManageItems: () => void; labState: LabState }) {
   const ingredients = labState.ingredients.filter((item) => item.isActive);
 
@@ -16,15 +16,15 @@ export function InventoryStockPage({ goToManageItems, labState }: { goToManageIt
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">On hand</p>
           <h3 className="mt-1 text-xl font-semibold">Current stock</h3>
-          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">What&apos;s actually on hand right now. To add, edit, or delete an ingredient, go to Manage Items.</p>
+          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">What&apos;s actually on hand right now. To add, edit, or delete an ingredient, go to Items.</p>
         </div>
         <button className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={goToManageItems} type="button">
           <Boxes size={16} />
-          Manage Items
+          Items
         </button>
       </div>
       <div className="divide-y divide-[#f0e4d8]">
-        {ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No ingredients yet. Add one in Manage Items.</p> : null}
+        {ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No ingredients yet. Add one in Items.</p> : null}
         {ingredients.map((item) => {
           const status = getStockStatus(item);
           const expirationStatus = getExpirationStatus(item.nearestExpirationDate, getToday());

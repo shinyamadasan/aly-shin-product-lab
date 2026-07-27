@@ -5,7 +5,7 @@ export const inventoryTabs: Array<{ key: InventoryTab; label: string }> = [
   { key: "purchases", label: "Purchases" },
   { key: "need-to-buy", label: "Need to Buy" },
   { key: "history", label: "History" },
-  { key: "ingredients", label: "Manage Items" },
+  { key: "ingredients", label: "Items" },
 ];
 
 const validInventoryTabs = new Set<string>(inventoryTabs.map((tab) => tab.key));

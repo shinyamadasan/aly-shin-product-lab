@@ -96,6 +96,7 @@ function mapTastingRow(row: Record<string, unknown>): TastingFeedback {
 function mapSupplyRow(row: Record<string, unknown>): SupplyEntry {
   return {
     id: String(row.id),
+    ingredientId: String(row.ingredient_id ?? ""),
     ingredientName: String(row.ingredient_name ?? ""),
     brandName: String(row.brand_name ?? ""),
     supplierName: String(row.supplier_name ?? ""),

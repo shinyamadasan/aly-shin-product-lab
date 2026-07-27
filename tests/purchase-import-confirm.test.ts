@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyPurchaseImportConfirmation } from "../src/lib/purchase-import-confirm.ts";
+import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport } from "../src/lib/purchase-import-confirm.ts";
 import type { PurchaseImportRowDraft } from "../src/lib/purchase-import.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
@@ -9,6 +9,7 @@ function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
     id: "milk-id",
     name: "Fresh Milk",
     baseUnit: "ml",
+    category: "",
     currentQuantity: 1000,
     lowStockThreshold: 500,
     targetStockQuantity: 5000,
@@ -24,16 +25,30 @@ function row(overrides: Partial<PurchaseImportRowDraft> = {}): PurchaseImportRow
   return {
     rowIndex: 0,
     rawItemName: "Fresh Milk",
+    rawBrand: "",
     rawQuantity: "6",
     rawUnit: "L",
     rawTotalPrice: "570",
     rawExpirationDate: "",
+    rawPackageCount: "",
+    rawPackageSize: "",
+    rawPackageUnit: "",
+    rawUnitPrice: "",
+    rawCategory: "",
+    rawSupplier: "",
+    rawReceiptNumber: "",
+    rawPurchaseDate: "",
     parsedQuantity: 6,
     parsedTotalPrice: 570,
     parsedExpirationDate: "",
+    parsedPackageCount: 0,
+    parsedPackageSize: 0,
+    parsedUnitPrice: 0,
     ingredientId: "milk-id",
     matchMethod: "exact",
     convertedQuantity: 6000,
+    isQuantityOverridden: false,
+    brandName: "Alaska",
     rowStatus: "matched",
     excludeReason: "",
     validationErrors: "",
@@ -185,4 +200,112 @@ test("applying the same confirmation a second time on its own would double the i
   if ("error" in secondResult) return;
 
   assert.equal(secondResult.ingredients[0].currentQuantity, 13000);
+});
+
+const supplyEntriesInput = {
+  ingredients: [ingredient()],
+  importSupplierName: "Main",
+  importReceiptNumber: "BR001-04",
+  importPurchaseDate: "2026-07-05",
+  today: "2026-07-24T00:00:00.000Z",
+};
+
+test("buildSupplyEntriesFromPurchaseImport creates one SupplyEntry per matched row", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row()] });
+
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.supplyEntries.length, 1);
+  const [entry] = result.supplyEntries;
+  assert.equal(entry.ingredientId, "milk-id");
+  assert.equal(entry.ingredientName, "Fresh Milk");
+  assert.equal(entry.brandName, "Alaska");
+  assert.equal(entry.packQuantity, 6);
+  assert.equal(entry.totalCost, 570);
+});
+
+test("buildSupplyEntriesFromPurchaseImport rejects when a matched row has no brand", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row({ brandName: "" })] });
+
+  assert.ok("error" in result);
+});
+
+test("buildSupplyEntriesFromPurchaseImport rejects when any non-excluded row is unresolved", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row({ rowStatus: "pending", brandName: "" })] });
+
+  assert.ok("error" in result);
+});
+
+test("buildSupplyEntriesFromPurchaseImport rejects when every row was excluded", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row({ rowStatus: "excluded" })] });
+
+  assert.ok("error" in result);
+});
+
+test("buildSupplyEntriesFromPurchaseImport skips excluded rows without requiring their brand", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({
+    ...supplyEntriesInput,
+    rows: [row(), row({ rowIndex: 1, rowStatus: "excluded", ingredientId: "", matchMethod: "none", brandName: "" })],
+  });
+
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.supplyEntries.length, 1);
+});
+
+test("buildSupplyEntriesFromPurchaseImport falls back to the import-level supplier/date when the row has none of its own", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row({ rawSupplier: "", rawPurchaseDate: "" })] });
+
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.supplyEntries[0].supplierName, "Main");
+  assert.equal(result.supplyEntries[0].purchaseDate, "2026-07-05");
+});
+
+test("buildSupplyEntriesFromPurchaseImport prefers a row's own supplier/date over the import header, for a CSV that mixes receipts", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({
+    ...supplyEntriesInput,
+    rows: [row({ rawSupplier: "Other Supplier", rawPurchaseDate: "2026-07-10" })],
+  });
+
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.supplyEntries[0].supplierName, "Other Supplier");
+  assert.equal(result.supplyEntries[0].purchaseDate, "2026-07-10");
+});
+
+test("buildSupplyEntriesFromPurchaseImport falls back to today when neither the row nor the header has a purchase date", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({
+    ingredients: [ingredient()],
+    importSupplierName: "Main",
+    importReceiptNumber: "",
+    importPurchaseDate: "",
+    today: "2026-07-24T00:00:00.000Z",
+    rows: [row({ rawPurchaseDate: "" })],
+  });
+
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.supplyEntries[0].purchaseDate, "2026-07-24T00:00:00.000Z");
+});
+
+test("buildSupplyEntriesFromPurchaseImport uses the package unit for package-format rows, not the flat unit", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({
+    ...supplyEntriesInput,
+    rows: [row({ rawUnit: "", rawPackageUnit: "kg", parsedQuantity: 2, parsedTotalPrice: 1126 })],
+  });
+
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.supplyEntries[0].unit, "kg");
+  assert.equal(result.supplyEntries[0].packQuantity, 2);
+  assert.equal(result.supplyEntries[0].totalCost, 1126);
+});
+
+test("buildSupplyEntriesFromPurchaseImport notes the receipt number when one is available", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row()] });
+
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.match(result.supplyEntries[0].notes, /BR001-04/);
 });

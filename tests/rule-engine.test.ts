@@ -9,7 +9,7 @@ import { evaluateLaunch } from "../src/lib/rule-engine/launch.ts";
 import { getPriorityScore, getProductHealth, getReadinessPercentage, selectNextBestAction } from "../src/lib/rule-engine/priority.ts";
 import { evaluateProduct } from "../src/lib/rule-engine/index.ts";
 import type { RuleEngineContext, RuleResult } from "../src/lib/rule-engine/types.ts";
-import type { CostingSummary, Product, ProductBatch, SupplyEntry, TastingFeedback } from "../src/lib/product-lab-types.ts";
+import type { CostingSummary, Ingredient, Product, ProductBatch, SupplyEntry, TastingFeedback } from "../src/lib/product-lab-types.ts";
 
 function product(overrides: Partial<Product> = {}): Product {
   return {
@@ -90,6 +90,7 @@ function tasting(overrides: Partial<TastingFeedback> = {}): TastingFeedback {
 function supply(overrides: Partial<SupplyEntry> = {}): SupplyEntry {
   return {
     id: crypto.randomUUID(),
+    ingredientId: "",
     ingredientName: "Classic Cocoa Powder",
     brandName: "Beryl's",
     supplierName: "Chef's and Bakers",
@@ -100,6 +101,23 @@ function supply(overrides: Partial<SupplyEntry> = {}): SupplyEntry {
     totalCost: 360,
     qualityRating: 5,
     notes: "",
+    ...overrides,
+  };
+}
+
+function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
+  return {
+    id: "cocoa-id",
+    name: "Classic Cocoa Powder",
+    baseUnit: "g",
+    category: "ingredient",
+    currentQuantity: 0,
+    lowStockThreshold: 0,
+    targetStockQuantity: 0,
+    nearestExpirationDate: "",
+    averageUnitCost: 0,
+    notes: "",
+    isActive: true,
     ...overrides,
   };
 }
@@ -390,6 +408,24 @@ test("SUP-001 fails when a formula ingredient has no matching supply record", ()
 test("SUP-001 passes when every formula ingredient has a match", () => {
   const results = evaluateSupply(product(), context({ batches: [batch()], supplies: [supply()] }));
   assert.equal(find(results, "SUP-001").passed, true);
+});
+
+test("SUP-001 uses ID-linked purchase history after an Item rename", () => {
+  const renamedItem = ingredient({ id: "cocoa-id", name: "Classic Cocoa Powder" });
+  const linkedPurchase = supply({ ingredientId: "cocoa-id", ingredientName: "Old Cocoa Receipt Name" });
+
+  const results = evaluateSupply(product(), context({ batches: [batch()], ingredients: [renamedItem], supplies: [linkedPurchase] }));
+
+  assert.equal(find(results, "SUP-001").passed, true);
+});
+
+test("SUP-001 refuses name fallback for an unknown ingredientId", () => {
+  const renamedItem = ingredient({ id: "cocoa-id", name: "Classic Cocoa Powder" });
+  const unknownLinkedPurchase = supply({ ingredientId: "deleted-id", ingredientName: "Classic Cocoa Powder" });
+
+  const results = evaluateSupply(product(), context({ batches: [batch()], ingredients: [renamedItem], supplies: [unknownLinkedPurchase] }));
+
+  assert.equal(find(results, "SUP-001").passed, false);
 });
 
 test("SUP-002 passes when the most recent matching purchase is within the staleness window", () => {

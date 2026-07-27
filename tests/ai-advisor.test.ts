@@ -89,6 +89,7 @@ function tasting(overrides: Partial<TastingFeedback> = {}): TastingFeedback {
 function supply(overrides: Partial<SupplyEntry> = {}): SupplyEntry {
   return {
     id: crypto.randomUUID(),
+    ingredientId: "",
     ingredientName: "Classic Cocoa Powder",
     brandName: "Beryl's",
     supplierName: "Chef's and Bakers",

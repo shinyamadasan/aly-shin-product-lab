@@ -9,6 +9,7 @@ function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
     id: crypto.randomUUID(),
     name: "Cocoa Powder",
     baseUnit: "g",
+    category: "",
     currentQuantity: 500,
     lowStockThreshold: 100,
     targetStockQuantity: 2000,

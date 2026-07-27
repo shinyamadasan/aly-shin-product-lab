@@ -13,6 +13,7 @@ create table if not exists ingredients (
   average_unit_cost numeric,
   notes text,
   is_active boolean not null default true,
+  archived_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -131,7 +132,7 @@ create policy "Authenticated users can manage purchase import rows"
 
 create table if not exists inventory_transactions (
   id uuid primary key default gen_random_uuid(),
-  ingredient_id uuid not null references ingredients(id) on delete cascade,
+  ingredient_id uuid not null references ingredients(id) on delete restrict,
   -- purchase | consume | adjustment | waste. Only "purchase" is produced starting this
   -- milestone; the other three are reserved for later milestones (bake deduction, manual
   -- adjustment/waste) so no migration is needed when they're added.

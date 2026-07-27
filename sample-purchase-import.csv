@@ -1,0 +1,4 @@
+purchase_date,supplier,receipt_number,item_name,category,package_count,package_size,package_unit,unit_price
+2026-07-05,Main,BR001-04,Van Houten Dark Chocolate Capo 1KG,ingredient,2,1,kg,563
+2026-07-05,Main,BR001-04,Brown Sugar,ingredient,3,500,g,85
+2026-07-05,Main,BR001-04,Fresh Milk,ingredient,4,250,ml,45

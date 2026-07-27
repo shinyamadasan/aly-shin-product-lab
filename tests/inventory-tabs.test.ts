@@ -34,7 +34,7 @@ test("inventoryTabs has exactly one entry per tab key, in the required order", (
   );
 });
 
-test("the Ingredients tab is labeled 'Manage Items', not 'Ingredients'", () => {
+test("the ingredients-keyed tab is labeled 'Items', not 'Ingredients' or 'Manage Items'", () => {
   const tab = inventoryTabs.find((item) => item.key === "ingredients");
-  assert.equal(tab?.label, "Manage Items");
+  assert.equal(tab?.label, "Items");
 });

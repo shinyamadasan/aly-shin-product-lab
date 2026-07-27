@@ -34,11 +34,12 @@ import {
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
-import { InventoryPage } from "@/components/inventory-page";
+import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
 import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
+import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
@@ -48,19 +49,20 @@ import { RecentEntries } from "@/components/recent-entries";
 import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
-import { applyPurchaseImportConfirmation } from "@/lib/purchase-import-confirm";
+import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
 import type { PurchaseImportRowDraft } from "@/lib/purchase-import";
 import { applyBakeConfirmation } from "@/lib/bake-confirm";
 import type { BakeDeduction } from "@/lib/bake-deduction";
 import { toInventoryTransactionRow } from "@/lib/inventory-transaction";
 import {
-  getAutoCostedIngredientRow,
+  getAutoCostedIngredientRowForItems,
   getConversionLabel,
-  getMatchingSupplies,
+  getMatchingPurchaseHistoryForIngredient,
   getSupplyLabel,
   getSupplyUsedCost,
   normalizeSupplyText,
 } from "@/lib/supplies";
+import { getChronologicalPurchases, getPurchaseGroupSummary, getPurchaseHistoryForIngredientReference, getUnlinkedPurchases, groupPurchasesByItem } from "@/lib/purchase-history";
 import { getAllocatedEquipmentCost, getEquipmentTotals, REFERENCE_COOKING_MINUTES } from "@/lib/equipment";
 import {
   diffFormulaRows,
@@ -70,6 +72,8 @@ import {
   parseBatchRecord,
   type BatchFormulaRow,
 } from "@/lib/batches";
+import { archiveItem, canHardDeleteItem, getItemReferenceSummary, itemReferenceCount, restoreItem } from "@/lib/inventory-safety";
+import { canDeleteDraftBatch, canVoidBatch, getBatchReferenceSummary, getEffectiveBatchStatus, markBatchCompleted, voidBatch } from "@/lib/batch-safety";
 
 // Keep these in sync with the file_size_limit / allowed_mime_types set on the
 // batch-photos bucket in supabase-add-batch-photos-storage.sql -- that bucket
@@ -84,6 +88,13 @@ const BATCH_PHOTO_ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "ima
 // (which would hide the real error behind a "run the setup SQL" banner).
 function isMissingTableError(error: PostgrestError | null): boolean {
   return error?.code === "PGRST205" || error?.code === "42P01";
+}
+
+// A column the operator hasn't migrated yet (supabase-add-purchase-import-packages.sql not run)
+// surfaces as PostgREST "column not found in the schema cache" (PGRST204) or the underlying
+// Postgres 42703 -- the same code-not-text-match reasoning as isMissingTableError above.
+function isMissingColumnError(error: PostgrestError | null): boolean {
+  return error?.code === "PGRST204" || error?.code === "42703";
 }
 
 export default function ProductLab({ view = "dashboard", initialInventoryTab }: { view?: LabView; initialInventoryTab?: InventoryTab }) {
@@ -115,6 +126,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
   const [isInventoryTableMissing, setIsInventoryTableMissing] = useState(false);
+  const [isPurchaseImportPackagesMissing, setIsPurchaseImportPackagesMissing] = useState(false);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
@@ -219,6 +231,10 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         id: row.id,
         productId: row.product_id,
         batchVersion: row.batch_version,
+        status: row.status ?? "draft",
+        completedAt: row.completed_at ?? "",
+        voidedAt: row.voided_at ?? "",
+        voidReason: row.void_reason ?? "",
         dateMade: row.date_made,
         ingredientsNotes: row.ingredients_notes ?? "",
         prepTimeMinutes: row.prep_time_minutes ?? 0,
@@ -272,6 +288,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       })),
       supplies: supplyMissing ? [] : (supplyResult.data ?? []).map((row) => ({
         id: row.id,
+        ingredientId: row.ingredient_id ?? "",
         ingredientName: row.ingredient_name,
         brandName: row.brand_name ?? "",
         supplierName: row.supplier_name,
@@ -339,6 +356,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         id: row.id,
         name: row.name,
         baseUnit: row.base_unit,
+        category: row.category ?? "",
         currentQuantity: Number(row.current_quantity ?? 0),
         lowStockThreshold: Number(row.low_stock_threshold ?? 0),
         targetStockQuantity: Number(row.target_stock_quantity ?? 0),
@@ -346,6 +364,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         averageUnitCost: Number(row.average_unit_cost ?? 0),
         notes: row.notes ?? "",
         isActive: row.is_active ?? true,
+        archivedAt: row.archived_at ?? "",
       })),
       ingredientAliases: ingredientsMissing ? [] : (ingredientAliasResult.data ?? []).map((row) => ({
         id: row.id,
@@ -361,22 +380,39 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         importedAt: row.imported_at ?? "",
         rowCount: Number(row.row_count ?? 0),
         totalValue: Number(row.total_value ?? 0),
+        supplierName: row.supplier_name ?? "",
+        receiptNumber: row.receipt_number ?? "",
+        purchaseDate: row.purchase_date ?? "",
       })),
       purchaseImportRows: ingredientsMissing ? [] : (purchaseImportRowResult.data ?? []).map((row) => ({
         id: row.id,
         importId: row.import_id,
         rowIndex: Number(row.row_index ?? 0),
         rawItemName: row.raw_item_name,
+        rawBrand: row.raw_brand ?? "",
         rawQuantity: row.raw_quantity,
         rawUnit: row.raw_unit,
         rawTotalPrice: row.raw_total_price ?? "",
         rawExpirationDate: row.raw_expiration_date ?? "",
+        rawPackageCount: row.raw_package_count ?? "",
+        rawPackageSize: row.raw_package_size ?? "",
+        rawPackageUnit: row.raw_package_unit ?? "",
+        rawUnitPrice: row.raw_unit_price ?? "",
+        rawCategory: row.raw_category ?? "",
+        rawSupplier: row.raw_supplier ?? "",
+        rawReceiptNumber: row.raw_receipt_number ?? "",
+        rawPurchaseDate: row.raw_purchase_date ?? "",
         parsedQuantity: Number(row.parsed_quantity ?? 0),
         parsedTotalPrice: Number(row.parsed_total_price ?? 0),
         parsedExpirationDate: row.parsed_expiration_date ?? "",
+        parsedPackageCount: Number(row.parsed_package_count ?? 0),
+        parsedPackageSize: Number(row.parsed_package_size ?? 0),
+        parsedUnitPrice: Number(row.parsed_unit_price ?? 0),
         ingredientId: row.ingredient_id ?? "",
         matchMethod: row.match_method ?? "none",
         convertedQuantity: Number(row.converted_quantity ?? 0),
+        isQuantityOverridden: row.is_quantity_overridden ?? false,
+        brandName: row.brand_name ?? "",
         rowStatus: row.row_status,
         excludeReason: row.exclude_reason ?? "",
         validationErrors: row.validation_errors ?? "",
@@ -472,10 +508,15 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     // can be staged against it before the batch itself is saved) -- existingId is the separate
     // signal for whether this was actually a pre-existing row, for messaging and upsert semantics.
     const isExisting = Boolean(formData.get("existingId"));
+    const existingBatch = labState.batches.find((item) => item.id === batchId);
     const batch: ProductBatch = {
       id: batchId || crypto.randomUUID(),
       productId: String(formData.get("productId")),
       batchVersion: String(formData.get("batchVersion") || "V1"),
+      status: existingBatch?.status ?? "draft",
+      completedAt: existingBatch?.completedAt ?? "",
+      voidedAt: existingBatch?.voidedAt ?? "",
+      voidReason: existingBatch?.voidReason ?? "",
       dateMade: String(formData.get("dateMade") || getToday()),
       ingredientsNotes: buildBatchIngredientsNotes(formData),
       prepTimeMinutes: Number(formData.get("prepTimeMinutes") || 0),
@@ -508,6 +549,10 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         went_wrong: batch.wentWrong,
         improve_next: batch.improveNext,
         launch_decision: batch.launchDecision,
+        status: batch.status || "draft",
+        completed_at: batch.completedAt || null,
+        voided_at: batch.voidedAt || null,
+        void_reason: batch.voidReason || null,
       };
       const { error } = await supabase.from("product_batches").upsert(payload);
       setMessage(error ? `Batch save failed: ${error.message}` : isExisting ? "Batch updated." : "Batch saved.");
@@ -528,6 +573,26 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
   }
 
   async function deleteBatch(batchId: string) {
+    const batch = labState.batches.find((item) => item.id === batchId);
+    if (!batch) {
+      setMessage("Batch not found.");
+      setMessageTone("bad");
+      return;
+    }
+    const summary = getBatchReferenceSummary({
+      batch,
+      inventoryTransactions: labState.inventoryTransactions,
+      costings: labState.costings,
+      costingEntries: labState.costingEntries,
+      tastings: labState.tastings,
+      batchPhotos: labState.batchPhotos,
+      aiReviews: labState.aiReviews,
+    });
+    if (!canDeleteDraftBatch(batch, summary, labState.inventoryTransactions)) {
+      setMessage("Batch delete blocked. Only untouched draft batches with no stock, costing, tasting, photo, or review references can be permanently deleted. Void completed batches instead.");
+      setMessageTone("bad");
+      return;
+    }
     if (supabase && session) {
       const { error } = await supabase.from("product_batches").delete().eq("id", batchId);
       setMessage(error ? `Batch delete failed: ${error.message}` : "Batch deleted.");
@@ -543,6 +608,39 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       setEditingBatch(null);
     }
     setMessage("Batch deleted locally.");
+    setMessageTone("good");
+  }
+
+  async function voidProductBatch(batchId: string, reason: string) {
+    const batch = labState.batches.find((item) => item.id === batchId);
+    if (!batch) {
+      setMessage("Batch not found.");
+      setMessageTone("bad");
+      return;
+    }
+    if (!canVoidBatch(batch, labState.inventoryTransactions)) {
+      setMessage(getEffectiveBatchStatus(batch, labState.inventoryTransactions) === "voided" ? "This batch is already voided." : "Only completed batches can be voided.");
+      setMessageTone("bad");
+      return;
+    }
+    const voided = voidBatch(batch, reason, new Date().toISOString());
+    if ("error" in voided) {
+      setMessage(voided.error);
+      setMessageTone("bad");
+      return;
+    }
+    if (supabase && session) {
+      const { error } = await supabase
+        .from("product_batches")
+        .update({ status: "voided", voided_at: voided.voidedAt || null, void_reason: voided.voidReason || null })
+        .eq("id", batchId);
+      setMessage(error ? `Batch void failed: ${error.message}` : "Batch voided. Current stock is unchanged; no InventoryTransaction was created, changed, or deleted.");
+      setMessageTone(error ? "bad" : "good");
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({ ...current, batches: current.batches.map((item) => (item.id === batchId ? voided : item)) }));
+    setMessage("Batch voided locally. Current stock is unchanged; no InventoryTransaction was created, changed, or deleted.");
     setMessageTone("good");
   }
 
@@ -903,9 +1001,17 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
 
   async function saveSupply(formData: FormData) {
     const supplyId = String(formData.get("id") || "");
+    const ingredientId = String(formData.get("ingredientId") || "").trim();
+    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      setMessage("Choose an Item before saving this purchase.");
+      setMessageTone("bad");
+      return;
+    }
     const supply: SupplyEntry = {
       id: supplyId || crypto.randomUUID(),
-      ingredientName: String(formData.get("ingredientName") || "").trim(),
+      ingredientId,
+      ingredientName: ingredient?.name ?? String(formData.get("ingredientName") || "").trim(),
       brandName: String(formData.get("brandName") || "").trim(),
       supplierName: String(formData.get("supplierName") || "").trim(),
       purchaseDate: String(formData.get("purchaseDate") || getToday()),
@@ -919,6 +1025,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
 
     if (supabase && session) {
       const payload = {
+        ingredient_id: supply.ingredientId || null,
         ingredient_name: supply.ingredientName,
         brand_name: supply.brandName,
         supplier_name: supply.supplierName,
@@ -933,9 +1040,16 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         ? supabase.from("supply_entries").update(payload).eq("id", supplyId)
         : supabase.from("supply_entries").insert(payload);
       const { error } = await query;
-      setMessage(error ? `Supply save failed. Run the latest supplies SQL first if this is your first time: ${error.message}` : "Supply saved.");
+      const missingPurchaseColumn = Boolean(error && isMissingColumnError(error));
+      setMessage(
+        error
+          ? missingPurchaseColumn
+            ? `Purchase save failed because supply_entries is missing a required purchase column. Run supabase-add-supplies.sql in Supabase, then retry. Details: ${error.message}`
+            : `Purchase save failed: ${error.message}`
+          : "Purchase saved.",
+      );
       setMessageTone(error ? "bad" : "good");
-      setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries") || error?.message.includes("brand_name")));
+      setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries") || error?.message.includes("brand_name") || error?.message.includes("ingredient_id")));
       if (!error) {
         setEditingSupply(null);
         await loadSupabaseData();
@@ -948,14 +1062,14 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       supplies: supplyId ? current.supplies.map((entry) => (entry.id === supplyId ? supply : entry)) : [supply, ...current.supplies],
     }));
     setEditingSupply(null);
-    setMessage("Supply saved locally.");
+    setMessage("Purchase saved locally.");
     setMessageTone("good");
   }
 
   async function deleteSupply(supplyId: string) {
     if (supabase && session) {
       const { error } = await supabase.from("supply_entries").delete().eq("id", supplyId);
-      setMessage(error ? `Supply delete failed: ${error.message}` : "Supply deleted.");
+      setMessage(error ? `Purchase delete failed: ${error.message}` : "Purchase deleted.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingSupply?.id === supplyId) {
         setEditingSupply(null);
@@ -968,51 +1082,70 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     if (editingSupply?.id === supplyId) {
       setEditingSupply(null);
     }
-    setMessage("Supply deleted locally.");
+    setMessage("Purchase deleted locally.");
     setMessageTone("good");
   }
 
   // currentQuantity is only user-editable on the create path (see InventoryPage) -- on an
   // existing ingredient the form submits a hidden input carrying the unchanged value, so this
   // never doubles as a way to silently correct stock outside a ledgered purchase/bake flow.
-  async function saveIngredient(formData: FormData) {
+  //
+  // Returns the saved ingredient's id (or null on failure) -- the id is generated client-side and
+  // sent explicitly on insert (matching how createPurchaseImportDraft already generates its own
+  // id up front), so a caller that needs to act on the new ingredient immediately -- e.g. the CSV
+  // importer's "Create New Item", which auto-assigns the current row to it -- doesn't have to wait
+  // for a reload/refetch to learn the id.
+  async function saveIngredient(formData: FormData): Promise<string | null> {
     const ingredientId = String(formData.get("id") || "");
+    const savedId = ingredientId || crypto.randomUUID();
+    const existingIngredient = labState.ingredients.find((item) => item.id === ingredientId);
     const ingredient: Ingredient = {
-      id: ingredientId || crypto.randomUUID(),
+      id: savedId,
       name: String(formData.get("name") || "").trim(),
       baseUnit: String(formData.get("baseUnit") || "g").trim() as Ingredient["baseUnit"],
+      category: String(formData.get("category") || "").trim() as Ingredient["category"],
       currentQuantity: Number(formData.get("currentQuantity") || 0),
       lowStockThreshold: Number(formData.get("lowStockThreshold") || 0),
       targetStockQuantity: Number(formData.get("targetStockQuantity") || 0),
       nearestExpirationDate: String(formData.get("nearestExpirationDate") || "").trim(),
       averageUnitCost: Number(formData.get("averageUnitCost") || 0),
       notes: String(formData.get("notes") || "").trim(),
-      isActive: true,
+      isActive: existingIngredient?.isActive ?? true,
+      archivedAt: existingIngredient?.archivedAt ?? "",
     };
 
     if (supabase && session) {
       const payload = {
         name: ingredient.name,
         base_unit: ingredient.baseUnit,
+        category: ingredient.category || null,
         current_quantity: ingredient.currentQuantity,
         low_stock_threshold: ingredient.lowStockThreshold,
         target_stock_quantity: ingredient.targetStockQuantity,
         nearest_expiration_date: ingredient.nearestExpirationDate || null,
         average_unit_cost: ingredient.averageUnitCost || null,
         notes: ingredient.notes,
+        is_active: ingredient.isActive,
+        archived_at: ingredient.archivedAt || null,
       };
-      const query = ingredientId
-        ? supabase.from("ingredients").update(payload).eq("id", ingredientId)
-        : supabase.from("ingredients").insert(payload);
+      const query = ingredientId ? supabase.from("ingredients").update(payload).eq("id", ingredientId) : supabase.from("ingredients").insert({ id: savedId, ...payload });
       const { error } = await query;
-      setMessage(error ? `Ingredient save failed. Run supabase-add-inventory.sql first if this is your first time: ${error.message}` : "Ingredient saved.");
+      const missingCategoryColumn = isMissingColumnError(error) && Boolean(error?.message.includes("category"));
+      setMessage(
+        error
+          ? missingCategoryColumn
+            ? `Ingredient save failed: run supabase-add-ingredient-category.sql once, then save again. (${error.message})`
+            : `Ingredient save failed. Run supabase-add-inventory.sql first if this is your first time: ${error.message}`
+          : "Ingredient saved."
+      );
       setMessageTone(error ? "bad" : "good");
-      setIsInventoryTableMissing(Boolean(error?.message.includes("ingredients")));
+      setIsInventoryTableMissing(Boolean(error?.message.includes("ingredients")) && !missingCategoryColumn);
       if (!error) {
         setEditingIngredient(null);
         await loadSupabaseData();
+        return savedId;
       }
-      return;
+      return null;
     }
 
     setLabState((current) => ({
@@ -1022,12 +1155,20 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     setEditingIngredient(null);
     setMessage("Ingredient saved locally.");
     setMessageTone("good");
+    return savedId;
   }
 
   async function deleteIngredient(ingredientId: string) {
+    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      setMessage("Ingredient not found.");
+      setMessageTone("bad");
+      return;
+    }
+    const archived = archiveItem(ingredient, new Date().toISOString());
     if (supabase && session) {
-      const { error } = await supabase.from("ingredients").delete().eq("id", ingredientId);
-      setMessage(error ? `Ingredient delete failed: ${error.message}` : "Ingredient deleted.");
+      const { error } = await supabase.from("ingredients").update({ is_active: false, archived_at: archived.archivedAt || null }).eq("id", ingredientId);
+      setMessage(error ? `Ingredient archive failed: ${error.message}` : "Ingredient archived. History is preserved.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingIngredient?.id === ingredientId) {
         setEditingIngredient(null);
@@ -1036,11 +1177,70 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       return;
     }
 
+    setLabState((current) => ({ ...current, ingredients: current.ingredients.map((entry) => (entry.id === ingredientId ? archived : entry)) }));
+    if (editingIngredient?.id === ingredientId) {
+      setEditingIngredient(null);
+    }
+    setMessage("Ingredient archived locally. History is preserved.");
+    setMessageTone("good");
+  }
+
+  async function restoreIngredient(ingredientId: string) {
+    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      setMessage("Ingredient not found.");
+      setMessageTone("bad");
+      return;
+    }
+    const restored = restoreItem(ingredient);
+    if (supabase && session) {
+      const { error } = await supabase.from("ingredients").update({ is_active: true, archived_at: null }).eq("id", ingredientId);
+      setMessage(error ? `Ingredient restore failed: ${error.message}` : "Ingredient restored.");
+      setMessageTone(error ? "bad" : "good");
+      await loadSupabaseData();
+      return;
+    }
+    setLabState((current) => ({ ...current, ingredients: current.ingredients.map((entry) => (entry.id === ingredientId ? restored : entry)) }));
+    setMessage("Ingredient restored locally.");
+    setMessageTone("good");
+  }
+
+  async function hardDeleteIngredient(ingredientId: string) {
+    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      setMessage("Ingredient not found.");
+      setMessageTone("bad");
+      return;
+    }
+    const summary = getItemReferenceSummary({
+      ingredient,
+      supplies: labState.supplies,
+      inventoryTransactions: labState.inventoryTransactions,
+      ingredientAliases: labState.ingredientAliases,
+      purchaseImportRows: labState.purchaseImportRows,
+      batches: labState.batches,
+      costingEntries: labState.costingEntries,
+    });
+    if (!canHardDeleteItem(summary)) {
+      setMessage(`Permanent delete blocked. ${ingredient.name} has ${itemReferenceCount(summary)} reference${itemReferenceCount(summary) === 1 ? "" : "s"}. Archive keeps history intact.`);
+      setMessageTone("bad");
+      return;
+    }
+    if (supabase && session) {
+      const { error } = await supabase.from("ingredients").delete().eq("id", ingredientId);
+      setMessage(error ? `Permanent delete failed: ${error.message}` : "Ingredient permanently deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingIngredient?.id === ingredientId) {
+        setEditingIngredient(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
     setLabState((current) => ({ ...current, ingredients: current.ingredients.filter((entry) => entry.id !== ingredientId) }));
     if (editingIngredient?.id === ingredientId) {
       setEditingIngredient(null);
     }
-    setMessage("Ingredient deleted locally.");
+    setMessage("Ingredient permanently deleted locally.");
     setMessageTone("good");
   }
 
@@ -1083,7 +1283,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
   // `ingredients`, so CSV preview cannot change inventory even in principle (the only function
   // that touches ingredient quantities is applyPurchaseImportConfirmation, called only from
   // confirmPurchaseImport below). Returns the new import's id so the wizard can show its preview.
-  async function createPurchaseImportDraft(fileName: string, rowDrafts: PurchaseImportRowDraft[]): Promise<string | null> {
+  async function createPurchaseImportDraft(fileName: string, rowDrafts: PurchaseImportRowDraft[], importSupplierName: string, importReceiptNumber: string, importPurchaseDate: string): Promise<string | null> {
     const importId = crypto.randomUUID();
     const totalValue = rowDrafts.reduce((sum, row) => sum + (row.rowStatus !== "excluded" ? row.parsedTotalPrice : 0), 0);
 
@@ -1094,11 +1294,15 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         status: "draft",
         row_count: rowDrafts.length,
         total_value: totalValue,
+        supplier_name: importSupplierName || null,
+        receipt_number: importReceiptNumber || null,
+        purchase_date: importPurchaseDate || null,
       });
       if (importError) {
         setMessage(`Could not start import: ${importError.message}`);
         setMessageTone("bad");
         setIsInventoryTableMissing(Boolean(importError.message.includes("purchase_imports")));
+        setIsPurchaseImportPackagesMissing(isMissingColumnError(importError));
         return null;
       }
 
@@ -1107,16 +1311,30 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
           import_id: importId,
           row_index: row.rowIndex,
           raw_item_name: row.rawItemName,
+          raw_brand: row.rawBrand,
           raw_quantity: row.rawQuantity,
           raw_unit: row.rawUnit,
           raw_total_price: row.rawTotalPrice,
           raw_expiration_date: row.rawExpirationDate,
+          raw_package_count: row.rawPackageCount,
+          raw_package_size: row.rawPackageSize,
+          raw_package_unit: row.rawPackageUnit,
+          raw_unit_price: row.rawUnitPrice,
+          raw_category: row.rawCategory,
+          raw_supplier: row.rawSupplier,
+          raw_receipt_number: row.rawReceiptNumber,
+          raw_purchase_date: row.rawPurchaseDate,
           parsed_quantity: row.parsedQuantity,
           parsed_total_price: row.parsedTotalPrice,
           parsed_expiration_date: row.parsedExpirationDate || null,
+          parsed_package_count: row.parsedPackageCount,
+          parsed_package_size: row.parsedPackageSize,
+          parsed_unit_price: row.parsedUnitPrice,
           ingredient_id: row.ingredientId || null,
           match_method: row.matchMethod,
           converted_quantity: row.convertedQuantity,
+          is_quantity_overridden: row.isQuantityOverridden,
+          brand_name: row.brandName,
           row_status: row.rowStatus,
           exclude_reason: row.excludeReason,
           validation_errors: row.validationErrors,
@@ -1125,6 +1343,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       if (rowsError) {
         setMessage(`Could not save import rows: ${rowsError.message}`);
         setMessageTone("bad");
+        setIsPurchaseImportPackagesMissing(isMissingColumnError(rowsError));
         return null;
       }
 
@@ -1132,7 +1351,17 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       return importId;
     }
 
-    const newImport: PurchaseImport = { id: importId, fileName, status: "draft", importedAt: "", rowCount: rowDrafts.length, totalValue };
+    const newImport: PurchaseImport = {
+      id: importId,
+      fileName,
+      status: "draft",
+      importedAt: "",
+      rowCount: rowDrafts.length,
+      totalValue,
+      supplierName: importSupplierName,
+      receiptNumber: importReceiptNumber,
+      purchaseDate: importPurchaseDate,
+    };
     const newRows: PurchaseImportRow[] = rowDrafts.map((row) => ({ ...row, id: crypto.randomUUID(), importId }));
     setLabState((current) => ({
       ...current,
@@ -1145,9 +1374,26 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
   async function updatePurchaseImportRow(rowId: string, changes: Partial<PurchaseImportRow>) {
     if (supabase && session) {
       const payload: Record<string, unknown> = {};
+      if (changes.rawItemName !== undefined) payload.raw_item_name = changes.rawItemName;
+      if (changes.rawBrand !== undefined) payload.raw_brand = changes.rawBrand;
+      if (changes.rawCategory !== undefined) payload.raw_category = changes.rawCategory;
+      if (changes.rawPackageCount !== undefined) payload.raw_package_count = changes.rawPackageCount;
+      if (changes.rawPackageSize !== undefined) payload.raw_package_size = changes.rawPackageSize;
+      if (changes.rawPackageUnit !== undefined) payload.raw_package_unit = changes.rawPackageUnit;
+      if (changes.rawUnitPrice !== undefined) payload.raw_unit_price = changes.rawUnitPrice;
+      if (changes.rawSupplier !== undefined) payload.raw_supplier = changes.rawSupplier;
+      if (changes.rawReceiptNumber !== undefined) payload.raw_receipt_number = changes.rawReceiptNumber;
+      if (changes.rawPurchaseDate !== undefined) payload.raw_purchase_date = changes.rawPurchaseDate;
+      if (changes.parsedQuantity !== undefined) payload.parsed_quantity = changes.parsedQuantity;
+      if (changes.parsedTotalPrice !== undefined) payload.parsed_total_price = changes.parsedTotalPrice;
+      if (changes.parsedPackageCount !== undefined) payload.parsed_package_count = changes.parsedPackageCount;
+      if (changes.parsedPackageSize !== undefined) payload.parsed_package_size = changes.parsedPackageSize;
+      if (changes.parsedUnitPrice !== undefined) payload.parsed_unit_price = changes.parsedUnitPrice;
       if (changes.ingredientId !== undefined) payload.ingredient_id = changes.ingredientId || null;
       if (changes.matchMethod !== undefined) payload.match_method = changes.matchMethod;
       if (changes.convertedQuantity !== undefined) payload.converted_quantity = changes.convertedQuantity;
+      if (changes.isQuantityOverridden !== undefined) payload.is_quantity_overridden = changes.isQuantityOverridden;
+      if (changes.brandName !== undefined) payload.brand_name = changes.brandName;
       if (changes.rowStatus !== undefined) payload.row_status = changes.rowStatus;
       if (changes.excludeReason !== undefined) payload.exclude_reason = changes.excludeReason;
 
@@ -1155,6 +1401,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       if (error) {
         setMessage(`Could not update row: ${error.message}`);
         setMessageTone("bad");
+        setIsPurchaseImportPackagesMissing(isMissingColumnError(error));
         return;
       }
       await loadSupabaseData();
@@ -1164,6 +1411,32 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     setLabState((current) => ({
       ...current,
       purchaseImportRows: current.purchaseImportRows.map((row) => (row.id === rowId ? { ...row, ...changes } : row)),
+    }));
+  }
+
+  // Header-only update (supplier/receipt number/purchase date), separate from updatePurchaseImportRow
+  // since it targets purchase_imports, not purchase_import_rows.
+  async function updatePurchaseImportHeader(importId: string, changes: { supplierName?: string; receiptNumber?: string; purchaseDate?: string }) {
+    if (supabase && session) {
+      const payload: Record<string, unknown> = {};
+      if (changes.supplierName !== undefined) payload.supplier_name = changes.supplierName;
+      if (changes.receiptNumber !== undefined) payload.receipt_number = changes.receiptNumber;
+      if (changes.purchaseDate !== undefined) payload.purchase_date = changes.purchaseDate || null;
+
+      const { error } = await supabase.from("purchase_imports").update(payload).eq("id", importId);
+      if (error) {
+        setMessage(`Could not update import details: ${error.message}`);
+        setMessageTone("bad");
+        setIsPurchaseImportPackagesMissing(isMissingColumnError(error));
+        return;
+      }
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      purchaseImports: current.purchaseImports.map((item) => (item.id === importId ? { ...item, ...changes } : item)),
     }));
   }
 
@@ -1204,7 +1477,8 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     }
 
     const rows = labState.purchaseImportRows.filter((row) => row.importId === importId) as unknown as PurchaseImportRowDraft[];
-    const result = applyPurchaseImportConfirmation({ ingredients: labState.ingredients, rows, importId, today: new Date().toISOString() });
+    const today = new Date().toISOString();
+    const result = applyPurchaseImportConfirmation({ ingredients: labState.ingredients, rows, importId, today });
 
     if ("error" in result) {
       setMessage(result.error);
@@ -1212,16 +1486,37 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       return;
     }
 
+    // A second, independent computation from the inventory-quantity one above -- see
+    // buildSupplyEntriesFromPurchaseImport's own comment for why it's kept separate. Computed
+    // (and any error surfaced) before anything is written, so a missing brand blocks the whole
+    // confirm the same way an unresolved row already does, not a partial apply.
+    const supplyEntriesResult = buildSupplyEntriesFromPurchaseImport({
+      rows,
+      ingredients: labState.ingredients,
+      importSupplierName: purchaseImport.supplierName,
+      importReceiptNumber: purchaseImport.receiptNumber,
+      importPurchaseDate: purchaseImport.purchaseDate,
+      today,
+    });
+
+    if ("error" in supplyEntriesResult) {
+      setMessage(supplyEntriesResult.error);
+      setMessageTone("bad");
+      return;
+    }
+
     const { ingredients: updatedIngredients, transactions } = result;
+    const { supplyEntries } = supplyEntriesResult;
     const changedIngredientIds = new Set(transactions.map((transaction) => transaction.ingredientId));
     const changedIngredients = updatedIngredients.filter((ingredient) => changedIngredientIds.has(ingredient.id));
 
     if (supabase && session) {
-      // One atomic Postgres transaction (confirm_purchase_import in supabase-add-inventory.sql)
-      // applies every ingredient update, every ledger insert, and the import's status flip
-      // together -- replacing the sequential .update()/.insert() calls Milestones 2-4 used. The
-      // RPC persists exactly what applyPurchaseImportConfirmation already computed above; it does
-      // not recompute or re-derive any business rule.
+      // One atomic Postgres transaction (confirm_purchase_import in supabase-add-inventory.sql /
+      // supabase-add-purchase-import-packages.sql) applies every ingredient update, every ledger
+      // insert, every supply_entries insert, and the import's status flip together -- replacing
+      // the sequential .update()/.insert() calls Milestones 2-4 used. The RPC persists exactly
+      // what applyPurchaseImportConfirmation/buildSupplyEntriesFromPurchaseImport already computed
+      // above; it does not recompute or re-derive any business rule.
       const { error } = await supabase.rpc("confirm_purchase_import", {
         p_import_id: importId,
         p_ingredient_updates: changedIngredients.map((ingredient) => ({
@@ -1231,15 +1526,17 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
           nearest_expiration_date: ingredient.nearestExpirationDate || null,
         })),
         p_transactions: transactions.map((transaction) => toInventoryTransactionRow(transaction)),
+        p_supply_entries: supplyEntries.map((entry) => toSupplyEntryRow(entry)),
       });
 
       if (error) {
         setMessage(`Import confirm failed: ${error.message}`);
         setMessageTone("bad");
+        setIsPurchaseImportPackagesMissing(isMissingColumnError(error));
         return;
       }
 
-      setMessage("Purchase import confirmed. Inventory updated.");
+      setMessage("Purchase import confirmed. Inventory and supplier prices updated.");
       setMessageTone("good");
       await loadSupabaseData();
       return;
@@ -1249,9 +1546,10 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       ...current,
       ingredients: current.ingredients.map((ingredient) => changedIngredients.find((updated) => updated.id === ingredient.id) ?? ingredient),
       inventoryTransactions: [...transactions, ...current.inventoryTransactions],
+      supplies: [...supplyEntries, ...current.supplies],
       purchaseImports: current.purchaseImports.map((item) => (item.id === importId ? { ...item, status: "confirmed", importedAt: new Date().toISOString() } : item)),
     }));
-    setMessage("Purchase import confirmed locally. Inventory updated.");
+    setMessage("Purchase import confirmed locally. Inventory and supplier prices updated.");
     setMessageTone("good");
   }
 
@@ -1292,18 +1590,29 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         return;
       }
 
-      setMessage("Bake confirmed. Inventory updated.");
-      setMessageTone("good");
+      const completedAt = new Date().toISOString();
+      const { error: completionError } = await supabase
+        .from("product_batches")
+        .update({ status: "completed", completed_at: completedAt })
+        .eq("id", batchId);
+      setMessage(
+        completionError
+          ? `Bake confirmed and inventory updated, but batch completion status could not be saved: ${completionError.message}. Do not confirm this bake again; the stock deduction already happened.`
+          : "Bake confirmed. Inventory updated and batch marked completed."
+      );
+      setMessageTone(completionError ? "bad" : "good");
       await loadSupabaseData();
       return;
     }
 
+    const completedAt = new Date().toISOString();
     setLabState((current) => ({
       ...current,
       ingredients: current.ingredients.map((ingredient) => changedIngredients.find((updated) => updated.id === ingredient.id) ?? ingredient),
+      batches: current.batches.map((batch) => (batch.id === batchId ? markBatchCompleted(batch, completedAt) : batch)),
       inventoryTransactions: [...transactions, ...current.inventoryTransactions],
     }));
-    setMessage("Bake confirmed locally. Inventory updated.");
+    setMessage("Bake confirmed locally. Inventory updated and batch marked completed.");
     setMessageTone("good");
   }
 
@@ -1543,7 +1852,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
-              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
                 <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
@@ -1552,12 +1861,12 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
           ) : null}
 
           {view === "batches" ? (
-            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} />
+            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} voidBatch={voidProductBatch} />
           ) : null}
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} saveCosting={saveCosting} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} saveCosting={saveCosting} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
                 <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} labState={labState} only="costing" />
@@ -1577,15 +1886,19 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
               discardPurchaseImport={discardPurchaseImport}
               editIngredient={setEditingIngredient}
               editSupply={setEditingSupply}
+              hardDeleteIngredient={hardDeleteIngredient}
               ingredient={editingIngredient}
               initialTab={initialInventoryTab}
               isInventoryTableMissing={isInventoryTableMissing}
+              isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               isSuppliesTableMissing={isSuppliesTableMissing}
               labState={labState}
               saveIngredient={saveIngredient}
               saveIngredientAlias={saveIngredientAlias}
               saveSupply={saveSupply}
+              restoreIngredient={restoreIngredient}
               supply={editingSupply}
+              updatePurchaseImportHeader={updatePurchaseImportHeader}
               updatePurchaseImportRow={updatePurchaseImportRow}
             />
           ) : null}
@@ -1683,7 +1996,7 @@ function formatBatchFormula(formula: BatchFormulaRow[]) {
     .join("\n");
 }
 
-function parseFormulaText(text: string, supplies: SupplyEntry[]) {
+function parseFormulaText(text: string, supplies: SupplyEntry[], ingredients: Ingredient[]) {
   const trimmed = text.trim();
   if (!trimmed) {
     return [];
@@ -1719,7 +2032,7 @@ function parseFormulaText(text: string, supplies: SupplyEntry[]) {
       const quantity = Number(quantityMatch?.[1] ?? 0);
       const unit = quantityMatch?.[2]?.trim() ?? "";
       const normalizedName = normalizeSupplyText(namePart);
-      const supplyMatch = [...supplies]
+      const supplyMatch = getPurchaseHistoryForIngredientReference(ingredients, supplies, { ingredientName: namePart })
         .sort((a, b) => getSupplyLabel(b).length - getSupplyLabel(a).length)
         .find((supply) => {
           const fullName = `${supply.brandName} ${supply.ingredientName}`.trim();
@@ -1863,6 +2176,7 @@ function ProductDetailPage({
           batches={labState.batches}
           costings={labState.costings}
           deleteReview={deleteAiReview}
+          ingredients={labState.ingredients}
           isTableMissing={isAiReviewsTableMissing}
           product={product}
           reviews={aiReviews}
@@ -1973,7 +2287,7 @@ function ContextBrain({ labState }: { labState: LabState }) {
         </div>
         <div className="grid gap-4 p-5 md:grid-cols-4">
           <MetricCard icon={<FlaskConical size={20} />} label="Proof batches" value={labState.batches.length} detail="Logged so far" />
-          <MetricCard icon={<Beaker size={20} />} label="Supplies" value={labState.supplies.length} detail="Purchases logged" />
+          <MetricCard icon={<Beaker size={20} />} label="Purchases" value={labState.supplies.length} detail="Purchase records" />
           <MetricCard icon={<Star size={20} />} label="Tastings" value={labState.tastings.length} detail="Feedback entries" />
           <MetricCard icon={<Star size={20} />} label="Avg rating" value={averageRating ?? 0} detail={averageRating === null ? "No ratings yet" : "Out of 10"} />
         </div>
@@ -2086,6 +2400,7 @@ function BatchHistoryPage({
   saveBatch,
   saveTasting,
   uploadBatchPhotos,
+  voidBatch,
 }: {
   batch: ProductBatch | null;
   cancelEdit: () => void;
@@ -2097,6 +2412,7 @@ function BatchHistoryPage({
   saveBatch: (formData: FormData) => void;
   saveTasting: (formData: FormData) => void;
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
+  voidBatch: (batchId: string, reason: string) => void;
 }) {
   const [copiedBatchId, setCopiedBatchId] = useState("");
 
@@ -2139,7 +2455,7 @@ function BatchHistoryPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
-            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -2158,18 +2474,36 @@ function BatchHistoryPage({
           {labState.batches.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No proof batches yet.</p> : null}
           {labState.batches.map((batch) => {
             const { formula, steps: processSteps } = parseBatchRecord(batch.ingredientsNotes);
+            const effectiveStatus = getEffectiveBatchStatus(batch, labState.inventoryTransactions);
+            const canVoid = canVoidBatch(batch, labState.inventoryTransactions);
             return (
               <article className="p-5" key={batch.id}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <h4 className="font-semibold">{productName(batch.productId)} {batch.batchVersion}</h4>
-                    <p className="mt-1 text-sm text-[#6f5a4c]">{batch.dateMade} / {batch.launchDecision}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-[#6f5a4c]">
+                      <span>{batch.dateMade} / {batch.launchDecision}</span>
+                      <Tag tone={effectiveStatus === "voided" ? "danger" : effectiveStatus === "completed" ? "green" : "warm"}>{effectiveStatus}</Tag>
+                    </div>
+                    {effectiveStatus === "voided" ? <p className="mt-1 text-sm text-[#8a3827]">Voided: {batch.voidReason || "No reason recorded"}</p> : null}
                   </div>
                   <div className="flex gap-2">
                     <a className="text-sm font-semibold text-[#8f5632] underline" href={`/bake?batch=${batch.id}`}>Bake this</a>
                     <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => copyFormula(batch.id, formula)} type="button">{copiedBatchId === batch.id ? "Copied" : "Copy formula"}</button>
                     <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => editBatch(batch)} type="button">Edit</button>
-                    <button className="text-sm font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${batch.batchVersion}?`) ? deleteBatch(batch.id) : undefined} type="button">Delete</button>
+                    {canVoid ? (
+                      <button
+                        className="text-sm font-semibold text-[#8a3827] underline"
+                        onClick={() => {
+                          const reason = window.prompt(`Void ${batch.batchVersion}? This batch will remain in history and current stock will remain unchanged. Enter a reason:`);
+                          if (reason !== null) voidBatch(batch.id, reason);
+                        }}
+                        type="button"
+                      >
+                        Void
+                      </button>
+                    ) : null}
+                    <button className="text-sm font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Permanently delete ${batch.batchVersion}? Only untouched draft batches with no stock, costing, tasting, photo, or review references can be deleted.`) ? deleteBatch(batch.id) : undefined} type="button">Delete</button>
                   </div>
                 </div>
                 <div className="mt-4 grid gap-4 xl:grid-cols-3">
@@ -2593,6 +2927,7 @@ function BatchForm({
   batchPhotos,
   cancelEdit,
   deleteBatchPhoto,
+  ingredients,
   saveBatch,
   supplies,
   uploadBatchPhotos,
@@ -2602,6 +2937,7 @@ function BatchForm({
   batchPhotos: BatchPhoto[];
   cancelEdit: () => void;
   deleteBatchPhoto: (photo: BatchPhoto) => void;
+  ingredients: Ingredient[];
   saveBatch: (formData: FormData) => void;
   supplies: SupplyEntry[];
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
@@ -2776,7 +3112,7 @@ function BatchForm({
     }
 
     const clipboardText = await navigator.clipboard.readText();
-    const pastedRows = parseFormulaText(clipboardText, supplies);
+    const pastedRows = parseFormulaText(clipboardText, supplies, ingredients);
     if (pastedRows.length === 0) {
       setFormulaMessage("No formula rows found in clipboard.");
       return;
@@ -2833,7 +3169,7 @@ function BatchForm({
           <div className="mt-3 grid gap-3">
             {formulaRows.map((row, index) => (
               <div className="grid gap-2 lg:grid-cols-[minmax(220px,2fr)_100px_80px_130px_150px_170px_70px]" key={row.rowId}>
-                <SupplyItemPicker row={row} rowIndex={index} supplies={supplies} updateFormulaRow={updateFormulaRow} />
+                <SupplyItemPicker ingredients={ingredients} row={row} rowIndex={index} supplies={supplies} updateFormulaRow={updateFormulaRow} />
                 <Input name={`batchQuantity-${row.rowId}`} label="Qty" type="number" step="0.01" placeholder="50" value={row.quantity || ""} onChange={(event) => updateFormulaRow(row.rowId, { quantity: Number(event.target.value || 0) })} />
                 <Input name={`batchUnit-${row.rowId}`} label="Unit used" placeholder="g / ml / tbsp" value={row.unit} onChange={(event) => updateFormulaRow(row.rowId, { unit: event.target.value })} />
                 <Input list="formulaStepSuggestions" name={`batchIngredientStep-${row.rowId}`} label="Step" placeholder="First mix" value={row.step} onChange={(event) => updateFormulaRow(row.rowId, { step: event.target.value })} />
@@ -3220,8 +3556,187 @@ function buildNamedCostRows(names: string[], savedRows?: CostingNamedCostRow[], 
   }));
 }
 
+// Manual purchases must attach to an existing Item, not arbitrary free text -- an ingredient and
+// its purchase history are one business item now (see inventory-items.ts), so a purchase logged
+// under a name that doesn't match any Item silently orphans itself the same way the "Vanhouten
+// Dark chocolate" bug did. "Create New Item" is the escape hatch for a genuinely new item, using
+// the same saveIngredient the Items tab itself uses -- not a second, divergent creation path.
+//
+// Lives inside PurchaseLogPage's own <form key={supply?.id ?? "new-supply"}> (see call site), so
+// switching which supply is being edited remounts this component and correctly resets its local
+// state -- the same key-remount convention this file already uses for the outer form itself,
+// rather than a useEffect syncing local state to a changed prop.
+//
+// The "Create New Item" panel below is deliberately NOT a nested <form> -- forms cannot nest in
+// HTML, and this field already lives inside PurchaseLogPage's outer <form>. It reads its inputs via
+// refs and builds a FormData by hand instead, matching what a real form submission would send.
+function SupplyIngredientField({
+  ingredients,
+  initialIngredientId,
+  initialIngredientName,
+  isLocked = false,
+  saveIngredient,
+}: {
+  ingredients: Ingredient[];
+  initialIngredientId?: string;
+  initialIngredientName: string;
+  isLocked?: boolean;
+  saveIngredient: (formData: FormData) => Promise<string | null>;
+}) {
+  const matched = ingredients.find((item) => item.id === initialIngredientId) ?? ingredients.find((item) => item.name === initialIngredientName);
+  const [selectedIngredientId, setSelectedIngredientId] = useState(matched?.id ?? "");
+  const [ingredientName, setIngredientName] = useState(initialIngredientName);
+  const [isCreatingItem, setIsCreatingItem] = useState(false);
+  const [isSavingItem, setIsSavingItem] = useState(false);
+  const newNameRef = useRef<HTMLInputElement>(null);
+  const newBaseUnitRef = useRef<HTMLSelectElement>(null);
+  const newCategoryRef = useRef<HTMLSelectElement>(null);
+  const selected = ingredients.find((item) => item.id === selectedIngredientId);
+
+  async function handleCreateItem() {
+    const formData = new FormData();
+    formData.set("name", newNameRef.current?.value.trim() ?? "");
+    formData.set("baseUnit", newBaseUnitRef.current?.value ?? "g");
+    formData.set("category", newCategoryRef.current?.value ?? "");
+    setIsSavingItem(true);
+    const newIngredientId = await saveIngredient(formData);
+    setIsSavingItem(false);
+    if (!newIngredientId) {
+      return;
+    }
+    setSelectedIngredientId(newIngredientId);
+    setIngredientName(String(formData.get("name") || ""));
+    setIsCreatingItem(false);
+  }
+
+  return (
+    <label className="grid gap-1 text-sm font-medium">
+      Ingredient
+      <input name="ingredientId" type="hidden" value={selectedIngredientId} />
+      <input name="ingredientName" type="hidden" value={ingredientName} />
+      {selected ? (
+        <div className="flex h-10 items-center justify-between gap-2 rounded-md border border-[#d8c7b7] bg-white px-3">
+          <span className="truncate text-sm font-semibold">{selected.name}</span>
+          {isLocked ? <span className="shrink-0 text-xs font-semibold text-[#8f5632]">Locked</span> : (
+            <button
+              className="shrink-0 text-xs font-semibold text-[#8f5632]"
+              onClick={() => {
+                setSelectedIngredientId("");
+                setIngredientName("");
+              }}
+              type="button"
+            >
+              Change
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <IngredientPicker
+            ingredients={ingredients}
+            onSelect={(ingredientId) => {
+              const item = ingredients.find((entry) => entry.id === ingredientId);
+              setSelectedIngredientId(ingredientId);
+              setIngredientName(item?.name ?? "");
+            }}
+            placeholder="Cocoa powder"
+          />
+          <button className="shrink-0 text-xs font-semibold text-[#8f5632]" onClick={() => setIsCreatingItem((current) => !current)} type="button">
+            {isCreatingItem ? "Cancel" : "Create New Item"}
+          </button>
+        </div>
+      )}
+      {isCreatingItem ? (
+        <div className="mt-1 grid gap-2 rounded-md border border-[#d8c7b7] bg-[#fffaf3] p-3">
+          <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" defaultValue={ingredientName} placeholder="Ingredient name" ref={newNameRef} />
+          <div className="grid grid-cols-2 gap-2">
+            <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm font-normal" defaultValue="g" ref={newBaseUnitRef}>
+              {baseUnitOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm font-normal" defaultValue="" ref={newCategoryRef}>
+              <option value="">Category (optional)</option>
+              {ingredientCategoryOptions.map((option) => (
+                <option key={option} value={option}>
+                  {ingredientCategoryLabel[option]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            className="h-8 rounded-md bg-[#8f5632] px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isSavingItem}
+            onClick={handleCreateItem}
+            type="button"
+          >
+            {isSavingItem ? "Saving..." : "Save new item"}
+          </button>
+        </div>
+      ) : null}
+    </label>
+  );
+}
+
 function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingredientName" | "supplierName" | "unit") {
   return Array.from(new Set(supplies.map((supply) => supply[key].trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function PurchaseRecordRow({
+  deleteSupply,
+  editSupply,
+  supply,
+}: {
+  deleteSupply: (supplyId: string) => void;
+  editSupply: (supply: SupplyEntry) => void;
+  supply: SupplyEntry;
+}) {
+  const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
+  const supplierLabel = supply.supplierName || "Supplier not set";
+  const brandLabel = supply.brandName || "Brand not set";
+  const source = "source" in supply ? String((supply as SupplyEntry & { source?: string }).source || "") : "";
+  const deleteMessage = [
+    `Delete this purchase record?`,
+    `${brandLabel} / ${supply.ingredientName} / ${supplierLabel} / ${supply.purchaseDate || "date not set"} / ${supply.packQuantity}${supply.unit ? ` ${supply.unit}` : ""} / PHP ${supply.totalCost.toFixed(2)}`,
+    "Only this purchase record will be removed.",
+    "Current stock will not change.",
+    "No InventoryTransaction will be created, changed, or deleted.",
+  ].join("\n\n");
+
+  return (
+    <article className="grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_140px]" key={supply.id}>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Tag tone="green">{brandLabel}</Tag>
+          <Tag tone="warm">{supplierLabel}</Tag>
+          {source ? <Tag tone="warm">{source}</Tag> : null}
+        </div>
+        <h4 className="mt-2 font-semibold">{supply.ingredientName}</h4>
+        <p className="mt-1 text-sm text-[#6f5a4c]">Bought {supply.purchaseDate || "date not set"}</p>
+        {supply.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{supply.notes}</p> : null}
+      </div>
+      <div className="text-sm">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Pack</p>
+        <p className="mt-1 font-semibold">{supply.packQuantity}{supply.unit ? ` ${supply.unit}` : ""}</p>
+        <p className="text-[#6f5a4c]">PHP {supply.totalCost.toFixed(2)}</p>
+      </div>
+      <div className="text-sm">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Unit Cost</p>
+        <p className="mt-1 font-semibold">PHP {unitCost.toFixed(4)}</p>
+        <p className="text-[#6f5a4c]">per {supply.unit || "unit"}</p>
+      </div>
+      <div className="text-sm">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Quality</p>
+        <p className="mt-1 font-semibold">{supply.qualityRating || 0}/5</p>
+      </div>
+      <div className="flex gap-2 lg:flex-col">
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editSupply(supply)} type="button">Edit</button>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(deleteMessage) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+      </div>
+    </article>
+  );
 }
 
 function SupplyValuePicker({
@@ -3296,11 +3811,13 @@ function SupplyValuePicker({
 }
 
 function SupplyItemPicker({
+  ingredients,
   row,
   rowIndex,
   supplies,
   updateFormulaRow,
 }: {
+  ingredients: Ingredient[];
   row: BatchFormulaRow;
   rowIndex: number;
   supplies: SupplyEntry[];
@@ -3308,11 +3825,30 @@ function SupplyItemPicker({
 }) {
   const [inputValue, setInputValue] = useState(row.ingredient ? getSupplyLabel({ brandName: row.brand, ingredientName: row.ingredient, unit: row.unit }) : "");
   const [isOpen, setIsOpen] = useState(false);
-  const filteredSupplies = supplies.filter((supply) => getSupplyLabel(supply).toLowerCase().includes(inputValue.trim().toLowerCase()));
+  const itemOptions = groupPurchasesByItem(ingredients, supplies).map((group) => {
+    const latestPurchase = group.purchases[0];
+    return {
+      id: group.ingredient.id,
+      brandName: latestPurchase?.brandName ?? "",
+      ingredientName: group.ingredient.name,
+      supplierName: latestPurchase?.supplierName ?? "",
+      unit: latestPurchase?.unit || group.ingredient.baseUnit,
+      isItem: true,
+    };
+  });
+  const unlinkedOptions = getUnlinkedPurchases(ingredients, supplies).map((supply) => ({
+    id: supply.id,
+    brandName: supply.brandName,
+    ingredientName: supply.ingredientName,
+    supplierName: supply.supplierName,
+    unit: supply.unit,
+    isItem: false,
+  }));
+  const filteredOptions = [...itemOptions, ...unlinkedOptions].filter((option) => getSupplyLabel(option).toLowerCase().includes(inputValue.trim().toLowerCase()));
 
   return (
     <label className="relative grid gap-1 text-sm font-medium">
-      Supply item {rowIndex + 1}
+      Purchase item {rowIndex + 1}
       <input name={`batchBrand-${row.rowId}`} type="hidden" value={row.brand} />
       <input name={`batchIngredient-${row.rowId}`} type="hidden" value={row.ingredient} />
       <div className="relative">
@@ -3330,7 +3866,7 @@ function SupplyItemPicker({
           value={inputValue}
         />
         <button
-          aria-label="Show saved supply items"
+          aria-label="Show purchase history items"
           className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-md border-l border-[#ead9c8] bg-[#fffaf3] text-[#6f5a4c] hover:bg-[#f5eadf]"
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => setIsOpen((current) => !current)}
@@ -3341,22 +3877,22 @@ function SupplyItemPicker({
       </div>
       {isOpen ? (
         <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-auto rounded-md border border-[#d8c7b7] bg-white shadow-lg">
-          {filteredSupplies.length === 0 ? <p className="px-3 py-2 text-sm font-normal text-[#6f5a4c]">No saved supply match. Add it in Supplies first, or type a custom ingredient.</p> : null}
-          {filteredSupplies.map((supply) => (
+          {filteredOptions.length === 0 ? <p className="px-3 py-2 text-sm font-normal text-[#6f5a4c]">No purchase match. Log a purchase first, or type a custom ingredient.</p> : null}
+          {filteredOptions.map((option) => (
             <button
               className="block w-full px-3 py-2 text-left text-sm font-normal text-[#211713] hover:bg-[#fffaf3]"
-              key={supply.id}
+              key={option.id}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
-                const label = getSupplyLabel(supply);
+                const label = getSupplyLabel(option);
                 setInputValue(label);
-                updateFormulaRow(row.rowId, { brand: supply.brandName, ingredient: supply.ingredientName, unit: supply.unit });
+                updateFormulaRow(row.rowId, { brand: option.brandName, ingredient: option.ingredientName, unit: option.unit });
                 setIsOpen(false);
               }}
               type="button"
             >
-              <span className="font-semibold">{getSupplyLabel(supply)}</span>
-              <span className="ml-2 text-[#6f5a4c]">{supply.supplierName || "Supplier not set"}</span>
+              <span className="font-semibold">{getSupplyLabel(option)}</span>
+              <span className="ml-2 text-[#6f5a4c]">{option.supplierName || "Supplier not set"} · {option.isItem ? "Item" : "Unlinked"}</span>
             </button>
           ))}
         </div>
@@ -3400,14 +3936,16 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
 
 // One Inventory page, five jobs that used to be five separate nav entries: Current Stock (what's
 // on hand), Purchases (Supplier prices log + CSV import -- both are ways of recording a purchase),
-// Need to Buy, History (the inventory transaction timeline), and Manage Items (the ingredient
-// master: add/edit/delete). Nothing here recomputes state; every tab renders the same components
-// and callbacks that used to live behind their own routes.
+// Need to Buy, History (the inventory transaction timeline), and Items (the unified ingredient +
+// purchase history: add/edit/delete an item, see its brand/supplier/price/purchase history). Nothing
+// here recomputes state; every tab renders the same components and callbacks that used to live
+// behind their own routes.
 function InventoryWorkspace({
   initialTab,
   cancelEditIngredient,
   deleteIngredient,
   editIngredient,
+  hardDeleteIngredient,
   ingredient,
   isInventoryTableMissing,
   saveIngredient,
@@ -3420,7 +3958,10 @@ function InventoryWorkspace({
   confirmPurchaseImport,
   createPurchaseImportDraft,
   discardPurchaseImport,
+  isPurchaseImportPackagesMissing,
+  restoreIngredient,
   saveIngredientAlias,
+  updatePurchaseImportHeader,
   updatePurchaseImportRow,
   labState,
 }: {
@@ -3428,9 +3969,10 @@ function InventoryWorkspace({
   cancelEditIngredient: () => void;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
+  hardDeleteIngredient: (ingredientId: string) => void;
   ingredient: Ingredient | null;
   isInventoryTableMissing: boolean;
-  saveIngredient: (formData: FormData) => void;
+  saveIngredient: (formData: FormData) => Promise<string | null>;
   cancelEditSupply: () => void;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
@@ -3438,14 +3980,35 @@ function InventoryWorkspace({
   saveSupply: (formData: FormData) => void;
   supply: SupplyEntry | null;
   confirmPurchaseImport: (importId: string) => Promise<void>;
-  createPurchaseImportDraft: (fileName: string, rows: PurchaseImportRowDraft[]) => Promise<string | null>;
+  createPurchaseImportDraft: (fileName: string, rows: PurchaseImportRowDraft[], importSupplierName: string, importReceiptNumber: string, importPurchaseDate: string) => Promise<string | null>;
   discardPurchaseImport: (importId: string) => void;
+  isPurchaseImportPackagesMissing: boolean;
+  restoreIngredient: (ingredientId: string) => void;
   saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
+  updatePurchaseImportHeader: (importId: string, changes: { supplierName?: string; receiptNumber?: string; purchaseDate?: string }) => void;
   updatePurchaseImportRow: (rowId: string, changes: Partial<PurchaseImportRow>) => void;
   labState: LabState;
 }) {
   const [tab, setTab] = useState<InventoryTab>(initialTab ?? "stock");
   const [purchasesTab, setPurchasesTab] = useState<"manual" | "csv">("manual");
+  function logPurchaseForIngredient(item: Ingredient) {
+    editSupply({
+      id: "",
+      ingredientId: item.id,
+      ingredientName: item.name,
+      brandName: "",
+      supplierName: "",
+      purchaseDate: getToday(),
+      createdAt: new Date().toISOString(),
+      packQuantity: 0,
+      unit: item.baseUnit,
+      totalCost: 0,
+      qualityRating: 0,
+      notes: "",
+    });
+    setPurchasesTab("manual");
+    setTab("purchases");
+  }
 
   return (
     <div className="grid gap-5">
@@ -3483,15 +4046,18 @@ function InventoryWorkspace({
             </button>
           </div>
           {purchasesTab === "manual" ? (
-            <SuppliesPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveSupply={saveSupply} supply={supply} />
+            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
           ) : (
             <PurchaseImportWizard
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
               discardPurchaseImport={discardPurchaseImport}
               isInventoryTableMissing={isInventoryTableMissing}
+              isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               labState={labState}
+              saveIngredient={saveIngredient}
               saveIngredientAlias={saveIngredientAlias}
+              updatePurchaseImportHeader={updatePurchaseImportHeader}
               updatePurchaseImportRow={updatePurchaseImportRow}
             />
           )}
@@ -3503,18 +4069,19 @@ function InventoryWorkspace({
       {tab === "history" ? <InventoryTimeline labState={labState} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredient={saveIngredient} />
+        <InventoryPage cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
       ) : null}
     </div>
   );
 }
 
-function SuppliesPage({
+function PurchaseLogPage({
   cancelEdit,
   deleteSupply,
   editSupply,
   isSuppliesTableMissing,
   labState,
+  saveIngredient,
   saveSupply,
   supply,
 }: {
@@ -3523,16 +4090,38 @@ function SuppliesPage({
   editSupply: (supply: SupplyEntry) => void;
   isSuppliesTableMissing: boolean;
   labState: LabState;
+  saveIngredient: (formData: FormData) => Promise<string | null>;
   saveSupply: (formData: FormData) => void;
   supply: SupplyEntry | null;
 }) {
+  const [purchaseView, setPurchaseView] = useState<"by-item" | "all">("by-item");
   const brandOptions = getUniqueSupplyValues(labState.supplies, "brandName");
   const supplierOptions = getUniqueSupplyValues(labState.supplies, "supplierName");
   const unitOptions = getUniqueSupplyValues(labState.supplies, "unit");
+  const purchaseGroups = groupPurchasesByItem(labState.ingredients, labState.supplies);
+  const unlinkedPurchases = getUnlinkedPurchases(labState.ingredients, labState.supplies);
+  const chronologicalPurchases = getChronologicalPurchases(labState.supplies);
 
-  function downloadSupplies() {
+  function logPurchaseForIngredient(item: Ingredient) {
+    editSupply({
+      id: "",
+      ingredientId: item.id,
+      ingredientName: item.name,
+      brandName: "",
+      supplierName: "",
+      purchaseDate: getToday(),
+      createdAt: "",
+      packQuantity: 0,
+      unit: item.baseUnit,
+      totalCost: 0,
+      qualityRating: 0,
+      notes: "",
+    });
+  }
+
+  function downloadPurchases() {
     downloadCsv(
-      "supplies.csv",
+      "purchases.csv",
       ["Brand", "Ingredient", "Supplier", "Date bought", "Pack qty", "Unit", "Total PHP", "Unit cost", "Quality", "Notes"],
       labState.supplies.map((supply) => [
         supply.brandName,
@@ -3551,17 +4140,17 @@ function SuppliesPage({
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
-      <FormPanel title={supply ? "Edit supply purchase" : "Log supply purchase"} icon={<PackageCheck size={18} />}>
+      <FormPanel title={supply ? "Edit purchase" : "Log purchase"} icon={<PackageCheck size={18} />}>
         {isSuppliesTableMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
-            Supplies database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
+            Purchase database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
           </div>
         ) : null}
         <form action={saveSupply} className="grid gap-3" key={supply?.id ?? "new-supply"}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-3">
             <SupplyValuePicker name="brandName" label="Brand" options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
-            <Input name="ingredientName" label="Ingredient" placeholder="Cocoa powder" defaultValue={supply?.ingredientName} />
+            <SupplyIngredientField ingredients={labState.ingredients} initialIngredientId={supply?.ingredientId} initialIngredientName={supply?.ingredientName ?? ""} isLocked={Boolean(supply?.ingredientId && !supply.id)} saveIngredient={saveIngredient} />
             <SupplyValuePicker name="supplierName" label="Supplier" options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
@@ -3573,15 +4162,15 @@ function SuppliesPage({
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
           <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." defaultValue={supply?.notes} />
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Button>{supply ? "Update supply" : "Save supply"}</Button>
+            <Button>{supply ? "Update purchase" : "Save purchase"}</Button>
             {supply ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
           </div>
         </form>
       </FormPanel>
 
-      <Panel title="Supplier Comparison" icon={<Sparkles size={18} />}>
+      <Panel title="Purchase Comparison" icon={<Sparkles size={18} />}>
         <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-          <p>Use this page only for actual purchases. Costing should use this information later, but this page is the source of truth for supplier prices and quality.</p>
+          <p>Use this page only for actual purchases. Costing should use this information later, but purchases are the source of truth for supplier prices and quality.</p>
           <p><strong>Example:</strong> Cocoa powder, Supplier A, 1000g, PHP 100, quality 4/5.</p>
         </div>
       </Panel>
@@ -3590,52 +4179,78 @@ function SuppliesPage({
         <div className="border-b border-[#eaded2] p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Purchase Log</p>
           <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <h3 className="text-xl font-semibold">Saved supplies</h3>
+            <h3 className="text-xl font-semibold">Purchases</h3>
             <div className="flex flex-wrap gap-2">
+              <button className={`h-9 rounded-md border px-3 text-sm font-semibold ${purchaseView === "by-item" ? "border-[#8f5632] bg-[#8f5632] text-white" : "border-[#d8c7b7] bg-white text-[#5f4a3d]"}`} onClick={() => setPurchaseView("by-item")} type="button">By Item</button>
+              <button className={`h-9 rounded-md border px-3 text-sm font-semibold ${purchaseView === "all" ? "border-[#8f5632] bg-[#8f5632] text-white" : "border-[#d8c7b7] bg-white text-[#5f4a3d]"}`} onClick={() => setPurchaseView("all")} type="button">All Purchases</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("supplies-print-report")} type="button">Print</button>
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadSupplies} type="button">Download CSV</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadPurchases} type="button">Download CSV</button>
             </div>
           </div>
+          {purchaseView === "all" ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Transaction log: each row is one purchase record, so repeated Item names are expected.</p> : null}
         </div>
-        <div className="divide-y divide-[#f0e4d8]">
-          {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No supplies logged yet.</p> : null}
-          {labState.supplies.map((supply) => {
-            const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
-            const supplierLabel = supply.supplierName || "Supplier not set";
-            const brandLabel = supply.brandName || "Brand not set";
-            return (
-              <article className="grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_70px]" key={supply.id}>
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Tag tone="green">{brandLabel}</Tag>
-                    <Tag tone="warm">{supplierLabel}</Tag>
+        {purchaseView === "by-item" ? (
+          <div className="divide-y divide-[#f0e4d8]">
+            {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
+            {purchaseGroups.map((group) => {
+              const summary = getPurchaseGroupSummary(group);
+              return (
+                <article className="p-5" key={group.ingredient.id}>
+                  <div className="grid gap-4 lg:grid-cols-[1fr_150px_150px_150px_130px]">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Tag tone="green">{summary.purchaseCount} purchase{summary.purchaseCount === 1 ? "" : "s"}</Tag>
+                        {summary.latestBrand ? <Tag tone="warm">{summary.latestBrand}</Tag> : null}
+                        {summary.latestSupplier ? <Tag tone="warm">{summary.latestSupplier}</Tag> : null}
+                      </div>
+                      <h4 className="mt-2 font-semibold">{group.ingredient.name}</h4>
+                      <p className="mt-1 text-sm text-[#6f5a4c]">Last bought {summary.lastPurchaseDate || "date not set"}</p>
+                    </div>
+                    <div className="text-sm">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Latest Pack</p>
+                      <p className="mt-1 font-semibold">{summary.latestPackage || "--"}</p>
+                      <p className="text-[#6f5a4c]">PHP {summary.latestUnitCost.toFixed(4)}/unit</p>
+                    </div>
+                    <div className="text-sm">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Total Bought</p>
+                      <p className="mt-1 font-semibold">{summary.totalPurchasedUnit ? `${summary.totalPurchasedQuantity} ${summary.totalPurchasedUnit}` : "Mixed units"}</p>
+                      <p className="text-[#6f5a4c]">{summary.averageUnitCost ? `Avg PHP ${summary.averageUnitCost.toFixed(4)}/${summary.totalPurchasedUnit}` : "Average not available"}</p>
+                    </div>
+                    <div className="text-sm">
+                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">History</p>
+                      <p className="mt-1 font-semibold">{summary.purchaseCount} record{summary.purchaseCount === 1 ? "" : "s"}</p>
+                    </div>
+                    <div className="flex gap-2 lg:flex-col">
+                      <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => logPurchaseForIngredient(group.ingredient)} type="button">Log Purchase</button>
+                    </div>
                   </div>
-                  <h4 className="mt-2 font-semibold">{supply.ingredientName}</h4>
-                  <p className="mt-1 text-sm text-[#6f5a4c]">Bought {supply.purchaseDate}</p>
-                  {supply.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{supply.notes}</p> : null}
+                  <details className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3]">
+                    <summary className="cursor-pointer p-3 text-sm font-semibold text-[#5f4a3d]">Purchase history</summary>
+                    <div className="divide-y divide-[#ead9c8] bg-white">
+                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} key={purchase.id} supply={purchase} />)}
+                    </div>
+                  </details>
+                </article>
+              );
+            })}
+            {unlinkedPurchases.length > 0 ? (
+              <section>
+                <div className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Unlinked purchases</p>
+                  <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">These purchase records do not resolve to a current Item. Records with unknown Item IDs are kept here and are not matched by name.</p>
                 </div>
-                <div className="text-sm">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Pack</p>
-                  <p className="mt-1 font-semibold">{supply.packQuantity}{supply.unit ? ` ${supply.unit}` : ""}</p>
-                  <p className="text-[#6f5a4c]">PHP {supply.totalCost.toFixed(2)}</p>
+                <div className="divide-y divide-[#f0e4d8]">
+                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} key={purchase.id} supply={purchase} />)}
                 </div>
-                <div className="text-sm">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Unit Cost</p>
-                  <p className="mt-1 font-semibold">PHP {unitCost.toFixed(4)}</p>
-                  <p className="text-[#6f5a4c]">per {supply.unit || "unit"}</p>
-                </div>
-                <div className="text-sm">
-                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Quality</p>
-                  <p className="mt-1 font-semibold">{supply.qualityRating || 0}/5</p>
-                </div>
-                <div className="flex gap-2 lg:flex-col">
-                  <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editSupply(supply)} type="button">Edit</button>
-                  <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${supply.ingredientName} from ${supplierLabel}?`) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
-                </div>
-              </article>
-            );
-          })}
+              </section>
+            ) : null}
+          </div>
+        ) : (
+        <div className="divide-y divide-[#f0e4d8]">
+          {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
+          {chronologicalPurchases.map((supply) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} key={supply.id} supply={supply} />)}
         </div>
+        )}
       </div>
       <SuppliesPrintReport supplies={labState.supplies} />
     </section>
@@ -3645,7 +4260,7 @@ function SuppliesPage({
 function SuppliesPrintReport({ supplies }: { supplies: SupplyEntry[] }) {
   return (
     <div className="print-report" id="supplies-print-report">
-      <h1>Aly & Shin Supply Purchase Log</h1>
+      <h1>Aly & Shin Purchase Log</h1>
       <p>Generated {getToday()}</p>
       <table>
         <thead>
@@ -4002,6 +4617,7 @@ function CostingForm({
   costing,
   equipment,
   ingredientEntries,
+  ingredients,
   message,
   messageTone,
   saveCosting,
@@ -4012,6 +4628,7 @@ function CostingForm({
   costing: CostingSummary | null;
   equipment: EquipmentEntry[];
   ingredientEntries: CostingEntry[];
+  ingredients: Ingredient[];
   message: string;
   messageTone: "good" | "bad" | "info";
   saveCosting: (formData: FormData) => void;
@@ -4036,7 +4653,7 @@ function CostingForm({
     : [];
   const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   // A brand-new costing has nothing saved yet to protect, so it starts pre-filled from the
-  // selected batch's formula (auto-costed against Supplies) instead of a blank row -- the "Use
+  // selected batch's formula (auto-costed against purchase history) instead of a blank row -- the "Use
   // this batch's formula" button stays for switching batches or editing a saved costing, where
   // auto-importing would risk silently overwriting rows the user already priced/edited.
   const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() => {
@@ -4248,7 +4865,7 @@ function CostingForm({
   }
 
   function autoCostRows(rows: CostingIngredientRow[]) {
-    return rows.map((row) => getAutoCostedIngredientRow(row, supplies));
+    return rows.map((row) => getAutoCostedIngredientRowForItems(row, supplies, ingredients));
   }
 
   function updateIngredientRow(rowId: string, changes: Partial<CostingIngredientRow>, isManualCost = false) {
@@ -4315,7 +4932,7 @@ function CostingForm({
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-sm font-semibold">Ingredients used</p>
-              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Cost the quantity used in this product batch. Use Supplies for purchase prices and supplier comparison.</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Cost the quantity used in this product batch. Use purchase history for prices and supplier comparison.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={selectedBatchFormula.length === 0} onClick={importBatchFormula} type="button">Use this batch&apos;s formula</button>
@@ -4326,7 +4943,7 @@ function CostingForm({
           </div>
           <div className="mt-3 grid gap-3">
             {ingredientRows.map((row, index) => {
-              const matches = getMatchingSupplies(supplies, row.brandName, row.ingredientName, row.unit).slice(0, 3);
+              const matches = getMatchingPurchaseHistoryForIngredient(supplies, ingredients, { ingredientName: row.ingredientName }, row.brandName, row.unit).slice(0, 3);
               return (
                 <div className="rounded-md border border-[#ead9c8] bg-white p-3" key={row.rowId}>
                   <div className="grid gap-2 lg:grid-cols-[1fr_1fr_90px_80px_110px_1fr_70px]">
@@ -4344,8 +4961,8 @@ function CostingForm({
                     }} type="button">Remove</button>
                   </div>
                   <div className="mt-3 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">Matching supplies</p>
-                    {matches.length === 0 ? <p className="mt-2 text-sm text-[#6f5a4c]">No exact supply match yet. Brand, ingredient, and unit must match Supplies.</p> : null}
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">Matching purchases</p>
+                    {matches.length === 0 ? <p className="mt-2 text-sm text-[#6f5a4c]">No exact purchase match yet. Brand, ingredient, and unit must match purchase history.</p> : null}
                     <div className="mt-2 grid gap-2">
                       {matches.map((supply, matchIndex) => {
                         const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;

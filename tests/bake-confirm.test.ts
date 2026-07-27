@@ -9,6 +9,7 @@ function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
     id: "flour-id",
     name: "Flour",
     baseUnit: "g",
+    category: "",
     currentQuantity: 1000,
     lowStockThreshold: 200,
     targetStockQuantity: 5000,
@@ -103,6 +104,7 @@ test("each transaction has transaction_type consume, source_type bake, source_id
   if ("error" in result) return;
   const [transaction] = result.transactions;
   assert.equal(transaction.transactionType, "consume");
+  assert.equal(transaction.ingredientId, "flour-id");
   assert.equal(transaction.sourceType, "bake");
   assert.equal(transaction.sourceId, "batch-42");
   assert.equal(transaction.quantityChange, -300);

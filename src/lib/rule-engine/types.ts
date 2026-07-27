@@ -1,4 +1,4 @@
-import type { CostingSummary, Product, ProductBatch, SupplyEntry, TastingFeedback } from "../product-lab-types.ts";
+import type { CostingSummary, Ingredient, Product, ProductBatch, SupplyEntry, TastingFeedback } from "../product-lab-types.ts";
 
 export type RuleSeverity = "info" | "warning" | "blocker";
 
@@ -21,6 +21,7 @@ export type RuleResult = {
 export type RuleEngineContext = {
   batches: ProductBatch[];
   costings: CostingSummary[];
+  ingredients?: Ingredient[];
   tastings: TastingFeedback[];
   supplies: SupplyEntry[];
   // Current time, read by the caller and passed in -- never Date.now() inside a rule -- so

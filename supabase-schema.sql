@@ -15,6 +15,10 @@ create table if not exists product_batches (
   id uuid primary key default gen_random_uuid(),
   product_id text not null references products(id) on delete cascade,
   batch_version text not null,
+  status text not null default 'draft',
+  completed_at timestamptz,
+  voided_at timestamptz,
+  void_reason text,
   date_made date not null,
   ingredients_notes text,
   prep_start_time time,
@@ -82,6 +86,7 @@ create table if not exists costing_summaries (
 
 create table if not exists supply_entries (
   id uuid primary key default gen_random_uuid(),
+  ingredient_id uuid,
   ingredient_name text not null,
   brand_name text,
   supplier_name text not null,

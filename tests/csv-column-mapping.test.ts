@@ -31,9 +31,22 @@ test("leaves unmapped fields absent when no header matches", () => {
   assert.equal(mapping.expirationDate, undefined);
 });
 
-test("isColumnMappingComplete requires only the 3 required fields", () => {
+test("isColumnMappingComplete accepts the flat quantity+unit path", () => {
   assert.equal(isColumnMappingComplete({ itemName: "a", quantity: "b", unit: "c" }), true);
   assert.equal(isColumnMappingComplete({ itemName: "a", quantity: "b" }), false);
+});
+
+test("isColumnMappingComplete accepts the package count+size+unit path", () => {
+  assert.equal(isColumnMappingComplete({ itemName: "a", packageCount: "b", packageSize: "c", packageUnit: "d" }), true);
+  assert.equal(isColumnMappingComplete({ itemName: "a", packageCount: "b", packageSize: "c" }), false);
+});
+
+test("isColumnMappingComplete requires itemName regardless of which quantity path is mapped", () => {
+  assert.equal(isColumnMappingComplete({ quantity: "b", unit: "c" }), false);
+});
+
+test("isColumnMappingComplete rejects a mapping with neither quantity path complete", () => {
+  assert.equal(isColumnMappingComplete({ itemName: "a", unit: "c", packageSize: "d" }), false);
 });
 
 test("a CSV with unrecognized headers maps to nothing automatically, requiring manual mapping", () => {
@@ -48,7 +61,54 @@ test("applyColumnMapping reads each field from its mapped column, trimmed", () =
 
   const mapped = applyColumnMapping(parsed, mapping);
 
-  assert.deepEqual(mapped, [{ itemName: "Fresh Milk", quantity: "6", unit: "L", totalPrice: "", expirationDate: "" }]);
+  assert.deepEqual(mapped, [
+    {
+      itemName: "Fresh Milk",
+      brand: "",
+      quantity: "6",
+      unit: "L",
+      totalPrice: "",
+      expirationDate: "",
+      category: "",
+      packageCount: "",
+      packageSize: "",
+      packageUnit: "",
+      unitPrice: "",
+      supplier: "",
+      receiptNumber: "",
+      purchaseDate: "",
+    },
+  ]);
+});
+
+test("auto-detects a 'brand' header", () => {
+  const mapping = suggestColumnMapping(["brand", "item_name", "quantity", "unit"]);
+
+  assert.equal(mapping.brand, "brand");
+});
+
+test("auto-detects brand header synonyms: brand_name, 'Brand Name', manufacturer", () => {
+  assert.equal(suggestColumnMapping(["brand_name", "item_name"]).brand, "brand_name");
+  assert.equal(suggestColumnMapping(["Brand Name", "item_name"]).brand, "Brand Name");
+  assert.equal(suggestColumnMapping(["Manufacturer", "item_name"]).brand, "Manufacturer");
+});
+
+test("applyColumnMapping reads the brand column when mapped", () => {
+  const parsed = { headers: ["brand", "item_name"], rows: [["Goya", "Chocolate Chips"]] };
+  const mapping = suggestColumnMapping(parsed.headers);
+
+  const [mapped] = applyColumnMapping(parsed, mapping);
+
+  assert.equal(mapped.brand, "Goya");
+});
+
+test("applyColumnMapping leaves brand as an empty string for an old-format CSV with no brand column", () => {
+  const parsed = { headers: ["item_name", "quantity", "unit"], rows: [["Fresh Milk", "6", "L"]] };
+  const mapping = suggestColumnMapping(parsed.headers);
+
+  const [mapped] = applyColumnMapping(parsed, mapping);
+
+  assert.equal(mapped.brand, "");
 });
 
 test("applyColumnMapping leaves an unmapped optional field as an empty string", () => {
@@ -59,4 +119,33 @@ test("applyColumnMapping leaves an unmapped optional field as an empty string", 
 
   assert.equal(mapped.totalPrice, "");
   assert.equal(mapped.expirationDate, "");
+  assert.equal(mapped.packageCount, "");
+});
+
+test("applyColumnMapping reads the package-format columns", () => {
+  const parsed = {
+    headers: ["item_name", "category", "package_count", "package_size", "package_unit", "unit_price", "supplier", "receipt_number", "purchase_date"],
+    rows: [["Van Houten Dark Chocolate", "ingredient", "2", "1", "kg", "563", "Main", "BR001-04", "2026-07-05"]],
+  };
+  const mapping = suggestColumnMapping(parsed.headers);
+
+  const [mapped] = applyColumnMapping(parsed, mapping);
+
+  assert.equal(mapped.packageCount, "2");
+  assert.equal(mapped.packageSize, "1");
+  assert.equal(mapped.packageUnit, "kg");
+  assert.equal(mapped.unitPrice, "563");
+  assert.equal(mapped.category, "ingredient");
+  assert.equal(mapped.supplier, "Main");
+  assert.equal(mapped.receiptNumber, "BR001-04");
+  assert.equal(mapped.purchaseDate, "2026-07-05");
+});
+
+test("suggestColumnMapping auto-detects the package-format headers from the spec", () => {
+  const mapping = suggestColumnMapping(["purchase_date", "supplier", "receipt_number", "item_name", "category", "package_count", "package_size", "package_unit", "unit_price"]);
+
+  assert.equal(isColumnMappingComplete(mapping), true);
+  assert.equal(mapping.packageCount, "package_count");
+  assert.equal(mapping.packageSize, "package_size");
+  assert.equal(mapping.packageUnit, "package_unit");
 });

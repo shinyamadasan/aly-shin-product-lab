@@ -194,6 +194,38 @@
 - AI-recommended priority: P1
 - status:      approved — pending rebase off the merged inventory nav, then merge; SQL to be run once at merge time.
 
+### PROP-010 — Ingredient Brand Variant / Product Catalog layer
+- ▶ Decision: Park — real architectural gap, deliberately deferred out of the CSV-import PR that surfaced it.
+- ▶ Risk: High — sits between two entities (Ingredient, SupplyEntry) that many features already read; touches costing auto-match, the alias system, and the ingredient master.
+- type:        feature
+- source captures: user request (2026-07-25, raised while scoping the CSV-import brand-population fix)
+- goal alignment:  supports — the underlying confusion (does "brand" belong to the ingredient or the purchase?) will keep resurfacing anywhere purchasing and recipes meet.
+- expected user value: Aly/Shin — a correct model instead of a widening workaround. Right now `Ingredient` (what a recipe consumes) and `SupplyEntry.brandName` (what was actually bought) are only loosely, textually related — no foreign key, two independent free-text fields matched by normalization.
+- evidence:    while building CSV-import brand handling, considered adding `brandName` directly to `Ingredient` and rejected it: recipes consume a generic ingredient ("Dark Chocolate"), but purchasing deals in specific branded products ("Van Houten Dark Chocolate", "Beryl's Dark Chocolate") that can vary purchase to purchase. Neither "brand lives on Ingredient" (forces one brand per ingredient forever) nor "brand lives only on SupplyEntry" (today's model — no reliable single source of truth for "what brand do we usually buy this in") fully fits. The real fix is a third entity: a Product/Brand-Variant layer between them (Ingredient 1:N Product, Product 1:N SupplyEntry), so a recipe references the generic ingredient while purchases and costing reference a specific branded product.
+- effort:      L — new entity, migration, and updates to costing auto-match, ingredient matching/aliases, and the Supplies/Purchases UI.
+- dependencies: should land after the CSV-import PR (this proposal) and the Inventory nav consolidation are both stable, not concurrently with either.
+- confidence:  med — the shape (Ingredient → Product → SupplyEntry) is clear; exact migration path for existing SupplyEntry rows is not yet designed.
+- ambiguity:   whether every SupplyEntry needs a Product, or whether brand-less/generic purchases stay valid; how existing SupplyEntry rows backfill into Products.
+- why now vs later: not blocking — the CSV importer works today with brand kept purchase-level and a reliability check before prefilling. This is the fix for when the workaround's edges start showing.
+- AI-recommended priority: P2
+- status:      pending
+
+### PROP-011 — Item-specific unit conversion factors (e.g. "1 tsp = X g")
+- ▶ Decision: Park — real, recurring need; deliberately deferred out of the tbsp/tsp/cup conversion fix that surfaced it.
+- ▶ Risk: High — extends `convertToBaseUnit`, which both Bake deduction and Purchase Import rely on for real inventory-quantity math; when unsure, this contract says say High.
+- type:        feature
+- source captures: user request (2026-07-25, raised while fixing "Needs unit fix" on Bake formula rows measured in tbsp/tsp)
+- goal alignment:  supports — keeps Bake/Costing quantities exact instead of guessed, the same principle behind PROP-010.
+- expected user value: Aly/Shin — lets a recipe reference an ingredient in its natural kitchen unit (tsp/tbsp/cup) while inventory still deducts in that ingredient's real base unit (g/kg), without the app ever guessing a density.
+- evidence:    today's fix (tbsp/tsp/cup -> ml/L in `unit-conversion.ts`) only covers unambiguous same-family volume conversions; it still correctly returns null for any volume-to-mass request (e.g. 3 tsp of Instant Coffee -> g), since guessing density from an ingredient-name keyword table (the pattern `supplies.ts`'s `gramPerMlByIngredient` already uses for Costing) was explicitly rejected here for Bake/Purchase-Import correctness -- a keyword match is a guess, and a wrong guess silently mis-deducts real inventory. The user asked instead for this to become an explicit **per-Item** setting: an operator-entered conversion factor (e.g. "1 tsp = 2g") stored on the Ingredient itself, consulted by `convertToBaseUnit` only when the recipe/purchase unit doesn't already resolve via a fixed metric-family or volume-family conversion. Never inferred from a keyword table -- always a value the operator explicitly typed in for that specific product. The immediate case (Instant Coffee) is unblocked today by changing that recipe row from tsp to grams directly, not by this proposal.
+- effort:      M -- a nullable custom-conversion field (or pair: source unit + factor) on `Ingredient`, an Item-form UI to set it, and a `convertToBaseUnit` fallback that checks the ingredient's own factor before returning null.
+- dependencies: none blocking; can land independently once scoped.
+- confidence:  med -- the general shape (an ingredient-level override, consulted last) is clear; open questions are the exact UI (one factor per ingredient vs. one per source-unit) and whether it also feeds Costing's `getConvertedQuantity` path (today a separate, keyword-based system) or stays Bake/Purchase-Import-only.
+- ambiguity:   whether an explicit per-item factor should also override/replace `supplies.ts`'s keyword-based density guess for Costing once one exists for that ingredient.
+- why now vs later: not blocking -- today's fix already covers the unambiguous volume conversions, and the one broken recipe row is fixed directly. This is for the general, recurring case (any future ingredient bought/measured by volume but tracked by weight).
+- AI-recommended priority: P2
+- status:      pending
+
 ## Proposal contract
 *(the structured shape triage produces — keep this shape so downstream stages stay swappable)*
 ```
