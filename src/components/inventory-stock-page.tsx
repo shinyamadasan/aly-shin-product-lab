@@ -23,38 +23,42 @@ export function InventoryStockPage({ goToManageItems, labState }: { goToManageIt
           Items
         </button>
       </div>
-      <div className="divide-y divide-[#f0e4d8]">
+      <div className="overflow-x-auto">
         {ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No ingredients yet. Add one in Items.</p> : null}
-        {ingredients.map((item) => {
-          const status = getStockStatus(item);
-          const expirationStatus = getExpirationStatus(item.nearestExpirationDate, getToday());
-          const value = getInventoryValue(item);
-          return (
-            <article className="grid gap-4 p-5 lg:grid-cols-[1fr_140px_140px_140px]" key={item.id}>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag>
-                  {expirationStatus !== "none" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}
-                </div>
-                <h4 className="mt-2 font-semibold">{item.name}</h4>
-              </div>
-              <div className="text-sm">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Current</p>
-                <p className="mt-1 font-semibold">{item.currentQuantity} {item.baseUnit}</p>
-                <p className="text-[#6f5a4c]">Low at {item.lowStockThreshold} {item.baseUnit}</p>
-              </div>
-              <div className="text-sm">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Target</p>
-                <p className="mt-1 font-semibold">{item.targetStockQuantity} {item.baseUnit}</p>
-              </div>
-              <div className="text-sm">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Value</p>
-                <p className="mt-1 font-semibold">PHP {value.toFixed(2)}</p>
-                <p className="text-[#6f5a4c]">{item.averageUnitCost ? `@ PHP ${item.averageUnitCost.toFixed(2)}` : "No cost set"}</p>
-              </div>
-            </article>
-          );
-        })}
+        {ingredients.length > 0 ? (
+          <div className="min-w-[680px]">
+            <div className="sticky top-0 z-10 grid grid-cols-[minmax(220px,1fr)_120px_120px_150px] gap-4 border-b border-[#eaded2] bg-[#fffaf3] px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">
+              <p>Item</p>
+              <p>Current</p>
+              <p>Target</p>
+              <p>Value</p>
+            </div>
+            <div className="divide-y divide-[#f0e4d8]">
+              {ingredients.map((item) => {
+                const status = getStockStatus(item);
+                const expirationStatus = getExpirationStatus(item.nearestExpirationDate, getToday());
+                const value = getInventoryValue(item);
+                return (
+                  <article className="grid grid-cols-[minmax(220px,1fr)_120px_120px_150px] items-center gap-4 px-5 py-3 text-sm" key={item.id}>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="font-semibold">{item.name}</h4>
+                        <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag>
+                        {expirationStatus !== "none" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}
+                      </div>
+                    </div>
+                    <p className="font-semibold">{item.currentQuantity} {item.baseUnit}</p>
+                    <p className="font-semibold">{item.targetStockQuantity} {item.baseUnit}</p>
+                    <div>
+                      <p className="font-semibold">PHP {value.toFixed(2)}</p>
+                      <p className="text-[#6f5a4c]">{item.averageUnitCost ? `@ PHP ${item.averageUnitCost.toFixed(2)}` : "No cost set"}</p>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
