@@ -297,13 +297,15 @@ export function PurchaseImportWizard({
     const quantityResult = resolveRowQuantity(rowToMappedRow(row));
     const hasConfirmedItem = row.ingredientId.trim() && row.matchMethod !== "suggested" && row.matchMethod !== "none";
     const convertedQuantity = Number.isFinite(parsed) ? parsed : 0;
-    const rowStatus: PurchaseImportRowStatus = quantityResult.errors.length > 0 ? "invalid" : hasConfirmedItem && convertedQuantity > 0 ? "matched" : "pending";
+    const usesPackageFormat = Boolean(row.rawPackageUnit.trim());
+    const manualStockOverrideIsSafe = hasConfirmedItem && convertedQuantity > 0 && !usesPackageFormat;
+    const rowStatus: PurchaseImportRowStatus = manualStockOverrideIsSafe ? "matched" : quantityResult.errors.length > 0 ? "invalid" : hasConfirmedItem && convertedQuantity > 0 ? "matched" : "pending";
 
     updatePurchaseImportRow(row.id, {
       convertedQuantity,
       isQuantityOverridden: true,
       rowStatus,
-      validationErrors: quantityResult.errors.join(" "),
+      validationErrors: manualStockOverrideIsSafe ? "" : quantityResult.errors.join(" "),
     });
   }
 

@@ -103,6 +103,26 @@ test("blocks unsupported conversion and zero converted quantity", () => {
   assert.equal(isPurchaseImportRowSafeToConfirm(importRow, ingredient()), false);
 });
 
+test("manual flat inventory override makes stale quantity/unit parse errors nonblocking", () => {
+  const importRow = row({
+    rawQuantity: "",
+    rawUnit: "",
+    rawPackageCount: "",
+    rawPackageSize: "",
+    rawPackageUnit: "",
+    validationErrors: "Quantity must be a number greater than zero. Unit is required.",
+    rowStatus: "invalid",
+    convertedQuantity: 500,
+    isQuantityOverridden: true,
+  });
+
+  const review = getPurchaseImportReview(importRow, ingredient());
+
+  assert.notEqual(review.status, "Blocked");
+  assert.deepEqual(review.blockingReasons, []);
+  assert.equal(isPurchaseImportRowSafeToConfirm(importRow, ingredient()), true);
+});
+
 test("flags package count default and normalized match as review warnings", () => {
   const review = getPurchaseImportReview(row({ rawPackageCount: "", parsedPackageCount: 1, matchMethod: "normalized" }), ingredient());
 
@@ -126,4 +146,3 @@ test("explicit alias checkbox defaults only for meaningful receipt names", () =>
   assert.equal(isMeaningfulReceiptAlias("AP Flour 1kg", ingredient()), true);
   assert.equal(isMeaningfulReceiptAlias(" all purpose flour ", ingredient()), false);
 });
-

@@ -54,6 +54,7 @@ export function getPurchaseImportReview(
     | "rawTotalPrice"
     | "parsedPackageCount"
     | "parsedTotalPrice"
+    | "isQuantityOverridden"
   >,
   ingredient: Pick<Ingredient, "id" | "baseUnit"> | null | undefined,
   importHeader: { supplierName?: string; receiptNumber?: string; purchaseDate?: string } = {},
@@ -61,11 +62,12 @@ export function getPurchaseImportReview(
   const blockingReasons: string[] = [];
   const reviewReasons: string[] = [];
   const usesPackageFormat = Boolean(row.rawPackageUnit.trim());
+  const hasManualFlatStockOverride = row.isQuantityOverridden && row.convertedQuantity > 0 && !usesPackageFormat;
   const receiptTotal = parseOptionalNumber(row.rawTotalPrice);
   const calculatedRowTotal = row.parsedTotalPrice;
   const hasTotalDiscrepancy = receiptTotal !== null && Math.abs(receiptTotal - calculatedRowTotal) > CURRENCY_TOLERANCE;
 
-  if (row.rowStatus === "invalid") {
+  if (row.rowStatus === "invalid" && !hasManualFlatStockOverride) {
     blockingReasons.push(row.validationErrors || "Row has invalid purchase data.");
   }
 
@@ -134,4 +136,3 @@ export function isPurchaseImportRowSafeToConfirm(row: PurchaseImportRowDraft, in
   }
   return getPurchaseImportReview(row, ingredient).status !== "Blocked";
 }
-
