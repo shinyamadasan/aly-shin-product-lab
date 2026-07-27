@@ -630,7 +630,7 @@ export function PurchaseImportWizard({
                               className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm"
                               defaultValue={row.rawPackageCount}
                               key={`pkgcount-${row.id}`}
-                              onBlur={(event) => handleQuantityEdit(row, { packageCount: event.target.value })}
+                              onChange={(event) => handleQuantityEdit(row, { packageCount: event.target.value })}
                               type="number"
                             />
                           ) : (
@@ -645,14 +645,14 @@ export function PurchaseImportWizard({
                                 className="h-9 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-sm"
                                 defaultValue={row.rawPackageSize}
                                 key={`pkgsize-${row.id}`}
-                                onBlur={(event) => handleQuantityEdit(row, { packageSize: event.target.value })}
+                                onChange={(event) => handleQuantityEdit(row, { packageSize: event.target.value })}
                                 type="number"
                               />
                               <input
                                 className="h-9 w-20 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm"
                                 defaultValue={row.rawPackageUnit}
                                 key={`pkgunit-${row.id}`}
-                                onBlur={(event) => handleQuantityEdit(row, { packageUnit: event.target.value })}
+                                onChange={(event) => handleQuantityEdit(row, { packageUnit: event.target.value })}
                               />
                             </div>
                           ) : (
@@ -668,7 +668,7 @@ export function PurchaseImportWizard({
                               className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm"
                               defaultValue={row.rawUnitPrice}
                               key={`unitprice-${row.id}`}
-                              onBlur={(event) => handleQuantityEdit(row, { unitPrice: event.target.value })}
+                              onChange={(event) => handleQuantityEdit(row, { unitPrice: event.target.value })}
                               type="number"
                             />
                           ) : (
@@ -686,14 +686,14 @@ export function PurchaseImportWizard({
                                 className="h-9 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-sm"
                                 defaultValue={row.rawQuantity}
                                 key={`qty-${row.id}`}
-                                onBlur={(event) => handleQuantityEdit(row, { quantity: event.target.value })}
+                                onChange={(event) => handleQuantityEdit(row, { quantity: event.target.value })}
                                 type="number"
                               />
                               <input
                                 className="h-9 w-20 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm"
                                 defaultValue={row.rawUnit}
                                 key={`unit-${row.id}`}
-                                onBlur={(event) => handleQuantityEdit(row, { unit: event.target.value })}
+                                onChange={(event) => handleQuantityEdit(row, { unit: event.target.value })}
                               />
                             </div>
                           ) : (
@@ -709,7 +709,7 @@ export function PurchaseImportWizard({
                               className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm"
                               defaultValue={row.rawTotalPrice}
                               key={`total-${row.id}`}
-                              onBlur={(event) => handleQuantityEdit(row, { totalPrice: event.target.value })}
+                              onChange={(event) => handleQuantityEdit(row, { totalPrice: event.target.value })}
                               type="number"
                             />
                           ) : (
