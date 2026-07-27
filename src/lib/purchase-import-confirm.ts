@@ -2,6 +2,7 @@ import type { Ingredient, InventoryTransaction, SupplyEntry } from "./product-la
 import type { PurchaseImportRowDraft } from "./purchase-import";
 import { computeWeightedAverageUnitCost } from "./inventory-cost.ts";
 import { buildInventoryTransaction } from "./inventory-transaction.ts";
+import { getPurchaseImportReview } from "./purchase-import-review.ts";
 
 export type PurchaseImportConfirmInput = {
   ingredients: Ingredient[];
@@ -28,6 +29,10 @@ export function applyPurchaseImportConfirmation({ ingredients, rows, importId, t
   }
   if (applicableRows.length === 0) {
     return { error: "No rows to confirm -- every row was excluded." };
+  }
+  const unsafeRow = applicableRows.find((row) => getPurchaseImportReview(row, ingredients.find((ingredient) => ingredient.id === row.ingredientId)).status === "Blocked");
+  if (unsafeRow) {
+    return { error: `Row "${unsafeRow.rawItemName}" cannot safely create an inventory transaction.` };
   }
 
   const rowsByIngredient = new Map<string, PurchaseImportRowDraft[]>();
@@ -119,9 +124,9 @@ export type BuildSupplyEntriesResult = { supplyEntries: SupplyEntry[] } | { erro
 // only job is inventory quantity/cost correctness, and stays completely untouched by this feature.
 // This one's only job is "what SupplyEntry rows does this import produce" -- every confirmed
 // (matched, non-excluded) row becomes one, so a CSV import is priced into Costing and shows up in
-// Purchases > Supplier Comparison exactly like a manually logged purchase. Brand is required here
-// (not in applyPurchaseImportConfirmation) because it's a SupplyEntry-only concern -- see PROP-010
-// in planning/PROPOSALS.md for why brand lives on the purchase, not the ingredient.
+// Purchases > Supplier Comparison exactly like a manually logged purchase. Brand is purchase-level
+// metadata (see PROP-010 in planning/PROPOSALS.md), but it is not required for safe stock movement;
+// the review UI flags a blank brand without blocking confirmation.
 export function buildSupplyEntriesFromPurchaseImport({ rows, ingredients, importSupplierName, importReceiptNumber, importPurchaseDate, today }: BuildSupplyEntriesInput): BuildSupplyEntriesResult {
   const applicableRows = rows.filter((row) => row.rowStatus !== "excluded");
   const unresolvedRow = applicableRows.find((row) => row.rowStatus !== "matched");
@@ -129,13 +134,12 @@ export function buildSupplyEntriesFromPurchaseImport({ rows, ingredients, import
     return { error: `Row "${unresolvedRow.rawItemName}" still needs to be resolved (or excluded) before this import can be confirmed.` };
   }
 
-  const missingBrandRow = applicableRows.find((row) => !row.brandName.trim());
-  if (missingBrandRow) {
-    return { error: `Row "${missingBrandRow.rawItemName}" needs a brand before this import can be confirmed.` };
-  }
-
   if (applicableRows.length === 0) {
     return { error: "No rows to confirm -- every row was excluded." };
+  }
+  const unsafeRow = applicableRows.find((row) => getPurchaseImportReview(row, ingredients.find((ingredient) => ingredient.id === row.ingredientId)).status === "Blocked");
+  if (unsafeRow) {
+    return { error: `Row "${unsafeRow.rawItemName}" cannot safely create an inventory transaction.` };
   }
 
   const supplyEntries: SupplyEntry[] = applicableRows.map((row) => {

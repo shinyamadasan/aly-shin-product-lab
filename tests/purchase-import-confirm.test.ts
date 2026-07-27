@@ -86,6 +86,12 @@ test("rejects confirmation when any non-excluded row is not matched", () => {
   assert.ok("error" in result);
 });
 
+test("rejects confirmation when a matched row cannot safely create a stock transaction", () => {
+  const result = applyPurchaseImportConfirmation({ ingredients: [ingredient()], rows: [row({ convertedQuantity: 0 })], importId: "import-1", today: "2026-07-24T00:00:00.000Z" });
+
+  assert.ok("error" in result);
+});
+
 test("an excluded row is skipped even if it would otherwise be unresolved", () => {
   const result = applyPurchaseImportConfirmation({
     ingredients: [ingredient({ currentQuantity: 1000 })],
@@ -224,14 +230,22 @@ test("buildSupplyEntriesFromPurchaseImport creates one SupplyEntry per matched r
   assert.equal(entry.totalCost, 570);
 });
 
-test("buildSupplyEntriesFromPurchaseImport rejects when a matched row has no brand", () => {
+test("buildSupplyEntriesFromPurchaseImport allows blank brand for a safely matched row", () => {
   const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row({ brandName: "" })] });
 
-  assert.ok("error" in result);
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.supplyEntries[0].brandName, "");
 });
 
 test("buildSupplyEntriesFromPurchaseImport rejects when any non-excluded row is unresolved", () => {
   const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row({ rowStatus: "pending", brandName: "" })] });
+
+  assert.ok("error" in result);
+});
+
+test("buildSupplyEntriesFromPurchaseImport rejects unsafe matched rows", () => {
+  const result = buildSupplyEntriesFromPurchaseImport({ ...supplyEntriesInput, rows: [row({ convertedQuantity: 0 })] });
 
   assert.ok("error" in result);
 });
@@ -292,7 +306,7 @@ test("buildSupplyEntriesFromPurchaseImport falls back to today when neither the 
 test("buildSupplyEntriesFromPurchaseImport uses the package unit for package-format rows, not the flat unit", () => {
   const result = buildSupplyEntriesFromPurchaseImport({
     ...supplyEntriesInput,
-    rows: [row({ rawUnit: "", rawPackageUnit: "kg", parsedQuantity: 2, parsedTotalPrice: 1126 })],
+    rows: [row({ rawUnit: "", rawPackageSize: "2", rawPackageUnit: "kg", parsedQuantity: 2, parsedTotalPrice: 1126 })],
   });
 
   assert.ok(!("error" in result));

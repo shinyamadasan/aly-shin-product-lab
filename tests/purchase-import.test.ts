@@ -183,15 +183,15 @@ test("buildPurchaseImportRowDrafts never mutates the ingredients or aliases pass
   assert.equal(ingredients[0].currentQuantity, 100);
 });
 
-test("isPurchaseImportReadyToConfirm is true only when every matched row has a brand, or is excluded", () => {
+test("isPurchaseImportReadyToConfirm is true when every non-excluded row is matched", () => {
   assert.equal(isPurchaseImportReadyToConfirm([{ rowStatus: "matched", brandName: "Van Houten" }, { rowStatus: "excluded", brandName: "" }]), true);
   assert.equal(isPurchaseImportReadyToConfirm([{ rowStatus: "matched", brandName: "Van Houten" }, { rowStatus: "pending", brandName: "" }]), false);
   assert.equal(isPurchaseImportReadyToConfirm([{ rowStatus: "matched", brandName: "Van Houten" }, { rowStatus: "invalid", brandName: "" }]), false);
 });
 
-test("isPurchaseImportReadyToConfirm is false when a matched row has no brand yet", () => {
-  assert.equal(isPurchaseImportReadyToConfirm([{ rowStatus: "matched", brandName: "" }]), false);
-  assert.equal(isPurchaseImportReadyToConfirm([{ rowStatus: "matched", brandName: "   " }]), false);
+test("isPurchaseImportReadyToConfirm allows blank brand because brand is review metadata, not stock-safety data", () => {
+  assert.equal(isPurchaseImportReadyToConfirm([{ rowStatus: "matched", brandName: "" }]), true);
+  assert.equal(isPurchaseImportReadyToConfirm([{ rowStatus: "matched", brandName: "   " }]), true);
 });
 
 test("isPurchaseImportReadyToConfirm is false for an empty row list", () => {

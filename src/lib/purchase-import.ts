@@ -298,12 +298,11 @@ export function buildPurchaseImportRowDrafts(mappedRows: MappedRow[], ingredient
   });
 }
 
-// A row is ready to fold into "Import Purchases" once it's matched with a real brand, or excluded.
-// A "matched" row with no brand still blocks confirmation -- every SupplyEntry this importer
-// creates must leave with a real brand (see buildSupplyEntriesFromPurchaseImport), so the operator
-// has to fill it in before the row counts as done, not discover the problem after clicking confirm.
+// A row is ready to fold into "Import Purchases" once it's safely matched for stock movement, or
+// excluded. Purchase metadata like brand is useful review context, but not required to create the
+// inventory transaction; the wizard surfaces those blanks as Needs review instead.
 export function isPurchaseImportReadyToConfirm(rows: Pick<PurchaseImportRowDraft, "rowStatus" | "brandName">[]): boolean {
-  return rows.length > 0 && rows.every((row) => row.rowStatus === "excluded" || (row.rowStatus === "matched" && row.brandName.trim() !== ""));
+  return rows.length > 0 && rows.every((row) => row.rowStatus === "excluded" || row.rowStatus === "matched");
 }
 
 export function summarizePurchaseImportRows(rows: PurchaseImportRowDraft[]) {

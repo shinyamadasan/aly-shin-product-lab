@@ -10,6 +10,7 @@ import { buildExcludeRowChanges, buildPurchaseImportRowDrafts, guessIngredientCa
 import { convertToBaseUnit } from "@/lib/unit-conversion";
 import { normalizeUnitText } from "@/lib/ingredient-normalization";
 import { findReliableBrandForItem } from "@/lib/purchase-history";
+import { getPurchaseImportReview, isMeaningfulReceiptAlias, isPurchaseImportRowSafeToConfirm, type PurchaseImportReviewStatus } from "@/lib/purchase-import-review";
 import { suggestBrandFromKnownBrands, traceFindPartialMatch } from "@/lib/ingredient-matching";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions } from "@/components/inventory-page";
 import { FormPanel, Input, SecondaryButton, Tag } from "@/components/ui";
@@ -39,6 +40,12 @@ type FilterTab = "all" | "matched" | "suggested" | "unmatched";
 function rowStatusTone(status: PurchaseImportRowStatus) {
   if (status === "matched") return "green" as const;
   if (status === "excluded") return "warm" as const;
+  return "danger" as const;
+}
+
+function reviewStatusTone(status: PurchaseImportReviewStatus) {
+  if (status === "Ready") return "green" as const;
+  if (status === "Needs review") return "warm" as const;
   return "danger" as const;
 }
 
@@ -107,6 +114,7 @@ export function PurchaseImportWizard({
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
   const [creatingItemForRowId, setCreatingItemForRowId] = useState<string | null>(null);
   const [isBulkCreatingItems, setIsBulkCreatingItems] = useState(false);
+  const [rememberAliasByRowId, setRememberAliasByRowId] = useState<Record<string, boolean>>({});
 
   const activeImport = labState.purchaseImports.find((item) => item.id === activeImportId) ?? null;
   const activeRows = labState.purchaseImportRows
@@ -115,7 +123,9 @@ export function PurchaseImportWizard({
 
   const requiredFieldsMapped = parsedCsv ? isColumnMappingComplete(mapping) : false;
   const summary = summarizePurchaseImportRows(activeRows as unknown as PurchaseImportRowDraft[]);
-  const readyToConfirm = isPurchaseImportReadyToConfirm(activeRows as unknown as PurchaseImportRowDraft[]);
+  const readyToConfirm =
+    isPurchaseImportReadyToConfirm(activeRows as unknown as PurchaseImportRowDraft[]) &&
+    activeRows.every((row) => isPurchaseImportRowSafeToConfirm(row as unknown as PurchaseImportRowDraft, labState.ingredients.find((item) => item.id === row.ingredientId)));
 
   // Removed rows never appear in any view -- Remove takes a row off the list outright, not into a
   // separate "excluded" tab to toggle back from. The underlying rowStatus/confirm-gating is
@@ -209,13 +219,13 @@ export function PurchaseImportWizard({
     setFilterTab("all");
   }
 
-  function handleAssign(row: PurchaseImportRow, ingredientId: string) {
+  function handleAssign(row: PurchaseImportRow, ingredientId: string, rememberAlias?: boolean) {
     const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
     if (!ingredient) {
       return;
     }
-    const effectiveUnit = row.rawPackageUnit.trim() || row.rawUnit;
-    const convertedQuantity = convertToBaseUnit(row.parsedQuantity, effectiveUnit, ingredient);
+    const quantityResult = resolveRowQuantity(rowToMappedRow(row));
+    const convertedQuantity = quantityResult.errors.length === 0 ? convertToBaseUnit(quantityResult.parsedQuantity, quantityResult.effectiveUnit, ingredient) : null;
     const brandFromHistory = findReliableBrandForItem(ingredient, labState.supplies);
     const brandName = row.brandName.trim() || brandFromHistory;
 
@@ -231,12 +241,21 @@ export function PurchaseImportWizard({
     updatePurchaseImportRow(row.id, {
       ingredientId,
       matchMethod: "manual",
+      parsedQuantity: quantityResult.parsedQuantity,
+      parsedTotalPrice: quantityResult.parsedTotalPrice,
+      parsedPackageCount: quantityResult.parsedPackageCount,
+      parsedPackageSize: quantityResult.parsedPackageSize,
+      parsedUnitPrice: quantityResult.parsedUnitPrice,
       convertedQuantity: convertedQuantity ?? 0,
       isQuantityOverridden: false,
       brandName,
-      rowStatus: convertedQuantity !== null ? "matched" : "pending",
+      rowStatus: quantityResult.errors.length > 0 ? "invalid" : convertedQuantity !== null && convertedQuantity > 0 ? "matched" : "pending",
+      validationErrors: quantityResult.errors.join(" "),
     });
-    saveIngredientAlias(row.rawItemName, ingredientId, "purchase_import");
+    const shouldRememberAlias = rememberAlias ?? rememberAliasByRowId[row.id] ?? isMeaningfulReceiptAlias(row.rawItemName, ingredient);
+    if (shouldRememberAlias) {
+      saveIngredientAlias(row.rawItemName, ingredientId, "purchase_import");
+    }
   }
 
   // Any field that can change the purchased quantity or price -- recomputes against the row's
@@ -275,7 +294,17 @@ export function PurchaseImportWizard({
   // superseded by new input" rule Costing's cost override already uses.
   function handleQuantityOverride(row: PurchaseImportRow, value: string) {
     const parsed = Number(value);
-    updatePurchaseImportRow(row.id, { convertedQuantity: Number.isFinite(parsed) ? parsed : 0, isQuantityOverridden: true });
+    const quantityResult = resolveRowQuantity(rowToMappedRow(row));
+    const hasConfirmedItem = row.ingredientId.trim() && row.matchMethod !== "suggested" && row.matchMethod !== "none";
+    const convertedQuantity = Number.isFinite(parsed) ? parsed : 0;
+    const rowStatus: PurchaseImportRowStatus = quantityResult.errors.length > 0 ? "invalid" : hasConfirmedItem && convertedQuantity > 0 ? "matched" : "pending";
+
+    updatePurchaseImportRow(row.id, {
+      convertedQuantity,
+      isQuantityOverridden: true,
+      rowStatus,
+      validationErrors: quantityResult.errors.join(" "),
+    });
   }
 
   function handleBrandEdit(row: PurchaseImportRow, brandName: string) {
@@ -541,6 +570,12 @@ export function PurchaseImportWizard({
               const usesPackageFormat = Boolean(row.rawPackageUnit.trim());
               const isUnmatched = !row.ingredientId;
               const isSuggested = row.rowStatus === "pending" && row.matchMethod === "suggested";
+              const review = getPurchaseImportReview(row as unknown as PurchaseImportRowDraft, ingredient, {
+                supplierName: activeImport.supplierName,
+                receiptNumber: activeImport.receiptNumber,
+                purchaseDate: activeImport.purchaseDate,
+              });
+              const aliasCheckboxChecked = rememberAliasByRowId[row.id] ?? isMeaningfulReceiptAlias(row.rawItemName, ingredient);
 
               return (
                 <article className="grid gap-4 p-5" key={row.id}>
@@ -559,8 +594,17 @@ export function PurchaseImportWizard({
                       )}
                       {row.validationErrors ? <p className="mt-1 text-sm text-[#8a3827]">{row.validationErrors}</p> : null}
                     </div>
-                    <Tag tone={rowStatusTone(row.rowStatus)}>{row.rowStatus === "pending" && row.matchMethod === "suggested" ? "suggested" : row.rowStatus}</Tag>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <Tag tone={reviewStatusTone(review.status)}>{review.status}</Tag>
+                      <Tag tone={rowStatusTone(row.rowStatus)}>{row.rowStatus === "pending" && row.matchMethod === "suggested" ? "suggested" : row.rowStatus}</Tag>
+                    </div>
                   </div>
+                  {review.blockingReasons.length || review.reviewReasons.length ? (
+                    <div className={`rounded-md border p-3 text-sm leading-6 ${review.status === "Blocked" ? "border-[#e2a09a] bg-[#fff5f2] text-[#8a3827]" : "border-[#ead9c8] bg-[#fffaf3] text-[#6f5a4c]"}`}>
+                      {review.blockingReasons.length ? <p className="font-semibold text-[#8a3827]">Fix before import: {review.blockingReasons.join(" ")}</p> : null}
+                      {review.reviewReasons.length ? <p>{review.reviewReasons.join(" ")}</p> : null}
+                    </div>
+                  ) : null}
 
                   <div className="grid gap-3 sm:grid-cols-4">
                     <label className="grid gap-1 text-sm">
@@ -683,9 +727,19 @@ export function PurchaseImportWizard({
                         <div className="mt-1 space-y-2">
                           <p className="text-sm text-[#8a3827]">No inventory match found.</p>
                           {isDraft ? (
-                            <div className="flex flex-wrap gap-2">
-                              <IngredientPicker ingredients={labState.ingredients} onSelect={(ingredientId) => handleAssign(row, ingredientId)} placeholder="Choose existing item..." />
-                              <SecondaryButton onClick={() => setCreatingItemForRowId(row.id)}>Create New Item</SecondaryButton>
+                            <div className="space-y-2">
+                              <div className="flex flex-wrap gap-2">
+                                <IngredientPicker ingredients={labState.ingredients} onSelect={(ingredientId) => handleAssign(row, ingredientId)} placeholder="Choose existing item..." />
+                                <SecondaryButton onClick={() => setCreatingItemForRowId(row.id)}>Create New Item</SecondaryButton>
+                              </div>
+                              <label className="flex items-center gap-2 text-xs text-[#6f5a4c]">
+                                <input
+                                  checked={rememberAliasByRowId[row.id] ?? true}
+                                  onChange={(event) => setRememberAliasByRowId((current) => ({ ...current, [row.id]: event.target.checked }))}
+                                  type="checkbox"
+                                />
+                                Remember receipt name as alias when it differs from the Item
+                              </label>
                             </div>
                           ) : null}
                         </div>
@@ -700,10 +754,21 @@ export function PurchaseImportWizard({
                           ) : (
                             <p className="text-sm font-semibold">{ingredient?.name ?? "Not assigned"}</p>
                           )}
+                          {ingredient ? <p className="text-xs text-[#6f5a4c]">Item base unit: {ingredient.baseUnit}</p> : null}
+                          {isDraft && ingredient ? (
+                            <label className="flex items-center gap-2 text-xs text-[#6f5a4c]">
+                              <input
+                                checked={aliasCheckboxChecked}
+                                onChange={(event) => setRememberAliasByRowId((current) => ({ ...current, [row.id]: event.target.checked }))}
+                                type="checkbox"
+                              />
+                              Remember receipt name as alias
+                            </label>
+                          ) : null}
                           {isSuggested && isDraft ? (
                             <button
                               className="h-8 rounded-md bg-[#8f5632] px-3 text-xs font-semibold text-white"
-                              onClick={() => handleAssign(row, row.ingredientId)}
+                              onClick={() => handleAssign(row, row.ingredientId, aliasCheckboxChecked)}
                               type="button"
                             >
                               Confirm suggested match
@@ -771,7 +836,7 @@ export function PurchaseImportWizard({
                           defaultValue={row.brandName}
                           key={`brand-${row.id}`}
                           onBlur={(event) => handleBrandEdit(row, event.target.value)}
-                          placeholder="Required before import"
+                          placeholder="Optional purchase detail"
                         />
                       ) : (
                         <span>{row.brandName || "--"}</span>
@@ -796,8 +861,13 @@ export function PurchaseImportWizard({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm text-[#6f5a4c]">Total: PHP {row.parsedTotalPrice.toFixed(2)}</p>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-[#6f5a4c]">
+                      <p>Receipt unit price: {row.rawUnitPrice.trim() ? `PHP ${row.rawUnitPrice}` : "--"}</p>
+                      <p>Calculated row total: PHP {review.calculatedRowTotal.toFixed(2)}</p>
+                      {review.receiptTotal !== null ? <p>Receipt total: PHP {review.receiptTotal.toFixed(2)}</p> : null}
+                      {review.hasTotalDiscrepancy ? <p className="font-semibold text-[#8a3827]">Receipt total differs from calculated row total.</p> : null}
+                    </div>
                     {isDraft ? <SecondaryButton onClick={() => handleRemove(row)}>Remove</SecondaryButton> : null}
                   </div>
                 </article>
