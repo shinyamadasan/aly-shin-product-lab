@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import { products } from "@/lib/sample-data";
 import type { LabState } from "@/lib/lab-state";
@@ -49,6 +49,16 @@ export function BakePage({
   // very first line of a second, near-simultaneous invocation sees it before anything else runs.
   const isConfirmingRef = useRef(false);
 
+  useEffect(() => {
+    if (batchesByProduct.length === 0) {
+      return;
+    }
+    if (selectedBatchId && labState.batches.some((item) => item.id === selectedBatchId)) {
+      return;
+    }
+    setSelectedBatchId(batchesByProduct[0]?.productBatches[0]?.id ?? "");
+  }, [batchesByProduct, labState.batches, selectedBatchId]);
+
   const selectedBatch = labState.batches.find((batch) => batch.id === selectedBatchId) ?? null;
   const multiplier = Number(multiplierText);
   const isMultiplierValid = Number.isFinite(multiplier) && multiplier > 0;
@@ -59,7 +69,7 @@ export function BakePage({
   const deductions = isMultiplierValid && fullyResolved ? groupDeductionsByIngredient(resolved, multiplier) : [];
   const insufficient = getInsufficientDeductions(deductions, labState.ingredients);
   const readyToConfirm = fullyResolved && isMultiplierValid && deductions.length > 0 && (allowNegative || insufficient.length === 0);
-  const computedPieces = selectedBatch && isMultiplierValid ? Math.round(selectedBatch.usablePieces * multiplier * 100) / 100 : 0;
+  const computedPieces = selectedBatch && isMultiplierValid && Number.isFinite(selectedBatch.usablePieces) ? Math.round(selectedBatch.usablePieces * multiplier * 100) / 100 : null;
 
   function handleAssign(row: ResolvedBakeRow, ingredientId: string) {
     saveIngredientAlias(row.ingredientName, ingredientId, "bake");
@@ -125,7 +135,7 @@ export function BakePage({
           </label>
           <div className="grid gap-1 text-sm font-medium">
             Pieces produced
-            <p className="flex h-10 items-center rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 font-semibold">{selectedBatch ? computedPieces : "--"}</p>
+            <p className="flex h-10 items-center rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 font-semibold">{computedPieces ?? "--"}</p>
           </div>
         </div>
 
