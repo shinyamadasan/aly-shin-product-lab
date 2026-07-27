@@ -287,6 +287,19 @@ Once Visual Identity is finished, everything else becomes easier:
 - Uniforms are already decided.
 - Future cafe interior is already guided by the same identity.
 
+### Living Design System
+
+Aly & Shin Product Lab should maintain a living design system so the brand can stay consistent across the internal app, customer website, social content, packaging, and future cafe experience.
+
+The design system should include:
+
+- Brand tokens: official colors, spacing, typography, border radius, shadows, and surface styles.
+- UI components: buttons, cards, forms, inputs, tables, tabs, badges, alerts, and navigation patterns for the website and app.
+- Marketing templates: social posts, story layouts, flyers, launch graphics, menu previews, and seasonal campaigns.
+- Packaging specifications: box sizes, sticker sizes, print-safe areas, QR placement, label hierarchy, and delivery insert rules.
+
+This turns the Brand Bible from a static reference into an operating system for how Aly & Pon looks, feels, and ships.
+
 ### Phase 3: Product Identity
 
 - Coffee Menu
