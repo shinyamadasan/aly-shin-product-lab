@@ -257,3 +257,66 @@ When people hear Aly & Pon, we want them to think:
 "If it's from Aly & Pon, I know it's going to be good."
 
 Not because one item went viral, but because the brand has earned their trust through consistent quality and thoughtful experiences.
+
+## Brand Roadmap
+
+### Phase 1: Business Setup
+
+Status: Complete
+
+- Domain
+- Socials
+- Brand Bible
+
+### Phase 2: Visual Identity
+
+Priority: Spend the most time here.
+
+- Logo System
+- Color Palette
+- Typography
+- Iconography
+- Photography Style
+- Packaging Style
+
+Once Visual Identity is finished, everything else becomes easier:
+
+- Website colors are already decided.
+- Packaging is already decided.
+- Social posts are already decided.
+- Uniforms are already decided.
+- Future cafe interior is already guided by the same identity.
+
+### Phase 3: Product Identity
+
+- Coffee Menu
+- Brownie Collection
+- Cookie Collection
+- Naming
+- Descriptions
+
+### Phase 4: Packaging
+
+- Boxes
+- Stickers
+- Coffee Cups
+- Paper Bags
+- Thank-you Cards
+- Delivery Experience
+
+### Phase 5: Digital Presence
+
+- Website
+- Instagram
+- Facebook
+- TikTok
+- Google Business
+
+### Phase 6: Content System
+
+- Photos
+- Videos
+- Reels
+- Stories
+- Email
+- Blog
