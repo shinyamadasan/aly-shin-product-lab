@@ -1,4 +1,4 @@
-# Marketing Module — Architecture Proposal (M0 + M1 + M1.5 review + Journey audit + M2A status)
+# Marketing Module — Architecture Proposal (M0 + M1 + M1.5 review + Journey audit + M2A/M2B status)
 
 > **Status: M0 (architecture/discovery) complete. M1 narrowed, approved, and implemented —
 > Brand Profile persistence only. Architectural review completed before Campaigns (M1.5) — see
@@ -6,7 +6,10 @@
 > writing any Journey schema — see "Journey / `content_journal` Readiness Audit" section below.
 > M2A (Journey persistence foundation — `entry_type` added to `content_journal`, no new table)
 > approved and implemented 2026-07-27 — see "M2A implementation record" section below and
-> `planning/PROPOSALS.md` PROP-014. Next: M2B, Journey capture UI.**
+> `planning/PROPOSALS.md` PROP-014. M2B (Journey Capture UI — optional product association, entry-type
+> picker, Journal→Journey terminology, on branch `feat/journey-capture-ui-m2b`) implemented
+> 2026-07-28 — see "M2B implementation record" section below. Next: M2C or later (batch_id wiring,
+> dead-column decision).**
 > Written 2026-07-25 (M0). Updated 2026-07-27: the owner approved a narrowed M1 covering
 > **Brand Profile only** — no `campaigns`, `campaign_products`, or any later-milestone table.
 > See `planning/PROPOSALS.md` PROP-012 for the approval record and PROP-013 for the remaining,
@@ -598,6 +601,121 @@ records above and by PROP-012/PROP-014 in `planning/PROPOSALS.md`.
 
 **Both migrations are idempotent** (`create table if not exists` / `add column if not exists`),
 so re-running either against the same project is still safe if ever needed.
+
+---
+
+## M2B implementation record (2026-07-28) — Journey Capture UI
+
+**Approved and implemented on branch `feat/journey-capture-ui-m2b`, based directly on
+`origin/main` (which already carries M1 + M2A from PR #2).** No schema/migration change, no new
+table, no `journey_entries`, no `/content-studio` change, no Campaign/Calendar/Publishing/
+Analytics/Content Studio table. This turns the existing `/journal` screen into a usable Journey
+capture interface while preserving all existing data and CRUD behavior.
+
+**User-facing Journal → Journey terminology.** Updated everywhere a human actually reads the word
+"Journal" as a proper noun, left untouched everywhere it's an internal identifier or belongs to
+`/content-studio` (still deferred, per §14):
+- Nav item label: "Content Journal" → "Journey" (`src/lib/lab-state.ts`).
+- Page header title: "Content journal" → "Journey" (`src/components/app-shell.tsx`).
+- Journey capture form: panel title "Edit content capture"/"Content capture record" →
+  "Edit Journey entry"/"New Journey entry"; buttons "Update journal"/"Save journal" →
+  "Update Journey entry"/"Save Journey entry" (`JournalForm` in `src/app/product-lab.tsx`).
+- Save/delete status toasts: "Journal saved."/"Journal updated."/"Journal deleted." (and their
+  "...locally"/failure variants) → "Journey entry saved."/"Journey entry updated."/"Journey entry
+  deleted." (same file).
+- Products page sidebar: "Journal signals" → "Journey signals"; its empty-state copy updated to
+  match.
+- Product Detail's content metric: "Journal entries" → "Journey entries".
+- Guide page prose (`ContextBrain`/`OperatingGuide`): the three places that named "Journal"/
+  "Content Journal" by name now say "Journey", so the operating manual doesn't contradict the nav
+  it's describing.
+- `recent-entries.tsx`'s Journey list: title "Journal" → "Journey"; empty message updated.
+
+**What did NOT change, deliberately:** the route (`/journal`), the DOM `id="journal"`, the
+`LabView` type's `"journal"` literal, the physical table name (`content_journal`), and every
+internal identifier (`JournalForm`, `saveJournal`, `deleteJournal`, `editingJournal`,
+`ContentJournalEntry`, `ContentJournalGuide`, `only="journal"`). Renaming those would be exactly
+the "broad rename that creates unnecessary churn" the milestone brief warned against, for zero
+user-facing benefit. `/content-studio`'s own "Source Journal" panel and "Content Draft From Latest
+Journal" heading are untouched — that page stays exactly the stub it already was (§6/§14).
+
+**Product association is now optional.** `content_journal.product_id` was always nullable in the
+database; only the UI forced a choice. `ProductSelect` (`src/components/product-controls.tsx`)
+gained an opt-in `includeNoProductOption` prop — a real `<option value="">No product</option>`,
+never a fake product ID — wired on only at the Journey form's call site, leaving every other
+product-required form in the app (Proof Day's `BatchForm`, the one other `ProductSelect` caller)
+completely unaffected. `productName()` now returns `"No product"` for an empty id instead of
+falling through to a blank/garbled label. The save payload converts `""` → `null` at the boundary
+(`buildContentJournalPayload`, below) — the same `|| null` pattern this schema already uses for
+`Ingredient.category`/`ProductBatch.completedAt` etc. — so nothing but a real null ever reaches
+`product_id`.
+
+**Entry-type picker.** A new `JourneyTypeSelect` component (`src/components/product-controls.tsx`)
+renders the 12-value app-level vocabulary from `src/lib/journal.ts`'s `JOURNEY_ENTRY_TYPES`
+(general, product_test, recipe_test, coffee_test, equipment, business_setup, brand_decision,
+software_build, mistake, lesson, milestone, behind_the_scenes) plus an explicit "Unclassified"
+(`""`) option — no database enum, no check constraint, matching `entry_type`'s deliberately
+open-ended design (§ Readiness Audit). **Unknown-value handling:** if an entry's `entry_type`
+holds a value outside this list (a future app version's value, or a hand-edited row),
+`JourneyTypeSelect` injects one extra `<option>` for that exact value and selects it — so editing
+and re-saving without touching the field preserves it byte-for-byte, instead of the browser
+silently selecting nothing (which would look like the field got cleared) or the value getting
+coerced to a known one.
+
+**Read and write wiring — the part a form-only change would have missed.** Pulled the actual
+Supabase row ↔ app-type mapping out of `product-lab.tsx`'s inline closures into a new
+`src/lib/journal.ts` (no JSX — this repo's `node --test` runner can't execute JSX, so anything
+left inline in `product-lab.tsx` would have been untestable): `mapContentJournalRow` (row →
+`ContentJournalEntry`, `product_id`/`entry_type` both `?? ""`) and `buildContentJournalPayload`
+(entry → save payload, both `|| null` at the boundary). `product-lab.tsx`'s `loadSupabaseData()`
+and `saveJournal()` now call these instead of duplicating the mapping inline — same runtime
+behavior, now independently tested. **`batch_id` is deliberately untouched** — still present in
+the TypeScript type (since M2A), still not read by `mapContentJournalRow`, still not written by
+`buildContentJournalPayload`. Wiring it up remains out of scope, unchanged from M2A's own
+deferral.
+
+**Legacy/null behavior.** A `content_journal` row saved before M2A (`entry_type` column exists but
+is `null`) loads as `entryType: ""`, which `journeyTypeLabel("")` renders as `"Unclassified"` — no
+crash, no invented category. A row saved before this milestone's product-optional change always
+has a real `product_id`, so it's completely unaffected — `mapContentJournalRow`/
+`buildContentJournalPayload` round-trip a real product id exactly as before.
+
+**Journey list presentation.** `recent-entries.tsx`'s Journey section now prefixes its detail line
+with `"Type: <label>. "` only when `entry.entryType` is actually set — legacy/unclassified entries
+render with no "Type:" prefix at all, not a blank or "Unclassified" clutter. The title line already
+handled "no product" correctly for free, once `productName()` was fixed centrally. Deliberately
+**not** touched: no filters, no search, no media upload, no content-generation or publishing
+controls, no layout redesign — exactly the restraint the milestone brief asked for.
+
+**Explicitly deferred (not part of M2B):**
+- Wiring `batch_id` into read/write.
+- Deciding the fate of the four still-dead columns (`what_was_tested`, `reactions`, `reel_ideas`,
+  `caption_draft`).
+- `/content-studio`'s replacement with a real `content_drafts`-backed record (§6/§14) — it still
+  reads `labState.journal[0]` live, exactly as before.
+- Any Campaign, Calendar, Publishing, or Analytics table or behavior.
+- Soft delete for `content_journal` (still a hard `.delete()`, same as every milestone before this
+  one — a real, named, still-open risk, not silently fixed here).
+
+**Tests added.** `tests/journal.test.ts` — 23 tests. The first 16 are genuine runtime tests: real
+calls into `mapContentJournalRow`/`buildContentJournalPayload`/`journeyTypeLabel` covering
+no-product entries, entry-type read/write, legacy null and entirely-missing `entry_type`,
+product-linked legacy entries, unknown-value preservation, unrelated-field survival, and
+`batch_id` staying unwired. **The remaining 7, explicitly labeled `[static]` in their test names,
+are static source-text checks, not interaction tests** — this repo has no JSX-capable test runner
+(no jsdom, no `@testing-library/react`), so `JourneyTypeSelect`/`ProductSelect`'s actual rendered
+output and `productName()`'s `"No product"` display fallback are **not** exercised by an automated
+test; they were verified by reading the code and by a successful production build only. Named here
+plainly rather than left implicit.
+
+**Verification:** `npm run typecheck` clean · `npx eslint` clean on every touched/new file ·
+`npm run test` 471 pass, 1 pre-existing unrelated skip (472 total, up from 449 — the 23 new tests
+above) · `npm run build` succeeds, all 17 routes including `/journal` and `/content-studio` compile
+and prerender.
+
+**Next milestone:** M2C or later Journey work — candidates named, not committed to: wiring
+`batch_id`, resolving the four dead columns, and (only once Campaigns/M1.5 actually exist) adding
+`campaign_id` to a future `content_drafts` table per the Architectural Review's driver design.
 
 ---
 

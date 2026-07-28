@@ -1,6 +1,7 @@
 import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
 import type { LabState } from "@/lib/lab-state";
 import type { ContentJournalEntry, CostingSummary, ProductBatch } from "@/lib/product-lab-types";
+import { journeyTypeLabel } from "@/lib/journal";
 import { productName } from "@/components/product-controls";
 
 export function RecentEntries({
@@ -76,12 +77,12 @@ export function RecentEntries({
           })}
         /> : null}
         {showJournal ? <RecentList
-          title="Journal"
-          empty="No journal saved yet."
+          title="Journey"
+          empty="No Journey entries saved yet."
           items={labState.journal.slice(0, 3).map((entry) => ({
             id: entry.id,
             title: `${productName(entry.productId)}: ${entry.postIdeas || "uncategorized"}`,
-            detail: `Captured: ${entry.mediaCaptured || "none logged"}. Next: ${entry.nextAction || "not set"}.`,
+            detail: `${entry.entryType ? `Type: ${journeyTypeLabel(entry.entryType)}. ` : ""}Captured: ${entry.mediaCaptured || "none logged"}. Next: ${entry.nextAction || "not set"}.`,
             onDelete: deleteJournal ? () => deleteJournal(entry.id) : undefined,
             onEdit: editJournal ? () => editJournal(entry) : undefined,
           }))}

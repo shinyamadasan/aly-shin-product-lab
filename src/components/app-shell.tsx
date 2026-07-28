@@ -12,7 +12,7 @@ const titles = {
   equipment: "Equipment and depreciation",
   inventory: "Inventory",
   bake: "Bake and deduct inventory",
-  journal: "Content journal",
+  journal: "Journey",
   admin: "Product admin",
   launch: "Launch offer builder",
   "content-studio": "Content studio",

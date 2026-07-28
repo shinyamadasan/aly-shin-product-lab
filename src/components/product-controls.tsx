@@ -1,11 +1,14 @@
 import type React from "react";
 import { products } from "@/lib/sample-data";
+import { JOURNEY_ENTRY_TYPES } from "@/lib/journal";
 
 export function ProductSelect({
+  includeNoProductOption,
   onChange,
   selectedProductId,
   value,
 }: {
+  includeNoProductOption?: boolean;
   onChange?: (event: React.ChangeEvent<HTMLSelectElement>) => void;
   selectedProductId?: string;
   value?: string;
@@ -14,7 +17,35 @@ export function ProductSelect({
     <label className="grid gap-1 text-sm font-medium">
       Product
       <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" name="productId" defaultValue={value ? undefined : selectedProductId} onChange={onChange} value={value}>
+        {includeNoProductOption ? <option value="">No product</option> : null}
         {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
+// Journey capture (M2B) -- see MARKETING_MODULE.md's "M2B implementation record". Product
+// association is optional for Journey entries (equipment, construction, team updates, and
+// other moments have no natural product), unlike every other product-scoped form in this app
+// (Proof Day, Costing, Tasting), so the "No product" option is opt-in via
+// includeNoProductOption rather than added to every ProductSelect caller.
+
+// Renders an extra option for a value this app's current vocabulary doesn't recognize (e.g.
+// one written by a future version, or by hand in the database) instead of silently dropping
+// it -- a native <select> with a defaultValue matching no <option> shows nothing selected,
+// which would look like the field got cleared. Keeping it visible and selected is what lets
+// an edit preserve an unknown value unless the operator actually changes it.
+export function JourneyTypeSelect({ selectedType }: { selectedType?: string }) {
+  const value = selectedType ?? "";
+  const isKnownValue = value === "" || JOURNEY_ENTRY_TYPES.some((type) => type.value === value);
+
+  return (
+    <label className="grid gap-1 text-sm font-medium">
+      Journey type
+      <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={value} name="entryType">
+        <option value="">Unclassified</option>
+        {JOURNEY_ENTRY_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+        {isKnownValue ? null : <option value={value}>{value}</option>}
       </select>
     </label>
   );
@@ -48,5 +79,8 @@ export function MediaChecklist({ selectedMedia = "" }: { selectedMedia?: string 
 }
 
 export function productName(productId: string) {
+  if (!productId) {
+    return "No product";
+  }
   return products.find((product) => product.id === productId)?.name ?? productId;
 }
