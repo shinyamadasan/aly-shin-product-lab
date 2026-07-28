@@ -1,4 +1,4 @@
-# Marketing Module — Architecture Proposal (M0 + M1 + M1.5 review + Journey audit + M2A/M2B status)
+# Marketing Module — Architecture Proposal (M0 + M1 + M1.5 review + Journey audit + M2A/M2B/M2C1 status)
 
 > **Status: M0 (architecture/discovery) complete. M1 narrowed, approved, and implemented —
 > Brand Profile persistence only. Architectural review completed before Campaigns (M1.5) — see
@@ -8,8 +8,10 @@
 > approved and implemented 2026-07-27 — see "M2A implementation record" section below and
 > `planning/PROPOSALS.md` PROP-014. M2B (Journey Capture UI — optional product association, entry-type
 > picker, Journal→Journey terminology, on branch `feat/journey-capture-ui-m2b`) implemented
-> 2026-07-28 — see "M2B implementation record" section below. Next: M2C or later (batch_id wiring,
-> dead-column decision).**
+> 2026-07-28 — see "M2B implementation record" section below. M2C1 (Content persistence foundation
+> — `content_drafts` table, nullable `journey_entry_id` link, no UI/wiring, on branch
+> `feat/journey-content-handoff-m2c`) implemented 2026-07-28 — see "M2C1 implementation record"
+> section below. Next: M2C2, Journey → Content handoff UI.**
 > Written 2026-07-25 (M0). Updated 2026-07-27: the owner approved a narrowed M1 covering
 > **Brand Profile only** — no `campaigns`, `campaign_products`, or any later-milestone table.
 > See `planning/PROPOSALS.md` PROP-012 for the approval record and PROP-013 for the remaining,
@@ -716,6 +718,86 @@ and prerender.
 **Next milestone:** M2C or later Journey work — candidates named, not committed to: wiring
 `batch_id`, resolving the four dead columns, and (only once Campaigns/M1.5 actually exist) adding
 `campaign_id` to a future `content_drafts` table per the Architectural Review's driver design.
+
+---
+
+## M2C1 implementation record (2026-07-28) — Content persistence foundation
+
+**Approved and implemented on branch `feat/journey-content-handoff-m2c`, based directly on
+`origin/main` (which carries M1/M2A/M2B via PR #6).** Follows the M2C architecture audit
+conducted on this same branch before any code was written. Schema/type only — no UI, no
+Supabase reads or writes, no snapshot-generation logic, no Journey handoff behavior. That is
+M2C2's job.
+
+**`content_drafts` — the first real table for the Content Studio domain.** Delivered as
+`supabase-add-content-drafts.sql`: `id` (uuid PK, `gen_random_uuid()`), `journey_entry_id`
+(nullable FK → `content_journal(id)`, `on delete set null`), `source_snapshot` (nullable text),
+`title` (nullable text), `content_type` (`not null default 'general'`, plain text, no enum/check
+— open-ended by design), `status` (`not null default 'idea'`, same open-endedness), `hook`,
+`caption`, `script` (all nullable text), `created_at`/`updated_at` (`timestamptz not null default
+now()`, no trigger — matching every existing table in this schema, `content_journal` included:
+none of them auto-update `updated_at` on write, so none is invented here either).
+
+**Journey linkage — one-to-many, link plus snapshot, no junction table.** One `content_journal`
+row can source zero or many `content_drafts` rows; a draft may exist with no Journey source at
+all. `journey_entry_id` is the persistent, traceable link; `source_snapshot` is a separate frozen
+text field that will hold a human-readable copy of Journey context at draft-creation time —
+**both stay effectively inert in M2C1**: no code populates `source_snapshot` yet, and nothing
+reads or writes `journey_entry_id` outside the migration itself. Editing a Journey entry cannot
+mutate an existing draft, by construction — there is no live-coupling code path anywhere yet, and
+once M2C2 populates `source_snapshot` at creation time, that frozen copy is what keeps it that
+way going forward.
+
+**Campaign linkage deliberately absent.** No `campaign_id` column, no placeholder foreign key to
+a nonexistent table. Will arrive later via its own additive migration once Campaigns/M1.5 ships —
+unchanged from the Architectural Review's own resolution (`M5C`).
+
+**Also deliberately absent, per the architecture audit:** `platform` (belongs to a future
+Calendar/Publishing table, not to drafting), a direct `product_id`/`batch_id` (redundant with
+context already reachable via `journey_entry_id`), any owner/user/workspace column (this app has
+no per-user identity anywhere — RLS matches every other table exactly), any AI-generation field
+(`generation_provider`/`model`/`prompt`), any publishing/scheduling/analytics field, any
+review/approval field (`reviewed_by`/`rejection_reason`), any soft-delete field, and any
+JSON/JSONB column (the original M0 draft's `format_details jsonb` was dropped in favor of plain
+`hook`/`caption`/`script` text columns — consistent with this schema's existing convention that no
+table uses `jsonb`).
+
+**RLS.** `enable row level security` + a single `for all to authenticated using (true) with check
+(true)` policy — identical shape to `content_journal`/`brand_profiles`/every other table. No new
+ownership model, no tenant isolation claimed or implied; this intentionally follows current app
+behavior (a two-person, shared-access workspace), not a multi-tenant guarantee.
+
+**TypeScript type.** `ContentDraft` added to `src/lib/product-lab-types.ts` — all eleven fields as
+plain, required `string` (no `?:`), matching `ContentJournalEntry`'s own original convention for a
+brand-new type (nullable DB text/FK columns read back as `""`, not `undefined`). No row-mapping or
+payload-building functions were added — none are needed to compile a types-only file, and no read/
+write code path exists yet to test.
+
+**Tests added.** `tests/content-drafts-schema.test.ts` — 24 static schema-shape tests (same
+disclosure as every prior schema test file in this repo: no live-DB/pgTAP harness, these are text/
+regex checks against the migration file and the type, not executed-schema checks). Covers all 15
+required checks from the milestone brief (table creation, PK/default, nullable `journey_entry_id`,
+its FK target and `on delete set null` behavior, nullable `source_snapshot`/`title`/`hook`/
+`caption`/`script`, required `content_type`/`status` with defaults, timestamp convention, RLS,
+policy shape, and the absence of any enum/check constraint on `content_type` or `status`) plus
+negative assertions that `campaign_id`, `platform`, direct `product_id`/`batch_id`, any owner
+column, a generic `source_type`/`source_id` pair, any JSON/JSONB column, and any AI/publishing/
+review/soft-delete field are all absent from both the migration and the type. One bug caught and
+fixed mid-way: an early draft of the "no check constraint" tests false-failed against the RLS
+policy's own `with check (true)` clause, which legitimately contains the literal text "check (" —
+fixed by scoping that specific check to the table's own column list, not the whole file.
+
+**Verification:** `npm run typecheck` clean · `npx eslint` clean on both touched/new files ·
+`npm run test` 495 pass, 1 pre-existing unrelated skip (496 total, up from 472 — the 24 new
+tests above) · `npm run build` succeeds, all 17 routes including `/journal` and `/content-studio`
+compile and prerender.
+
+**Explicitly deferred to M2C2 or later:** the "Create content" UI action, any Content Studio form
+or draft list/edit screen, populating `source_snapshot`, all Supabase read/write wiring for this
+table, `/content-studio`'s replacement (its current stub — deriving live from `journal[0]` — is
+untouched), Campaign persistence, platform selection, Calendar, Publishing, Analytics, AI
+generation, and `batch_id` wiring on `content_journal` (a separate, independent Journey
+enhancement, unrelated to this handoff).
 
 ---
 
