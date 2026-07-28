@@ -226,6 +226,54 @@
 - AI-recommended priority: P2
 - status:      pending
 
+### PROP-012 — Marketing Module M1: Brand Profile schema foundation
+- ▶ Decision: Approve — narrowed by the owner (2026-07-27) from the original brand+campaign M1 sketch down to Brand Profile only; implemented the same day at this narrowed scope.
+- ▶ Risk: Low — one additive table, no foreign keys into any existing entity, no product dependency, matches every existing table's RLS/grant/index convention exactly. (Originally filed as High when it covered campaigns too — narrowing the scope is what dropped the risk.)
+- type:        feature
+- source captures: audit (M0 architecture discovery, 2026-07-25); owner scope-narrowing decision (2026-07-27, full 13-point record in `MARKETING_MODULE.md`'s "M1 implementation record")
+- goal alignment:  neutral — supports future marketing work, not required for the Current Objective (launch-readiness with sound costing), but genuinely zero-risk to add now given the narrowed scope.
+- expected user value: Shin/Aly — one durable place to record brand voice, tone, CTA, preferred/prohibited phrasing, colors, and fonts, instead of re-deciding it per piece of future content. Schema only in this milestone — no UI yet, so no value is realized until a later milestone builds on it.
+- evidence:    Full record in `MARKETING_MODULE.md`'s "M1 implementation record" and `supabase-add-brand-profiles.sql`. Final schema: `business_name` (not null), `short_description`, `target_audience`, `brand_voice_notes`, `primary_cta`, `preferred_phrases`, `prohibited_phrases`, `primary_color`, `secondary_color`, `heading_font`, `body_font`, `logo_storage_path` (nullable path reference, no Storage bucket created — deferred, no established+tested bucket-migration convention exists beyond the single `batch-photos` precedent), `social_links`, `is_active` (partial unique index enforces at most one active row — this app has no workspace/tenant concept, so no scoping column was added), `created_at`/`updated_at`. RLS matches every other table exactly (`using (true) to authenticated`) — this app has no per-user/workspace ownership model anywhere to scope against; inventing one for this table alone would be a false workspace model, which the owner's decision 4 explicitly said not to build. Deliberately excludes `deleted_at`/soft-delete (the original M0 draft recommended it; the owner-approved field list didn't include it) — flagged as a residual accidental-deletion risk in `MARKETING_MODULE.md`, not silently added.
+- effort:      S — one migration, one hand-written TS type (matching this repo's established no-codegen convention), one schema/security test file; no UI, no adapters, no server routes, no packages installed.
+- dependencies: none
+- confidence:  high
+- ambiguity:   none remaining at this narrowed scope. Campaigns/campaign_products and everything past them are split out to PROP-013, still blocked.
+- why now vs later: owner explicitly requested it now, narrowed to the smallest safe slice (no product dependency, no external calls, no server boundary).
+- AI-recommended priority: P2
+- status:      implemented (2026-07-27) — `supabase-add-brand-profiles.sql` written (idempotent), `BrandProfile` type added to `src/lib/product-lab-types.ts`, `tests/brand-profiles-schema.test.ts` added (11 static checks against the migration file — this repo has no live-DB/pgTAP test harness, so these are text/regex checks, not executed-schema checks). Verified: typecheck, lint, test, build — see the M1 completion report for exact results. **Applied and verified live against the intended Supabase project 2026-07-27** — see `MARKETING_MODULE.md`'s "Live Migration Verification" section for the full check-by-check record (table/columns/RLS/policies/single-active-index all confirmed live).
+
+### PROP-013 — Marketing Module M1.5+: Campaigns, Content Drafts, and beyond (blocked)
+- ▶ Decision: Park — real, still-relevant architecture (full detail in `MARKETING_MODULE.md`), blocked on decisions PROP-012's narrowing didn't resolve.
+- ▶ Risk: High — new subsystem, foreign keys into `products`, later external provider integrations (LLM, image-gen, social scheduler).
+- type:        feature
+- source captures: audit (M0 architecture discovery, 2026-07-25); split out of PROP-012 on 2026-07-27 when the owner approved a narrowed Brand-Profile-only M1, leaving this the home for everything PROP-012 no longer covers.
+- goal alignment:  neutral, same reasoning as PROP-012.
+- expected user value: same long-term value originally described under PROP-012 — campaigns, content drafts, a content calendar, deterministic marketing recommendations, and performance tracking, once unblocked.
+- evidence:    `MARKETING_MODULE.md` §6-§16 (proposed tables, lifecycle model, adapter boundaries, and the M1.5-M9 sequence). The specific blocker for M1.5 (`campaigns`/`campaign_products` schema) is the product-readiness audit named in Open Decision 8's resolution: persisted `products` rows are the intended long-term identity source, but whether the current product domain (DB table vs. the `sample-data.ts` hardcoded array the app actually reads) is ready to be foreign-keyed against by `campaign_products.product_id` is a separate, not-yet-scheduled audit. M6/M7/M9 remain additionally blocked on LLM/image-gen/scheduler vendor choice and budget (Open Decisions 1-4 in `MARKETING_MODULE.md`).
+- effort:      L across the full remaining M1.5-M9 sequence; M1.5 alone (campaigns/campaign_products schema) is S once the product-readiness audit lands.
+- dependencies: the product-readiness audit (not yet scheduled) blocks M1.5; M1.5 blocks M2/M3; the server boundary (M5) blocks M6/M7/M9.
+- confidence:  high on schema shape for M1.5 through M4/M8 (no vendor/business decision needed); low on M5-M7/M9 pending business decisions.
+- ambiguity:   the 11 remaining open decisions listed in `MARKETING_MODULE.md` §15 (originally 12 — decision 8 was directionally resolved by PROP-012's narrowing, though the product-readiness audit it points to is still unscheduled).
+- why now vs later: not urgent — stays Parked until the product-readiness audit is scheduled and the remaining business decisions (LLM/image-gen provider, budget, social-scheduling scope, server-boundary timing) are made.
+- AI-recommended priority: P3
+- status:      pending
+
+### PROP-014 — Marketing Module M2A: Journey persistence foundation (`content_journal` evolution)
+- ▶ Decision: Approve — a readiness audit (2026-07-25/27, full record in `MARKETING_MODULE.md`'s "Journey / `content_journal` Readiness Audit" section) found `content_journal` can safely become the canonical Journey domain in place; the owner approved the audit and this smallest-additive-slice milestone the same day.
+- ▶ Risk: Low — one nullable, unconstrained column added to an existing table; no new table, no foreign key, no UI/behavior change, matches every existing additive migration's convention exactly.
+- type:        feature
+- source captures: Architectural Review (2026-07-27, `MARKETING_MODULE.md`, established Journey as a first-class domain independent of Campaigns); Journey/`content_journal` Readiness Audit (2026-07-27, same file) that this milestone implements.
+- goal alignment:  neutral — same reasoning as PROP-012; supports future Journey/Content Studio work, not required for the Current Objective, genuinely zero-risk to add now.
+- expected user value: Shin/Aly — none realized yet (schema/type only, no UI). Unblocks M2B (Journey capture UI) without having created a duplicate `journey_entries` table that would have fragmented where "real moments" get recorded.
+- evidence:    `supabase-add-journey-entry-type.sql` (`alter table content_journal add column if not exists entry_type text;` — nullable, no default, no check constraint, no enum, no backfill). `ContentJournalEntry` in `src/lib/product-lab-types.ts` gained `batchId?: string` (DB column already existed, nullable, was unused at the app layer until now) and `entryType?: string` (new), both optional per this repo's established nullable-additive-column convention (`ProductBatch.completedAt?`/`voidedAt?`/`voidReason?`, `Ingredient.archivedAt?`) — so no existing read/save code path required a change. `tests/journey-content-journal-schema.test.ts` added (11 static checks against the migration file and the type, mirroring `tests/brand-profiles-schema.test.ts`'s pattern). The five pre-existing dead columns (`what_was_tested`, `reactions`, `reel_ideas`, `caption_draft`, and — until this milestone — `batch_id`) are left exactly as the audit found them; their fate is still an open decision.
+- effort:      S — one migration, one type update (two new optional fields), one schema-shape test file; no UI, no adapters, no server routes, no packages installed.
+- dependencies: none beyond PROP-012 (M1, already implemented)
+- confidence:  high
+- ambiguity:   none remaining at this scope. UI changes (optional product association, entry-type picker, nav label) are M2B, not yet scoped in detail.
+- why now vs later: owner explicitly requested it now, narrowed to the smallest safe slice, immediately after approving the readiness audit that made the case for reuse over a new table.
+- AI-recommended priority: P2
+- status:      implemented (2026-07-27) — `supabase-add-journey-entry-type.sql` written (idempotent), `ContentJournalEntry` updated in `src/lib/product-lab-types.ts`, `tests/journey-content-journal-schema.test.ts` added (11/11 passing). Verified: `npm run typecheck` clean, `npx eslint` clean on both touched files, `npm run test` 448/449 passing (1 pre-existing, unrelated skip), `npm run build` succeeds. No `/journal` or `/content-studio` behavior changed. **Applied and verified live against the intended Supabase project 2026-07-27** — see `MARKETING_MODULE.md`'s "Live Migration Verification" section for the full check-by-check record (`entry_type` column existence/type/nullability/no-default, existing-row validity, no backfill, unchanged `/journal` behavior all confirmed live).
+
 ## Proposal contract
 *(the structured shape triage produces — keep this shape so downstream stages stay swappable)*
 ```

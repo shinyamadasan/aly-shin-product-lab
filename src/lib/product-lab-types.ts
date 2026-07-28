@@ -112,15 +112,25 @@ export type TastingFeedback = {
   packagingReaction: string;
 };
 
+// Journey / content_journal readiness (M2A) -- see MARKETING_MODULE.md's "Journey /
+// content_journal Readiness Audit" section. content_journal is the canonical Journey
+// persistence table (no separate journey_entries table). batchId was already a nullable
+// DB column, unused at this layer until now; entryType is a new nullable DB column
+// (supabase-add-journey-entry-type.sql), open-ended and app-enforced, not a DB enum/check.
+// Both stay optional -- matching ProductBatch's completedAt/voidedAt/voidReason and
+// Ingredient's archivedAt convention for additive nullable columns -- so this change
+// requires no update to existing read/save code paths (that's M2B's job).
 export type ContentJournalEntry = {
   id: string;
   productId: string;
+  batchId?: string;
   entryDate: string;
   whatWasMade: string;
   mediaCaptured: string;
   lessonLearned: string;
   postIdeas: string;
   nextAction: string;
+  entryType?: string;
 };
 
 // The 5 AI Advisor actions this app supports -- see services/ai/. Deliberately fixed, not
@@ -283,5 +293,29 @@ export type EquipmentEntry = {
   burnRateKgPerHour: number;
   calculationMode: EquipmentCalculationMode;
   notes: string;
+  isActive: boolean;
+};
+
+// Marketing Module M1 (see PROP-012 in planning/PROPOSALS.md and MARKETING_MODULE.md).
+// Schema/type only in this milestone -- no CRUD UI reads or writes this yet. This app has
+// no per-user/workspace identity anywhere, so there is no "owner" scoping here: isActive
+// marks the single currently-active profile (enforced by a DB partial unique index), not
+// a per-user flag. Older profiles can stay isActive: false for history instead of being
+// overwritten in place.
+export type BrandProfile = {
+  id: string;
+  businessName: string;
+  shortDescription: string;
+  targetAudience: string;
+  brandVoiceNotes: string;
+  primaryCta: string;
+  preferredPhrases: string;
+  prohibitedPhrases: string;
+  primaryColor: string;
+  secondaryColor: string;
+  headingFont: string;
+  bodyFont: string;
+  logoStoragePath: string;
+  socialLinks: string;
   isActive: boolean;
 };
