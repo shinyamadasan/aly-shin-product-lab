@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "0.2.0",
+  "phase": "Phase 1",
+  "business": {
+    "name": "Aly & Pon",
+    "industry": "Coffee and Bakery",
+    "vision": "Build one of the most trusted coffee and bakery brands."
+  },
+  "principles": [
+    "Notion is the business brain.",
+    "Google Drive stores assets.",
+    "GitHub stores documentation, templates, schemas, and automation.",
+    "Codex maintains the repository.",
+    "Humans approve major changes.",
+    "Every major decision should be documented."
+  ],
+  "statusSystems": {
+    "workStatus": ["Not Started", "In Progress", "Blocked", "Done", "Canceled"],
+    "decisionStatus": ["Proposed", "Approved", "Rejected", "Superseded"],
+    "approvalStatus": ["Submitted", "Approved", "Rejected", "Changes Requested", "Canceled"],
+    "areaStatus": ["Active", "Paused", "Archived"],
+    "priority": ["High", "Medium", "Low"]
+  },
+  "databases": [
+    {
+      "name": "Areas",
+      "phase": "Phase 1",
+      "purpose": "Define accountable business areas that organize tasks, decisions, meetings, and approvals.",
+      "properties": [
+        { "name": "Name", "type": "title", "required": true },
+        { "name": "Status", "type": "select", "required": true, "optionsRef": "areaStatus" },
+        { "name": "Accountable Owner", "type": "people", "required": false },
+        { "name": "Description", "type": "rich_text", "required": false },
+        { "name": "Review Cadence", "type": "select", "required": false, "options": ["Weekly", "Monthly", "Quarterly", "Annually"] }
+      ]
+    },
+    {
+      "name": "Tasks",
+      "phase": "Phase 1",
+      "purpose": "Track accountable work across business areas.",
+      "properties": [
+        { "name": "Name", "type": "title", "required": true },
+        { "name": "Status", "type": "select", "required": true, "optionsRef": "workStatus" },
+        { "name": "Priority", "type": "select", "required": false, "optionsRef": "priority" },
+        { "name": "Owner", "type": "people", "required": false },
+        { "name": "Collaborator", "type": "people", "required": false },
+        { "name": "Due Date", "type": "date", "required": false },
+        { "name": "Area", "type": "relation", "required": false, "relatedDatabase": "Areas", "cardinality": "zero_or_one" },
+        { "name": "Approval Required", "type": "checkbox", "required": false },
+        { "name": "Related Decision", "type": "relation", "required": false, "relatedDatabase": "Decisions", "cardinality": "zero_or_many" },
+        { "name": "Notes", "type": "rich_text", "required": false }
+      ]
+    },
+    {
+      "name": "Decisions",
+      "phase": "Phase 1",
+      "purpose": "Track major business, brand, operating, and architecture decisions.",
+      "properties": [
+        { "name": "Name", "type": "title", "required": true },
+        { "name": "Status", "type": "select", "required": true, "optionsRef": "decisionStatus" },
+        { "name": "Decision Date", "type": "date", "required": false },
+        { "name": "Area", "type": "relation", "required": false, "relatedDatabase": "Areas", "cardinality": "zero_or_one" },
+        { "name": "Proposed By", "type": "people", "required": false },
+        { "name": "Approved By", "type": "people", "required": false },
+        { "name": "Reason", "type": "rich_text", "required": false },
+        { "name": "Summary", "type": "rich_text", "required": false },
+        { "name": "Revisit Date", "type": "date", "required": false }
+      ]
+    },
+    {
+      "name": "Meetings",
+      "phase": "Phase 1",
+      "purpose": "Record meetings, notes, and resulting tasks or decisions.",
+      "properties": [
+        { "name": "Name", "type": "title", "required": true },
+        { "name": "Meeting Date", "type": "date", "required": true },
+        { "name": "Area", "type": "relation", "required": false, "relatedDatabase": "Areas", "cardinality": "zero_or_one" },
+        { "name": "Participants", "type": "people", "required": false },
+        { "name": "Status", "type": "select", "required": true, "optionsRef": "workStatus" },
+        { "name": "Notes", "type": "rich_text", "required": false },
+        { "name": "Resulting Tasks", "type": "relation", "required": false, "relatedDatabase": "Tasks", "cardinality": "zero_or_many" },
+        { "name": "Resulting Decisions", "type": "relation", "required": false, "relatedDatabase": "Decisions", "cardinality": "zero_or_many" },
+        { "name": "Next Meeting Date", "type": "date", "required": false }
+      ]
+    },
+    {
+      "name": "Approvals",
+      "phase": "Phase 1",
+      "purpose": "Track human review for tasks and decisions that require approval.",
+      "properties": [
+        { "name": "Name", "type": "title", "required": true },
+        { "name": "Status", "type": "select", "required": true, "optionsRef": "approvalStatus" },
+        { "name": "Submitted By", "type": "people", "required": false },
+        { "name": "Reviewer", "type": "people", "required": false },
+        { "name": "Submitted Date", "type": "date", "required": false },
+        { "name": "Decision Date", "type": "date", "required": false },
+        { "name": "Area", "type": "relation", "required": false, "relatedDatabase": "Areas", "cardinality": "zero_or_one" },
+        { "name": "Related Task", "type": "relation", "required": false, "relatedDatabase": "Tasks", "cardinality": "zero_or_one" },
+        { "name": "Related Decision", "type": "relation", "required": false, "relatedDatabase": "Decisions", "cardinality": "zero_or_one" },
+        { "name": "Feedback", "type": "rich_text", "required": false }
+      ]
+    }
+  ],
+  "relationships": [
+    { "from": "Tasks.Area", "to": "Areas", "cardinality": "zero_or_one" },
+    { "from": "Decisions.Area", "to": "Areas", "cardinality": "zero_or_one" },
+    { "from": "Meetings.Area", "to": "Areas", "cardinality": "zero_or_one" },
+    { "from": "Approvals.Area", "to": "Areas", "cardinality": "zero_or_one" },
+    { "from": "Tasks.Related Decision", "to": "Decisions", "cardinality": "zero_or_many" },
+    { "from": "Meetings.Resulting Tasks", "to": "Tasks", "cardinality": "zero_or_many" },
+    { "from": "Meetings.Resulting Decisions", "to": "Decisions", "cardinality": "zero_or_many" },
+    { "from": "Approvals.Related Task", "to": "Tasks", "cardinality": "zero_or_one" },
+    { "from": "Approvals.Related Decision", "to": "Decisions", "cardinality": "zero_or_one" }
+  ],
+  "futureModules": [
+    { "name": "SOPs", "reason": "Standard operating procedures are important but should follow after Phase 1 work, decisions, meetings, and approvals are stable." },
+    { "name": "Projects", "reason": "Project tracking should be revisited after task and meeting flows prove the core operating model." },
+    { "name": "Assets", "reason": "Asset indexing depends on the Google Drive mapping and naming standards being approved." },
+    { "name": "Vendors", "reason": "Vendor records should be added after operating ownership and approval rules are stable." },
+    { "name": "Brand Standards", "reason": "Brand standards should become a module after the brand book and approval process mature." }
+  ],
+  "integrationStatus": {
+    "notionApiCode": false,
+    "dependenciesInstalled": false,
+    "workspaceTouched": false,
+    "seedDataApproved": false
+  },
+  "safetyRules": [
+    "Never delete or archive Notion content automatically.",
+    "Dry-run is the default for write-capable commands.",
+    "Live writes require an explicit --apply flag.",
+    "Never expose secrets.",
+    "Operations must be idempotent.",
+    "Stop on unexpected live-schema conflicts.",
+    "Seed data is not approved unless explicitly marked approved."
+  ]
+}
