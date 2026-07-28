@@ -9,10 +9,9 @@ from unittest.mock import Mock
 from dotenv import load_dotenv
 
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parents[2]
 
-from scripts.notion_connection_test import (  # noqa: E402
+from automation.scripts.notion_connection_test import (  # noqa: E402
     TEST_PAGE_TITLE,
     TEST_PARAGRAPH,
     run_check,
@@ -110,7 +109,7 @@ class NotionConnectionTest(unittest.TestCase):
         env.update(VALID_ENV)
 
         completed = subprocess.run(
-            [sys.executable, "scripts/notion_connection_test.py"],
+            [sys.executable, "automation/scripts/notion_connection_test.py"],
             cwd=ROOT,
             env=env,
             text=True,

@@ -3,7 +3,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
-from scripts.bootstrap_notion_phase2 import (
+from automation.scripts.bootstrap_notion_phase2 import (
     DASHBOARD_PAGES,
     DATABASE_VIEWS,
     STARTER_AREAS,
@@ -11,14 +11,15 @@ from scripts.bootstrap_notion_phase2 import (
     TEMPLATE_MARKER,
     run_bootstrap,
 )
-from tests.test_build_notion_phase1 import full_data_source, prop_payload
+from automation.tests.test_build_notion_phase1 import full_data_source, prop_payload
 
 
 VALID_ENV = {
     "NOTION_TOKEN": "secret_phase2_token_should_not_appear",
     "NOTION_PARENT_PAGE_ID": "1234567890abcdef1234567890abcdef",
 }
-BASE_SCHEMA = json.loads(Path("notion/workspace-schema.json").read_text(encoding="utf-8"))
+ROOT = Path(__file__).resolve().parents[2]
+BASE_SCHEMA = json.loads((ROOT / "schema" / "workspace-schema.json").read_text(encoding="utf-8"))
 APPROVED_DATABASES = [database["name"] for database in BASE_SCHEMA["databases"]]
 
 

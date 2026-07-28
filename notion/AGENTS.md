@@ -1,10 +1,10 @@
 # AGENTS.md
 
-This file defines how AI agents should work inside the Aly & Pon OS repository.
+This file defines how AI agents should work inside the Aly & Pon Notion tooling area of the Product Lab repository.
 
 ## Mission
 
-Maintain the documentation and architecture foundation for Aly & Pon. The repository exists to make business knowledge durable, understandable, and ready for future Notion and automation integration.
+Maintain the documentation and architecture foundation for Aly & Pon. This tooling area exists to make business knowledge durable, understandable, and ready for future Notion and automation integration.
 
 ## Non-Negotiables
 

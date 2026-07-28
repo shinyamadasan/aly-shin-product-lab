@@ -24,7 +24,7 @@ Notion is the planned business brain for Aly & Pon. This document defines the ar
 
 ## Phase 1 Builder
 
-`scripts/build_notion_phase1.py` builds only the five approved Phase 1 databases from `notion/workspace-schema.json`. Dry-run is the default.
+`automation/scripts/build_notion_phase1.py` builds only the five approved Phase 1 databases from `schema/workspace-schema.json`. Dry-run is the default.
 
 The builder targets Notion API version `2025-09-03`. In that version, a database is a container and schema properties belong to the database's primary data source. The installed Python client does not expose a dedicated `data_sources` endpoint helper, so the builder uses the client's generic request method for `/v1/data_sources` reads and updates.
 
@@ -36,7 +36,7 @@ Apply mode may only:
 - Resolve each database container ID and primary data source ID.
 - Retrieve schemas from primary data sources.
 - Create missing approved Phase 1 databases.
-- Add only missing relation properties explicitly defined in `workspace-schema.json`.
+- Add only missing relation properties explicitly defined in `schema/workspace-schema.json`.
 - Build one-way relation properties with the related data source ID and `single_property`.
 - Skip existing databases whose schemas match.
 - Stop safely on same-title schema conflicts.
@@ -61,11 +61,11 @@ Relation repair updates are sent to `PATCH /v1/data_sources/{data_source_id}` wi
 }
 ```
 
-The builder does not add `dual_property` unless it is explicitly defined in `notion/workspace-schema.json`, and it does not invent reciprocal relation properties.
+The builder does not add `dual_property` unless it is explicitly defined in `schema/workspace-schema.json`, and it does not invent reciprocal relation properties.
 
 ## Phase 2 Bootstrap
 
-`scripts/bootstrap_notion_phase2.py` adds the first usable workspace layer after Phase 1 is complete. Dry-run is offline. `--inspect` performs read-only live planning. `--apply` is the only write mode.
+`automation/scripts/bootstrap_notion_phase2.py` adds the first usable workspace layer after Phase 1 is complete. Dry-run is offline. `--inspect` performs read-only live planning. `--apply` is the only write mode.
 
 Phase 2 may create:
 

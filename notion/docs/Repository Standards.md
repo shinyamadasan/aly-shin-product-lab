@@ -2,15 +2,15 @@
 
 ## Purpose
 
-These standards keep the Aly & Pon OS repository understandable, maintainable, and ready for future automation.
+These standards keep the Aly & Pon Notion tooling area understandable, maintainable, and ready for future automation inside the Product Lab repository.
 
 ## Structure
 
 - Keep durable business architecture in `docs/`.
 - Keep reusable formats in `templates/`.
-- Keep Notion schema planning in `notion/`.
-- Keep future automation entrypoints in `scripts/`.
-- Keep validation checks in `tests/`.
+- Keep Notion schema planning in `schema/`.
+- Keep future automation entrypoints in `automation/scripts/`.
+- Keep validation checks in `automation/tests/`.
 
 ## Markdown Standards
 

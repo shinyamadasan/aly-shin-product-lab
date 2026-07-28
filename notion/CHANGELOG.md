@@ -2,7 +2,7 @@
 
 All meaningful changes to the Aly & Pon OS repository should be documented here.
 
-The format follows a simple date-based log. This repository is currently pre-release.
+The format follows a simple date-based log. This tooling area is currently pre-release.
 
 ## 2026-07-28
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap sequences the Aly & Pon OS repository foundation. It intentionally excludes product application, inventory, and recipe work.
+This roadmap sequences the Aly & Pon Notion tooling foundation inside the Product Lab repository. It intentionally excludes product application, inventory, and recipe work.
 
 ## Phase 1: Repository Foundation
 
@@ -41,7 +41,7 @@ These ideas are intentionally excluded from the Phase 1 workspace schema, but th
 
 Status: Not started
 
-- Validate `notion/workspace-schema.json`.
+- Validate `schema/workspace-schema.json`.
 - Create seed data examples.
 - Document Notion API permissions needed.
 - Define safe sync rules between GitHub and Notion.
