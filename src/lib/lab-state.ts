@@ -25,7 +25,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Costing", href: "/costing", view: "costing" },
   { label: "Equipment", href: "/equipment", view: "equipment" },
   { label: "Inventory", href: "/inventory", view: "inventory" },
-  { label: "Content Journal", href: "/journal", view: "journal" },
+  { label: "Journey", href: "/journal", view: "journal" },
   { label: "Product Admin", href: "/admin", view: "admin" },
   { label: "Launch Offer", href: "/launch", view: "launch" },
   { label: "Content Studio", href: "/content-studio", view: "content-studio" },

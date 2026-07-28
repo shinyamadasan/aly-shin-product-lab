@@ -44,8 +44,9 @@ import { BakePage } from "@/components/bake-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
-import { MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
+import { JourneyTypeSelect, MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
+import { buildContentJournalPayload, mapContentJournalRow } from "@/lib/journal";
 import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
@@ -332,16 +333,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         wouldReorder: row.would_reorder,
         packagingReaction: row.packaging_reaction ?? "",
       })),
-      journal: (journalResult.data ?? []).map((row) => ({
-        id: row.id,
-        productId: row.product_id,
-        entryDate: row.entry_date,
-        whatWasMade: row.what_was_made ?? "",
-        mediaCaptured: row.media_captured ?? "",
-        lessonLearned: row.lesson_learned ?? "",
-        postIdeas: row.post_ideas ?? "",
-        nextAction: row.next_action ?? "",
-      })),
+      journal: (journalResult.data ?? []).map(mapContentJournalRow),
       aiReviews: aiReviewsMissing ? [] : (aiReviewResult.data ?? []).map((row) => ({
         id: row.id,
         productId: row.product_id,
@@ -1770,29 +1762,22 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     const contentAngle = String(formData.get("contentAngle") || "");
     const entry: ContentJournalEntry = {
       id: journalId || crypto.randomUUID(),
-      productId: String(formData.get("productId")),
+      productId: String(formData.get("productId") || ""),
       entryDate: String(formData.get("entryDate") || getToday()),
       whatWasMade: String(formData.get("whatWasMade") || ""),
       mediaCaptured: mediaLink ? `${mediaCaptured}. Link: ${mediaLink}` : mediaCaptured,
       lessonLearned: String(formData.get("lessonLearned") || ""),
       postIdeas: contentAngle,
       nextAction: String(formData.get("nextAction") || ""),
+      entryType: String(formData.get("entryType") || ""),
     };
     if (supabase && session) {
-      const payload = {
-        product_id: entry.productId,
-        entry_date: entry.entryDate,
-        what_was_made: entry.whatWasMade,
-        media_captured: entry.mediaCaptured,
-        lesson_learned: entry.lessonLearned,
-        post_ideas: entry.postIdeas,
-        next_action: entry.nextAction,
-      };
+      const payload = buildContentJournalPayload(entry);
       const query = journalId
         ? supabase.from("content_journal").update(payload).eq("id", journalId)
         : supabase.from("content_journal").insert(payload);
       const { error } = await query;
-      setMessage(error ? `Journal save failed: ${error.message}` : journalId ? "Journal updated." : "Journal saved.");
+      setMessage(error ? `Journey save failed: ${error.message}` : journalId ? "Journey entry updated." : "Journey entry saved.");
       setMessageTone(error ? "bad" : "good");
       if (!error) {
         setEditingJournal(null);
@@ -1805,14 +1790,14 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       journal: journalId ? current.journal.map((item) => (item.id === journalId ? entry : item)) : [entry, ...current.journal],
     }));
     setEditingJournal(null);
-    setMessage(journalId ? "Journal updated locally." : "Journal saved locally.");
+    setMessage(journalId ? "Journey entry updated locally." : "Journey entry saved locally.");
     setMessageTone("good");
   }
 
   async function deleteJournal(journalId: string) {
     if (supabase && session) {
       const { error } = await supabase.from("content_journal").delete().eq("id", journalId);
-      setMessage(error ? `Journal delete failed: ${error.message}` : "Journal deleted.");
+      setMessage(error ? `Journey delete failed: ${error.message}` : "Journey entry deleted.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingJournal?.id === journalId) {
         setEditingJournal(null);
@@ -1824,7 +1809,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     if (editingJournal?.id === journalId) {
       setEditingJournal(null);
     }
-    setMessage("Journal deleted locally.");
+    setMessage("Journey entry deleted locally.");
     setMessageTone("good");
   }
 
@@ -2155,7 +2140,7 @@ function ProductDetailPage({
           <MetricCard icon={<FlaskConical size={20} />} label="Batches" value={batches.length} detail={latestBatch ? latestBatch.launchDecision : "No proof yet"} />
           <MetricCard icon={<Sparkles size={20} />} label="Batch cost" value={costingTotals ? Math.round(costingTotals.totalBatchCost) : 0} detail={costing ? "PHP total" : "No costing"} />
           <MetricCard icon={<Star size={20} />} label="Tastings" value={tastings.length} detail={`Avg: ${averageRating}`} />
-          <MetricCard icon={<NotebookPen size={20} />} label="Content" value={journal.length} detail="Journal entries" />
+          <MetricCard icon={<NotebookPen size={20} />} label="Content" value={journal.length} detail="Journey entries" />
         </div>
         <div className="grid gap-4 p-5 pt-0 xl:grid-cols-2">
           <DetailCard title="Latest Proof" lines={[latestBatch?.batchVersion ?? "No proof batch saved", latestBatch?.wentWrong ? `Issue: ${latestBatch.wentWrong}` : "Issue: not logged", latestBatch?.improveNext ? `Next: ${latestBatch.improveNext}` : "Next: not set"]} />
@@ -2283,7 +2268,7 @@ function ContextBrain({ labState }: { labState: LabState }) {
         <div className="border-b border-[#eaded2] p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Context Brain</p>
           <h3 className="mt-1 text-xl font-semibold">What the data says right now</h3>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">Generated from real Proof Day, Costing, Tasting, and Journal entries — not generic text.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">Generated from real Proof Day, Costing, Tasting, and Journey entries — not generic text.</p>
         </div>
         <div className="grid gap-4 p-5 md:grid-cols-4">
           <MetricCard icon={<FlaskConical size={20} />} label="Proof batches" value={labState.batches.length} detail="Logged so far" />
@@ -2323,7 +2308,7 @@ function ContextBrain({ labState }: { labState: LabState }) {
 function OperatingGuide({ labState }: { labState: LabState }) {
   const dailyFlow = [
     { title: "1. Record the kitchen test", page: "/proof-day", detail: "Use Proof Day every time a product is made. Select the product, adjust the auto-filled formula, record timing, sellable yield, issues, freshness, packaging behavior, and the next test only." },
-    { title: "2. Capture useful content", page: "/proof-day", detail: "Use the content journal only when real media or a real lesson exists. Log texture close-ups, process clips, packaging photos, reactions, content angle, and next action." },
+    { title: "2. Capture useful content", page: "/proof-day", detail: "Use Journey only when real media or a real lesson exists. Log texture close-ups, process clips, packaging photos, reactions, content angle, and next action." },
     { title: "3. Review the experiment history", page: "/batches", detail: "Use Batches after the kitchen work. Compare formulas, see automatic ingredient adjustments, review what failed, and decide whether to retest, pause, launch, or remove." },
     { title: "4. Add tasting checkpoints", page: "/batches", detail: "Tasting now lives directly under each batch on the Batches page. Add a checkpoint every time someone tries it -- 2 hours post-bake, 24 hours, whenever -- with rating, what they liked, what should improve, willingness to pay, reorder signal, and packaging reaction." },
     { title: "5. Cost only promising formulas", page: "/costing", detail: "Use Costing after the formula is close. Pull the latest proof formula into ingredients, then add real costs, packaging, labor, utilities, waste, and suggested price." },
@@ -2367,7 +2352,7 @@ function OperatingGuide({ labState }: { labState: LabState }) {
         <div className="space-y-5">
           <Panel title="Simple Roles" icon={<ClipboardCheck size={18} />}>
             <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-              <p><strong>Your wife:</strong> Proof Day, Tasting, Content Journal.</p>
+              <p><strong>Your wife:</strong> Proof Day, Tasting, Journey.</p>
               <p><strong>You:</strong> Batches, Costing, Product Detail, Products, Admin, Launch.</p>
             </div>
           </Panel>
@@ -2905,9 +2890,9 @@ function DecisionSidebar({ labState }: { labState: LabState }) {
           ))}
         </ul>
       </Panel>
-      <Panel title="Journal signals" icon={<NotebookPen size={18} />}>
+      <Panel title="Journey signals" icon={<NotebookPen size={18} />}>
         <div className="space-y-3">
-          {latestJournal.length === 0 ? <p className="text-sm text-[#6f5a4c]">No journal entries yet. Save one from Content Journal after real kitchen work.</p> : null}
+          {latestJournal.length === 0 ? <p className="text-sm text-[#6f5a4c]">No Journey entries yet. Save one after real kitchen work.</p> : null}
           {latestJournal.map((entry) => (
             <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3" key={entry.id}>
               <p className="text-sm font-semibold">{productName(entry.productId)} — {entry.entryDate}</p>
@@ -5681,12 +5666,13 @@ function JournalForm({
   const mediaLink = entry?.mediaCaptured.split(". Link: ")[1] ?? "";
 
   return (
-    <FormPanel title={entry ? "Edit content capture" : "Content capture record"} icon={<NotebookPen size={18} />}>
+    <FormPanel title={entry ? "Edit Journey entry" : "New Journey entry"} icon={<NotebookPen size={18} />}>
       <form action={saveJournal} className="grid gap-3" key={entry?.id ?? "new-journal"}>
         <input name="id" type="hidden" value={entry?.id ?? ""} />
-        <ProductSelect selectedProductId={entry?.productId} />
-        <div className="grid gap-3 sm:grid-cols-2">
+        <ProductSelect includeNoProductOption selectedProductId={entry?.productId} />
+        <div className="grid gap-3 sm:grid-cols-3">
           <Input name="entryDate" label="Capture date" type="date" defaultValue={entry?.entryDate ?? getToday()} />
+          <JourneyTypeSelect selectedType={entry?.entryType} />
           <Select name="contentAngle" label="Best use" options={["product proof", "behind the scenes", "packaging test", "tasting feedback", "lesson learned", "launch teaser", "not content-worthy"]} defaultValue={entry?.postIdeas ?? "product proof"} />
         </div>
         <Textarea name="whatWasMade" label="Moment captured" placeholder="Example: Brownies V2 cooling and cutting test. One clean top shot, one slicing clip, one texture close-up." defaultValue={entry?.whatWasMade} />
@@ -5695,7 +5681,7 @@ function JournalForm({
         <Textarea name="lessonLearned" label="Useful note for content or product" placeholder="Example: The pull-apart texture looked strong on video, but the box shot looked messy." defaultValue={entry?.lessonLearned} />
         <Textarea name="nextAction" label="Next content action" placeholder="Example: Turn texture clip into reel; reshoot packaging with cleaner liner; skip posting this batch." defaultValue={entry?.nextAction} />
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button>{entry ? "Update journal" : "Save journal"}</Button>
+          <Button>{entry ? "Update Journey entry" : "Save Journey entry"}</Button>
           {entry ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
         </div>
       </form>
