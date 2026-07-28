@@ -1,8 +1,8 @@
 # Aly & Pon OS
 
-This repository is the operating system for Aly & Pon, a coffee and bakery business built to become one of the most trusted brands in its category.
+This folder is the Notion and business-workspace tooling area inside the Aly & Shin Product Lab repository for Aly & Pon, a coffee and bakery business built to become one of the most trusted brands in its category.
 
-It does not contain the product app, inventory system, or recipes. It contains the documentation, templates, schemas, standards, and future automation foundation that help humans and AI operate the business with consistency.
+It is separate from the product app runtime, inventory system, and recipes. It contains the documentation, templates, schemas, standards, and future automation foundation that help humans and AI operate the business with consistency.
 
 ## Philosophy
 
@@ -20,9 +20,9 @@ It does not contain the product app, inventory system, or recipes. It contains t
 | --- | --- |
 | `docs/` | Durable business documentation and architecture notes. |
 | `templates/` | Reusable document templates for decisions, SOPs, projects, and change proposals. |
-| `notion/` | Notion workspace architecture, schema definitions, and future seed data. |
-| `scripts/` | Future automation entrypoints. No scripts are implemented yet. |
-| `tests/` | Future validation checks for schemas, documentation standards, and automation. |
+| `schema/` | Notion workspace schema definitions and future seed data. |
+| `automation/scripts/` | Approved automation entrypoints. |
+| `automation/tests/` | Validation checks for schemas, documentation standards, and automation. |
 | `AGENTS.md` | Operating rules for AI agents working in this repository. |
 | `ROADMAP.md` | Sequenced plan for building the business operating system. |
 | `CHANGELOG.md` | Human-readable record of meaningful repository changes. |
@@ -40,7 +40,7 @@ The current repository foundation focuses on:
 
 ## Notion Commands
 
-Human approval is required before running any write-capable Notion command. Dry-run is the default and does not perform live Notion writes.
+Human approval is required before running any write-capable Notion command. Dry-run is the default and does not perform live Notion writes. Run these commands from `aly-shin-product-lab/notion`.
 
 Install:
 
@@ -51,19 +51,19 @@ python -m pip install -r requirements.txt
 Test:
 
 ```powershell
-python -m unittest discover -s tests
+python -m unittest discover -s automation/tests -t .
 ```
 
 Connectivity dry-run:
 
 ```powershell
-python scripts/notion_connection_test.py
+python automation/scripts/notion_connection_test.py
 ```
 
 Connectivity apply:
 
 ```powershell
-python scripts/notion_connection_test.py --apply
+python automation/scripts/notion_connection_test.py --apply
 ```
 
 The script loads local `.env` values with `python-dotenv`, then reads `NOTION_TOKEN` and `NOTION_PARENT_PAGE_ID` from the process environment. Existing process environment variables are not overwritten by default. It never prints the token. In apply mode it only verifies parent-page access and idempotently creates a direct child page named `Aly & Pon Connection Test` if that page does not already exist.
@@ -71,39 +71,39 @@ The script loads local `.env` values with `python-dotenv`, then reads `NOTION_TO
 Phase 1 workspace dry-run:
 
 ```powershell
-python scripts/build_notion_phase1.py
+python automation/scripts/build_notion_phase1.py
 ```
 
 Phase 1 workspace inspect:
 
 ```powershell
-python scripts/build_notion_phase1.py --inspect
+python automation/scripts/build_notion_phase1.py --inspect
 ```
 
 Phase 1 workspace apply:
 
 ```powershell
-python scripts/build_notion_phase1.py --apply
+python automation/scripts/build_notion_phase1.py --apply
 ```
 
-The Phase 1 builder reads `notion/workspace-schema.json` and may create only the approved `Areas`, `Tasks`, `Decisions`, `Meetings`, and `Approvals` databases when `--apply` is explicitly provided. Offline dry-run performs no Notion reads or writes. Inspect mode performs read-only planning. Apply mode inspects all five databases before writing, stops on hard schema conflicts, and can safely resume a partial build by adding only missing approved one-way relation properties.
+The Phase 1 builder reads `schema/workspace-schema.json` and may create only the approved `Areas`, `Tasks`, `Decisions`, `Meetings`, and `Approvals` databases when `--apply` is explicitly provided. Offline dry-run performs no Notion reads or writes. Inspect mode performs read-only planning. Apply mode inspects all five databases before writing, stops on hard schema conflicts, and can safely resume a partial build by adding only missing approved one-way relation properties.
 
 Phase 2 workspace dry-run:
 
 ```powershell
-python scripts/bootstrap_notion_phase2.py
+python automation/scripts/bootstrap_notion_phase2.py
 ```
 
 Phase 2 workspace inspect:
 
 ```powershell
-python scripts/bootstrap_notion_phase2.py --inspect
+python automation/scripts/bootstrap_notion_phase2.py --inspect
 ```
 
 Phase 2 workspace apply:
 
 ```powershell
-python scripts/bootstrap_notion_phase2.py --apply
+python automation/scripts/bootstrap_notion_phase2.py --apply
 ```
 
 The Phase 2 bootstrap command transforms complete Phase 1 databases into a usable operating system shell. It may create only approved dashboard pages, database views, structural template reference pages, and starter Area records. Inspect reports Phase 1 completion, each approved view target, layout, filters, sorts, visible property configuration, and the apply endpoint. Apply performs full preflight before writing and creates database views before lower-risk bootstrap pages or starter Areas. It does not create Tasks, Meetings, Decisions, Approvals, products, recipes, vendors, inventory, marketing content, or business facts.

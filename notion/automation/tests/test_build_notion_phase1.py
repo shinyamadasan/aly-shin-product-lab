@@ -4,7 +4,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
-from scripts.build_notion_phase1 import APPROVED_DATABASES, NOTION_API_VERSION, load_notion_client, run_build
+from automation.scripts.build_notion_phase1 import APPROVED_DATABASES, NOTION_API_VERSION, load_notion_client, run_build
 
 
 VALID_ENV = {
@@ -12,7 +12,8 @@ VALID_ENV = {
     "NOTION_PARENT_PAGE_ID": "1234567890abcdef1234567890abcdef",
 }
 
-BASE_SCHEMA = json.loads(Path("notion/workspace-schema.json").read_text(encoding="utf-8"))
+ROOT = Path(__file__).resolve().parents[2]
+BASE_SCHEMA = json.loads((ROOT / "schema" / "workspace-schema.json").read_text(encoding="utf-8"))
 
 
 def write_schema(schema):

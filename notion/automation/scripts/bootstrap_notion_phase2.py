@@ -23,7 +23,7 @@ try:
         inspect_workspace as inspect_phase1_workspace,
     )
 except ModuleNotFoundError:
-    from scripts.build_notion_phase1 import (
+    from automation.scripts.build_notion_phase1 import (
         APPROVED_DATABASES,
         SCHEMA_PATH,
         api_error_message,

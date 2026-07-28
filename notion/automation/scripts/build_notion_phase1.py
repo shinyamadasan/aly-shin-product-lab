@@ -21,8 +21,8 @@ REQUIRED_ENV_VARS = ("NOTION_TOKEN", "NOTION_PARENT_PAGE_ID")
 PAGE_ID_RE = re.compile(
     r"^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
 )
-ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = ROOT / "notion" / "workspace-schema.json"
+ROOT = Path(__file__).resolve().parents[2]
+SCHEMA_PATH = ROOT / "schema" / "workspace-schema.json"
 
 
 class NotionClient(Protocol):
