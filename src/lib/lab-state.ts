@@ -11,6 +11,7 @@ export type LabView =
   | "inventory"
   | "bake"
   | "journal"
+  | "opportunities"
   | "admin"
   | "launch"
   | "content-studio"
@@ -26,6 +27,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Equipment", href: "/equipment", view: "equipment" },
   { label: "Inventory", href: "/inventory", view: "inventory" },
   { label: "Content Journal", href: "/journal", view: "journal" },
+  { label: "Opportunities", href: "/opportunities", view: "opportunities" },
   { label: "Product Admin", href: "/admin", view: "admin" },
   { label: "Launch Offer", href: "/launch", view: "launch" },
   { label: "Content Studio", href: "/content-studio", view: "content-studio" },
