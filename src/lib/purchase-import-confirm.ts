@@ -166,9 +166,8 @@ export function buildSupplyEntriesFromPurchaseImport({ rows, ingredients, import
   return { supplyEntries };
 }
 
-// The Supabase insert-payload mirror of a built SupplyEntry -- `id`/`created_at` are omitted, the
-// same convention toInventoryTransactionRow uses, since Postgres's own defaults
-// (gen_random_uuid()/now()) apply server-side.
+// The Supabase insert-payload mirror of a built SupplyEntry -- `id`/`created_at` are omitted
+// here because Postgres's own defaults (gen_random_uuid()/now()) apply server-side.
 export function toSupplyEntryRow(entry: SupplyEntry) {
   return {
     ingredient_id: entry.ingredientId || null,

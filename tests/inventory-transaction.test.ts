@@ -90,6 +90,7 @@ test("toInventoryTransactionRow maps every camelCase field to its exact snake_ca
   };
 
   assert.deepEqual(toInventoryTransactionRow(transaction), {
+    id: "fixed-id",
     ingredient_id: "milk-id",
     transaction_type: "purchase",
     quantity_change: 6000,
@@ -101,12 +102,12 @@ test("toInventoryTransactionRow maps every camelCase field to its exact snake_ca
   });
 });
 
-test("toInventoryTransactionRow omits id and created_at -- Postgres's own defaults apply server-side", () => {
+test("toInventoryTransactionRow keeps id for idempotent retry paths and omits created_at", () => {
   const transaction = buildInventoryTransaction({ ...baseParams(), id: "fixed-id", createdAt: "2026-07-24T00:00:00.000Z" });
 
   const row = toInventoryTransactionRow(transaction);
 
-  assert.equal("id" in row, false);
+  assert.equal(row.id, "fixed-id");
   assert.equal("created_at" in row, false);
 });
 
