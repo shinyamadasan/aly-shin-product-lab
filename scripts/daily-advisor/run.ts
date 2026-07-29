@@ -7,6 +7,8 @@ import { invokeClaude } from "./claude-invoke.ts";
 import { loadEnvFile, readClaudeBinary, readSupabaseCredentials, readTimezone } from "./env.ts";
 import { acquireLock } from "./lock.ts";
 import { detectOrphanedRecords } from "./orphan-check.ts";
+import { buildDailyAdvisorOpportunities } from "./opportunity-producer.ts";
+import { persistOpportunityDrafts, type OpportunityPersistenceClient } from "./opportunity-persistence.ts";
 import { createFileBriefingWriter } from "./persistence.ts";
 import { mergeClaudeEnrichment, renderDeterministicBriefing } from "./render-briefing.ts";
 import { buildPortfolioPrompt } from "./prompt.ts";
@@ -92,6 +94,7 @@ async function main(): Promise<void> {
   }
 
   let context;
+  let opportunityClient: OpportunityPersistenceClient | null = null;
   if (dataSource === "supabase") {
     const credsResult = readSupabaseCredentials();
     if (!credsResult.ok) {
@@ -99,6 +102,7 @@ async function main(): Promise<void> {
       exitWithCode(2);
     }
     const client = createClient(credsResult.credentials.url, credsResult.credentials.anonKey);
+    opportunityClient = client as unknown as OpportunityPersistenceClient;
     const result = await loadSupabaseContext(client, { email: credsResult.credentials.email, password: credsResult.credentials.password }, now);
     if (!result.ok) {
       log("error", `Supabase data load failed: ${result.reason}`);
@@ -156,6 +160,37 @@ async function main(): Promise<void> {
   } catch (err) {
     log("error", `Failed to write briefing output: ${err instanceof Error ? err.message : String(err)}`);
     exitWithCode(1);
+  }
+
+  if (dataSource === "supabase" && opportunityClient) {
+    try {
+      const drafts = buildDailyAdvisorOpportunities({ evaluations, context, date, timezone, dataSource, detectedAt: new Date(now).toISOString() });
+      if (drafts.length > 0) {
+        const result = await persistOpportunityDrafts(opportunityClient, drafts);
+        if (result.ok) {
+          log("info", `Opportunity persistence complete: inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped}.`);
+        } else {
+          const reasons = result.details
+            .filter((detail) => detail.outcome === "failed")
+            .map((detail) => detail.reason)
+            .filter(Boolean)
+            .join("; ");
+          log(
+            "warn",
+            `Opportunity persistence skipped or partially failed: inserted=${result.inserted} updated=${result.updated} skipped=${result.skipped} failed=${result.failed}. ` +
+              `${reasons || "unknown write failure"}. Markdown briefing was written and will still publish; run/verify supabase-add-opportunities.sql before relying on Opportunity records.`,
+          );
+        }
+      } else {
+        log("info", "No Daily Advisor Opportunities emitted for this run.");
+      }
+    } catch (err) {
+      log(
+        "warn",
+        `Opportunity persistence skipped: ${err instanceof Error ? err.message : String(err)}. ` +
+          "Markdown briefing was written and will still publish; run/verify supabase-add-opportunities.sql before relying on Opportunity records.",
+      );
+    }
   }
 
   exitWithCode(0);
