@@ -2,9 +2,12 @@ import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/
 import type { LabState } from "@/lib/lab-state";
 import type { ContentJournalEntry, CostingSummary, ProductBatch } from "@/lib/product-lab-types";
 import { journeyTypeLabel } from "@/lib/journal";
+import { isCreateContentPending } from "@/lib/content-drafts";
 import { productName } from "@/components/product-controls";
 
 export function RecentEntries({
+  createContentFromJourney,
+  creatingContentForEntryId,
   deleteBatch,
   deleteCosting,
   deleteJournal,
@@ -14,6 +17,11 @@ export function RecentEntries({
   labState,
   only,
 }: {
+  // Journey -> Content handoff (M2C2) -- see MARKETING_MODULE.md's "M2C1.5 UX contract". Only
+  // ever wired for the Journey list: RecentEntries has no journal-linked concept for
+  // Batches/Costing, so this stays undefined there and RecentList never renders the button.
+  createContentFromJourney?: (entry: ContentJournalEntry) => void;
+  creatingContentForEntryId?: string | null;
   deleteBatch?: (batchId: string) => void;
   deleteCosting?: (costing: CostingSummary) => void;
   deleteJournal?: (journalId: string) => void;
@@ -85,6 +93,8 @@ export function RecentEntries({
             detail: `${entry.entryType ? `Type: ${journeyTypeLabel(entry.entryType)}. ` : ""}Captured: ${entry.mediaCaptured || "none logged"}. Next: ${entry.nextAction || "not set"}.`,
             onDelete: deleteJournal ? () => deleteJournal(entry.id) : undefined,
             onEdit: editJournal ? () => editJournal(entry) : undefined,
+            onCreateContent: createContentFromJourney ? () => createContentFromJourney(entry) : undefined,
+            isCreatingContent: isCreateContentPending(creatingContentForEntryId ?? null, entry.id),
           }))}
         /> : null}
       </div>
@@ -99,7 +109,15 @@ function RecentList({
 }: {
   title: string;
   empty: string;
-  items: Array<{ id: string; title: string; detail: string; onDelete?: () => void; onEdit?: () => void }>;
+  items: Array<{
+    id: string;
+    title: string;
+    detail: string;
+    onDelete?: () => void;
+    onEdit?: () => void;
+    onCreateContent?: () => void;
+    isCreatingContent?: boolean;
+  }>;
 }) {
   return (
     <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-4">
@@ -110,8 +128,18 @@ function RecentList({
           <div className="border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0" key={item.id}>
             <div className="flex items-start justify-between gap-3">
               <p className="text-sm font-medium">{item.title}</p>
-              {item.onEdit || item.onDelete ? (
+              {item.onEdit || item.onDelete || item.onCreateContent ? (
                 <div className="flex shrink-0 gap-2">
+                  {item.onCreateContent ? (
+                    <button
+                      className="text-xs font-semibold text-[#8f5632] underline disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={item.isCreatingContent}
+                      onClick={item.onCreateContent}
+                      type="button"
+                    >
+                      {item.isCreatingContent ? "Creating…" : "Create content"}
+                    </button>
+                  ) : null}
                   {item.onEdit ? <button className="text-xs font-semibold text-[#8f5632] underline" onClick={item.onEdit} type="button">Edit</button> : null}
                   {item.onDelete ? <button className="text-xs font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${item.title}?`) ? item.onDelete?.() : undefined} type="button">Delete</button> : null}
                 </div>
