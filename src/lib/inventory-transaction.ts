@@ -37,11 +37,11 @@ export function buildInventoryTransaction(params: BuildInventoryTransactionParam
   };
 }
 
-// The Supabase insert-payload mirror of buildInventoryTransaction -- `id`/`created_at` are
-// deliberately omitted (Postgres's own defaults, gen_random_uuid()/now(), apply server-side),
-// matching the insert payload every confirm path already sends.
+// The Supabase insert-payload mirror of buildInventoryTransaction. `id` travels so repair/retry
+// paths can be idempotent; `created_at` still uses Postgres's own now() default server-side.
 export function toInventoryTransactionRow(transaction: InventoryTransaction) {
   return {
+    id: transaction.id,
     ingredient_id: transaction.ingredientId,
     transaction_type: transaction.transactionType,
     quantity_change: transaction.quantityChange,
