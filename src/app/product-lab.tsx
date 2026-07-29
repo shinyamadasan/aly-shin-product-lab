@@ -42,9 +42,11 @@ import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
 import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
+import { OpportunitiesPage } from "@/components/opportunities-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
+import type { OpportunityStatusFilter } from "@/lib/opportunity-review";
 import { ContentStatusSelect, ContentTypeSelect, JourneyTypeSelect, MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
 import { buildContentJournalPayload, mapContentJournalRow } from "@/lib/journal";
@@ -107,7 +109,15 @@ function isMissingColumnError(error: PostgrestError | null): boolean {
   return error?.code === "PGRST204" || error?.code === "42703";
 }
 
-export default function ProductLab({ view = "dashboard", initialInventoryTab }: { view?: LabView; initialInventoryTab?: InventoryTab }) {
+export default function ProductLab({
+  view = "dashboard",
+  initialInventoryTab,
+  initialOpportunityStatusFilter = "new",
+}: {
+  view?: LabView;
+  initialInventoryTab?: InventoryTab;
+  initialOpportunityStatusFilter?: OpportunityStatusFilter;
+}) {
   const router = useRouter();
   const [labState, setLabState] = useState<LabState>(() => {
     if (typeof window === "undefined") {
@@ -2018,6 +2028,8 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
               </div>
             </section>
           ) : null}
+
+          {view === "opportunities" ? <OpportunitiesPage initialStatusFilter={initialOpportunityStatusFilter} /> : null}
 
           {view === "admin" ? <ProductAdminPage labState={labState} /> : null}
 

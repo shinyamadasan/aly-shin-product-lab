@@ -13,6 +13,7 @@ const titles = {
   inventory: "Inventory",
   bake: "Bake and deduct inventory",
   journal: "Journey",
+  opportunities: "Opportunity review",
   admin: "Product admin",
   launch: "Launch offer builder",
   "content-studio": "Content studio",
