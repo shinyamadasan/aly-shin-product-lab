@@ -185,23 +185,36 @@ test("[static] /journal's physical route and the content_journal table name are 
   assert.match(productLab, /supabase\.from\("content_journal"\)/);
 });
 
-// --- 9. No Campaign or Content Studio behavior is introduced ---
+// --- 9. No Campaign behavior is introduced; Content Studio scope is exactly what M2B approved ---
 // Static source-text checks across every file this milestone touched.
+//
+// Updated in M2C2: the original version of this section asserted that NOTHING about Content
+// Studio (including the literal substring "content_draft") appeared anywhere yet, and that
+// `/content-studio`'s ContentStudio() component was untouched. Both were true and correct for
+// M2B, which predates content_drafts entirely. M2C2 is the later, separately-approved
+// milestone that deliberately connects Journey to Content Studio (see MARKETING_MODULE.md's
+// "M2C2 implementation record") -- `product-controls.tsx` now legitimately imports
+// CONTENT_DRAFT_STATUSES/CONTENT_TYPE_OPTIONS from @/lib/content-drafts, and ContentStudio()
+// has been replaced with a real, content_drafts-backed implementation (see
+// tests/content-drafts.test.ts for that coverage). Updated here, not deleted, so the still-true
+// parts of this milestone's own boundary (journal.ts stays Campaign/Content-Studio-agnostic;
+// `/content-studio`'s route wrapper is unchanged) stay verified.
 
-test("[static] no Campaign or Content Studio table/domain is referenced in the new journal module", () => {
+test("[static] journal.ts itself never references Campaign, Calendar, Publishing, or Analytics", () => {
   const journalLib = readFileSync(new URL("../src/lib/journal.ts", import.meta.url), "utf8");
-  const productControls = readFileSync(new URL("../src/components/product-controls.tsx", import.meta.url), "utf8");
-  for (const forbidden of ["campaign", "content_draft", "content_asset", "content_calendar", "publishing_job", "journey_entries"]) {
+  for (const forbidden of ["campaign", "content_calendar", "publishing_job", "journey_entries"]) {
     assert.doesNotMatch(journalLib.toLowerCase(), new RegExp(forbidden));
+  }
+});
+
+test("[static] no Campaign table/domain is referenced anywhere product-controls.tsx now touches", () => {
+  const productControls = readFileSync(new URL("../src/components/product-controls.tsx", import.meta.url), "utf8");
+  for (const forbidden of ["campaign", "content_calendar", "publishing_job", "journey_entries"]) {
     assert.doesNotMatch(productControls.toLowerCase(), new RegExp(forbidden));
   }
 });
 
-test("[static] /content-studio's own page and ContentStudio() component are untouched by this milestone", () => {
+test("[static] /content-studio's route wrapper is still unchanged", () => {
   const contentStudioPage = readFileSync(new URL("../src/app/content-studio/page.tsx", import.meta.url), "utf8");
   assert.match(contentStudioPage, /return <ProductLab view="content-studio" \/>;/);
-  // ContentStudio() itself still reads live from labState.journal[0] -- M2B did not give it its
-  // own content_drafts-backed record, matching MARKETING_MODULE.md's explicit deferral.
-  assert.match(productLab, /function ContentStudio\(\{ labState \}: \{ labState: LabState \}\) \{/);
-  assert.match(productLab, /const latest = labState\.journal\[0\];/);
 });

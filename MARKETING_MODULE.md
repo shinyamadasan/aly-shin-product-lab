@@ -1,4 +1,4 @@
-# Marketing Module — Architecture Proposal (M0 + M1 + M1.5 review + Journey audit + M2A/M2B/M2C1 status)
+# Marketing Module — Architecture Proposal (M0 + M1 + M1.5 review + Journey audit + M2A/M2B/M2C1/M2C1.5/M2C2 status)
 
 > **Status: M0 (architecture/discovery) complete. M1 narrowed, approved, and implemented —
 > Brand Profile persistence only. Architectural review completed before Campaigns (M1.5) — see
@@ -9,9 +9,14 @@
 > `planning/PROPOSALS.md` PROP-014. M2B (Journey Capture UI — optional product association, entry-type
 > picker, Journal→Journey terminology, on branch `feat/journey-capture-ui-m2b`) implemented
 > 2026-07-28 — see "M2B implementation record" section below. M2C1 (Content persistence foundation
-> — `content_drafts` table, nullable `journey_entry_id` link, no UI/wiring, on branch
-> `feat/journey-content-handoff-m2c`) implemented 2026-07-28 — see "M2C1 implementation record"
-> section below. Next: M2C2, Journey → Content handoff UI.**
+> — `content_drafts` table, nullable `journey_entry_id` link, no UI/wiring) implemented 2026-07-28
+> — see "M2C1 implementation record" section below and `planning/PROPOSALS.md` PROP-016. M2C1.5
+> (Content Studio UX contract — design audit only, no code) completed 2026-07-28 — see "M2C1.5 —
+> Content Studio UX Contract" section below. M2C2 (Journey → Content handoff UI — the
+> `createDraftFromJourney`/`saveDraft` pipeline, the Create content button, the real Content
+> Studio screen, on branch `feat/journey-content-handoff-ui-m2c2`) implemented 2026-07-28 — see
+> "M2C2 implementation record" section below and `planning/PROPOSALS.md` PROP-017. Next: Duplicate
+> draft, AI generation, or Campaign linkage (once Campaigns exists) — none committed to yet.**
 > Written 2026-07-25 (M0). Updated 2026-07-27: the owner approved a narrowed M1 covering
 > **Brand Profile only** — no `campaigns`, `campaign_products`, or any later-milestone table.
 > See `planning/PROPOSALS.md` PROP-012 for the approval record and PROP-013 for the remaining,
@@ -798,6 +803,187 @@ table, `/content-studio`'s replacement (its current stub — deriving live from 
 untouched), Campaign persistence, platform selection, Calendar, Publishing, Analytics, AI
 generation, and `batch_id` wiring on `content_journal` (a separate, independent Journey
 enhancement, unrelated to this handoff).
+
+---
+
+## M2C1.5 — Content Studio UX Contract (2026-07-28)
+
+**Inserted between M2C1 and M2C2, as its own milestone, before any UI code was written.** M2C1
+answered *where* things go (schema, linkage). It deliberately left *how the user moves through
+the workflow* unanswered — navigate or stay? What's selected on arrival? Is status editable? This
+section is that design-only audit, produced on `feat/journey-content-handoff-ui-m2c2` before M2C2
+implementation began. Every open question below was resolved with a decision, then implemented
+exactly as written — nothing here was redesigned mid-implementation.
+
+**The ten open questions, answered:**
+- **Create content → navigate immediately** via the Next.js App Router (`useRouter().push`), not
+  a hard reload, not a drawer/modal (this app has neither anywhere) — amended from an original
+  `window.location.href` recommendation once the owner asked for App Router navigation
+  specifically, to preserve client state and align with where this app is headed.
+- **Selected on arrival:** the most-recently-created draft, by `created_at desc` — no query
+  param needed, since a fresh client-side navigation re-fetches and the just-inserted draft is
+  the most recent by construction.
+- **Multiple drafts from one entry:** click "Create content" again — each click is independent,
+  nothing blocks it.
+- **Duplicate drafts (as a feature):** not in M2C2 — deferred, with a named extension point.
+- **After Save:** stay on the same draft (deliberately different from `JournalForm`'s "reset to
+  blank" — content drafting is ongoing, multi-session work, not a one-shot capture).
+- **Autosave:** not in M2C2 — explicit manual Save, matching every form in this app.
+- **Is `status` editable:** yes, a `Select` mirroring `JourneyTypeSelect`'s open-ended,
+  unknown-value-preserving pattern.
+- **Journey preview collapsible:** no — always visible when present, absent entirely otherwise.
+- **Source snapshot read-only:** yes, unambiguously — hidden form fields only, never a visible
+  editable control.
+- **How a draft becomes "published":** purely by the operator setting `status` to `published`
+  manually — a self-reported label, zero automation behind it.
+
+**Runtime pipeline — `createDraftFromJourney(entry, options?)`.** The UI never assembles a draft
+object by hand. One function owns title derivation, snapshot formatting, defaults, and Journey
+linkage; the UI is exactly `saveDraft(createDraftFromJourney(entry))`. `options` is forward-
+compatible and ignored today (e.g. `{ contentType: "reel" }`) so Duplicate/AI-Generate/
+Create-from-template can each become their own `createDraftFromX` sibling later, feeding the same
+`saveDraft` pipeline, without ever changing this function's call signature. `deriveDraftTitle`
+stays private — the UI is never told the title heuristic exists, only that the returned draft
+already has one.
+
+**Wireframe-level component hierarchy, button placement, empty/editing/error states, keyboard
+flow, mobile considerations, and future AI-generation insertion points** were fully specified in
+this audit and carried into M2C2 unchanged. Full detail: the audit transcript that produced this
+milestone (not duplicated here — see the M2C2 record below for what actually shipped from it).
+
+---
+
+## M2C2 implementation record (2026-07-28) — Journey → Content handoff UI
+
+**Approved and implemented on branch `feat/journey-content-handoff-ui-m2c2`, based directly on
+`origin/main` (which carries M1 through M2C1 via PR #7), implementing the M2C1.5 UX contract
+above exactly as written.** No schema change, no new table — `content_drafts` (M2C1) already had
+everything this milestone needed.
+
+**`src/lib/content-drafts.ts` — new.** Mirrors `src/lib/journal.ts`'s established shape:
+`ContentDraftRow` (snake_case, nullable columns as `string | null`), `mapContentDraftRow` (row →
+`ContentDraft`, every nullable field `?? ""`), `buildContentDraftPayload` (→ payload, nullable
+fields `|| null`; `content_type`/`status` specifically fall back to `'general'`/`'idea'` — the
+database's own defaults — never a raw empty string in a `not null` column; never includes
+`created_at`/`updated_at`, matching `content_journal`'s own payload shape). `CONTENT_TYPE_OPTIONS`
+(General/Reel/Carousel/Caption-Post/Story — the smallest useful set for a home-based, social-first
+business today, deliberately excluding Blog/Video/Photo-post) and `CONTENT_DRAFT_STATUSES`
+(Idea/Drafting/Ready/Published/Archived), each with an unknown-value-preserving label helper
+matching `journeyTypeLabel`'s exact pattern.
+
+**The one owning creation pipeline.** `createDraftFromJourney(entry, options?)` and its
+from-scratch sibling `createBlankDraft(options?)` are the only places title derivation
+(`deriveDraftTitle`, private — first sentence of `whatWasMade`, capped, generic fallback), Journey
+snapshot formatting (`formatJourneySnapshot`, private), defaults, and linkage decisions live. The
+UI never assembles a draft object by hand. `options: { contentType?: string }` is accepted and
+honored today, forward-compatible for Duplicate/AI-Generate/Create-from-template later without
+ever changing the call signature. `isCreateContentPending(pendingEntryId, entryId)` is a pure
+predicate extracted specifically so the duplicate-click guard is unit-testable without a
+JSX-capable runner.
+
+**Snapshot format (exact, as designed in M2C1.5):** a fixed-order, plain-text block — `Journey
+entry — <date>`, then `Type:`/`Product:`/`What happened:`/`Captured:`/`Lesson:`/`Best use:`/
+`Next action:` lines, each included only when its source field is non-empty. `what_was_tested` is
+excluded — that `content_journal` column was never wired into `ContentJournalEntry` at all (M2A/
+M2B), so it is always empty at this layer; there was nothing to include. An unresolvable
+`productId` falls back to the raw id, matching `productName()`'s own established fallback — never
+silently dropped.
+
+**Journey side — one new action, one place.** `RecentEntries`/`RecentList` (the only place a
+Journey list row exists anywhere in this app) gained an optional third action, "Create content,"
+next to the existing Edit/Delete, wired only for the Journey section (`only="journal"`) — Batches
+and Costing are structurally unaffected, since `createContentFromJourney` is simply never passed
+there. `product-lab.tsx`'s `createContentFromJourney(entry)` handler: sets a per-entry pending
+flag, calls `saveDraft(createDraftFromJourney(entry))` (exactly the M2C1.5-specified pipeline),
+and — only on confirmed success — navigates via `useRouter().push("/content-studio")` (`next/
+navigation`, no hard reload, per the owner's amendment to the original audit's `window.location.
+href` recommendation). On failure, the operator stays on `/journal` with a toast and the button
+re-enabled for retry; nothing navigates on a failed insert.
+
+**The one save pipeline.** `saveDraft(draft: ContentDraft): Promise<boolean>` is the single
+function both the Journey handoff and the Content Studio edit form's submit path call — insert
+vs. update is decided by membership in `labState.contentDrafts` (a `content_drafts` id is always
+assigned up front, unlike `content_journal`'s lazy-id pattern, so "is the id empty" isn't a
+reliable signal here). Deliberately keeps the draft selected after a successful save
+(`setEditingDraft(draft)`, never `null`) — a considered deviation from `saveJournal`'s
+"reset to blank," because content drafting is ongoing work, not a one-shot capture (see the
+M2C1.5 contract). Returns whether the save succeeded so `createContentFromJourney` knows whether
+it's safe to navigate away. `saveDraftForm(formData)` is the only place `FormData` gets parsed for
+this domain — `journeyEntryId`/`sourceSnapshot` travel through as hidden fields, never a visible
+editable control, so the frozen-snapshot/read-only-link rule from M2C1 cannot be bypassed by
+editing.
+
+**Content Studio — replaced entirely, nothing of the old stub survives.** `ContentStudio()` now
+renders a real `content_drafts`-backed screen: `ContentDraftForm` (mirrors `JournalForm` — hidden
+`journeyEntryId`/`sourceSnapshot`, a read-only "Source: Journey" panel shown only when a snapshot
+exists, `title`/`ContentTypeSelect`/`ContentStatusSelect`/`hook`/`caption`/`script`, Save/Update +
+conditional Cancel) plus a draft list (mirroring `RecentList`'s row style: title, type · status ·
+"From Journey" if linked, an Edit action) and `ContentStudioGuide` (mirrors `ContentJournalGuide`).
+Table-missing state mirrors every existing `isXTableMissing` screen in this app exactly (new
+`isContentDraftsTableMissing` flag, wired into `loadSupabaseData()` the same way `isEquipmentTableMissing`
+etc. already are). No explicit "New draft" button — mirroring `JournalForm`'s own
+blank-by-default pattern, `editingDraft: null` already renders a blank form via the same inline
+`defaultValue` fallbacks used everywhere else in this app.
+
+**`lab-state.ts`:** `contentDrafts: ContentDraft[]` added to `LabState`/`emptyState`.
+
+**Tests added.** `tests/content-drafts.test.ts` — 30 tests: 25 genuine runtime tests (row
+mapping, payload building including the `content_type`/`status` default-fallback nuance, snapshot
+determinism/omission/ordering/product-name handling, `createDraftFromJourney`/`createBlankDraft`
+linkage/title/defaults/options-override, the duplicate-click guard predicate, both label helpers'
+unknown-value safety) plus 5 tests explicitly labeled `[static]` (App Router navigation wiring —
+including an explicit assertion that `window.location.href = "/content-studio"` does **not**
+appear anywhere — button placement, hidden-field-only linkage fields, Campaign/ownership absence,
+`/content-studio`'s route wrapper). **Two pre-existing tests in `tests/journal.test.ts` (from
+M2B) were updated, not deleted** — they asserted "Content Studio is untouched" and "no
+`content_draft` string anywhere," both true for M2B specifically but superseded by this
+later, separately-approved milestone; updated to keep verifying what's still actually true
+(`journal.ts` itself and the parts of `product-controls.tsx` unrelated to Content Studio still
+never reference Campaign/Calendar/Publishing) rather than silently deleted or left failing.
+
+**Manual verification — disclosed plainly, not overstated.** No browser-automation tool is
+available in this environment. Verified via the dev server + HTTP-level checks: both `/journal`
+and `/content-studio` return 200 with no server errors; `/content-studio` correctly renders its
+empty state ("No content drafts yet"); `/journal` correctly renders its own empty state ("No
+Journey entries saved yet") in this fresh environment with zero seeded data, which is *why* the
+"Create content" button doesn't appear in that specific check (there are no Journey rows to
+attach it to — confirmed as the correct, expected behavior, not a bug). **The actual interactive
+flow — create a Journey entry, click Create content, confirm navigation, confirm the draft
+appears selected in Content Studio — was not exercised end-to-end in a real browser.** Confirmed
+only by the passing unit tests, static-source checks, typecheck, and a successful production
+build.
+
+**Explicitly deferred (per the M2C1.5 contract, unchanged):** Duplicate draft, AI generation,
+Delete draft (not in the original M2C2 checklist), Campaign linkage, platform selection, Calendar,
+Publishing, Analytics, `batch_id` wiring, and the four still-dead `content_journal` columns.
+
+**Pre-commit regression review (2026-07-28) — two real findings, both fixed:**
+1. **Duplicate-click guard didn't clear on a thrown exception.** `createContentFromJourney`
+   originally set/cleared `creatingContentForEntryId` with plain sequential statements — if
+   `saveDraft` ever threw (not just returned a handled error), the flag would never clear and
+   that entry's "Create content" button would stay disabled until reload. Fixed with a
+   `try`/`finally`, so the guard clears no matter how the save attempt ends. `router.push` still
+   only runs inside the `if (succeeded)` branch — the finally only clears the pending flag, it
+   doesn't change navigation behavior.
+2. **An update could technically rewrite `journey_entry_id`/`source_snapshot`.** The original
+   `saveDraft` used the same `buildContentDraftPayload()` for both insert and update, so an
+   UPDATE statement's SET clause included both write-once columns — harmless in practice (the
+   edit form's hidden fields always carried the same value forward) but not a *structural*
+   guarantee. Fixed two ways: a new `buildContentDraftUpdatePayload()` that excludes both
+   columns entirely from any UPDATE statement, and `saveDraft` itself now looks up the
+   already-persisted draft and carries its `journeyEntryId`/`sourceSnapshot` forward
+   unconditionally on any edit, ignoring whatever the incoming draft argument said. Both the
+   Supabase path and the local (no-Supabase) fallback path get this guarantee.
+
+One minor tightening alongside these: `saveDraftForm` no longer repeats the `'general'`/`'idea'`
+default literals — those live in exactly one place now (`DEFAULT_CONTENT_TYPE`/`DEFAULT_STATUS`
+in `content-drafts.ts`), referenced by the creation helpers and both payload builders. Six new
+tests cover all of this (`buildContentDraftUpdatePayload`'s column exclusion and default
+fallback, plus two `[static]` checks confirming the `finally` block and the insert/update payload
+split are actually wired in `product-lab.tsx`, not just present in `content-drafts.ts`).
+Re-verified after the fixes: typecheck clean, full suite 531/532 passing (1 pre-existing skip,
+up from 526 — the 6 new tests), repo-wide lint unchanged (only the pre-existing `bake-page.tsx`
+error), build succeeds.
 
 ---
 

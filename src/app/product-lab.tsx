@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import type { ChangeEvent as ReactChangeEvent, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PostgrestError, Session } from "@supabase/supabase-js";
@@ -32,7 +33,7 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
@@ -44,9 +45,17 @@ import { BakePage } from "@/components/bake-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
-import { JourneyTypeSelect, MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
+import { ContentStatusSelect, ContentTypeSelect, JourneyTypeSelect, MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
 import { buildContentJournalPayload, mapContentJournalRow } from "@/lib/journal";
+import {
+  buildContentDraftPayload,
+  buildContentDraftUpdatePayload,
+  contentDraftStatusLabel,
+  contentTypeLabel,
+  createDraftFromJourney,
+  mapContentDraftRow,
+} from "@/lib/content-drafts";
 import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
@@ -99,6 +108,7 @@ function isMissingColumnError(error: PostgrestError | null): boolean {
 }
 
 export default function ProductLab({ view = "dashboard", initialInventoryTab }: { view?: LabView; initialInventoryTab?: InventoryTab }) {
+  const router = useRouter();
   const [labState, setLabState] = useState<LabState>(() => {
     if (typeof window === "undefined") {
       return emptyState;
@@ -128,12 +138,18 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
   const [isInventoryTableMissing, setIsInventoryTableMissing] = useState(false);
   const [isPurchaseImportPackagesMissing, setIsPurchaseImportPackagesMissing] = useState(false);
+  const [isContentDraftsTableMissing, setIsContentDraftsTableMissing] = useState(false);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
   const [editingEquipment, setEditingEquipment] = useState<EquipmentEntry | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
+  const [editingDraft, setEditingDraft] = useState<ContentDraft | null>(null);
+  // Which Journey entry's "Create content" insert is currently in flight, if any -- guards
+  // against one click firing twice without blocking a *different* entry's button (see
+  // isCreateContentPending in src/lib/content-drafts.ts).
+  const [creatingContentForEntryId, setCreatingContentForEntryId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!supabase) {
@@ -173,7 +189,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       return;
     }
 
-    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
+    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
@@ -182,6 +198,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       supabase.from("equipment").select("*").order("created_at", { ascending: false }),
       supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
       supabase.from("content_journal").select("*").order("created_at", { ascending: false }),
+      supabase.from("content_drafts").select("*").order("created_at", { ascending: false }),
       supabase.from("ai_reviews").select("*").order("created_at", { ascending: false }),
       supabase.from("ingredients").select("*").order("created_at", { ascending: false }),
       supabase.from("ingredient_aliases").select("*").order("created_at", { ascending: false }),
@@ -193,6 +210,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     const supplyMissing = isMissingTableError(supplyResult.error);
     const equipmentMissing = isMissingTableError(equipmentResult.error);
     const aiReviewsMissing = isMissingTableError(aiReviewResult.error);
+    const contentDraftsMissing = isMissingTableError(contentDraftResult.error);
     // All 6 inventory tables ship together in supabase-add-inventory.sql, so one shared flag
     // (not one per table) -- there's no real scenario where only some of them exist. Uses the same
     // error-code check as the tables above so a genuine load failure isn't misread as "not set up".
@@ -206,7 +224,8 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     setIsEquipmentTableMissing(Boolean(equipmentMissing));
     setIsAiReviewsTableMissing(Boolean(aiReviewsMissing));
     setIsInventoryTableMissing(ingredientsMissing);
-    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
+    setIsContentDraftsTableMissing(Boolean(contentDraftsMissing));
+    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!contentDraftsMissing && contentDraftResult.error) || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
       const error =
         batchResult.error?.message ||
         batchPhotoResult.error?.message ||
@@ -216,6 +235,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         equipmentResult.error?.message ||
         tastingResult.error?.message ||
         journalResult.error?.message ||
+        contentDraftResult.error?.message ||
         aiReviewResult.error?.message ||
         ingredientResult.error?.message ||
         ingredientAliasResult.error?.message ||
@@ -334,6 +354,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
         packagingReaction: row.packaging_reaction ?? "",
       })),
       journal: (journalResult.data ?? []).map(mapContentJournalRow),
+      contentDrafts: contentDraftsMissing ? [] : (contentDraftResult.data ?? []).map(mapContentDraftRow),
       aiReviews: aiReviewsMissing ? [] : (aiReviewResult.data ?? []).map((row) => ({
         id: row.id,
         productId: row.product_id,
@@ -1813,6 +1834,98 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     setMessageTone("good");
   }
 
+  // The single Content Studio save pipeline (M2C2) -- both the edit form and the Journey
+  // handoff action funnel through this one function; neither assembles a Supabase query by
+  // hand. Insert vs. update is decided by membership in labState.contentDrafts, not by
+  // whether draft.id is empty -- unlike content_journal, a content_drafts id is always
+  // assigned up front by createDraftFromJourney/the form's own lazy crypto.randomUUID(), so
+  // "does this id already exist" is the only reliable signal. Deliberately keeps the draft
+  // selected after a successful save (setEditingDraft(draft), never null) -- unlike
+  // saveJournal's "reset to blank," content drafting is ongoing, multi-session work, not a
+  // one-shot capture; see MARKETING_MODULE.md's M2C1.5 UX contract for the reasoning. Returns
+  // whether the save succeeded so a caller (createContentFromJourney) can decide whether it's
+  // safe to navigate away.
+  // journeyEntryId/sourceSnapshot are write-once, set only at creation (buildContentDraftPayload).
+  // An edit can never change them, even if a future bug fed a different value through the form's
+  // hidden fields -- for an existing draft, the already-persisted values always win over
+  // whatever the incoming `draft` argument says; the UPDATE payload itself
+  // (buildContentDraftUpdatePayload) also structurally excludes both columns, so this is a
+  // belt-and-suspenders guarantee, not just a convention the caller has to remember.
+  async function saveDraft(draft: ContentDraft): Promise<boolean> {
+    const existingDraft = labState.contentDrafts.find((item) => item.id === draft.id);
+    const isNewDraft = !existingDraft;
+    const persistedDraft: ContentDraft = existingDraft
+      ? { ...draft, journeyEntryId: existingDraft.journeyEntryId, sourceSnapshot: existingDraft.sourceSnapshot }
+      : draft;
+
+    if (supabase && session) {
+      const query = isNewDraft
+        ? supabase.from("content_drafts").insert({ id: persistedDraft.id, ...buildContentDraftPayload(persistedDraft) })
+        : supabase.from("content_drafts").update(buildContentDraftUpdatePayload(persistedDraft)).eq("id", persistedDraft.id);
+      const { error } = await query;
+      setMessage(error ? `Content draft save failed: ${error.message}` : isNewDraft ? "Content draft saved." : "Content draft updated.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error) {
+        setEditingDraft(persistedDraft);
+      }
+      await loadSupabaseData();
+      return !error;
+    }
+    setLabState((current) => ({
+      ...current,
+      contentDrafts: isNewDraft ? [persistedDraft, ...current.contentDrafts] : current.contentDrafts.map((item) => (item.id === persistedDraft.id ? persistedDraft : item)),
+    }));
+    setEditingDraft(persistedDraft);
+    setMessage(isNewDraft ? "Content draft saved locally." : "Content draft updated locally.");
+    setMessageTone("good");
+    return true;
+  }
+
+  // Reads the edit form's fields into a ContentDraft and hands it to saveDraft -- the only
+  // place FormData gets parsed for this domain. journeyEntryId/sourceSnapshot travel through
+  // as hidden fields (never a visible, editable control) so the frozen-snapshot/read-only-link
+  // rule from M2C1 can't be bypassed by editing -- and saveDraft itself now enforces this
+  // structurally regardless of what these two fields carry. contentType/status are read as
+  // plain "" on empty rather than repeating the "general"/"idea" default literals here too --
+  // buildContentDraftPayload/buildContentDraftUpdatePayload already own that fallback.
+  async function saveDraftForm(formData: FormData) {
+    const draftId = String(formData.get("id") || crypto.randomUUID());
+    await saveDraft({
+      id: draftId,
+      journeyEntryId: String(formData.get("journeyEntryId") || ""),
+      sourceSnapshot: String(formData.get("sourceSnapshot") || ""),
+      title: String(formData.get("title") || ""),
+      contentType: String(formData.get("contentType") || ""),
+      status: String(formData.get("status") || ""),
+      hook: String(formData.get("hook") || ""),
+      caption: String(formData.get("caption") || ""),
+      script: String(formData.get("script") || ""),
+      createdAt: "",
+      updatedAt: "",
+    });
+  }
+
+  // Journey -> Content handoff (M2C2) -- see MARKETING_MODULE.md's "M2C1.5 UX contract".
+  // Exactly `saveDraft(createDraftFromJourney(entry))`: the UI never touches title/snapshot/
+  // defaults/linkage logic, only the one owning helper does. Navigates via the App Router
+  // (no hard reload -- preserves client state, matches where this app is headed) only after a
+  // confirmed successful insert; on failure the operator stays on /journal with a toast and
+  // the button re-enabled for retry. creatingContentForEntryId guards against one click
+  // firing twice without blocking a *different* entry's button (see isCreateContentPending in
+  // src/lib/content-drafts.ts) -- cleared in a finally so a thrown exception (not just a
+  // returned save failure) can never leave the button stuck disabled.
+  async function createContentFromJourney(entry: ContentJournalEntry) {
+    setCreatingContentForEntryId(entry.id);
+    try {
+      const succeeded = await saveDraft(createDraftFromJourney(entry));
+      if (succeeded) {
+        router.push("/content-studio");
+      }
+    } finally {
+      setCreatingContentForEntryId(null);
+    }
+  }
+
   if (isSupabaseConfigured && isAuthLoading) {
     return <LoadingScreen />;
   }
@@ -1894,7 +2007,14 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
               <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
               <div className="space-y-5">
                 <ContentJournalGuide />
-                <RecentEntries deleteJournal={deleteJournal} editJournal={setEditingJournal} labState={labState} only="journal" />
+                <RecentEntries
+                  createContentFromJourney={createContentFromJourney}
+                  creatingContentForEntryId={creatingContentForEntryId}
+                  deleteJournal={deleteJournal}
+                  editJournal={setEditingJournal}
+                  labState={labState}
+                  only="journal"
+                />
               </div>
             </section>
           ) : null}
@@ -1903,7 +2023,15 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
 
           {view === "launch" ? <LaunchOfferBuilder labState={labState} /> : null}
 
-          {view === "content-studio" ? <ContentStudio labState={labState} /> : null}
+          {view === "content-studio" ? (
+            <ContentStudio
+              editingDraft={editingDraft}
+              isContentDraftsTableMissing={isContentDraftsTableMissing}
+              labState={labState}
+              saveDraftForm={saveDraftForm}
+              setEditingDraft={setEditingDraft}
+            />
+          ) : null}
 
           {view === "guide" ? <OperatingGuide labState={labState} /> : null}
     </AppShell>
@@ -2743,38 +2871,118 @@ function LaunchOfferBuilder({ labState }: { labState: LabState }) {
   );
 }
 
-function ContentStudio({ labState }: { labState: LabState }) {
-  const latest = labState.journal[0];
-  const product = latest ? productName(latest.productId) : "Selected product";
-  const angle = latest?.postIdeas || "product proof";
-  const lesson = latest?.lessonLearned || "Show what changed and what you learned from the test.";
-  const next = latest?.nextAction || "Pick the strongest clip and draft one simple post.";
+// Content Studio (M2C2) -- see MARKETING_MODULE.md's "M2C2 implementation record" and the
+// "M2C1.5 UX contract" it implements. Replaces the old journal[0]-derived stub entirely --
+// nothing about that stub's logic survives (it was never real persistence). Table-missing
+// banner mirrors every other isXTableMissing screen in this app exactly.
+function ContentStudio({
+  editingDraft,
+  isContentDraftsTableMissing,
+  labState,
+  saveDraftForm,
+  setEditingDraft,
+}: {
+  editingDraft: ContentDraft | null;
+  isContentDraftsTableMissing: boolean;
+  labState: LabState;
+  saveDraftForm: (formData: FormData) => void;
+  setEditingDraft: Dispatch<SetStateAction<ContentDraft | null>>;
+}) {
+  if (isContentDraftsTableMissing) {
+    return (
+      <Panel icon={<Sparkles size={18} />} title="Content Studio needs one-time setup">
+        <p className="text-sm leading-6 text-[#5f4a3d]">
+          Run <code>supabase-add-content-drafts.sql</code> once in the Supabase SQL editor, then
+          reload this page.
+        </p>
+      </Panel>
+    );
+  }
+
+  const sortedDrafts = [...labState.contentDrafts].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
-      <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Repurpose Real Proof</p>
-        <h3 className="mt-1 text-xl font-semibold">Content Draft From Latest Journal</h3>
-        <div className="mt-5 grid gap-4 xl:grid-cols-3">
-          <DetailCard title="Reel" lines={[`Hook: Testing ${product} again today.`, `Middle: ${lesson}`, `Close: ${next}`]} />
-          <DetailCard title="Carousel" lines={[`Slide 1: ${product} test`, `Slide 2: What changed`, `Slide 3: Texture/result`, `Slide 4: What we fix next`, `Slide 5: Follow the proof process`]} />
-          <DetailCard title="Caption" lines={[`Today we tested ${product}.`, lesson, `Next step: ${next}`, `Angle: ${angle}`]} />
-        </div>
+      <ContentDraftForm cancelEdit={() => setEditingDraft(null)} draft={editingDraft} saveDraft={saveDraftForm} />
+      <div className="space-y-5">
+        <ContentStudioGuide />
+        <Panel icon={<Sparkles size={18} />} title="Content drafts">
+          <div className="space-y-3">
+            {sortedDrafts.length === 0 ? (
+              <p className="text-sm text-[#6f5a4c]">No content drafts yet. Create one from a Journey entry, or start one below.</p>
+            ) : null}
+            {sortedDrafts.map((draft) => (
+              <div className="border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0" key={draft.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-sm font-medium">{draft.title || "Untitled draft"}</p>
+                  <button className="shrink-0 text-xs font-semibold text-[#8f5632] underline" onClick={() => setEditingDraft(draft)} type="button">
+                    Edit
+                  </button>
+                </div>
+                <p className="mt-1 line-clamp-2 text-sm text-[#6f5a4c]">
+                  {contentTypeLabel(draft.contentType)} · {contentDraftStatusLabel(draft.status)}
+                  {draft.journeyEntryId ? " · From Journey" : ""}
+                </p>
+              </div>
+            ))}
+          </div>
+        </Panel>
       </div>
-      <Panel title="Source Journal" icon={<NotebookPen size={18} />}>
-        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-          {latest ? (
-            <>
-              <p>{product}</p>
-              <p>Captured: {latest.mediaCaptured || "No media logged"}</p>
-              <p>Use: {angle}</p>
-            </>
-          ) : (
-            <p>No journal entries yet. Save a real content capture first.</p>
-          )}
-        </div>
-      </Panel>
     </section>
+  );
+}
+
+function ContentDraftForm({
+  cancelEdit,
+  draft,
+  saveDraft,
+}: {
+  cancelEdit: () => void;
+  draft: ContentDraft | null;
+  saveDraft: (formData: FormData) => void;
+}) {
+  return (
+    <FormPanel icon={<Sparkles size={18} />} title={draft ? "Edit content draft" : "New content draft"}>
+      <form action={saveDraft} className="grid gap-3" key={draft?.id ?? "new-draft"}>
+        <input name="id" type="hidden" value={draft?.id ?? ""} />
+        {/* journeyEntryId/sourceSnapshot never appear as an editable control -- only ever a
+            hidden pass-through -- so editing this form can never rewrite a draft's Journey
+            source or its frozen snapshot (M2C1's read-only-link rule). */}
+        <input name="journeyEntryId" type="hidden" value={draft?.journeyEntryId ?? ""} />
+        <input name="sourceSnapshot" type="hidden" value={draft?.sourceSnapshot ?? ""} />
+        {draft?.sourceSnapshot ? (
+          <Panel icon={<NotebookPen size={18} />} title="Source: Journey">
+            <p className="whitespace-pre-line text-sm leading-6 text-[#5f4a3d]">{draft.sourceSnapshot}</p>
+          </Panel>
+        ) : null}
+        <Input defaultValue={draft?.title} label="Title" name="title" placeholder="Example: Brownies V2 texture reel" />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <ContentTypeSelect selectedType={draft?.contentType} />
+          <ContentStatusSelect selectedStatus={draft?.status} />
+        </div>
+        <Textarea defaultValue={draft?.hook} label="Hook" name="hook" placeholder="Example: Testing brownies again -- here's what changed." />
+        <Textarea defaultValue={draft?.caption} label="Caption" name="caption" placeholder="The full caption text for this post." />
+        <Textarea defaultValue={draft?.script} label="Script" name="script" placeholder="Shot-by-shot notes or a full script." />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button>{draft ? "Update content draft" : "Save content draft"}</Button>
+          {draft ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+        </div>
+      </form>
+    </FormPanel>
+  );
+}
+
+function ContentStudioGuide() {
+  return (
+    <Panel icon={<Sparkles size={18} />} title="Keep It Simple">
+      <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
+        <p>Create content from a real Journey moment, or start from scratch below.</p>
+        <ul className="space-y-2">
+          <li><strong>Journey drafts:</strong> the source moment is shown above, frozen -- editing it here never changes the original Journey entry.</li>
+          <li><strong>Status:</strong> a label you set yourself. There is no publishing automation yet.</li>
+        </ul>
+      </div>
+    </Panel>
   );
 }
 

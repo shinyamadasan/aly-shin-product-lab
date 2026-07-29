@@ -1,6 +1,7 @@
 import type React from "react";
 import { products } from "@/lib/sample-data";
 import { JOURNEY_ENTRY_TYPES } from "@/lib/journal";
+import { CONTENT_DRAFT_STATUSES, CONTENT_TYPE_OPTIONS } from "@/lib/content-drafts";
 
 export function ProductSelect({
   includeNoProductOption,
@@ -45,6 +46,41 @@ export function JourneyTypeSelect({ selectedType }: { selectedType?: string }) {
       <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={value} name="entryType">
         <option value="">Unclassified</option>
         {JOURNEY_ENTRY_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+        {isKnownValue ? null : <option value={value}>{value}</option>}
+      </select>
+    </label>
+  );
+}
+
+// Content Studio (M2C2) -- see MARKETING_MODULE.md's "M2C2 implementation record". Same
+// unknown-value-preserving pattern as JourneyTypeSelect: content_type/status are both
+// open-ended text with no database enum/check, so an unrecognized value (a future app
+// version, a hand-edited row) gets its own injected option and stays selected unless the
+// operator actually changes it.
+export function ContentTypeSelect({ selectedType }: { selectedType?: string }) {
+  const value = selectedType || "general";
+  const isKnownValue = CONTENT_TYPE_OPTIONS.some((type) => type.value === value);
+
+  return (
+    <label className="grid gap-1 text-sm font-medium">
+      Content type
+      <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={value} name="contentType">
+        {CONTENT_TYPE_OPTIONS.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+        {isKnownValue ? null : <option value={value}>{value}</option>}
+      </select>
+    </label>
+  );
+}
+
+export function ContentStatusSelect({ selectedStatus }: { selectedStatus?: string }) {
+  const value = selectedStatus || "idea";
+  const isKnownValue = CONTENT_DRAFT_STATUSES.some((status) => status.value === value);
+
+  return (
+    <label className="grid gap-1 text-sm font-medium">
+      Status
+      <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={value} name="status">
+        {CONTENT_DRAFT_STATUSES.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}
         {isKnownValue ? null : <option value={value}>{value}</option>}
       </select>
     </label>
