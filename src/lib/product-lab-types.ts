@@ -319,3 +319,25 @@ export type BrandProfile = {
   socialLinks: string;
   isActive: boolean;
 };
+
+// Content persistence foundation (M2C1) -- see PROP in planning/PROPOSALS.md and
+// MARKETING_MODULE.md's "M2C1 implementation record". Schema/type only in this milestone --
+// no CRUD UI reads or writes this yet, no row-mapping/payload-building functions (M2C2's job).
+// journeyEntryId/sourceSnapshot/title/hook/caption/script are all nullable at the database
+// layer; each reads back as "" when unset, matching this app's existing convention for
+// nullable text fields (see ContentJournalEntry's own productId/whatWasMade/etc.). There is
+// no campaignId, platform, productId, batchId, or owner/user/workspace column here -- all
+// deliberately deferred or excluded, per MARKETING_MODULE.md.
+export type ContentDraft = {
+  id: string;
+  journeyEntryId: string;
+  sourceSnapshot: string;
+  title: string;
+  contentType: string;
+  status: string;
+  hook: string;
+  caption: string;
+  script: string;
+  createdAt: string;
+  updatedAt: string;
+};
