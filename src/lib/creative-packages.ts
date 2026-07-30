@@ -1,6 +1,7 @@
 import {
   fromCreativeJobRow,
   isCreativeJobResultEnvelope,
+  isCreativeJobWorkerType,
   runMockCreativeJob,
   type CreativeJobClient,
   type CreativeJobRecord,
@@ -144,7 +145,8 @@ export function isCreativePackageContentV1(value: unknown): value is CreativePac
     metadata.generatorVersion === "1" &&
     typeof metadata.sourceCreativeJobId === "string" &&
     metadata.sourceCreativeJobId.trim().length > 0 &&
-    metadata.sourceWorker === "mock" &&
+    typeof metadata.sourceWorker === "string" &&
+    isCreativeJobWorkerType(metadata.sourceWorker) &&
     metadata.sourceJobResultSchemaVersion === "v1" &&
     Array.isArray(value.artifacts)
   );

@@ -11,6 +11,10 @@
 -- applied draft tables. Guarded preflight blocks verify that the live creative_jobs table,
 -- indexes, and claim function have the approved shape. If an older draft table exists with an
 -- incompatible shape, the script raises and stops so the operator can reconcile deliberately.
+--
+-- AI-readiness note: last_error is intentionally plain nullable text. It stores bounded
+-- operator-facing failure diagnostics only, not stack traces, prompts, raw responses, credentials,
+-- provider names, model names, tokens, or execution history.
 
 create table if not exists creative_jobs (
   id uuid primary key default gen_random_uuid(),
@@ -19,6 +23,7 @@ create table if not exists creative_jobs (
   worker_type text not null default 'mock',
   attempt_count integer not null default 0,
   result jsonb not null default '{}'::jsonb,
+  last_error text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   started_at timestamptz,
@@ -26,9 +31,13 @@ create table if not exists creative_jobs (
   failed_at timestamptz
 );
 
+alter table creative_jobs
+  add column if not exists last_error text;
+
 do $$
 declare
   required_column record;
+  disallowed_column text;
   actual_type text;
   actual_not_null boolean;
 begin
@@ -41,6 +50,7 @@ begin
       ('worker_type', 'text', true),
       ('attempt_count', 'integer', true),
       ('result', 'jsonb', true),
+      ('last_error', 'text', false),
       ('created_at', 'timestamp with time zone', true),
       ('updated_at', 'timestamp with time zone', true),
       ('started_at', 'timestamp with time zone', false),
@@ -71,6 +81,35 @@ begin
 
     if actual_not_null <> required_column.is_required then
       raise exception 'creative_jobs column % nullability is %, expected %; reconcile the stale draft table before continuing.', required_column.column_name, actual_not_null, required_column.is_required;
+    end if;
+  end loop;
+
+  for disallowed_column in
+    select *
+    from (values
+      ('provider'),
+      ('model'),
+      ('token_count'),
+      ('tokens'),
+      ('prompt'),
+      ('raw_response'),
+      ('api_request_id'),
+      ('execution_history_id'),
+      ('retry_after'),
+      ('max_retries')
+    ) as excluded(column_name)
+  loop
+    if exists (
+      select 1
+      from pg_attribute attribute
+      join pg_class table_class on table_class.oid = attribute.attrelid
+      join pg_namespace namespace on namespace.oid = table_class.relnamespace
+      where namespace.nspname = 'public'
+        and table_class.relname = 'creative_jobs'
+        and attribute.attname = disallowed_column
+        and not attribute.attisdropped
+    ) then
+      raise exception 'creative_jobs table has disallowed column %; reconcile the stale draft table before continuing.', disallowed_column;
     end if;
   end loop;
 

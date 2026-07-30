@@ -76,6 +76,7 @@ test("Opportunity review UI exposes accessible labels for filters, actions, and 
     "Mark expired",
     "Create Job",
     "Creative Job",
+    "Last error",
     "View job detail",
     "Creative Package",
     "View Package",

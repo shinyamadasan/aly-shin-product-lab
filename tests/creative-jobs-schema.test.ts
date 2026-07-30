@@ -22,6 +22,7 @@ test("creative_jobs creates the approved foundation table with required columns"
     "worker_type text not null default 'mock'",
     "attempt_count integer not null default 0",
     "result jsonb not null default '{}'::jsonb",
+    "last_error text",
     "created_at timestamptz not null default now()",
     "updated_at timestamptz not null default now()",
     "started_at timestamptz",
@@ -35,6 +36,10 @@ test("creative_jobs creates the approved foundation table with required columns"
 test("creative_jobs keeps worker identity explicit and does not use a generic worker column", () => {
   assert.match(columnBody, /\bworker_type text not null default 'mock'/i);
   assert.doesNotMatch(columnBody, /^\s*worker\s+text\b/im);
+});
+
+test("creative_jobs adds last_error idempotently for existing live tables", () => {
+  assert.match(sqlStatementsOnly, /alter table creative_jobs\s+add column if not exists last_error text;/i);
 });
 
 test("creative_jobs prevents duplicate jobs for the same Opportunity", () => {
@@ -56,6 +61,7 @@ test("creative_jobs fails loudly instead of silently accepting stale draft schem
     "worker_type",
     "attempt_count",
     "result",
+    "last_error",
     "created_at",
     "updated_at",
     "started_at",
@@ -66,6 +72,9 @@ test("creative_jobs fails loudly instead of silently accepting stale draft schem
   }
   assert.match(staleTableGuardStatement, /contype = 'p'/i);
   assert.match(staleTableGuardStatement, /contype = 'f'/i);
+  for (const disallowedColumn of ["provider", "model", "token_count", "tokens", "prompt", "raw_response", "api_request_id", "execution_history_id", "retry_after", "max_retries"]) {
+    assert.match(staleTableGuardStatement, new RegExp(`'${disallowedColumn}'`, "i"));
+  }
   assert.match(staleTableGuardStatement, /raise exception/i);
   assert.match(indexGuardStatement, /creative_jobs_opportunity_id_idx/i);
   assert.match(indexGuardStatement, /creative_jobs_status_created_at_idx/i);
@@ -116,7 +125,7 @@ test("creative_jobs does not create future pipeline tables or provider fields", 
     assert.doesNotMatch(sqlStatementsOnly, new RegExp(`create table[^;]*\\b${excludedTable}\\b`, "i"));
   }
 
-  for (const providerColumn of ["claude", "openai", "gemini", "ollama", "remotion", "provider", "model"]) {
+  for (const providerColumn of ["claude", "openai", "gemini", "ollama", "remotion", "provider", "model", "tokens", "prompt", "raw_response", "execution_history_id", "retry_after", "max_retries"]) {
     assert.doesNotMatch(columnBody, new RegExp(`\\b${providerColumn}\\b`, "i"));
   }
 });

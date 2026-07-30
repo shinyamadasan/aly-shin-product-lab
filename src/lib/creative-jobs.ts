@@ -3,7 +3,8 @@ import { fromOpportunityRow, type OpportunityRecord, type OpportunityRow } from 
 export const CREATIVE_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type CreativeJobStatus = (typeof CREATIVE_JOB_STATUSES)[number];
 
-export type CreativeJobWorkerType = "mock";
+export const CREATIVE_JOB_WORKER_TYPES = ["mock", "product_text_worker"] as const;
+export type CreativeJobWorkerType = (typeof CREATIVE_JOB_WORKER_TYPES)[number];
 
 export type CreativeJobResultEnvelope = {
   schemaVersion: "v1";
@@ -23,9 +24,10 @@ export type CreativeJobRow = {
   id?: string;
   opportunity_id: string;
   status: CreativeJobStatus;
-  worker_type: CreativeJobWorkerType;
+  worker_type: string;
   attempt_count: number;
   result: CreativeJobResultEnvelope | Record<string, unknown>;
+  last_error?: string | null;
   created_at?: string;
   updated_at?: string;
   started_at?: string | null;
@@ -37,9 +39,10 @@ export type CreativeJobRecord = {
   id: string;
   opportunityId: string;
   status: CreativeJobStatus;
-  workerType: CreativeJobWorkerType;
+  workerType: string;
   attemptCount: number;
   result: CreativeJobResultEnvelope | Record<string, unknown>;
+  lastError: string;
   createdAt: string;
   updatedAt: string;
   startedAt: string;
@@ -103,6 +106,17 @@ export type QueuedCreativeJobsResult =
   | { ok: true; jobs: CreativeJobRecord[] }
   | { ok: false; reason: "missing-table" | "failed"; message: string };
 
+export type CreativeJobResultValidation =
+  | { ok: true; result: CreativeJobResultEnvelope }
+  | {
+      ok: false;
+      reason: "unsupported-schema-version" | "unsupported-worker" | "malformed-output" | "malformed-metadata" | "malformed-artifacts";
+      message: string;
+    };
+
+export type CreativeJobExecutor = (job: CreativeJobRecord, opportunity: OpportunityRecord) => unknown | Promise<unknown>;
+export type CreativeJobExecutorMap = Partial<Record<CreativeJobWorkerType, CreativeJobExecutor>>;
+
 const TERMINAL_JOB_STATUSES = new Set<CreativeJobStatus>(["completed", "failed"]);
 
 function isMissingTableError(error: SupabaseErrorLike): boolean {
@@ -128,8 +142,8 @@ function parseCreativeJobStatus(value: string): CreativeJobStatus {
   return isCreativeJobStatus(value) ? value : "queued";
 }
 
-function parseWorkerType(value: string): CreativeJobWorkerType {
-  return value === "mock" ? "mock" : "mock";
+function parseWorkerType(value: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : "mock";
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -140,28 +154,44 @@ export function isCreativeJobStatus(value: string): value is CreativeJobStatus {
   return CREATIVE_JOB_STATUSES.includes(value as CreativeJobStatus);
 }
 
-export function isCreativeJobResultEnvelope(value: unknown): value is CreativeJobResultEnvelope {
+export function isCreativeJobWorkerType(value: string): value is CreativeJobWorkerType {
+  return CREATIVE_JOB_WORKER_TYPES.includes(value as CreativeJobWorkerType);
+}
+
+export function validateCreativeJobResultEnvelope(value: unknown): CreativeJobResultValidation {
   if (!isJsonObject(value)) {
-    return false;
+    return { ok: false, reason: "unsupported-schema-version", message: "Creative Job result must be a v1 object envelope." };
+  }
+
+  if (value.schemaVersion !== "v1") {
+    return { ok: false, reason: "unsupported-schema-version", message: "Creative Job result schemaVersion must be v1." };
+  }
+
+  if (typeof value.worker !== "string" || !isCreativeJobWorkerType(value.worker)) {
+    return { ok: false, reason: "unsupported-worker", message: "Creative Job result worker is not supported." };
   }
 
   const output = value.output;
   const metadata = value.metadata;
+  const artifacts = value.artifacts;
 
-  return (
-    value.schemaVersion === "v1" &&
-    value.worker === "mock" &&
-    isJsonObject(output) &&
-    typeof output.headline === "string" &&
-    output.headline.trim().length > 0 &&
-    typeof output.caption === "string" &&
-    output.caption.trim().length > 0 &&
-    isJsonObject(metadata) &&
-    typeof metadata.generatedFromOpportunity === "string" &&
-    metadata.generatedFromOpportunity.trim().length > 0 &&
-    metadata.generatorVersion === "1" &&
-    Array.isArray(value.artifacts)
-  );
+  if (!isJsonObject(output) || typeof output.headline !== "string" || output.headline.trim().length === 0 || typeof output.caption !== "string" || output.caption.trim().length === 0) {
+    return { ok: false, reason: "malformed-output", message: "Creative Job result output must include non-empty headline and caption strings." };
+  }
+
+  if (!isJsonObject(metadata) || typeof metadata.generatedFromOpportunity !== "string" || metadata.generatedFromOpportunity.trim().length === 0 || /\s/.test(metadata.generatedFromOpportunity) || metadata.generatorVersion !== "1") {
+    return { ok: false, reason: "malformed-metadata", message: "Creative Job result metadata must include a valid generatedFromOpportunity value and generatorVersion 1." };
+  }
+
+  if (!Array.isArray(artifacts) || artifacts.length !== 0) {
+    return { ok: false, reason: "malformed-artifacts", message: "Creative Job result artifacts must be an empty array for this milestone." };
+  }
+
+  return { ok: true, result: value as CreativeJobResultEnvelope };
+}
+
+export function isCreativeJobResultEnvelope(value: unknown): value is CreativeJobResultEnvelope {
+  return validateCreativeJobResultEnvelope(value).ok;
 }
 
 export function fromCreativeJobRow(row: CreativeJobRow): CreativeJobRecord {
@@ -176,6 +206,7 @@ export function fromCreativeJobRow(row: CreativeJobRow): CreativeJobRecord {
     workerType: parseWorkerType(row.worker_type),
     attemptCount: Number(row.attempt_count ?? 0),
     result: isJsonObject(row.result) ? row.result : {},
+    lastError: row.last_error ?? "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     startedAt: row.started_at ?? "",
@@ -198,6 +229,17 @@ export function buildMockCreativeJobResult(opportunity: OpportunityRecord): Crea
     },
     artifacts: [],
   };
+}
+
+export function sanitizeCreativeJobErrorMessage(message: string, maxLength = 500): string {
+  const collapsed = message
+    .replace(/\b(key|token|password)\s*[:=]\s*\S+/gi, "$1=[redacted]")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const fallback = "Creative Job execution failed.";
+  const safeMessage = collapsed.length > 0 ? collapsed : fallback;
+  return safeMessage.length > maxLength ? `${safeMessage.slice(0, maxLength - 1)}...` : safeMessage;
 }
 
 export function getCreativeJobStatusLabel(status: CreativeJobStatus): string {
@@ -256,7 +298,11 @@ export async function getCreativeJobForOpportunity(client: CreativeJobClient, op
   }
 }
 
-export async function createCreativeJobForAcceptedOpportunity(client: CreativeJobClient, opportunityId: string): Promise<CreativeJobCreateResult> {
+export async function createCreativeJobForAcceptedOpportunity(
+  client: CreativeJobClient,
+  opportunityId: string,
+  options: { workerType?: CreativeJobWorkerType } = {},
+): Promise<CreativeJobCreateResult> {
   const opportunityResult = await readOpportunity(client, opportunityId);
   if (!opportunityResult.ok) {
     return { ok: false, reason: opportunityResult.reason, message: opportunityResult.message };
@@ -269,6 +315,7 @@ export async function createCreativeJobForAcceptedOpportunity(client: CreativeJo
     };
   }
 
+  const workerType = options.workerType ?? "mock";
   const existing = await getCreativeJobForOpportunity(client, opportunityId);
   if (existing.ok) {
     return { ok: true, outcome: "existing", job: existing.job };
@@ -279,7 +326,7 @@ export async function createCreativeJobForAcceptedOpportunity(client: CreativeJo
 
   const inserted = await client
     .from("creative_jobs")
-    .insert({ opportunity_id: opportunityId, status: "queued", worker_type: "mock", attempt_count: 0, result: {} })
+    .insert({ opportunity_id: opportunityId, status: "queued", worker_type: workerType, attempt_count: 0, result: {}, last_error: null })
     .select("*")
     .single();
 
@@ -298,13 +345,12 @@ export async function createCreativeJobForAcceptedOpportunity(client: CreativeJo
   return { ok: false, ...dbErrorResult(inserted.error ?? { message: "Creative Job insert returned no row." }) };
 }
 
-export async function listQueuedCreativeJobs(client: CreativeJobClient, limit = 1): Promise<QueuedCreativeJobsResult> {
-  const result = await client
-    .from("creative_jobs")
-    .select<CreativeJobRow>("*")
-    .eq("status", "queued")
-    .order("created_at", { ascending: true })
-    .limit(limit);
+export async function listQueuedCreativeJobs(client: CreativeJobClient, limit = 1, workerType?: CreativeJobWorkerType): Promise<QueuedCreativeJobsResult> {
+  let query = client.from("creative_jobs").select<CreativeJobRow>("*").eq("status", "queued");
+  if (workerType) {
+    query = query.eq("worker_type", workerType);
+  }
+  const result = await query.order("created_at", { ascending: true }).limit(limit);
 
   if (result.error) {
     return { ok: false, ...dbErrorResult(result.error) };
@@ -361,22 +407,34 @@ async function finishRunningJob(
     : { ok: false, reason: reread.reason === "not-found" ? "not-found" : reread.reason, message: reread.message };
 }
 
-export async function completeRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, resultEnvelope: CreativeJobResultEnvelope, completedAt: string): Promise<CreativeJobRunnerResult> {
+export async function completeRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, resultEnvelope: unknown, completedAt: string): Promise<CreativeJobRunnerResult> {
+  const validation = validateCreativeJobResultEnvelope(resultEnvelope);
+  if (!validation.ok) {
+    return failRunningCreativeJob(client, job, completedAt, validation.message);
+  }
+
   return finishRunningJob(
     client,
     job,
-    { status: "completed", result: resultEnvelope, completed_at: completedAt, failed_at: null, updated_at: completedAt },
+    { status: "completed", result: validation.result, completed_at: completedAt, failed_at: null, last_error: null, updated_at: completedAt },
     "conflict",
   );
 }
 
-export async function failRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, failedAt: string): Promise<CreativeJobRunnerResult> {
-  const result = await client.from("creative_jobs").update({ status: "failed", failed_at: failedAt, updated_at: failedAt }).eq("id", job.id).eq("status", "running").select("*").maybeSingle();
+export async function failRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, failedAt: string, message = "Creative Job execution failed."): Promise<CreativeJobRunnerResult> {
+  const lastError = sanitizeCreativeJobErrorMessage(message);
+  const result = await client
+    .from("creative_jobs")
+    .update({ status: "failed", failed_at: failedAt, completed_at: null, last_error: lastError, updated_at: failedAt })
+    .eq("id", job.id)
+    .eq("status", "running")
+    .select("*")
+    .maybeSingle();
   if (result.error) {
     return { ok: false, ...dbErrorResult(result.error) };
   }
   if (result.data) {
-    return { ok: false, reason: "failed", message: "Creative Job failed during mock worker execution.", job: fromCreativeJobRow(result.data) };
+    return { ok: false, reason: "failed", message: lastError, job: fromCreativeJobRow(result.data) };
   }
 
   const reread = await getCreativeJobById(client, job.id);
@@ -385,24 +443,51 @@ export async function failRunningCreativeJob(client: CreativeJobClient, job: Cre
     : { ok: false, reason: reread.reason === "not-found" ? "not-found" : reread.reason, message: reread.message };
 }
 
-export async function runMockCreativeJob(client: CreativeJobClient, id: string, options: { now?: () => string } = {}): Promise<CreativeJobRunnerResult> {
+export async function runCreativeJobWithExecutors(
+  client: CreativeJobClient,
+  id: string,
+  executors: CreativeJobExecutorMap,
+  options: { now?: () => string } = {},
+): Promise<CreativeJobRunnerResult> {
   const claimed = await claimQueuedCreativeJob(client, id);
   if (!claimed.ok) {
     return claimed;
   }
 
-  const opportunity = await readOpportunity(client, claimed.job.opportunityId);
-  if (!opportunity.ok || opportunity.opportunity.status !== "accepted") {
-    return failRunningCreativeJob(client, claimed.job, options.now?.() ?? new Date().toISOString());
+  const finishedAt = () => options.now?.() ?? new Date().toISOString();
+
+  if (!isCreativeJobWorkerType(claimed.job.workerType)) {
+    return failRunningCreativeJob(client, claimed.job, finishedAt(), `Unsupported worker type: ${claimed.job.workerType}.`);
   }
 
-  const completedAt = options.now?.() ?? new Date().toISOString();
-  const resultEnvelope = buildMockCreativeJobResult(opportunity.opportunity);
+  const executor = executors[claimed.job.workerType];
+  if (!executor) {
+    return failRunningCreativeJob(client, claimed.job, finishedAt(), `No executor is registered for worker type: ${claimed.job.workerType}.`);
+  }
+
+  const opportunity = await readOpportunity(client, claimed.job.opportunityId);
+  if (!opportunity.ok || opportunity.opportunity.status !== "accepted") {
+    return failRunningCreativeJob(client, claimed.job, finishedAt(), "Creative Job could not load an accepted Opportunity.");
+  }
+
+  let resultEnvelope: unknown;
+  try {
+    resultEnvelope = await executor(claimed.job, opportunity.opportunity);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return failRunningCreativeJob(client, claimed.job, finishedAt(), `Worker execution failed: ${message}`);
+  }
+
+  const completedAt = finishedAt();
   return completeRunningCreativeJob(client, claimed.job, resultEnvelope, completedAt);
 }
 
+export async function runMockCreativeJob(client: CreativeJobClient, id: string, options: { now?: () => string } = {}): Promise<CreativeJobRunnerResult> {
+  return runCreativeJobWithExecutors(client, id, { mock: (_job, opportunity) => buildMockCreativeJobResult(opportunity) }, options);
+}
+
 export async function runQueuedMockCreativeJobs(client: CreativeJobClient, limit = 1, options: { now?: () => string } = {}) {
-  const queued = await listQueuedCreativeJobs(client, limit);
+  const queued = await listQueuedCreativeJobs(client, limit, "mock");
   if (!queued.ok) {
     return queued;
   }

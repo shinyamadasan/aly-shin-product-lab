@@ -61,6 +61,7 @@ function completedJobRow(overrides: Partial<CreativeJobRow> = {}): CreativeJobRo
     worker_type: "mock",
     attempt_count: 0,
     result: {},
+    last_error: null,
     created_at: "2026-07-29T09:10:00.000Z",
     updated_at: "2026-07-29T09:10:00.000Z",
     started_at: null,
@@ -95,6 +96,7 @@ function completedJobRow(overrides: Partial<CreativeJobRow> = {}): CreativeJobRo
       createdAt: "2026-07-29T09:00:00.000Z",
       updatedAt: "2026-07-29T09:00:00.000Z",
     }),
+    last_error: null,
     created_at: job.createdAt,
     updated_at: fixedNow,
     started_at: startedAt,
@@ -328,11 +330,40 @@ test("buildCreativePackageContentFromCompletedJob creates deterministic package 
   assert.doesNotMatch(JSON.stringify(first), /2026-07-29T/);
 });
 
+test("buildCreativePackageContentFromCompletedJob supports product_text_worker without execution diagnostics", () => {
+  const job = fromCreativeJobRow(
+    completedJobRow({
+      worker_type: "product_text_worker",
+      result: {
+        schemaVersion: "v1",
+        worker: "product_text_worker",
+        output: {
+          headline: "NON-AI TEST - Brownies",
+          caption: "NON-AI TEST - Brownies are ready.",
+        },
+        metadata: {
+          generatedFromOpportunity: "opportunity-1",
+          generatorVersion: "1",
+        },
+        artifacts: [],
+      },
+    }),
+  );
+  const content = buildCreativePackageContentFromCompletedJob(job);
+
+  assert.equal(content.metadata.sourceWorker, "product_text_worker");
+  assert.equal(content.output.headline, "NON-AI TEST - Brownies");
+  assert.equal(content.metadata.generatedFromOpportunity, "opportunity-1");
+  assert.doesNotMatch(JSON.stringify(content), /provider|model|tokens|prompt|raw_response|request/i);
+});
+
 test("isCreativePackageContentV1 requires the supported content shape", () => {
   assert.equal(isCreativePackageContentV1(creativePackageRow().content), true);
+  assert.equal(isCreativePackageContentV1({ output: { headline: "x", caption: "x" }, metadata: { generatedFromOpportunity: "opportunity-1", generatorVersion: "1", sourceCreativeJobId: "job-1", sourceWorker: "product_text_worker", sourceJobResultSchemaVersion: "v1" }, artifacts: [] }), true);
   assert.equal(isCreativePackageContentV1({ output: { headline: "", caption: "x" }, metadata: {}, artifacts: [] }), false);
   assert.equal(isCreativePackageContentV1({ output: { headline: "x", caption: "x" }, metadata: { generatedFromOpportunity: "opportunity-1" }, artifacts: [] }), false);
   assert.equal(isCreativePackageContentV1({ output: { headline: "x", caption: "x" }, metadata: { generatedFromOpportunity: "opportunity-1", generatorVersion: "1", sourceCreativeJobId: "job-1", sourceWorker: "mock", sourceJobResultSchemaVersion: "v1" } }), false);
+  assert.equal(isCreativePackageContentV1({ output: { headline: "x", caption: "x" }, metadata: { generatedFromOpportunity: "opportunity-1", generatorVersion: "1", sourceCreativeJobId: "job-1", sourceWorker: "claude", sourceJobResultSchemaVersion: "v1" }, artifacts: [] }), false);
 });
 
 test("createCreativePackageFromCompletedJob creates one ready package from a completed job", async () => {

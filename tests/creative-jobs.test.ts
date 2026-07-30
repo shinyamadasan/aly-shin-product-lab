@@ -10,9 +10,13 @@ import {
   fromCreativeJobRow,
   isCreativeJobResultEnvelope,
   isCreativeJobStatus,
+  isCreativeJobWorkerType,
   runMockCreativeJob,
   runQueuedMockCreativeJobs,
+  sanitizeCreativeJobErrorMessage,
+  validateCreativeJobResultEnvelope,
   type CreativeJobClient,
+  type CreativeJobResultEnvelope,
   type CreativeJobRow,
 } from "../src/lib/creative-jobs.ts";
 import { fromOpportunityRow, toOpportunityRow, type OpportunityDraft, type OpportunityRecord, type OpportunityRow } from "../src/lib/opportunities.ts";
@@ -62,6 +66,7 @@ function creativeJobRow(overrides: Partial<CreativeJobRow> = {}): CreativeJobRow
     worker_type: "mock",
     attempt_count: 0,
     result: {},
+    last_error: null,
     created_at: "2026-07-29T09:10:00.000Z",
     updated_at: "2026-07-29T09:10:00.000Z",
     started_at: null,
@@ -183,6 +188,7 @@ function makeClient(
                     worker_type: row.worker_type ?? "mock",
                     attempt_count: row.attempt_count ?? 0,
                     result: row.result ?? {},
+                    last_error: row.last_error ?? null,
                     id: `job-${jobs.length + 1}`,
                     created_at: fixedNow,
                     updated_at: fixedNow,
@@ -282,10 +288,19 @@ test("isCreativeJobStatus accepts only the approved statuses", () => {
   }
 });
 
+test("isCreativeJobWorkerType accepts only provider-neutral supported workers", () => {
+  assert.equal(isCreativeJobWorkerType("mock"), true);
+  assert.equal(isCreativeJobWorkerType("product_text_worker"), true);
+  for (const workerType of ["claude", "openai", "gemini", "remotion", "image", ""]) {
+    assert.equal(isCreativeJobWorkerType(workerType), false);
+  }
+});
+
 test("fromCreativeJobRow maps nullable timestamps to empty strings", () => {
   const record = fromCreativeJobRow(creativeJobRow());
   assert.equal(record.status, "queued");
   assert.equal(record.workerType, "mock");
+  assert.equal(record.lastError, "");
   assert.equal(record.startedAt, "");
   assert.equal(record.completedAt, "");
   assert.equal(record.failedAt, "");
@@ -304,6 +319,20 @@ test("createCreativeJobForAcceptedOpportunity inserts one queued mock job for an
     assert.equal(result.job.workerType, "mock");
     assert.equal(result.job.attemptCount, 0);
     assert.deepEqual(result.job.result, {});
+    assert.equal(result.job.lastError, "");
+  }
+});
+
+test("createCreativeJobForAcceptedOpportunity can queue the provider-neutral product text worker", async () => {
+  const store = makeClient();
+  const result = await createCreativeJobForAcceptedOpportunity(store.client, "opportunity-1", { workerType: "product_text_worker" });
+
+  assert.equal(result.ok, true);
+  assert.equal(store.insertCalls, 1);
+  assert.equal(store.jobs.length, 1);
+  if (result.ok) {
+    assert.equal(result.job.workerType, "product_text_worker");
+    assert.equal(result.job.status, "queued");
   }
 });
 
@@ -393,14 +422,41 @@ test("buildMockCreativeJobResult is deterministic for the same Opportunity", () 
   assert.equal(buildMockCreativeJobResult(opportunity).schemaVersion, "v1");
 });
 
-test("isCreativeJobResultEnvelope validates the supported mock result shape", () => {
+test("isCreativeJobResultEnvelope validates both supported v1 result shapes", () => {
   const envelope = buildMockCreativeJobResult(fromOpportunityRow(opportunityRow()));
+  const productTextEnvelope: CreativeJobResultEnvelope = { ...envelope, worker: "product_text_worker" };
 
   assert.equal(isCreativeJobResultEnvelope(envelope), true);
+  assert.equal(isCreativeJobResultEnvelope(productTextEnvelope), true);
   assert.equal(isCreativeJobResultEnvelope({ ...envelope, schemaVersion: "v2" }), false);
+  assert.equal(isCreativeJobResultEnvelope({ ...envelope, worker: "claude" }), false);
   assert.equal(isCreativeJobResultEnvelope({ ...envelope, output: { headline: "", caption: envelope.output.caption } }), false);
+  assert.equal(isCreativeJobResultEnvelope({ ...envelope, output: { headline: envelope.output.headline, caption: "" } }), false);
   assert.equal(isCreativeJobResultEnvelope({ ...envelope, metadata: { generatedFromOpportunity: "", generatorVersion: "1" } }), false);
   assert.equal(isCreativeJobResultEnvelope({ ...envelope, artifacts: "none" }), false);
+});
+
+test("validateCreativeJobResultEnvelope reports specific rejection reasons", () => {
+  const envelope = buildMockCreativeJobResult(fromOpportunityRow(opportunityRow()));
+
+  assert.equal(validateCreativeJobResultEnvelope(envelope).ok, true);
+  assert.deepEqual(validateCreativeJobResultEnvelope({ ...envelope, schemaVersion: "v2" }), {
+    ok: false,
+    reason: "unsupported-schema-version",
+    message: "Creative Job result schemaVersion must be v1.",
+  });
+  for (const [candidate, reason] of [
+    [{ ...envelope, worker: "openai" }, "unsupported-worker"],
+    [{ ...envelope, output: { headline: "", caption: envelope.output.caption } }, "malformed-output"],
+    [{ ...envelope, metadata: { generatedFromOpportunity: "", generatorVersion: "1" } }, "malformed-metadata"],
+    [{ ...envelope, artifacts: [{ asset: "out-of-scope" }] }, "malformed-artifacts"],
+  ] as const) {
+    const result = validateCreativeJobResultEnvelope(candidate);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, reason);
+    }
+  }
 });
 
 test("runMockCreativeJob separates claim, execution, and completion", async () => {
@@ -415,6 +471,7 @@ test("runMockCreativeJob separates claim, execution, and completion", async () =
   assert.equal(store.jobs[0].started_at, startedAt);
   assert.equal(store.jobs[0].completed_at, fixedNow);
   assert.equal(store.jobs[0].failed_at, null);
+  assert.equal(store.jobs[0].last_error, null);
   if (result.ok) {
     assert.equal(result.job.status, "completed");
     assert.match(JSON.stringify(result.job.result), /MOCK ONLY/);
@@ -428,6 +485,55 @@ test("runMockCreativeJob marks the job failed if the accepted Opportunity cannot
   assert.equal(result.reason, "failed");
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.jobs[0].failed_at, fixedNow);
+  assert.equal(store.jobs[0].completed_at, null);
+  assert.equal(store.jobs[0].last_error, "Creative Job could not load an accepted Opportunity.");
+});
+
+test("completeRunningCreativeJob rejects invalid results and persists bounded last_error", async () => {
+  const running = creativeJobRow({ status: "running", attempt_count: 1, started_at: startedAt });
+  const store = makeClient({ jobs: [running] });
+  const invalidResult = {
+    schemaVersion: "v1",
+    worker: "product_text_worker",
+    output: { headline: "", caption: "Caption" },
+    metadata: { generatedFromOpportunity: "opportunity-1", generatorVersion: "1" },
+    artifacts: [],
+  };
+  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), invalidResult, fixedNow);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "failed");
+  assert.equal(store.jobs[0].status, "failed");
+  assert.equal(store.jobs[0].completed_at, null);
+  assert.equal(store.jobs[0].failed_at, fixedNow);
+  assert.equal(store.jobs[0].attempt_count, 1);
+  assert.equal(store.jobs[0].started_at, startedAt);
+  assert.equal(store.jobs[0].last_error, "Creative Job result output must include non-empty headline and caption strings.");
+  assert.deepEqual(store.jobs[0].result, {});
+});
+
+test("completeRunningCreativeJob validates output and clears old failure diagnostics on success", async () => {
+  const running = creativeJobRow({ status: "running", attempt_count: 1, started_at: startedAt, failed_at: fixedNow, last_error: "Previous failure" });
+  const store = makeClient({ jobs: [running] });
+  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())), fixedNow);
+
+  assert.equal(result.ok, true);
+  assert.equal(store.jobs[0].status, "completed");
+  assert.equal(store.jobs[0].failed_at, null);
+  assert.equal(store.jobs[0].last_error, null);
+  assert.equal(store.jobs[0].completed_at, fixedNow);
+});
+
+test("sanitizeCreativeJobErrorMessage bounds and redacts operator-facing errors", () => {
+  const message = sanitizeCreativeJobErrorMessage(
+    `Failure
+ token=abc123 password=hunter2 ${"x".repeat(700)}`,
+    80,
+  );
+
+  assert.ok(message.length <= 83);
+  assert.doesNotMatch(message, /abc123|hunter2|\n/);
+  assert.match(message, /token=\[redacted\]/);
 });
 
 test("completeRunningCreativeJob does not mutate terminal or non-running jobs", async () => {
@@ -452,6 +558,20 @@ test("runQueuedMockCreativeJobs finds queued jobs and processes only that set", 
   assert.equal(store.jobs.find((job) => job.id === "job-older")?.status, "completed");
   assert.equal(store.jobs.find((job) => job.id === "job-newer")?.status, "queued");
   assert.equal(store.jobs.find((job) => job.id === "job-complete")?.status, "completed");
+});
+
+test("runQueuedMockCreativeJobs does not claim product_text_worker jobs", async () => {
+  const store = makeClient({
+    jobs: [
+      creativeJobRow({ id: "job-product-text", worker_type: "product_text_worker" }),
+      creativeJobRow({ id: "job-mock", worker_type: "mock", created_at: "2026-07-29T09:30:00.000Z" }),
+    ],
+  });
+  const result = await runQueuedMockCreativeJobs(store.client, 2, { now: () => fixedNow });
+
+  assert.equal(result.ok, true);
+  assert.equal(store.jobs.find((job) => job.id === "job-product-text")?.status, "queued");
+  assert.equal(store.jobs.find((job) => job.id === "job-mock")?.status, "completed");
 });
 
 test("creative job code does not call external providers or create future-domain records", () => {

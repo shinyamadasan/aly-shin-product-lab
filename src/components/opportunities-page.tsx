@@ -461,6 +461,7 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
                   {selectedJob.startedAt ? metadataBlock("Started", formatDateTime(selectedJob.startedAt)) : null}
                   {selectedJob.completedAt ? metadataBlock("Completed", formatDateTime(selectedJob.completedAt)) : null}
                   {selectedJob.failedAt ? metadataBlock("Failed", formatDateTime(selectedJob.failedAt)) : null}
+                  {selectedJob.lastError ? metadataBlock("Last error", selectedJob.lastError) : null}
                 </div>
                 <details className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3" open={isCreativeJobTerminal(selectedJob)}>
                   <summary className="cursor-pointer text-sm font-semibold text-[#5f4a3d]">View job detail</summary>
