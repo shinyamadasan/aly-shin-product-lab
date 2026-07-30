@@ -13,29 +13,34 @@ test("Opportunity review UI is wired as its own Product Lab route", () => {
   assert.match(source("src/components/app-shell.tsx"), /opportunities: "Opportunity review"/);
 });
 
-test("Opportunity review files do not introduce excluded PROP-016 follow-on concepts", () => {
+test("Opportunity review files do not introduce excluded post-Creative-Job concepts", () => {
   const reviewedSource = [
     source("src/app/opportunities/page.tsx"),
     source("src/components/opportunities-page.tsx"),
     source("src/lib/opportunity-review.ts"),
+    source("src/lib/creative-jobs.ts"),
   ].join("\n");
 
   for (const forbidden of [
-    /from\("creative_jobs"\)/i,
     /from\("content_packages"\)/i,
     /from\("assets"\)/i,
     /from\("approvals"\)/i,
     /from\("publishing_jobs"\)/i,
     /from\("campaigns"\)/i,
     /from\("workers"\)/i,
-    /\.rpc\(/i,
     /Claude/i,
     /Remotion/i,
-    /createCreativeJob/i,
     /publish/i,
   ]) {
     assert.doesNotMatch(reviewedSource, forbidden);
   }
+});
+
+test("Opportunity review UI creates jobs but does not execute the worker runner", () => {
+  const page = source("src/components/opportunities-page.tsx");
+
+  assert.match(page, /createCreativeJobForAcceptedOpportunity/);
+  assert.doesNotMatch(page, /runMockCreativeJob/);
 });
 
 test("Opportunity review UI exposes accessible labels for filters, actions, and evidence", () => {
@@ -53,6 +58,9 @@ test("Opportunity review UI exposes accessible labels for filters, actions, and 
     "Accept",
     "Dismiss",
     "Mark expired",
+    "Create Job",
+    "Creative Job",
+    "View job detail",
     "Raw evidence JSON",
   ]) {
     assert.match(page, new RegExp(label));

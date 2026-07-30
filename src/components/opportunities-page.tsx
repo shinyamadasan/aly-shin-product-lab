@@ -1,8 +1,17 @@
 "use client";
 
-import { CheckCircle2, Clock3, Eye, XCircle } from "lucide-react";
+import { BriefcaseBusiness, CheckCircle2, Clock3, Eye, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { MessageBox, Panel, Tag } from "@/components/ui";
+import {
+  createCreativeJobForAcceptedOpportunity,
+  getCreativeJobForOpportunity,
+  getCreativeJobStatusLabel,
+  isCreativeJobTerminal,
+  type CreativeJobClient,
+  type CreativeJobRecord,
+  type CreativeJobResultEnvelope,
+} from "@/lib/creative-jobs";
 import {
   buildOpportunityEvidenceSections,
   formatOpportunityRawJson,
@@ -48,8 +57,18 @@ function statusLabel(status: OpportunityStatus): string {
   return status.slice(0, 1).toUpperCase() + status.slice(1);
 }
 
+function creativeJobStatusTone(status: CreativeJobRecord["status"]): "warm" | "green" | "danger" {
+  if (status === "completed") return "green";
+  if (status === "failed") return "danger";
+  return "warm";
+}
+
 function filterLabel(filter: OpportunityStatusFilter): string {
   return filterOptions.find((option) => option.value === filter)?.label ?? "New";
+}
+
+function isMockResultEnvelope(value: unknown): value is CreativeJobResultEnvelope {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && (value as { schemaVersion?: unknown }).schemaVersion === "v1";
 }
 
 function metadataBlock(label: string, value: string) {
@@ -91,18 +110,22 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
   const [rows, setRows] = useState<OpportunityListRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedOpportunity, setSelectedOpportunity] = useState<OpportunityRecord | null>(null);
+  const [selectedJob, setSelectedJob] = useState<CreativeJobRecord | null>(null);
   const [isLoadingList, setIsLoadingList] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [listError, setListError] = useState("");
   const [detailError, setDetailError] = useState("");
+  const [jobError, setJobError] = useState("");
   const [hasAny, setHasAny] = useState<boolean | null>(null);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
   const [pendingAction, setPendingAction] = useState<OpportunityStatusUpdateTarget | null>(null);
+  const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
   const [now, setNow] = useState(() => new Date().toISOString());
 
   const client = supabase as unknown as OpportunityReviewClient | null;
+  const creativeJobClient = supabase as unknown as CreativeJobClient | null;
 
   useEffect(() => {
     let cancelled = false;
@@ -158,8 +181,10 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
 
     async function loadDetail() {
       setDetailError("");
+      setJobError("");
       if (!selectedId || !client) {
         setSelectedOpportunity(null);
+        setSelectedJob(null);
         return;
       }
 
@@ -169,8 +194,21 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
 
       if (result.ok) {
         setSelectedOpportunity(result.opportunity);
+        if (creativeJobClient) {
+          const jobResult = await getCreativeJobForOpportunity(creativeJobClient, result.opportunity.id);
+          if (cancelled) return;
+          if (jobResult.ok) {
+            setSelectedJob(jobResult.job);
+          } else {
+            setSelectedJob(null);
+            if (jobResult.reason !== "not-found") {
+              setJobError(jobResult.message);
+            }
+          }
+        }
       } else {
         setSelectedOpportunity(null);
+        setSelectedJob(null);
         setDetailError(result.message);
       }
       setIsLoadingDetail(false);
@@ -180,7 +218,7 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
     return () => {
       cancelled = true;
     };
-  }, [client, selectedId, refreshToken]);
+  }, [client, creativeJobClient, selectedId, refreshToken]);
 
   const selectedSummary = useMemo(() => rows.find((item) => item.id === selectedId) ?? null, [rows, selectedId]);
   const activeOpportunity = selectedOpportunity ?? selectedSummary;
@@ -198,6 +236,7 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
     const result = await updateOpportunityStatus(client, selectedOpportunity.id, target, { now: () => new Date().toISOString() });
     if (result.ok) {
       setSelectedOpportunity(result.opportunity);
+      setSelectedJob(null);
       setMessage(`Opportunity marked ${result.opportunity.status}.`);
       setMessageTone("good");
       setRefreshToken((current) => current + 1);
@@ -207,6 +246,31 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
       setRefreshToken((current) => current + 1);
     }
     setPendingAction(null);
+  }
+
+  async function createJob() {
+    if (!selectedOpportunity || !creativeJobClient) {
+      return;
+    }
+
+    setIsCreatingJob(true);
+    setMessage("");
+    setJobError("");
+
+    const created = await createCreativeJobForAcceptedOpportunity(creativeJobClient, selectedOpportunity.id);
+    if (!created.ok) {
+      setMessage(created.message);
+      setMessageTone(created.reason === "not-accepted" ? "info" : "bad");
+      setIsCreatingJob(false);
+      setRefreshToken((current) => current + 1);
+      return;
+    }
+
+    setSelectedJob(created.job);
+    setMessage(created.outcome === "created" ? "Creative Job queued." : "Creative Job already exists.");
+    setMessageTone("good");
+    setIsCreatingJob(false);
+    setRefreshToken((current) => current + 1);
   }
 
   function emptyMessage() {
@@ -332,9 +396,57 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
                   </ActionButton>
                 ) : null}
               </div>
+            ) : selectedOpportunity.status === "accepted" ? (
+              <div className="space-y-3">
+                {!selectedJob ? (
+                  <>
+                    <p className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm">This Opportunity is accepted. Create one Creative Job to prove the worker pipeline without generating real content.</p>
+                    <ActionButton disabled={isCreatingJob || Boolean(jobError)} onClick={createJob} tone="positive">
+                      <BriefcaseBusiness size={15} />
+                      {isCreatingJob ? "Creating job..." : "Create Job"}
+                    </ActionButton>
+                  </>
+                ) : (
+                  <p className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm">This Opportunity already has one Creative Job. Job records are read-only in this milestone.</p>
+                )}
+              </div>
             ) : (
               <p className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm">This Opportunity is read-only because its status is {selectedOpportunity.status}.</p>
             )}
+
+            {jobError ? <MessageBox message={jobError} tone="bad" /> : null}
+            {selectedJob ? (
+              <section className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <BriefcaseBusiness className="text-[#9a5b2f]" size={17} />
+                    <h4 className="font-semibold text-[#211713]">Creative Job</h4>
+                  </div>
+                  <Tag tone={creativeJobStatusTone(selectedJob.status)}>Status: {getCreativeJobStatusLabel(selectedJob.status)}</Tag>
+                </div>
+                <div className="mt-3 grid gap-3">
+                  {metadataBlock("Worker type", selectedJob.workerType)}
+                  {metadataBlock("Attempts", String(selectedJob.attemptCount))}
+                  {metadataBlock("Queued", formatDateTime(selectedJob.createdAt))}
+                  {selectedJob.startedAt ? metadataBlock("Started", formatDateTime(selectedJob.startedAt)) : null}
+                  {selectedJob.completedAt ? metadataBlock("Completed", formatDateTime(selectedJob.completedAt)) : null}
+                  {selectedJob.failedAt ? metadataBlock("Failed", formatDateTime(selectedJob.failedAt)) : null}
+                </div>
+                <details className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3" open={isCreativeJobTerminal(selectedJob)}>
+                  <summary className="cursor-pointer text-sm font-semibold text-[#5f4a3d]">View job detail</summary>
+                  {isMockResultEnvelope(selectedJob.result) ? (
+                    <div className="mt-3 grid gap-3">
+                      {metadataBlock("Schema version", selectedJob.result.schemaVersion)}
+                      {metadataBlock("Worker", selectedJob.result.worker)}
+                      {metadataBlock("Headline", selectedJob.result.output.headline)}
+                      {metadataBlock("Caption", selectedJob.result.output.caption)}
+                      {metadataBlock("Artifacts", `${selectedJob.result.artifacts.length}`)}
+                    </div>
+                  ) : null}
+                  <pre className="mt-3 max-h-[300px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[#231813] p-3 text-xs leading-5 text-[#fff8ef]">{formatOpportunityRawJson(selectedJob.result)}</pre>
+                </details>
+              </section>
+            ) : null}
 
             <div className="grid gap-3">
               {metadataBlock("Evidence version", selectedOpportunity.evidenceVersion)}
