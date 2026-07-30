@@ -8,6 +8,7 @@ import {
   completeRunningCreativeJob,
   createCreativeJobForAcceptedOpportunity,
   fromCreativeJobRow,
+  isCreativeJobResultEnvelope,
   isCreativeJobStatus,
   runMockCreativeJob,
   runQueuedMockCreativeJobs,
@@ -390,6 +391,16 @@ test("buildMockCreativeJobResult is deterministic for the same Opportunity", () 
   assert.deepEqual(buildMockCreativeJobResult(opportunity), buildMockCreativeJobResult(opportunity));
   assert.deepEqual(buildMockCreativeJobResult(opportunity).artifacts, []);
   assert.equal(buildMockCreativeJobResult(opportunity).schemaVersion, "v1");
+});
+
+test("isCreativeJobResultEnvelope validates the supported mock result shape", () => {
+  const envelope = buildMockCreativeJobResult(fromOpportunityRow(opportunityRow()));
+
+  assert.equal(isCreativeJobResultEnvelope(envelope), true);
+  assert.equal(isCreativeJobResultEnvelope({ ...envelope, schemaVersion: "v2" }), false);
+  assert.equal(isCreativeJobResultEnvelope({ ...envelope, output: { headline: "", caption: envelope.output.caption } }), false);
+  assert.equal(isCreativeJobResultEnvelope({ ...envelope, metadata: { generatedFromOpportunity: "", generatorVersion: "1" } }), false);
+  assert.equal(isCreativeJobResultEnvelope({ ...envelope, artifacts: "none" }), false);
 });
 
 test("runMockCreativeJob separates claim, execution, and completion", async () => {

@@ -140,6 +140,30 @@ export function isCreativeJobStatus(value: string): value is CreativeJobStatus {
   return CREATIVE_JOB_STATUSES.includes(value as CreativeJobStatus);
 }
 
+export function isCreativeJobResultEnvelope(value: unknown): value is CreativeJobResultEnvelope {
+  if (!isJsonObject(value)) {
+    return false;
+  }
+
+  const output = value.output;
+  const metadata = value.metadata;
+
+  return (
+    value.schemaVersion === "v1" &&
+    value.worker === "mock" &&
+    isJsonObject(output) &&
+    typeof output.headline === "string" &&
+    output.headline.trim().length > 0 &&
+    typeof output.caption === "string" &&
+    output.caption.trim().length > 0 &&
+    isJsonObject(metadata) &&
+    typeof metadata.generatedFromOpportunity === "string" &&
+    metadata.generatedFromOpportunity.trim().length > 0 &&
+    metadata.generatorVersion === "1" &&
+    Array.isArray(value.artifacts)
+  );
+}
+
 export function fromCreativeJobRow(row: CreativeJobRow): CreativeJobRecord {
   if (!row.id || !row.created_at || !row.updated_at) {
     throw new Error("Creative Job row is missing id, created_at, or updated_at.");
