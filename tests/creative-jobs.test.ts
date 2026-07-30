@@ -8,6 +8,7 @@ import {
   claimQueuedCreativeJobWithAttempt,
   completeRunningCreativeJob,
   createCreativeJobForAcceptedOpportunity,
+  failRunningCreativeJob,
   fromCreativeJobRow,
   isCreativeJobResultEnvelope,
   isCreativeJobStatus,
@@ -22,13 +23,18 @@ import {
   type CreativeJobResultEnvelope,
   type CreativeJobRow,
 } from "../src/lib/creative-jobs.ts";
-import { type CreativeJobAttemptRow } from "../src/lib/creative-job-attempts.ts";
+import { finishCreativeJobAttempt, type CreativeJobAttemptRow } from "../src/lib/creative-job-attempts.ts";
 import { fromOpportunityRow, toOpportunityRow, type OpportunityDraft, type OpportunityRecord, type OpportunityRow } from "../src/lib/opportunities.ts";
 
 type ErrorLike = { code?: string; message: string };
 
 const fixedNow = "2026-07-29T10:00:00.000Z";
 const startedAt = "2026-07-29T10:01:00.000Z";
+// The fake's finish_creative_job/finish_creative_job_attempt RPC handlers stamp this fixed
+// "database now()" for every finish call, standing in for the SQL functions' own now() --
+// deliberately later than startedAt so latency/ordering assertions are meaningful. Nothing in
+// production ever computes this value or passes it in; options.now has no effect on it.
+const finishedAt = "2026-07-29T10:05:00.000Z";
 
 function opportunityDraft(overrides: Partial<OpportunityDraft> = {}): OpportunityDraft {
   return {
@@ -86,12 +92,11 @@ function makeClient(
     jobs?: CreativeJobRow[];
     selectError?: ErrorLike;
     insertError?: ErrorLike;
-    updateError?: ErrorLike;
     rpcError?: ErrorLike;
     uniqueRaceJob?: CreativeJobRow;
     beforeRpc?: (jobs: CreativeJobRow[]) => void;
-    forceEmptyComplete?: boolean;
-    attemptUpdateError?: ErrorLike;
+    finishJobRpcError?: ErrorLike;
+    finishAttemptRpcError?: ErrorLike;
   } = {},
 ) {
   const opportunities = [...(options.opportunities ?? [opportunityRow()])];
@@ -99,7 +104,6 @@ function makeClient(
   const attempts: CreativeJobAttemptRow[] = [];
   const events: string[] = [];
   let insertCalls = 0;
-  let updateCalls = 0;
   let rpcCalls = 0;
   let beforeRpcCalled = false;
 
@@ -171,43 +175,9 @@ function makeClient(
         };
       }
 
-      if (table === "creative_job_attempts") {
-        return {
-          update(updateRow: Partial<CreativeJobAttemptRow>) {
-            const filters: Array<{ column: string; value: string }> = [];
-            const builder = {
-              eq(column: string, value: string) {
-                filters.push({ column, value });
-                return builder;
-              },
-              select() {
-                return {
-                  async maybeSingle() {
-                    if (options.attemptUpdateError) {
-                      return { data: null, error: options.attemptUpdateError };
-                    }
-                    const index = attempts.findIndex((row) => matches(row as Record<string, unknown>, filters));
-                    if (index === -1) {
-                      return { data: null, error: null };
-                    }
-                    attempts[index] = { ...attempts[index], ...updateRow };
-                    events.push(
-                      updateRow.status === "completed"
-                        ? "finish-attempt-completed"
-                        : updateRow.status === "timed_out"
-                          ? "finish-attempt-timed-out"
-                          : "finish-attempt-failed",
-                    );
-                    return { data: attempts[index], error: null };
-                  },
-                };
-              },
-            };
-            return builder;
-          },
-        };
-      }
-
+      // creative_job_attempts has no from(...) handler -- finishCreativeJobAttempt only ever
+      // calls the finish_creative_job_attempt RPC below, matching the production type (which no
+      // longer declares from(...)/update(...) for this table at all).
       assert.equal(table, "creative_jobs");
       return {
         select() {
@@ -247,41 +217,9 @@ function makeClient(
             },
           };
         },
-        update(updateRow: Partial<CreativeJobRow>) {
-          const filters: Array<{ column: string; value: string }> = [];
-          const builder = {
-            eq(column: string, value: string) {
-              filters.push({ column, value });
-              return builder;
-            },
-            select() {
-              return {
-                async maybeSingle() {
-                  updateCalls += 1;
-                  if (options.updateError) {
-                    return { data: null, error: options.updateError };
-                  }
-                  if (options.forceEmptyComplete) {
-                    return { data: null, error: null };
-                  }
-                  const index = jobs.findIndex((row) => matches(row as Record<string, unknown>, filters));
-                  if (index === -1) {
-                    return { data: null, error: null };
-                  }
-                  jobs[index] = { ...jobs[index], ...updateRow };
-                  if (updateRow.status === "completed" || updateRow.status === "failed") {
-                    events.push(updateRow.status === "completed" ? "complete-job" : "fail-job");
-                  }
-                  return { data: jobs[index], error: null };
-                },
-              };
-            },
-          };
-          return builder;
-        },
       };
     },
-    rpc(functionName: string, args: { p_job_id: string }) {
+    rpc(functionName: string, args: Record<string, unknown>) {
       // Deprecated path: unchanged behavior, no attempt created, matching production's
       // claimQueuedCreativeJob (still callable, no longer used by runCreativeJobWithExecutors).
       if (functionName === "claim_creative_job") {
@@ -295,7 +233,7 @@ function makeClient(
             if (options.rpcError) {
               return { data: null, error: options.rpcError };
             }
-            const index = jobs.findIndex((row) => row.id === args.p_job_id && row.status === "queued");
+            const index = jobs.findIndex((row) => row.id === (args.p_job_id as string) && row.status === "queued");
             if (index === -1) {
               return { data: null, error: null };
             }
@@ -311,46 +249,106 @@ function makeClient(
         };
       }
 
-      assert.equal(functionName, "claim_creative_job_with_attempt");
+      if (functionName === "claim_creative_job_with_attempt") {
+        return {
+          async maybeSingle() {
+            rpcCalls += 1;
+            if (!beforeRpcCalled) {
+              beforeRpcCalled = true;
+              options.beforeRpc?.(jobs);
+            }
+            if (options.rpcError) {
+              return { data: null, error: options.rpcError };
+            }
+            const index = jobs.findIndex((row) => row.id === (args.p_job_id as string) && row.status === "queued");
+            if (index === -1) {
+              return { data: null, error: null };
+            }
+            jobs[index] = {
+              ...jobs[index],
+              status: "running",
+              attempt_count: jobs[index].attempt_count + 1,
+              started_at: startedAt,
+              updated_at: startedAt,
+            };
+            events.push("claim-job");
+            const attempt: CreativeJobAttemptRow = {
+              id: `attempt-${attempts.length + 1}`,
+              creative_job_id: jobs[index].id!,
+              attempt_number: jobs[index].attempt_count,
+              worker_type: jobs[index].worker_type,
+              status: "running",
+              started_at: startedAt,
+              completed_at: null,
+              latency_ms: null,
+              error_code: null,
+              error_message: null,
+              provider: null,
+              model: null,
+              created_at: fixedNow,
+            };
+            attempts.push(attempt);
+            return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
+          },
+        };
+      }
+
+      if (functionName === "finish_creative_job") {
+        return {
+          // Mirrors finish_creative_job's own guards: id + status='running' + p_outcome in
+          // ('completed','failed'). A mismatch on either produces zero rows, exactly like the SQL.
+          async maybeSingle() {
+            rpcCalls += 1;
+            if (options.finishJobRpcError) {
+              return { data: null, error: options.finishJobRpcError };
+            }
+            const outcome = args.p_outcome as string;
+            const validOutcome = outcome === "completed" || outcome === "failed";
+            const index = jobs.findIndex((row) => row.id === (args.p_job_id as string) && row.status === "running");
+            if (index === -1 || !validOutcome) {
+              return { data: null, error: null };
+            }
+            jobs[index] = {
+              ...jobs[index],
+              status: outcome as CreativeJobRow["status"],
+              result: outcome === "completed" ? (args.p_result as CreativeJobRow["result"]) : jobs[index].result,
+              last_error: outcome === "failed" ? (args.p_last_error as string | null) : null,
+              completed_at: outcome === "completed" ? finishedAt : null,
+              failed_at: outcome === "failed" ? finishedAt : null,
+              updated_at: finishedAt,
+            };
+            events.push(outcome === "completed" ? "complete-job" : "fail-job");
+            return { data: jobs[index], error: null };
+          },
+        };
+      }
+
+      assert.equal(functionName, "finish_creative_job_attempt");
       return {
+        // Mirrors finish_creative_job_attempt's own guards: id + status='running' + p_outcome in
+        // ('completed','failed','timed_out'). latency_ms uses the same fixed clock as
+        // completed_at, exactly like `now() - started_at` inside the real function.
         async maybeSingle() {
           rpcCalls += 1;
-          if (!beforeRpcCalled) {
-            beforeRpcCalled = true;
-            options.beforeRpc?.(jobs);
+          if (options.finishAttemptRpcError) {
+            return { data: null, error: options.finishAttemptRpcError };
           }
-          if (options.rpcError) {
-            return { data: null, error: options.rpcError };
-          }
-          const index = jobs.findIndex((row) => row.id === args.p_job_id && row.status === "queued");
-          if (index === -1) {
+          const outcome = args.p_outcome as string;
+          const validOutcome = outcome === "completed" || outcome === "failed" || outcome === "timed_out";
+          const index = attempts.findIndex((row) => row.id === (args.p_attempt_id as string) && row.status === "running");
+          if (index === -1 || !validOutcome) {
             return { data: null, error: null };
           }
-          jobs[index] = {
-            ...jobs[index],
-            status: "running",
-            attempt_count: jobs[index].attempt_count + 1,
-            started_at: startedAt,
-            updated_at: startedAt,
+          attempts[index] = {
+            ...attempts[index],
+            status: outcome as CreativeJobAttemptRow["status"],
+            completed_at: finishedAt,
+            latency_ms: Date.parse(finishedAt) - Date.parse(attempts[index].started_at),
+            error_code: outcome === "completed" ? null : (args.p_error_code as string | null),
+            error_message: outcome === "completed" ? null : (args.p_error_message as string | null),
           };
-          events.push("claim-job");
-          const attempt: CreativeJobAttemptRow = {
-            id: `attempt-${attempts.length + 1}`,
-            creative_job_id: jobs[index].id!,
-            attempt_number: jobs[index].attempt_count,
-            worker_type: jobs[index].worker_type,
-            status: "running",
-            started_at: startedAt,
-            completed_at: null,
-            latency_ms: null,
-            error_code: null,
-            error_message: null,
-            provider: null,
-            model: null,
-            created_at: fixedNow,
-          };
-          attempts.push(attempt);
-          return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
+          events.push(outcome === "completed" ? "finish-attempt-completed" : outcome === "timed_out" ? "finish-attempt-timed-out" : "finish-attempt-failed");
+          return { data: attempts[index], error: null };
         },
       };
     },
@@ -364,9 +362,6 @@ function makeClient(
     events,
     get insertCalls() {
       return insertCalls;
-    },
-    get updateCalls() {
-      return updateCalls;
     },
     get rpcCalls() {
       return rpcCalls;
@@ -556,15 +551,14 @@ test("validateCreativeJobResultEnvelope reports specific rejection reasons", () 
 
 test("runMockCreativeJob separates claim, execution, and completion", async () => {
   const store = makeClient({ jobs: [creativeJobRow()] });
-  const result = await runMockCreativeJob(store.client, "job-1", { now: () => fixedNow });
+  const result = await runMockCreativeJob(store.client, "job-1");
   assert.equal(result.ok, true);
-  assert.equal(store.rpcCalls, 1);
-  assert.equal(store.updateCalls, 1);
+  assert.equal(store.rpcCalls, 3);
   assert.equal(store.opportunities[0].status, "accepted");
   assert.equal(store.jobs[0].status, "completed");
   assert.equal(store.jobs[0].attempt_count, 1);
   assert.equal(store.jobs[0].started_at, startedAt);
-  assert.equal(store.jobs[0].completed_at, fixedNow);
+  assert.equal(store.jobs[0].completed_at, finishedAt);
   assert.equal(store.jobs[0].failed_at, null);
   assert.equal(store.jobs[0].last_error, null);
   if (result.ok) {
@@ -575,11 +569,11 @@ test("runMockCreativeJob separates claim, execution, and completion", async () =
 
 test("runMockCreativeJob marks the job failed if the accepted Opportunity cannot be read", async () => {
   const store = makeClient({ opportunities: [], jobs: [creativeJobRow()] });
-  const result = await runMockCreativeJob(store.client, "job-1", { now: () => fixedNow });
+  const result = await runMockCreativeJob(store.client, "job-1");
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
   assert.equal(store.jobs[0].status, "failed");
-  assert.equal(store.jobs[0].failed_at, fixedNow);
+  assert.equal(store.jobs[0].failed_at, finishedAt);
   assert.equal(store.jobs[0].completed_at, null);
   assert.equal(store.jobs[0].last_error, "Creative Job could not load an accepted Opportunity.");
 });
@@ -594,13 +588,13 @@ test("completeRunningCreativeJob rejects invalid results and persists bounded la
     metadata: { generatedFromOpportunity: "opportunity-1", generatorVersion: "1" },
     artifacts: [],
   };
-  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), invalidResult, fixedNow);
+  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), invalidResult);
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.jobs[0].completed_at, null);
-  assert.equal(store.jobs[0].failed_at, fixedNow);
+  assert.equal(store.jobs[0].failed_at, finishedAt);
   assert.equal(store.jobs[0].attempt_count, 1);
   assert.equal(store.jobs[0].started_at, startedAt);
   assert.equal(store.jobs[0].last_error, "Creative Job result output must include non-empty headline and caption strings.");
@@ -610,13 +604,13 @@ test("completeRunningCreativeJob rejects invalid results and persists bounded la
 test("completeRunningCreativeJob validates output and clears old failure diagnostics on success", async () => {
   const running = creativeJobRow({ status: "running", attempt_count: 1, started_at: startedAt, failed_at: fixedNow, last_error: "Previous failure" });
   const store = makeClient({ jobs: [running] });
-  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())), fixedNow);
+  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())));
 
   assert.equal(result.ok, true);
   assert.equal(store.jobs[0].status, "completed");
   assert.equal(store.jobs[0].failed_at, null);
   assert.equal(store.jobs[0].last_error, null);
-  assert.equal(store.jobs[0].completed_at, fixedNow);
+  assert.equal(store.jobs[0].completed_at, finishedAt);
 });
 
 test("sanitizeCreativeJobErrorMessage bounds and redacts operator-facing errors", () => {
@@ -634,7 +628,7 @@ test("sanitizeCreativeJobErrorMessage bounds and redacts operator-facing errors"
 test("completeRunningCreativeJob does not mutate terminal or non-running jobs", async () => {
   const completed = creativeJobRow({ status: "completed", result: { terminal: true }, completed_at: fixedNow });
   const store = makeClient({ jobs: [completed] });
-  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(completed), buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())), fixedNow);
+  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(completed), buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())));
   assert.equal(result.ok, false);
   assert.equal(result.reason, "conflict");
   assert.deepEqual(store.jobs[0].result, { terminal: true });
@@ -648,7 +642,7 @@ test("runQueuedMockCreativeJobs finds queued jobs and processes only that set", 
       creativeJobRow({ id: "job-complete", status: "completed", created_at: "2026-07-29T08:00:00.000Z" }),
     ],
   });
-  const result = await runQueuedMockCreativeJobs(store.client, 1, { now: () => fixedNow });
+  const result = await runQueuedMockCreativeJobs(store.client, 1);
   assert.equal(result.ok, true);
   assert.equal(store.jobs.find((job) => job.id === "job-older")?.status, "completed");
   assert.equal(store.jobs.find((job) => job.id === "job-newer")?.status, "queued");
@@ -662,7 +656,7 @@ test("runQueuedMockCreativeJobs does not claim product_text_worker jobs", async 
       creativeJobRow({ id: "job-mock", worker_type: "mock", created_at: "2026-07-29T09:30:00.000Z" }),
     ],
   });
-  const result = await runQueuedMockCreativeJobs(store.client, 2, { now: () => fixedNow });
+  const result = await runQueuedMockCreativeJobs(store.client, 2);
 
   assert.equal(result.ok, true);
   assert.equal(store.jobs.find((job) => job.id === "job-product-text")?.status, "queued");
@@ -712,29 +706,28 @@ test("claimQueuedCreativeJobWithAttempt creates no attempt row when the underlyi
 
 test("runCreativeJobWithExecutors finishes the job before finishing its attempt", async () => {
   const store = makeClient({ jobs: [creativeJobRow()] });
-  const result = await runMockCreativeJob(store.client, "job-1", { now: () => fixedNow });
+  const result = await runMockCreativeJob(store.client, "job-1");
 
   assert.equal(result.ok, true);
   assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed"]);
 });
 
 test("runCreativeJobWithExecutors records a completed attempt with a positive latency_ms and no error_code", async () => {
-  const laterNow = "2026-07-29T10:05:00.000Z";
   const store = makeClient({ jobs: [creativeJobRow()] });
-  const result = await runMockCreativeJob(store.client, "job-1", { now: () => laterNow });
+  const result = await runMockCreativeJob(store.client, "job-1");
 
   assert.equal(result.ok, true);
   assert.equal(store.attempts[0].status, "completed");
   assert.equal(store.attempts[0].error_code, null);
   assert.equal(store.attempts[0].error_message, null);
-  assert.equal(store.attempts[0].completed_at, laterNow);
-  assert.equal(store.attempts[0].latency_ms, Date.parse(laterNow) - Date.parse(startedAt));
+  assert.equal(store.attempts[0].completed_at, finishedAt);
+  assert.equal(store.attempts[0].latency_ms, Date.parse(finishedAt) - Date.parse(startedAt));
   assert.ok((store.attempts[0].latency_ms ?? -1) > 0);
 });
 
 test("runCreativeJobWithExecutors stays ok:true and reports the attempt outcome when finishing the attempt hits a missing-table error", async () => {
-  const store = makeClient({ jobs: [creativeJobRow()], attemptUpdateError: { code: "PGRST205", message: "missing" } });
-  const result = await runMockCreativeJob(store.client, "job-1", { now: () => fixedNow });
+  const store = makeClient({ jobs: [creativeJobRow()], finishAttemptRpcError: { code: "PGRST205", message: "missing" } });
+  const result = await runMockCreativeJob(store.client, "job-1");
 
   assert.equal(result.ok, true);
   assert.equal(store.jobs[0].status, "completed");
@@ -748,7 +741,7 @@ test("runCreativeJobWithExecutors stays ok:true and reports the attempt outcome 
 
 test("runCreativeJobWithExecutors fails the job and marks the attempt failed with a bounded error_code and error_message", async () => {
   const store = makeClient({ opportunities: [], jobs: [creativeJobRow()] });
-  const result = await runMockCreativeJob(store.client, "job-1", { now: () => fixedNow });
+  const result = await runMockCreativeJob(store.client, "job-1");
 
   assert.equal(result.ok, false);
   assert.equal(store.jobs[0].status, "failed");
@@ -767,7 +760,7 @@ test("runCreativeJobWithExecutors fails the job and marks the attempt timed_out 
       }),
   };
 
-  const result = await runCreativeJobWithExecutors(store.client, "job-1", executors, { now: () => fixedNow, timeoutMs: 10 });
+  const result = await runCreativeJobWithExecutors(store.client, "job-1", executors, { timeoutMs: 10 });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "timeout");
@@ -775,16 +768,105 @@ test("runCreativeJobWithExecutors fails the job and marks the attempt timed_out 
   assert.doesNotMatch(result.message, /cancel/i);
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.jobs[0].completed_at, null);
-  assert.equal(store.jobs[0].failed_at, fixedNow);
+  assert.equal(store.jobs[0].failed_at, finishedAt);
   assert.equal(store.attempts[0].status, "timed_out");
   assert.equal(store.attempts[0].error_code, "timeout");
-  assert.equal(store.attempts[0].completed_at, fixedNow);
+  assert.equal(store.attempts[0].completed_at, finishedAt);
 
   resolveExecutor(buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.attempts[0].status, "timed_out");
   assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-timed-out"]);
+});
+
+test("finish_creative_job and finish_creative_job_attempt always produce terminal timestamps at or after started_at (mixed-clock regression)", async () => {
+  for (const outcome of ["completed", "failed"] as const) {
+    const store = makeClient({
+      jobs: [creativeJobRow({ id: `job-${outcome}`, opportunity_id: "opportunity-1" })],
+      opportunities: [opportunityRow()],
+    });
+    const claim = await claimQueuedCreativeJobWithAttempt(store.client, `job-${outcome}`);
+    assert.equal(claim.ok, true);
+    if (!claim.ok) continue;
+
+    const job = fromCreativeJobRow(store.jobs[0]);
+    const jobResult =
+      outcome === "completed"
+        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())))
+        : await failRunningCreativeJob(store.client, job, "Forced failure for regression test.");
+    await finishCreativeJobAttempt(store.client, claim.attemptId, outcome, outcome === "failed" ? { errorCode: "failed", errorMessage: "Forced failure for regression test." } : {});
+
+    const terminalJobTimestamp = outcome === "completed" ? store.jobs[0].completed_at : store.jobs[0].failed_at;
+    assert.ok(terminalJobTimestamp, `expected a ${outcome} timestamp to be set`);
+    assert.ok(Date.parse(terminalJobTimestamp!) >= Date.parse(store.jobs[0].started_at!), `job terminal timestamp must not precede started_at for outcome ${outcome}`);
+    assert.ok(Date.parse(store.attempts[0].completed_at!) >= Date.parse(store.attempts[0].started_at), `attempt completed_at must not precede started_at for outcome ${outcome}`);
+    assert.equal(jobResult.ok, outcome === "completed");
+  }
+});
+
+test("finish_creative_job rejects a second finish on an already-terminal job (double-finish conflict), for both completed and failed outcomes", async () => {
+  for (const outcome of ["completed", "failed"] as const) {
+    const store = makeClient({
+      jobs: [creativeJobRow({ id: `job-${outcome}`, opportunity_id: "opportunity-1" })],
+      opportunities: [opportunityRow()],
+    });
+    const claim = await claimQueuedCreativeJobWithAttempt(store.client, `job-${outcome}`);
+    assert.equal(claim.ok, true);
+    if (!claim.ok) continue;
+
+    const job = fromCreativeJobRow(store.jobs[0]);
+    const first =
+      outcome === "completed"
+        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())))
+        : await failRunningCreativeJob(store.client, job, "First failure.");
+    assert.equal(first.ok, outcome === "completed");
+    const stateAfterFirst = { ...store.jobs[0] };
+
+    const second =
+      outcome === "completed"
+        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())))
+        : await failRunningCreativeJob(store.client, job, "Second failure attempt.");
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "conflict");
+    assert.deepEqual(store.jobs[0], stateAfterFirst, `a second finish call must not mutate an already-terminal job for outcome ${outcome}`);
+  }
+});
+
+test("attempt outcome guard: finish_creative_job_attempt rejects an invalid outcome and a non-running attempt", async () => {
+  const store = makeClient({ jobs: [creativeJobRow()], opportunities: [opportunityRow()] });
+  const claim = await claimQueuedCreativeJobWithAttempt(store.client, "job-1");
+  assert.equal(claim.ok, true);
+  if (!claim.ok) return;
+
+  const invalidOutcome = await store.client
+    .rpc("finish_creative_job_attempt", { p_attempt_id: claim.attemptId, p_outcome: "cancelled", p_error_code: null, p_error_message: null })
+    .maybeSingle();
+  assert.equal(invalidOutcome.data, null);
+  assert.equal(store.attempts[0].status, "running");
+
+  const finished = await finishCreativeJobAttempt(store.client, claim.attemptId, "completed");
+  assert.equal(finished.ok, true);
+
+  const alreadyTerminal = await store.client
+    .rpc("finish_creative_job_attempt", { p_attempt_id: claim.attemptId, p_outcome: "failed", p_error_code: "failed", p_error_message: "too late" })
+    .maybeSingle();
+  assert.equal(alreadyTerminal.data, null);
+  assert.equal(store.attempts[0].status, "completed");
+});
+
+test("fake finish_creative_job RPC enforces the same status and outcome guards as the SQL function", async () => {
+  const store = makeClient({ jobs: [creativeJobRow({ status: "queued" })], opportunities: [opportunityRow()] });
+
+  const notRunning = await store.client.rpc("finish_creative_job", { p_job_id: "job-1", p_outcome: "completed", p_result: {}, p_last_error: null }).maybeSingle();
+  assert.equal(notRunning.data, null);
+
+  const claim = await claimQueuedCreativeJobWithAttempt(store.client, "job-1");
+  assert.equal(claim.ok, true);
+
+  const invalidOutcome = await store.client.rpc("finish_creative_job", { p_job_id: "job-1", p_outcome: "cancelled", p_result: {}, p_last_error: null }).maybeSingle();
+  assert.equal(invalidOutcome.data, null);
+  assert.equal(store.jobs[0].status, "running");
 });
 
 test("creative job code does not call external providers or create future-domain records", () => {

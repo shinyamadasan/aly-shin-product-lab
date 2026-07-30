@@ -97,6 +97,16 @@ export type CreativeJobClient = {
   rpc(functionName: "claim_creative_job_with_attempt", args: { p_job_id: string }): {
     maybeSingle(): QueryResult<CreativeJobWithAttemptRow>;
   };
+  // No timestamptz parameter -- completed_at/failed_at are computed inside the function from the
+  // database's own now(), never accepted from the caller. p_outcome is guarded server-side too
+  // (finish_creative_job only writes 'completed'|'failed'); this signature doesn't encode that,
+  // it's enforced by the SQL function itself.
+  rpc(
+    functionName: "finish_creative_job",
+    args: { p_job_id: string; p_outcome: string; p_result: unknown; p_last_error: string | null },
+  ): {
+    maybeSingle(): QueryResult<CreativeJobRow>;
+  };
 };
 
 // The wider client capability runCreativeJobWithExecutors actually needs: claiming a job (via
@@ -453,67 +463,71 @@ export async function claimQueuedCreativeJobWithAttempt(client: CreativeJobClien
   };
 }
 
-async function finishRunningJob(
+type FinishCreativeJobWriteResult =
+  | { written: true; job: CreativeJobRecord }
+  | { written: false; reason: "missing-table" | "not-found" | "conflict" | "failed"; message: string; job?: CreativeJobRecord };
+
+// Shared by completeRunningCreativeJob and failRunningCreativeJob -- both callers interpret the
+// neutral written:true/false result into their own correct ok/reason shape (a successful *write*
+// means ok:true for complete but ok:false for fail, since "the job failed" is not itself an
+// operation failure). No timestamp is passed in; finish_creative_job computes completed_at/
+// failed_at from now() internally.
+async function finishCreativeJobViaRpc(
   client: CreativeJobClient,
   job: CreativeJobRecord,
-  update: Partial<CreativeJobRow>,
-  failureReason: "conflict" | "failed",
-): Promise<CreativeJobRunnerResult> {
-  const result = await client.from("creative_jobs").update(update).eq("id", job.id).eq("status", "running").select("*").maybeSingle();
-  if (result.error) {
-    return { ok: false, ...dbErrorResult(result.error) };
+  outcome: "completed" | "failed",
+  result: CreativeJobResultEnvelope | null,
+  lastError: string | null,
+): Promise<FinishCreativeJobWriteResult> {
+  const rpcResult = await client.rpc("finish_creative_job", { p_job_id: job.id, p_outcome: outcome, p_result: result, p_last_error: lastError }).maybeSingle();
+  if (rpcResult.error) {
+    return { written: false, ...dbErrorResult(rpcResult.error) };
   }
-  if (result.data) {
-    return { ok: true, outcome: "completed", job: fromCreativeJobRow(result.data) };
+  if (rpcResult.data) {
+    return { written: true, job: fromCreativeJobRow(rpcResult.data) };
   }
 
   const reread = await getCreativeJobById(client, job.id);
   return reread.ok
-    ? { ok: false, reason: failureReason, message: `Creative Job status changed to ${reread.job.status} before the runner could finish.`, job: reread.job }
-    : { ok: false, reason: reread.reason === "not-found" ? "not-found" : reread.reason, message: reread.message };
+    ? { written: false, reason: "conflict", message: `Creative Job status changed to ${reread.job.status} before the runner could finish.`, job: reread.job }
+    : { written: false, reason: reread.reason === "not-found" ? "not-found" : reread.reason, message: reread.message };
 }
 
-export async function completeRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, resultEnvelope: unknown, completedAt: string): Promise<CreativeJobRunnerResult> {
+export async function completeRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, resultEnvelope: unknown): Promise<CreativeJobRunnerResult> {
   const validation = validateCreativeJobResultEnvelope(resultEnvelope);
   if (!validation.ok) {
-    return failRunningCreativeJob(client, job, completedAt, validation.message);
+    return failRunningCreativeJob(client, job, validation.message);
   }
 
-  return finishRunningJob(
-    client,
-    job,
-    { status: "completed", result: validation.result, completed_at: completedAt, failed_at: null, last_error: null, updated_at: completedAt },
-    "conflict",
-  );
+  const result = await finishCreativeJobViaRpc(client, job, "completed", validation.result, null);
+  return result.written ? { ok: true, outcome: "completed", job: result.job } : { ok: false, reason: result.reason, message: result.message, job: result.job };
 }
 
-export async function failRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, failedAt: string, message = "Creative Job execution failed."): Promise<CreativeJobRunnerResult> {
+export async function failRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, message = "Creative Job execution failed."): Promise<CreativeJobRunnerResult> {
   const lastError = sanitizeCreativeJobErrorMessage(message);
-  const result = await client
-    .from("creative_jobs")
-    .update({ status: "failed", failed_at: failedAt, completed_at: null, last_error: lastError, updated_at: failedAt })
-    .eq("id", job.id)
-    .eq("status", "running")
-    .select("*")
-    .maybeSingle();
-  if (result.error) {
-    return { ok: false, ...dbErrorResult(result.error) };
-  }
-  if (result.data) {
-    return { ok: false, reason: "failed", message: lastError, job: fromCreativeJobRow(result.data) };
-  }
-
-  const reread = await getCreativeJobById(client, job.id);
-  return reread.ok
-    ? { ok: false, reason: "conflict", message: `Creative Job status changed to ${reread.job.status} before the runner could mark it failed.`, job: reread.job }
-    : { ok: false, reason: reread.reason === "not-found" ? "not-found" : reread.reason, message: reread.message };
+  const result = await finishCreativeJobViaRpc(client, job, "failed", null, lastError);
+  return result.written
+    ? { ok: false, reason: "failed", message: lastError, job: result.job }
+    : { ok: false, reason: result.reason, message: result.message, job: result.job };
 }
+
+export type CreativeJobRunnerOptions = {
+  /**
+   * @deprecated No longer consulted. completed_at/failed_at (and the attempt's completed_at/
+   * latency_ms) are computed by finish_creative_job/finish_creative_job_attempt from the
+   * database's own now() -- there is no application-supplied timestamp anywhere in this call
+   * chain anymore. Kept on the public type for backward compatibility; slated for removal in a
+   * later cleanup milestone.
+   */
+  now?: () => string;
+  timeoutMs?: number;
+};
 
 export async function runCreativeJobWithExecutors(
   client: CreativeJobExecutionClient,
   id: string,
   executors: CreativeJobExecutorMap,
-  options: { now?: () => string; timeoutMs?: number } = {},
+  options: CreativeJobRunnerOptions = {},
 ): Promise<CreativeJobRunnerResult> {
   const claimed = await claimQueuedCreativeJobWithAttempt(client, id);
   if (!claimed.ok) {
@@ -526,8 +540,6 @@ export async function runCreativeJobWithExecutors(
   const job = claimed.job;
   const attemptId = claimed.attemptId;
 
-  const finishedAt = () => options.now?.() ?? new Date().toISOString();
-
   // Job-first, attempt-second: if the process crashes between the two writes below, the job is
   // already correctly terminal (everything that matters -- package materialization, Opportunity
   // state -- gates on the job, not the attempt) and only the attempt is left cosmetically stale.
@@ -536,8 +548,7 @@ export async function runCreativeJobWithExecutors(
   // deliberately non-fatal here: it's merged onto the result as `attempt`, never used to flip
   // `ok`/`reason`/`message`.
   async function failJobAndAttempt(message: string, attemptOutcome: "failed" | "timed_out" = "failed"): Promise<CreativeJobRunnerResult> {
-    const failedAt = finishedAt();
-    const jobResult = await failRunningCreativeJob(client, job, failedAt, message);
+    const jobResult = await failRunningCreativeJob(client, job, message);
     if (jobResult.ok) {
       // failRunningCreativeJob never actually resolves ok:true; this satisfies the type checker
       // without misrepresenting an attempt outcome that didn't happen.
@@ -545,8 +556,6 @@ export async function runCreativeJobWithExecutors(
     }
     const reason = attemptOutcome === "timed_out" && jobResult.reason === "failed" ? ("timeout" as const) : jobResult.reason;
     const attempt = await finishCreativeJobAttempt(client, attemptId, attemptOutcome, {
-      startedAt: job.startedAt,
-      completedAt: failedAt,
       errorCode: attemptOutcome === "timed_out" ? "timeout" : "failed",
       errorMessage: jobResult.message,
     });
@@ -599,26 +608,21 @@ export async function runCreativeJobWithExecutors(
     return failJobAndAttempt(timedOut ? message : `Worker execution failed: ${message}`, timedOut ? "timed_out" : "failed");
   }
 
-  const completedAt = finishedAt();
-  const jobResult = await completeRunningCreativeJob(client, job, resultEnvelope, completedAt);
+  const jobResult = await completeRunningCreativeJob(client, job, resultEnvelope);
   const attempt = await finishCreativeJobAttempt(
     client,
     attemptId,
     jobResult.ok ? "completed" : "failed",
-    jobResult.ok ? { startedAt: job.startedAt, completedAt } : { startedAt: job.startedAt, completedAt, errorCode: "failed", errorMessage: jobResult.message },
+    jobResult.ok ? {} : { errorCode: "failed", errorMessage: jobResult.message },
   );
   return { ...jobResult, attempt };
 }
 
-export async function runMockCreativeJob(
-  client: CreativeJobExecutionClient,
-  id: string,
-  options: { now?: () => string; timeoutMs?: number } = {},
-): Promise<CreativeJobRunnerResult> {
+export async function runMockCreativeJob(client: CreativeJobExecutionClient, id: string, options: CreativeJobRunnerOptions = {}): Promise<CreativeJobRunnerResult> {
   return runCreativeJobWithExecutors(client, id, { mock: (_job, opportunity) => buildMockCreativeJobResult(opportunity) }, options);
 }
 
-export async function runQueuedMockCreativeJobs(client: CreativeJobExecutionClient, limit = 1, options: { now?: () => string; timeoutMs?: number } = {}) {
+export async function runQueuedMockCreativeJobs(client: CreativeJobExecutionClient, limit = 1, options: CreativeJobRunnerOptions = {}) {
   const queued = await listQueuedCreativeJobs(client, limit, "mock");
   if (!queued.ok) {
     return queued;

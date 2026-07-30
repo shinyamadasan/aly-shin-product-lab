@@ -40,16 +40,15 @@ type SupabaseErrorLike = {
 
 type QueryResult<T> = PromiseLike<{ data: T | null; error: SupabaseErrorLike | null }>;
 
-type UpdateBuilder<T> = {
-  eq(column: string, value: string): UpdateBuilder<T>;
-  select(columns: string): {
-    maybeSingle(): QueryResult<T>;
-  };
-};
-
+// No `from(...)`/`update(...)` here anymore -- finishCreativeJobAttempt's only interaction with
+// this table is the finish_creative_job_attempt RPC below, which is database-timestamped and
+// database-outcome-guarded. There is no other writer of this table.
 export type CreativeJobAttemptClient = {
-  from(table: "creative_job_attempts"): {
-    update(row: Partial<CreativeJobAttemptRow>): UpdateBuilder<CreativeJobAttemptRow>;
+  rpc(
+    functionName: "finish_creative_job_attempt",
+    args: { p_attempt_id: string; p_outcome: string; p_error_code: string | null; p_error_message: string | null },
+  ): {
+    maybeSingle(): QueryResult<CreativeJobAttemptRow>;
   };
 };
 
@@ -102,26 +101,24 @@ export function fromCreativeJobAttemptRow(row: CreativeJobAttemptRow): CreativeJ
 // a crash between the two writes leaves the job correctly terminal and only the attempt
 // cosmetically stale, never the reverse. Failure here is deliberately non-fatal to the caller's
 // job result -- see CreativeJobRunnerResult's optional `attempt` field in creative-jobs.ts.
+//
+// completed_at and latency_ms are computed entirely inside finish_creative_job_attempt from the
+// database's own now() and the row's own started_at -- no timestamp is accepted here or passed
+// to the RPC, so this function cannot produce a mixed-clock terminal record even if a caller
+// wanted it to.
 export async function finishCreativeJobAttempt(
   client: CreativeJobAttemptClient,
   attemptId: string,
   outcome: Exclude<CreativeJobAttemptStatus, "running">,
-  details: { startedAt: string; completedAt: string; errorCode?: string; errorMessage?: string },
+  details: { errorCode?: string; errorMessage?: string } = {},
 ): Promise<CreativeJobAttemptFinishResult> {
-  const latencyMs = Date.parse(details.completedAt) - Date.parse(details.startedAt);
-
   const result = await client
-    .from("creative_job_attempts")
-    .update({
-      status: outcome,
-      completed_at: details.completedAt,
-      latency_ms: Number.isFinite(latencyMs) ? latencyMs : null,
-      error_code: outcome === "completed" ? null : (details.errorCode ?? "failed"),
-      error_message: outcome === "completed" ? null : (details.errorMessage ?? "Creative Job attempt failed."),
+    .rpc("finish_creative_job_attempt", {
+      p_attempt_id: attemptId,
+      p_outcome: outcome,
+      p_error_code: outcome === "completed" ? null : (details.errorCode ?? "failed"),
+      p_error_message: outcome === "completed" ? null : (details.errorMessage ?? "Creative Job attempt failed."),
     })
-    .eq("id", attemptId)
-    .eq("status", "running")
-    .select("*")
     .maybeSingle();
 
   if (result.error) {

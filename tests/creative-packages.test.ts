@@ -21,6 +21,10 @@ type ErrorLike = { code?: string; message: string };
 
 const fixedNow = "2026-07-29T10:00:00.000Z";
 const startedAt = "2026-07-29T10:01:00.000Z";
+// Stands in for finish_creative_job/finish_creative_job_attempt's own now() -- deliberately
+// later than startedAt so latency/ordering assertions are meaningful. options.now has no effect
+// on it; nothing in production ever passes a timestamp into either RPC.
+const finishedAt = "2026-07-29T10:05:00.000Z";
 
 function opportunityDraft(overrides: Partial<OpportunityDraft> = {}): OpportunityDraft {
   return {
@@ -137,7 +141,6 @@ function makeClient(
   const attempts: CreativeJobAttemptRow[] = [];
   const events: string[] = [];
   let packageInsertCalls = 0;
-  let jobUpdateCalls = 0;
   let opportunityUpdateCalls = 0;
 
   function matches(row: Record<string, unknown>, filters: Array<{ column: string; value: string }>): boolean {
@@ -190,34 +193,8 @@ function makeClient(
         };
       }
 
-      if (table === "creative_job_attempts") {
-        return {
-          update(updateRow: Partial<CreativeJobAttemptRow>) {
-            const filters: Array<{ column: string; value: string }> = [];
-            const builder = {
-              eq(column: string, value: string) {
-                filters.push({ column, value });
-                return builder;
-              },
-              select() {
-                return {
-                  async maybeSingle() {
-                    const index = attempts.findIndex((row) => matches(row as Record<string, unknown>, filters));
-                    if (index === -1) {
-                      return { data: null, error: null };
-                    }
-                    attempts[index] = { ...attempts[index], ...updateRow };
-                    events.push(updateRow.status === "completed" ? "finish-attempt-completed" : "finish-attempt-failed");
-                    return { data: attempts[index], error: null };
-                  },
-                };
-              },
-            };
-            return builder;
-          },
-        };
-      }
-
+      // creative_job_attempts has no from(...) handler -- finishing an attempt only ever calls
+      // the finish_creative_job_attempt RPC below, matching the production client type.
       if (table === "creative_jobs") {
         return {
           select() {
@@ -225,30 +202,6 @@ function makeClient(
           },
           insert() {
             throw new Error("Creative Job inserts are out of scope for package materialization.");
-          },
-          update(updateRow: Partial<CreativeJobRow>) {
-            const filters: Array<{ column: string; value: string }> = [];
-            const builder = {
-              eq(column: string, value: string) {
-                filters.push({ column, value });
-                return builder;
-              },
-              select() {
-                return {
-                  async maybeSingle() {
-                    jobUpdateCalls += 1;
-                    const index = jobs.findIndex((row) => matches(row as Record<string, unknown>, filters));
-                    if (index === -1) {
-                      return { data: null, error: null };
-                    }
-                    events.push(updateRow.status === "completed" ? "complete-job" : "update-job");
-                    jobs[index] = { ...jobs[index], ...updateRow };
-                    return { data: jobs[index], error: null };
-                  },
-                };
-              },
-            };
-            return builder;
           },
         };
       }
@@ -290,39 +243,90 @@ function makeClient(
         },
       };
     },
-    rpc(functionName: string, args: { p_job_id: string }) {
-      assert.equal(functionName, "claim_creative_job_with_attempt");
+    rpc(functionName: string, args: Record<string, unknown>) {
+      if (functionName === "claim_creative_job_with_attempt") {
+        return {
+          async maybeSingle() {
+            const index = jobs.findIndex((row) => row.id === (args.p_job_id as string) && row.status === "queued");
+            if (index === -1) {
+              return { data: null, error: null };
+            }
+            jobs[index] = {
+              ...jobs[index],
+              status: "running",
+              attempt_count: jobs[index].attempt_count + 1,
+              started_at: startedAt,
+              updated_at: startedAt,
+            };
+            events.push("claim-job");
+            const attempt: CreativeJobAttemptRow = {
+              id: `attempt-${attempts.length + 1}`,
+              creative_job_id: jobs[index].id!,
+              attempt_number: jobs[index].attempt_count,
+              worker_type: jobs[index].worker_type,
+              status: "running",
+              started_at: startedAt,
+              completed_at: null,
+              latency_ms: null,
+              error_code: null,
+              error_message: null,
+              provider: null,
+              model: null,
+              created_at: fixedNow,
+            };
+            attempts.push(attempt);
+            return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
+          },
+        };
+      }
+
+      if (functionName === "finish_creative_job") {
+        return {
+          // Mirrors finish_creative_job's own guards: id + status='running' + p_outcome in
+          // ('completed','failed').
+          async maybeSingle() {
+            const outcome = args.p_outcome as string;
+            const validOutcome = outcome === "completed" || outcome === "failed";
+            const index = jobs.findIndex((row) => row.id === (args.p_job_id as string) && row.status === "running");
+            if (index === -1 || !validOutcome) {
+              return { data: null, error: null };
+            }
+            jobs[index] = {
+              ...jobs[index],
+              status: outcome as CreativeJobRow["status"],
+              result: outcome === "completed" ? (args.p_result as CreativeJobRow["result"]) : jobs[index].result,
+              last_error: outcome === "failed" ? (args.p_last_error as string | null) : null,
+              completed_at: outcome === "completed" ? finishedAt : null,
+              failed_at: outcome === "failed" ? finishedAt : null,
+              updated_at: finishedAt,
+            };
+            events.push(outcome === "completed" ? "complete-job" : "fail-job");
+            return { data: jobs[index], error: null };
+          },
+        };
+      }
+
+      assert.equal(functionName, "finish_creative_job_attempt");
       return {
+        // Mirrors finish_creative_job_attempt's own guards: id + status='running' + p_outcome in
+        // ('completed','failed','timed_out').
         async maybeSingle() {
-          const index = jobs.findIndex((row) => row.id === args.p_job_id && row.status === "queued");
-          if (index === -1) {
+          const outcome = args.p_outcome as string;
+          const validOutcome = outcome === "completed" || outcome === "failed" || outcome === "timed_out";
+          const index = attempts.findIndex((row) => row.id === (args.p_attempt_id as string) && row.status === "running");
+          if (index === -1 || !validOutcome) {
             return { data: null, error: null };
           }
-          jobs[index] = {
-            ...jobs[index],
-            status: "running",
-            attempt_count: jobs[index].attempt_count + 1,
-            started_at: startedAt,
-            updated_at: startedAt,
+          attempts[index] = {
+            ...attempts[index],
+            status: outcome as CreativeJobAttemptRow["status"],
+            completed_at: finishedAt,
+            latency_ms: Date.parse(finishedAt) - Date.parse(attempts[index].started_at),
+            error_code: outcome === "completed" ? null : (args.p_error_code as string | null),
+            error_message: outcome === "completed" ? null : (args.p_error_message as string | null),
           };
-          events.push("claim-job");
-          const attempt: CreativeJobAttemptRow = {
-            id: `attempt-${attempts.length + 1}`,
-            creative_job_id: jobs[index].id!,
-            attempt_number: jobs[index].attempt_count,
-            worker_type: jobs[index].worker_type,
-            status: "running",
-            started_at: startedAt,
-            completed_at: null,
-            latency_ms: null,
-            error_code: null,
-            error_message: null,
-            provider: null,
-            model: null,
-            created_at: fixedNow,
-          };
-          attempts.push(attempt);
-          return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
+          events.push(outcome === "completed" ? "finish-attempt-completed" : outcome === "timed_out" ? "finish-attempt-timed-out" : "finish-attempt-failed");
+          return { data: attempts[index], error: null };
         },
       };
     },
@@ -337,9 +341,6 @@ function makeClient(
     events,
     get packageInsertCalls() {
       return packageInsertCalls;
-    },
-    get jobUpdateCalls() {
-      return jobUpdateCalls;
     },
     get opportunityUpdateCalls() {
       return opportunityUpdateCalls;
@@ -509,7 +510,7 @@ test("getCreativePackageForJob returns not-found without pretending a package ex
 
 test("runMockCreativeJobAndMaterializePackage completes the job before materializing the package", async () => {
   const store = makeClient({ jobs: [completedJobRow({ status: "queued", attempt_count: 0, result: {}, started_at: null, completed_at: null })] });
-  const result = await runMockCreativeJobAndMaterializePackage(store.client, "job-1", { now: () => fixedNow });
+  const result = await runMockCreativeJobAndMaterializePackage(store.client, "job-1");
 
   assert.equal(result.ok, true);
   assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed", "insert-package"]);
@@ -528,20 +529,20 @@ test("runMockCreativeJobAndMaterializePackage keeps a completed job completed if
     jobs: [completedJobRow({ status: "queued", attempt_count: 0, result: {}, started_at: null, completed_at: null })],
     packageInsertError: { message: "package write failed" },
   });
-  const result = await runMockCreativeJobAndMaterializePackage(store.client, "job-1", { now: () => fixedNow });
+  const result = await runMockCreativeJobAndMaterializePackage(store.client, "job-1");
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
   assert.equal(result.message, "package write failed");
   assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed", "insert-package"]);
   assert.equal(store.jobs[0].status, "completed");
-  assert.equal(store.jobs[0].completed_at, fixedNow);
+  assert.equal(store.jobs[0].completed_at, finishedAt);
   assert.equal(store.packages.length, 0);
 });
 
 test("runMockCreativeJobAndMaterializePackage is safe to invoke after a package already exists", async () => {
   const store = makeClient({ jobs: [completedJobRow({ status: "queued", attempt_count: 0, result: {}, started_at: null, completed_at: null })] });
-  const first = await runMockCreativeJobAndMaterializePackage(store.client, "job-1", { now: () => fixedNow });
+  const first = await runMockCreativeJobAndMaterializePackage(store.client, "job-1");
   const second = await createCreativePackageFromCompletedJob(store.client, "job-1");
 
   assert.equal(first.ok, true);
