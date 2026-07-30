@@ -1,4 +1,9 @@
 import { fromOpportunityRow, type OpportunityRecord, type OpportunityRow } from "./opportunities.ts";
+import {
+  finishCreativeJobAttempt,
+  type CreativeJobAttemptClient,
+  type CreativeJobAttemptFinishResult,
+} from "./creative-job-attempts.ts";
 
 export const CREATIVE_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type CreativeJobStatus = (typeof CREATIVE_JOB_STATUSES)[number];
@@ -68,6 +73,8 @@ type QueryBuilder<T> = PromiseLike<{ data: T[] | null; error: SupabaseErrorLike 
   };
 };
 
+export type CreativeJobWithAttemptRow = CreativeJobRow & { attempt_id: string; attempt_number: number };
+
 export type CreativeJobClient = {
   from(table: "creative_jobs"): {
     select<T = unknown>(columns: string): QueryBuilder<T>;
@@ -81,10 +88,23 @@ export type CreativeJobClient = {
   from(table: "opportunities"): {
     select<T = unknown>(columns: string): QueryBuilder<T>;
   };
+  // Deprecated: superseded by claim_creative_job_with_attempt below. Left callable (and left
+  // defined in supabase-add-creative-jobs.sql) so an in-flight rollback isn't blocked by a
+  // dropped interface; no application code path calls this going forward.
   rpc(functionName: "claim_creative_job", args: { p_job_id: string }): {
     maybeSingle(): QueryResult<CreativeJobRow>;
   };
+  rpc(functionName: "claim_creative_job_with_attempt", args: { p_job_id: string }): {
+    maybeSingle(): QueryResult<CreativeJobWithAttemptRow>;
+  };
 };
+
+// The wider client capability runCreativeJobWithExecutors actually needs: claiming a job (via
+// CreativeJobClient) plus finishing the attempt row that claim created (via
+// CreativeJobAttemptClient). Kept as a separate type rather than folded into CreativeJobClient so
+// callers that only ever read/create jobs (e.g. the Opportunities UI) aren't forced to satisfy an
+// attempts-table shape they never touch.
+export type CreativeJobExecutionClient = CreativeJobClient & CreativeJobAttemptClient;
 
 export type CreativeJobDetailResult =
   | { ok: true; job: CreativeJobRecord }
@@ -95,11 +115,21 @@ export type CreativeJobCreateResult =
   | { ok: false; reason: "missing-table" | "not-found" | "not-accepted" | "failed"; message: string };
 
 export type CreativeJobRunnerResult =
-  | { ok: true; outcome: "completed"; job: CreativeJobRecord }
-  | { ok: false; reason: "missing-table" | "not-found" | "not-queued" | "conflict" | "failed"; message: string; job?: CreativeJobRecord };
+  | { ok: true; outcome: "completed"; job: CreativeJobRecord; attempt?: CreativeJobAttemptFinishResult }
+  | {
+      ok: false;
+      reason: "missing-table" | "not-found" | "not-queued" | "conflict" | "failed" | "timeout";
+      message: string;
+      job?: CreativeJobRecord;
+      attempt?: CreativeJobAttemptFinishResult;
+    };
 
 export type CreativeJobClaimResult =
   | { ok: true; job: CreativeJobRecord }
+  | { ok: false; reason: "missing-table" | "not-found" | "not-queued" | "failed"; message: string; job?: CreativeJobRecord };
+
+export type CreativeJobClaimWithAttemptResult =
+  | { ok: true; job: CreativeJobRecord; attemptId: string; attemptNumber: number }
   | { ok: false; reason: "missing-table" | "not-found" | "not-queued" | "failed"; message: string; job?: CreativeJobRecord };
 
 export type QueuedCreativeJobsResult =
@@ -114,10 +144,21 @@ export type CreativeJobResultValidation =
       message: string;
     };
 
-export type CreativeJobExecutor = (job: CreativeJobRecord, opportunity: OpportunityRecord) => unknown | Promise<unknown>;
+// The signal is threaded through now, ahead of any real provider, so a future network-calling
+// executor can support real cancellation without another signature change. Today's deterministic
+// executors (mock, product_text_worker) ignore it -- there is nothing yet for them to cancel.
+export type CreativeJobExecutor = (
+  job: CreativeJobRecord,
+  opportunity: OpportunityRecord,
+  context: { signal: AbortSignal },
+) => unknown | Promise<unknown>;
 export type CreativeJobExecutorMap = Partial<Record<CreativeJobWorkerType, CreativeJobExecutor>>;
 
 const TERMINAL_JOB_STATUSES = new Set<CreativeJobStatus>(["completed", "failed"]);
+
+// Provisional default pending real-provider latency data; only the trusted runner (never browser
+// code) can override it via options.timeoutMs.
+const DEFAULT_EXECUTOR_TIMEOUT_MS = 30000;
 
 function isMissingTableError(error: SupabaseErrorLike): boolean {
   return error.code === "PGRST205" || error.code === "42P01";
@@ -387,6 +428,31 @@ export async function claimQueuedCreativeJob(client: CreativeJobClient, id: stri
   };
 }
 
+export async function claimQueuedCreativeJobWithAttempt(client: CreativeJobClient, id: string): Promise<CreativeJobClaimWithAttemptResult> {
+  const result = await client.rpc("claim_creative_job_with_attempt", { p_job_id: id }).maybeSingle();
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+  if (result.data) {
+    const { attempt_id, attempt_number, ...jobRow } = result.data;
+    return { ok: true, job: fromCreativeJobRow(jobRow), attemptId: attempt_id, attemptNumber: attempt_number };
+  }
+
+  const reread = await getCreativeJobById(client, id);
+  if (!reread.ok) {
+    return reread.reason === "not-found"
+      ? { ok: false, reason: "not-found", message: "Creative Job was not claimed because it could not be found after the atomic claim." }
+      : { ok: false, reason: reread.reason, message: reread.message };
+  }
+
+  return {
+    ok: false,
+    reason: "not-queued",
+    message: `Creative Job was not claimed because its status is ${reread.job.status}.`,
+    job: reread.job,
+  };
+}
+
 async function finishRunningJob(
   client: CreativeJobClient,
   job: CreativeJobRecord,
@@ -444,49 +510,115 @@ export async function failRunningCreativeJob(client: CreativeJobClient, job: Cre
 }
 
 export async function runCreativeJobWithExecutors(
-  client: CreativeJobClient,
+  client: CreativeJobExecutionClient,
   id: string,
   executors: CreativeJobExecutorMap,
-  options: { now?: () => string } = {},
+  options: { now?: () => string; timeoutMs?: number } = {},
 ): Promise<CreativeJobRunnerResult> {
-  const claimed = await claimQueuedCreativeJob(client, id);
+  const claimed = await claimQueuedCreativeJobWithAttempt(client, id);
   if (!claimed.ok) {
     return claimed;
   }
 
+  // Captured as plain, non-union locals rather than read off `claimed` inside the closures below --
+  // TypeScript does not carry the `claimed.ok` narrowing performed above into a nested function
+  // declaration, since it can't guarantee the closure runs only while that narrowing still holds.
+  const job = claimed.job;
+  const attemptId = claimed.attemptId;
+
   const finishedAt = () => options.now?.() ?? new Date().toISOString();
 
-  if (!isCreativeJobWorkerType(claimed.job.workerType)) {
-    return failRunningCreativeJob(client, claimed.job, finishedAt(), `Unsupported worker type: ${claimed.job.workerType}.`);
+  // Job-first, attempt-second: if the process crashes between the two writes below, the job is
+  // already correctly terminal (everything that matters -- package materialization, Opportunity
+  // state -- gates on the job, not the attempt) and only the attempt is left cosmetically stale.
+  // The reverse order would risk the attempt saying "completed" while the job silently gets
+  // stale-recovered later -- a direct contradiction. finishCreativeJobAttempt's own failure is
+  // deliberately non-fatal here: it's merged onto the result as `attempt`, never used to flip
+  // `ok`/`reason`/`message`.
+  async function failJobAndAttempt(message: string, attemptOutcome: "failed" | "timed_out" = "failed"): Promise<CreativeJobRunnerResult> {
+    const failedAt = finishedAt();
+    const jobResult = await failRunningCreativeJob(client, job, failedAt, message);
+    if (jobResult.ok) {
+      // failRunningCreativeJob never actually resolves ok:true; this satisfies the type checker
+      // without misrepresenting an attempt outcome that didn't happen.
+      return jobResult;
+    }
+    const reason = attemptOutcome === "timed_out" && jobResult.reason === "failed" ? ("timeout" as const) : jobResult.reason;
+    const attempt = await finishCreativeJobAttempt(client, attemptId, attemptOutcome, {
+      startedAt: job.startedAt,
+      completedAt: failedAt,
+      errorCode: attemptOutcome === "timed_out" ? "timeout" : "failed",
+      errorMessage: jobResult.message,
+    });
+    return { ...jobResult, reason, attempt };
   }
 
-  const executor = executors[claimed.job.workerType];
+  if (!isCreativeJobWorkerType(job.workerType)) {
+    return failJobAndAttempt(`Unsupported worker type: ${job.workerType}.`);
+  }
+
+  const executor = executors[job.workerType];
   if (!executor) {
-    return failRunningCreativeJob(client, claimed.job, finishedAt(), `No executor is registered for worker type: ${claimed.job.workerType}.`);
+    return failJobAndAttempt(`No executor is registered for worker type: ${job.workerType}.`);
   }
 
-  const opportunity = await readOpportunity(client, claimed.job.opportunityId);
+  const opportunity = await readOpportunity(client, job.opportunityId);
   if (!opportunity.ok || opportunity.opportunity.status !== "accepted") {
-    return failRunningCreativeJob(client, claimed.job, finishedAt(), "Creative Job could not load an accepted Opportunity.");
+    return failJobAndAttempt("Creative Job could not load an accepted Opportunity.");
   }
+
+  const timeoutMs = options.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timedOut = false;
 
   let resultEnvelope: unknown;
   try {
-    resultEnvelope = await executor(claimed.job, opportunity.opportunity);
+    resultEnvelope = await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        timedOut = true;
+        // Only stops waiting -- nothing here can forcibly terminate in-flight executor work.
+        // A future provider adapter that honors signal.aborted is what would make this a real
+        // cancellation; today's deterministic executors have no in-flight network call to cancel.
+        controller.abort();
+        reject(new Error(`Creative Job execution exceeded ${timeoutMs}ms timeout.`));
+      }, timeoutMs);
+
+      Promise.resolve(executor(job, opportunity.opportunity, { signal: controller.signal })).then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return failRunningCreativeJob(client, claimed.job, finishedAt(), `Worker execution failed: ${message}`);
+    return failJobAndAttempt(timedOut ? message : `Worker execution failed: ${message}`, timedOut ? "timed_out" : "failed");
   }
 
   const completedAt = finishedAt();
-  return completeRunningCreativeJob(client, claimed.job, resultEnvelope, completedAt);
+  const jobResult = await completeRunningCreativeJob(client, job, resultEnvelope, completedAt);
+  const attempt = await finishCreativeJobAttempt(
+    client,
+    attemptId,
+    jobResult.ok ? "completed" : "failed",
+    jobResult.ok ? { startedAt: job.startedAt, completedAt } : { startedAt: job.startedAt, completedAt, errorCode: "failed", errorMessage: jobResult.message },
+  );
+  return { ...jobResult, attempt };
 }
 
-export async function runMockCreativeJob(client: CreativeJobClient, id: string, options: { now?: () => string } = {}): Promise<CreativeJobRunnerResult> {
+export async function runMockCreativeJob(
+  client: CreativeJobExecutionClient,
+  id: string,
+  options: { now?: () => string; timeoutMs?: number } = {},
+): Promise<CreativeJobRunnerResult> {
   return runCreativeJobWithExecutors(client, id, { mock: (_job, opportunity) => buildMockCreativeJobResult(opportunity) }, options);
 }
 
-export async function runQueuedMockCreativeJobs(client: CreativeJobClient, limit = 1, options: { now?: () => string } = {}) {
+export async function runQueuedMockCreativeJobs(client: CreativeJobExecutionClient, limit = 1, options: { now?: () => string; timeoutMs?: number } = {}) {
   const queued = await listQueuedCreativeJobs(client, limit, "mock");
   if (!queued.ok) {
     return queued;
