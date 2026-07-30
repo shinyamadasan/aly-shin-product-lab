@@ -9,6 +9,7 @@ import {
   type CreativeJobRunnerResult,
   type CreativeJobWorkerType,
 } from "./creative-jobs.ts";
+import type { CreativeJobAttemptClient } from "./creative-job-attempts.ts";
 
 export const CREATIVE_PACKAGE_STATUSES = ["ready"] as const;
 export type CreativePackageStatus = (typeof CREATIVE_PACKAGE_STATUSES)[number];
@@ -81,7 +82,10 @@ export type CreativePackageClient = {
   };
 };
 
-export type CreativePackageRunnerClient = CreativePackageClient & CreativeJobClient;
+// Includes CreativeJobAttemptClient because runMockCreativeJob (called below) now also finishes
+// the attempt row its atomic claim created -- this type has always meant "everything needed to
+// run a job and materialize its package," and that now includes attempt-finishing.
+export type CreativePackageRunnerClient = CreativePackageClient & CreativeJobClient & CreativeJobAttemptClient;
 
 export type CreativePackageDetailResult =
   | { ok: true; creativePackage: CreativePackageRecord }

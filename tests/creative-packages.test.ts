@@ -14,6 +14,7 @@ import {
   type CreativePackageRow,
 } from "../src/lib/creative-packages.ts";
 import { buildMockCreativeJobResult, fromCreativeJobRow, type CreativeJobRow } from "../src/lib/creative-jobs.ts";
+import { type CreativeJobAttemptRow } from "../src/lib/creative-job-attempts.ts";
 import { toOpportunityRow, type OpportunityDraft, type OpportunityRow } from "../src/lib/opportunities.ts";
 
 type ErrorLike = { code?: string; message: string };
@@ -133,6 +134,7 @@ function makeClient(
   const opportunities = [...(options.opportunities ?? [opportunityRow()])];
   const jobs = [...(options.jobs ?? [completedJobRow()])];
   const packages = [...(options.packages ?? [])];
+  const attempts: CreativeJobAttemptRow[] = [];
   const events: string[] = [];
   let packageInsertCalls = 0;
   let jobUpdateCalls = 0;
@@ -184,6 +186,34 @@ function makeClient(
           update() {
             opportunityUpdateCalls += 1;
             throw new Error("Opportunity updates are out of scope for package materialization.");
+          },
+        };
+      }
+
+      if (table === "creative_job_attempts") {
+        return {
+          update(updateRow: Partial<CreativeJobAttemptRow>) {
+            const filters: Array<{ column: string; value: string }> = [];
+            const builder = {
+              eq(column: string, value: string) {
+                filters.push({ column, value });
+                return builder;
+              },
+              select() {
+                return {
+                  async maybeSingle() {
+                    const index = attempts.findIndex((row) => matches(row as Record<string, unknown>, filters));
+                    if (index === -1) {
+                      return { data: null, error: null };
+                    }
+                    attempts[index] = { ...attempts[index], ...updateRow };
+                    events.push(updateRow.status === "completed" ? "finish-attempt-completed" : "finish-attempt-failed");
+                    return { data: attempts[index], error: null };
+                  },
+                };
+              },
+            };
+            return builder;
           },
         };
       }
@@ -261,7 +291,7 @@ function makeClient(
       };
     },
     rpc(functionName: string, args: { p_job_id: string }) {
-      assert.equal(functionName, "claim_creative_job");
+      assert.equal(functionName, "claim_creative_job_with_attempt");
       return {
         async maybeSingle() {
           const index = jobs.findIndex((row) => row.id === args.p_job_id && row.status === "queued");
@@ -276,7 +306,23 @@ function makeClient(
             updated_at: startedAt,
           };
           events.push("claim-job");
-          return { data: jobs[index], error: null };
+          const attempt: CreativeJobAttemptRow = {
+            id: `attempt-${attempts.length + 1}`,
+            creative_job_id: jobs[index].id!,
+            attempt_number: jobs[index].attempt_count,
+            worker_type: jobs[index].worker_type,
+            status: "running",
+            started_at: startedAt,
+            completed_at: null,
+            latency_ms: null,
+            error_code: null,
+            error_message: null,
+            provider: null,
+            model: null,
+            created_at: fixedNow,
+          };
+          attempts.push(attempt);
+          return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
         },
       };
     },
@@ -287,6 +333,7 @@ function makeClient(
     opportunities,
     jobs,
     packages,
+    attempts,
     events,
     get packageInsertCalls() {
       return packageInsertCalls;
@@ -465,11 +512,12 @@ test("runMockCreativeJobAndMaterializePackage completes the job before materiali
   const result = await runMockCreativeJobAndMaterializePackage(store.client, "job-1", { now: () => fixedNow });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(store.events, ["claim-job", "complete-job", "insert-package"]);
+  assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed", "insert-package"]);
   assert.equal(store.jobs[0].status, "completed");
   assert.equal(store.jobs[0].attempt_count, 1);
   assert.equal(store.packages.length, 1);
   assert.equal(store.opportunities[0].status, "accepted");
+  assert.equal(store.attempts[0].status, "completed");
   if (result.ok) {
     assert.equal(result.packageOutcome, "created");
   }
@@ -485,7 +533,7 @@ test("runMockCreativeJobAndMaterializePackage keeps a completed job completed if
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
   assert.equal(result.message, "package write failed");
-  assert.deepEqual(store.events, ["claim-job", "complete-job", "insert-package"]);
+  assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed", "insert-package"]);
   assert.equal(store.jobs[0].status, "completed");
   assert.equal(store.jobs[0].completed_at, fixedNow);
   assert.equal(store.packages.length, 0);

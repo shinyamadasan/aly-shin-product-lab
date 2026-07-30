@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { createCreativePackageFromCompletedJob, type CreativePackageRow, type CreativePackageRunnerClient } from "../src/lib/creative-packages.ts";
 import { type CreativeJobExecutorMap, type CreativeJobRow } from "../src/lib/creative-jobs.ts";
+import { type CreativeJobAttemptClient, type CreativeJobAttemptRow } from "../src/lib/creative-job-attempts.ts";
 import { toOpportunityRow, type OpportunityDraft, type OpportunityRecord, type OpportunityRow } from "../src/lib/opportunities.ts";
 import { buildProductTextWorkerReadinessResult, runTrustedCreativeJobAndMaterializePackage } from "../scripts/creative-workers/runner.ts";
 
@@ -66,6 +67,7 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
   const opportunities = [...(options.opportunities ?? [opportunityRow()])];
   const jobs = [...(options.jobs ?? [creativeJobRow()])];
   const packages = [...(options.packages ?? [])];
+  const attempts: CreativeJobAttemptRow[] = [];
   const events: string[] = [];
 
   function matches(row: Record<string, unknown>, filters: Array<{ column: string; value: string }>): boolean {
@@ -107,6 +109,34 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
           },
           update() {
             throw new Error("Opportunity updates are out of scope for trusted worker execution.");
+          },
+        };
+      }
+
+      if (table === "creative_job_attempts") {
+        return {
+          update(updateRow: Partial<CreativeJobAttemptRow>) {
+            const filters: Array<{ column: string; value: string }> = [];
+            const builder = {
+              eq(column: string, value: string) {
+                filters.push({ column, value });
+                return builder;
+              },
+              select() {
+                return {
+                  async maybeSingle() {
+                    const index = attempts.findIndex((row) => matches(row as Record<string, unknown>, filters));
+                    if (index === -1) {
+                      return { data: null, error: null };
+                    }
+                    attempts[index] = { ...attempts[index], ...updateRow };
+                    events.push(updateRow.status === "completed" ? "finish-attempt-completed" : "finish-attempt-failed");
+                    return { data: attempts[index], error: null };
+                  },
+                };
+              },
+            };
+            return builder;
           },
         };
       }
@@ -175,7 +205,7 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
       };
     },
     rpc(functionName: string, args: { p_job_id: string }) {
-      assert.equal(functionName, "claim_creative_job");
+      assert.equal(functionName, "claim_creative_job_with_attempt");
       return {
         async maybeSingle() {
           const index = jobs.findIndex((row) => row.id === args.p_job_id && row.status === "queued");
@@ -190,13 +220,29 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
             updated_at: startedAt,
           };
           events.push("claim-job");
-          return { data: jobs[index], error: null };
+          const attempt: CreativeJobAttemptRow = {
+            id: `attempt-${attempts.length + 1}`,
+            creative_job_id: jobs[index].id!,
+            attempt_number: jobs[index].attempt_count,
+            worker_type: jobs[index].worker_type,
+            status: "running",
+            started_at: startedAt,
+            completed_at: null,
+            latency_ms: null,
+            error_code: null,
+            error_message: null,
+            provider: null,
+            model: null,
+            created_at: fixedNow,
+          };
+          attempts.push(attempt);
+          return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
         },
       };
     },
-  } as unknown as CreativePackageRunnerClient;
+  } as unknown as CreativePackageRunnerClient & CreativeJobAttemptClient;
 
-  return { client, opportunities, jobs, packages, events };
+  return { client, opportunities, jobs, packages, attempts, events };
 }
 
 test("trusted runner completes a valid product_text_worker job and materializes one package", async () => {
@@ -204,7 +250,7 @@ test("trusted runner completes a valid product_text_worker job and materializes 
   const result = await runTrustedCreativeJobAndMaterializePackage(store.client, "job-1", { now: () => fixedNow });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(store.events, ["claim-job", "complete-job", "insert-package"]);
+  assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed", "insert-package"]);
   assert.equal(store.jobs[0].status, "completed");
   assert.equal(store.jobs[0].attempt_count, 1);
   assert.equal(store.jobs[0].last_error, null);
@@ -212,6 +258,10 @@ test("trusted runner completes a valid product_text_worker job and materializes 
   assert.equal(store.opportunities[0].status, "accepted");
   assert.match(JSON.stringify(store.jobs[0].result), /NON-AI TEST/);
   assert.doesNotMatch(JSON.stringify(store.packages[0].content), /provider|model|tokens|prompt|raw_response|request/i);
+  assert.equal(store.attempts.length, 1);
+  assert.equal(store.attempts[0].status, "completed");
+  assert.equal(store.attempts[0].worker_type, "product_text_worker");
+  assert.equal(store.attempts[0].error_code, null);
 
   const duplicate = await createCreativePackageFromCompletedJob(store.client, "job-1");
   assert.equal(duplicate.ok, true);
@@ -233,13 +283,15 @@ test("trusted runner fails invalid product_text_worker output without creating a
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
-  assert.deepEqual(store.events, ["claim-job", "fail-job"]);
+  assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-failed"]);
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.jobs[0].completed_at, null);
   assert.equal(store.jobs[0].failed_at, fixedNow);
   assert.equal(store.jobs[0].last_error, "Creative Job result output must include non-empty headline and caption strings.");
   assert.equal(store.packages.length, 0);
   assert.equal(store.opportunities[0].status, "accepted");
+  assert.equal(store.attempts[0].status, "failed");
+  assert.equal(store.attempts[0].error_code, "failed");
 });
 
 test("trusted runner fails unsupported worker types honestly", async () => {
@@ -302,4 +354,5 @@ test("trusted runner boundary avoids client execution controls and excluded doma
 
   assert.doesNotMatch(pageSource, /runTrustedCreativeJobAndMaterializePackage/);
   assert.doesNotMatch(pageSource, /Run AI|Retry|Provider selector|Model selector|Prompt editor|API key/i);
+  assert.doesNotMatch(pageSource, /from\("creative_job_attempts"\)/i);
 });
