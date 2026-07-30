@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
     "advisor": "node scripts/daily-advisor/run.ts",
-    "advisor:smoke": "node --test tests/smoke/*.test.ts"
+    "advisor:smoke": "node --test tests/smoke/*.test.ts",
+    "creative-workers": "node scripts/creative-workers/run.ts",
+    "creative-workers:smoke": "node --test tests/smoke/creative-workers/*.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.3",
