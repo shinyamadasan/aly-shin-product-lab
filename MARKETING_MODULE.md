@@ -998,19 +998,33 @@ stays the operational source of truth, and this system is a new *producer* of `o
 that flows through the already-built Opportunity → Creative Job → Creative Package pipeline
 unchanged, not a new execution path.
 
-Four milestones, each deliberately small (a deterministic recommendation step was inserted between
-Context Builder and the LLM-based Advisor after Context Builder shipped):
+Five milestones, each deliberately small (a deterministic recommendation step was inserted between
+Context Builder and the LLM-based Advisor after Context Builder shipped; a deterministic Brief +
+Opportunity Draft Generator step was inserted between the Recommendation Engine and the LLM call
+after design review found that a separate "advice" review layer in front of the already-proven
+Opportunity Review UI was solving the wrong problem):
 1. **Context Builder** — a pure, read-only `MarketingAdvisorContext` object assembled from data
    that already exists in Product Lab. No AI. Implemented — PROP-018.
 2. **M2A: Deterministic Recommendation Engine** — a pure function reading that same context and
    producing a ranked list of concrete marketing recommendations using rules alone, no AI. Gives
    the LLM step below either a real list to show directly or pre-computed hints to fold into its
    own prompt. Implemented — PROP-019.
-3. **Advisor (LLM)** — send the context (and/or M2A's recommendations) to an LLM (manually, via the
-   same Claude Code export/import workflow already proven for the Creative Job text worker), get
-   back ranked marketing opportunities with reasons/evidence, display them. Not started.
-4. **Approval** — approving one suggestion creates a normal `Opportunity` row, which the existing,
-   unmodified pipeline takes over from there. Not started.
+3. **Marketing Brief + Opportunity Draft Generator** — a pure `MarketingBrief` composing the
+   Context and Recommendations; a small, bounded AI suggestion contract (`title`/`reason`/
+   `sourceRecommendationIds` only, nothing mechanical) with an anti-hallucination validator; and a
+   deterministic lifter that mechanically turns a validated suggestion into a full
+   `OpportunityDraft` — priority, supporting evidence, dedup key, source ID, and expiry are all
+   derived or reconstructed, never AI-authored. Implemented — PROP-020.
+4. **Advisor (LLM) invocation** — send the Brief to an LLM (manually, via the same Claude Code
+   export/import workflow already proven for the Creative Job text worker), get back a
+   `MarketingOpportunitySuggestion[]` response, validate it, and lift it into `OpportunityDraft[]`
+   via PROP-020's own functions. Not started — the prompt-text builder and invocation mechanism
+   (manual export/import vs. local CLI spawn) remain undecided.
+5. **Approval** — now a much smaller remaining step than originally scoped, since PROP-020's own
+   output already *is* an `OpportunityDraft[]`: persisting a generated draft (via the existing,
+   already-tested `toOpportunityRow`/insert path) surfaces it directly in the existing, unmodified
+   Opportunity Review UI (New/Accept/Dismiss/Expire) — no new review screen, no manual re-keying
+   step. Not started.
 
 ### Marketing Context Builder implementation record (2026-07-30)
 
@@ -1139,6 +1153,80 @@ changed (`src/lib/marketing-advisor-context.ts` is read-only input, never edited
 tests and no regressions, `npm run build -- --webpack` succeeds.
 
 The LLM Advisor call and Opportunity approval remain not started.
+
+### Marketing Brief + Opportunity Draft Generator implementation record (2026-07-31)
+
+Implemented on branch `feat/marketing-opportunity-drafts`, branched from
+`feat/marketing-recommendations` (tip `2dbfec8`, PROP-019). Full proposal record:
+`planning/PROPOSALS.md` PROP-020. This milestone went through four rounds of plan-mode redesign
+before implementation — the full reasoning trail (why the original "Marketing Advice" layer was
+rejected, and the four final corrections that hardened the design) is preserved in the approved
+plan, not repeated in full here.
+
+New `src/lib/marketing-brief.ts`: `buildMarketingBrief(context, recommendations)`, a pure
+composition of `MarketingAdvisorContext` and `MarketingRecommendation[]` — no business logic, no
+AI, `generatedAt` reused verbatim from `context.generatedAt` so this stage never introduces a
+second clock source.
+
+New `src/lib/marketing-opportunity-suggestions.ts`: the AI's entire contract is three fields —
+`title`, `reason`, `sourceRecommendationIds` — down from an original five-field design across two
+earlier rounds of owner refinement (`priority` and `supportingEvidence` both moved to deterministic
+derivation instead of AI authorship). Bounded by four exported constants
+(`MAX_SUGGESTIONS_PER_RESPONSE = 10`, `MAX_CITED_RECOMMENDATIONS_PER_SUGGESTION = 5`,
+`MAX_TITLE_LENGTH = 120`, `MAX_REASON_LENGTH = 600`) so the AI's freedom is bounded on every axis,
+not just content. `validateMarketingOpportunitySuggestions(raw, brief)` checks, in order: JSON
+parse, schema version, metadata (including an anti-staleness check against the exact Brief being
+answered), per-suggestion shape and bounds, the anti-hallucination check (every cited
+recommendation id must exist in `brief.recommendations` — the single most important check, since
+everything above it can be satisfied by a suggestion that is entirely invented), and a batch-level
+`"duplicate-suggestion-identity"` check rejecting two suggestions in the same response that cite the
+identical (canonicalized) set of recommendations.
+
+New `src/lib/marketing-opportunity-drafts.ts`: `buildOpportunityDraftFromSuggestion(suggestion,
+brief)`, a 100% deterministic lifter — no AI, no randomness, no clock read beyond what's already in
+`brief`. Canonicalizes the cited recommendation ids once (sorted, deduplicated) and reuses that
+same order for every downstream field (`sourceRuleIds`, `sourceFindings`, `evidence.
+supportingEvidence`, the dedup key's `entityIds`, `sourceId`), so the same cited set always produces
+the same draft regardless of the AI's original citation order. `evidence.priority` is the maximum
+`RecommendationPriority` across cited recommendations (an opportunity is at least as urgent as its
+single most compelling grounding signal). `evidence.supportingEvidence` is reconstructed — one
+bullet per cited recommendation, built from that recommendation's own `explanation`, never
+AI-authored prose. `deduplicationKey` folds in both the underlying entity ids (product/holiday/
+ingredient) and the canonicalized recommendation-id set itself, so two suggestions about the same
+product with different grounding never collide. `sourceId` is built only from the business date and
+that same canonical id set — deliberately never from `suggestion.title`/`reason`, since AI-authored
+prose isn't guaranteed identical across regenerations of the same underlying situation.
+
+**The `expiresAt` fix, found and documented during planning, not by accident during a review:**
+`calculateOpportunityExpiresAt`'s `"expiry_related"` branch (`src/lib/opportunities.ts:206-230`)
+performs no clamping against `detectedAt` at all, while `validateOpportunityDraft`
+(`opportunities.ts:141-142`) strictly requires `expiresAt` after `detectedAt`. An `expiring_ingredient`
+recommendation whose `nearestExpirationDate` is already in the past relative to the Brief would,
+passed through unmodified, produce an invalid draft. Fixed by clamping the relevant expiry date at
+the Brief's own business date, never earlier — an already-expired or expires-today citation now
+resolves to end of the current business day (maximally urgent, never contradictory), and multiple
+`expiring_ingredient` citations use the earliest date among them before the clamp is applied.
+
+One additive, one-line touch to the already-shipped `src/lib/opportunities.ts`:
+`OpportunitySourceType` widened from `"daily_advisor"` to `"daily_advisor" | "marketing_advisor"` —
+no DB `CHECK` constraint, no migration, confirmed via direct read of `validateOpportunityDraft`
+(only checks non-empty string, never validates against the union at runtime).
+
+`tests/marketing-brief.test.ts` (7 tests), `tests/marketing-opportunity-suggestions.test.ts` (22
+tests), `tests/marketing-opportunity-drafts.test.ts` (25 tests) added, plus one additive test in
+`tests/opportunities.test.ts` confirming the widened `OpportunitySourceType` leaves `"daily_advisor"`
+unaffected — 55 new tests total. The lifter's own tests exercise the real, unmodified
+`validateOpportunityDraft` directly as their strongest correctness proof, rather than
+re-implementing its rules.
+
+No schema/migration change, no new table, no new UI, no packages installed, no existing file
+changed besides the one-line `OpportunitySourceType` widening. Verified: `npm run typecheck` clean,
+`npx eslint` clean on all touched/new files, `npm run test` passing 836/836 (1 pre-existing
+unrelated skip, up from 781 — the 55 new tests), `npm run build -- --webpack` succeeds with no new
+route.
+
+The prompt-text builder, the invocation mechanism, and actual Supabase persistence of a generated
+`OpportunityDraft` remain not started — see milestone 4/5 above.
 
 ---
 

@@ -141,6 +141,17 @@ test("buildOpportunityDeduplicationKey changes when the business fact changes", 
   assert.notEqual(base, changed);
 });
 
+test("validateOpportunityDraft accepts sourceType marketing_advisor alongside daily_advisor, unaffected", () => {
+  const daily = validateOpportunityDraft(draft());
+  const marketing = validateOpportunityDraft(draft({ sourceType: "marketing_advisor" }));
+  assert.equal(daily.ok, true);
+  assert.equal(marketing.ok, true);
+  if (daily.ok && marketing.ok) {
+    assert.equal(daily.value.sourceType, "daily_advisor");
+    assert.equal(marketing.value.sourceType, "marketing_advisor");
+  }
+});
+
 test("calculateOpportunityExpiresAt applies the approved defaults", () => {
   assert.equal(calculateOpportunityExpiresAt({ detectedAt, policy: "fresh_batch_same_day_availability" }), "2026-07-25T01:00:00.000Z");
   assert.equal(calculateOpportunityExpiresAt({ detectedAt, policy: "general_product_promotion" }), "2026-07-27T01:00:00.000Z");
