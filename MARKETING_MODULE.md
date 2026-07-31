@@ -987,6 +987,89 @@ error), build succeeds.
 
 ---
 
+## Marketing Advisor v1 — a separate track (2026-07-30)
+
+**This is a different milestone sequence from M0–M9/M2A–M2C2 above, tracked separately to avoid
+colliding with that numbering.** Where M0–M9 build a Brand/Journey/Content-Studio production
+pipeline, Marketing Advisor v1 answers a narrower, different question: can an LLM read Product
+Lab's real business data and *advise* the owner on what to make content about, without deciding or
+creating anything itself? The owner's own framing: the app should advise, not decide — Product Lab
+stays the operational source of truth, and this system is a new *producer* of `opportunities` rows
+that flows through the already-built Opportunity → Creative Job → Creative Package pipeline
+unchanged, not a new execution path.
+
+Three milestones, each deliberately small:
+1. **Context Builder** — a pure, read-only `MarketingAdvisorContext` object assembled from data
+   that already exists in Product Lab. No AI.
+2. **Advisor** — send that context to an LLM (manually, via the same Claude Code export/import
+   workflow already proven for the Creative Job text worker), get back 5–10 ranked marketing
+   opportunities with reasons/evidence, display them. Not started.
+3. **Approval** — approving one suggestion creates a normal `Opportunity` row, which the existing,
+   unmodified pipeline takes over from there. Not started.
+
+### Marketing Context Builder implementation record (2026-07-30)
+
+Implemented on branch `feat/marketing-advisor-context`, branched from
+`fix/creative-job-timestamp-clock-source` (tip `23457b5` — the only lineage with both the full
+Creative Job/Opportunity pipeline and the just-finished database-timestamp hardening). Full
+proposal record: `planning/PROPOSALS.md` PROP-018.
+
+New `src/lib/marketing-advisor-context.ts`: `buildMarketingAdvisorContext(input)`, a pure function
+(no Supabase client, no side effects) returning a versioned (`version: 1`), timestamped
+(`generatedAt`) `MarketingAdvisorContext` object with 8 fields:
+- `businessFacts` — a new, independent hand-condensed constant sourced from
+  `PRODUCT_LAB_CONTEXT.md`. Deliberately **not** `src/services/ai/context.ts`'s `BUSINESS_CONTEXT`
+  — that constant is prompt text for the existing, unrelated Copy-Prompt AI Advisor, and coupling
+  this milestone's business-data contract to it would tie two different features' wording
+  together. `src/services/ai/context.ts` is untouched by this milestone.
+- `products` — passed through unchanged from the caller.
+- `publishingHistory` — derived fresh from `content_journal`/`ContentJournalEntry[]`, per product
+  plus a separate "unassociated" (no-product) bucket, explicitly labeled as based on Journal
+  capture date, not a real publish date (no publish-status field exists anywhere in this schema).
+- `currentGoals`/`promotions` — ship as an explicit, typed absence (`{ hasData: false, reason }`)
+  rather than fabricated content, since neither has any data source anywhere in Product Lab today.
+  The owner explicitly chose read-only scope for this milestone over adding a new input surface.
+- `season` — pure date computation (month/quarter/nearest fixed-date holidays only — deliberately
+  excludes lunar/variable-date holidays and any single-country assumption, since no doc in this
+  repo confirms one).
+- `inventoryHighlights` — thin wiring over the existing, already-tested `inventory-status.ts`
+  functions (`getInventorySummaryCounts`/`getExpiringIngredients`/`getNeedToBuyList`).
+- `brandBible` — a structured `BrandBible` object (`mission`/`positioning`/`targetAudience`/
+  `tone`/`writingPrinciples`/`prohibitedPatterns`), hand-condensed from `docs/BRAND_BIBLE_V1.md`
+  and verified field-by-field against the real doc, not the empty `brand_profiles` table (no UI
+  has ever written to it, and its shape doesn't map cleanly onto the doc's strategic content
+  anyway — see PROP-018 for the full reasoning). Kept honest by a `[static]` test that re-reads
+  the real doc and asserts every condensed string is still a real substring of it.
+
+`tests/marketing-advisor-context.test.ts` added: 27 tests covering assembly/purity/non-mutation,
+every publishing-history edge case (zero-entry products, multi-entry recency, unparsable dates,
+off-catalog products, unassociated entries, same-day capture), the goals/promotions absence,
+season/holiday math (including same-day and rollover cases), inventory-highlights parity against
+the underlying functions called directly, and brand-bible content including the doc-drift guard.
+
+**Pre-commit regression review (2026-07-30) — one root cause, two symptoms, both fixed:** `season`
+and `publishingHistory` both compared a date-only value (always midnight UTC) directly against
+`now` (a real timestamp, rarely exactly midnight) — on a fixed holiday's own calendar date, this
+incorrectly rolled the holiday to next year instead of reporting `daysAway: 0`; a Journal entry
+captured the same calendar day as `now` reported `daysSinceLastCapture: 1` instead of `0`. Fixed
+with a single `startOfUtcDay(timestampMs)` helper, normalized once in `buildMarketingAdvisorContext`
+and used only as the anchor for `buildSeason`/`buildPublishingHistory`'s date-only comparisons —
+`generatedAt` keeps the raw, un-normalized timestamp. 5 regression tests added; both original repro
+cases re-verified directly after the fix.
+
+No schema/migration change, no new table, no new UI, no packages installed. Verified: `npm run
+typecheck` clean, `npx eslint` clean on both new files, `npm run test` passing with 27 new tests
+and no regressions, `npm run build -- --webpack` succeeds.
+
+M2 (the Advisor's LLM call) and M3 (Opportunity approval) are not started. Two schema-shaped
+details they'll need when actually designed: `OpportunitySourceType`/`OpportunityRecommendedAction`
+(closed TypeScript unions in `src/lib/opportunities.ts`, not DB `CHECK` constraints) will need a
+new value; `opportunities` has a guarded, migration-enforced ban on ever adding a `priority`
+column (`supabase-add-opportunities.sql` raises an exception if one appears), so any
+Advisor-assigned priority must live inside the existing open `evidence` jsonb field.
+
+---
+
 ## 1. Current-state summary
 
 **Stack**: Next.js 16.2.11 (App Router), React 19.2.4, TypeScript, Tailwind v4, Supabase JS
