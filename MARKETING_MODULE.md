@@ -998,13 +998,18 @@ stays the operational source of truth, and this system is a new *producer* of `o
 that flows through the already-built Opportunity → Creative Job → Creative Package pipeline
 unchanged, not a new execution path.
 
-Three milestones, each deliberately small:
+Four milestones, each deliberately small (a deterministic recommendation step was inserted between
+Context Builder and the LLM-based Advisor after Context Builder shipped):
 1. **Context Builder** — a pure, read-only `MarketingAdvisorContext` object assembled from data
-   that already exists in Product Lab. No AI.
-2. **Advisor** — send that context to an LLM (manually, via the same Claude Code export/import
-   workflow already proven for the Creative Job text worker), get back 5–10 ranked marketing
-   opportunities with reasons/evidence, display them. Not started.
-3. **Approval** — approving one suggestion creates a normal `Opportunity` row, which the existing,
+   that already exists in Product Lab. No AI. Implemented — PROP-018.
+2. **M2A: Deterministic Recommendation Engine** — a pure function reading that same context and
+   producing a ranked list of concrete marketing recommendations using rules alone, no AI. Gives
+   the LLM step below either a real list to show directly or pre-computed hints to fold into its
+   own prompt. Implemented — PROP-019.
+3. **Advisor (LLM)** — send the context (and/or M2A's recommendations) to an LLM (manually, via the
+   same Claude Code export/import workflow already proven for the Creative Job text worker), get
+   back ranked marketing opportunities with reasons/evidence, display them. Not started.
+4. **Approval** — approving one suggestion creates a normal `Opportunity` row, which the existing,
    unmodified pipeline takes over from there. Not started.
 
 ### Marketing Context Builder implementation record (2026-07-30)
@@ -1061,12 +1066,79 @@ No schema/migration change, no new table, no new UI, no packages installed. Veri
 typecheck` clean, `npx eslint` clean on both new files, `npm run test` passing with 27 new tests
 and no regressions, `npm run build -- --webpack` succeeds.
 
-M2 (the Advisor's LLM call) and M3 (Opportunity approval) are not started. Two schema-shaped
-details they'll need when actually designed: `OpportunitySourceType`/`OpportunityRecommendedAction`
-(closed TypeScript unions in `src/lib/opportunities.ts`, not DB `CHECK` constraints) will need a
-new value; `opportunities` has a guarded, migration-enforced ban on ever adding a `priority`
-column (`supabase-add-opportunities.sql` raises an exception if one appears), so any
-Advisor-assigned priority must live inside the existing open `evidence` jsonb field.
+The LLM Advisor call and Opportunity approval are not started. Two schema-shaped details they'll
+need when actually designed: `OpportunitySourceType`/`OpportunityRecommendedAction` (closed
+TypeScript unions in `src/lib/opportunities.ts`, not DB `CHECK` constraints) will need a new value;
+`opportunities` has a guarded, migration-enforced ban on ever adding a `priority` column
+(`supabase-add-opportunities.sql` raises an exception if one appears), so any Advisor-assigned
+priority must live inside the existing open `evidence` jsonb field.
+
+### M2A: Deterministic Recommendation Engine implementation record (2026-07-30)
+
+Implemented on branch `feat/marketing-recommendations`, branched from
+`feat/marketing-advisor-context` (tip `2ddaeb4`, PROP-018). Full proposal record:
+`planning/PROPOSALS.md` PROP-019. **Naming note:** this file's own M0–M9 track already has an
+unrelated, already-shipped "M2A" (Journey persistence) — this step is tracked formally as PROP-019;
+"M2A" is only the owner's own informal shorthand for "the second step in the Marketing Advisor
+sequence."
+
+New `src/lib/marketing-recommendations.ts`: `buildMarketingRecommendations(context)`, a pure
+function (no Supabase client, no side effects, no AI) composing 5 independent rule functions, each
+reading only fields `MarketingAdvisorContext` already exposes:
+- `buildNeglectedProductRecommendations` — a product with real marketing history that's gone quiet
+  (`daysSinceLastCapture >= 30`). `confidence: "high"`.
+- `buildNoMarketingHistoryRecommendations` — a product never covered at all (`entryCount === 0`).
+  Mutually exclusive with the rule above by construction (verified by a dedicated test), not just
+  convention. `confidence: "high"`.
+- `buildSeasonalOpportunityRecommendations` — a fixed-date holiday within 21 days, product-agnostic
+  (no holiday-to-product mapping exists in scope). `confidence: "high"`.
+- `buildLaunchCandidateFollowUpRecommendations` — an explicitly-labeled proxy for "recent launches
+  needing follow-up": `product.status`/`decision` standing in for a real launch date that doesn't
+  exist anywhere in this schema. Always `confidence: "low"`, and its evidence carries a `basis`
+  string stating this plainly.
+- `buildExpiringIngredientRecommendations` — reads `inventoryHighlights.expiringSoon` directly,
+  never naming a specific product (`Ingredient` has no product-linking field at all).
+  `confidence: "medium"`.
+
+**Scope decision, made with the owner before implementation:** the user's original sketch named six
+rule categories; two ("high-rated but under-promoted products", "recent launches needing
+follow-up") reference signals `MarketingAdvisorContext` doesn't carry (no rating field is reachable
+from its inputs at all; no real launch-date field exists anywhere on `Product`). The owner chose to
+ship 5 rules, redefine the launch-follow-up rule as the honest, low-confidence proxy described
+above, and fully drop "high-rated" as out of scope — blocked on a future `MarketingAdvisorContext`
+extension, not implemented as a fabricated substitute.
+
+`MarketingRecommendation` is a discriminated union keyed by `recommendationType`, with a closed
+`priority: 1|2|3|4|5` (directly renderable as N-of-5 stars, matching the owner's own original
+mockup) and a closed `confidence: "high"|"medium"|"low"` — this is the first runtime-typed
+"confidence" concept anywhere in this codebase (confirmed via search), deliberately not a numeric
+score, since a number would fabricate statistical precision this deterministic engine has no basis
+for. Ranking is fully independent of `src/lib/rule-engine/priority.ts` (confirmed its
+category/severity weights have no honest mapping onto `RecommendationType`); its own
+`compareRecommendations` sorts by priority descending, then confidence descending, then `id`
+ascending as a final deterministic tiebreak. One flagged, deliberate refinement beyond the owner's
+literal rule descriptions: products with `status: "paused"` are excluded from the neglected/
+no-history/launch-follow-up rules, since a paused product isn't a live marketing candidate.
+
+Rules never suppress each other, and this is intentional: a single product can appear in more than
+one recommendation at once (e.g. `neglected_product` and `launch_candidate_follow_up` for the same
+product), since each rule represents its own independent marketing signal. Merging or deduplicating
+across signals for the same product is left to a later campaign-planning milestone, not decided
+here.
+
+`tests/marketing-recommendations.test.ts` added: 29 tests covering every rule's firing/non-firing
+boundary (including the exact 30/21/14-day thresholds), the paused-product exclusion, the rule-1/
+rule-2 mutual exclusivity, evidence shape/content per rule, composition/ranking (priority,
+confidence-tiebreak, id-tiebreak, input-order-independence), an explicit guard proving no rating/
+quality-based recommendation is ever produced, and purity/non-mutation/quiet-context tests
+mirroring PROP-018's own test file precedent.
+
+No schema/migration change, no new table, no new UI, no packages installed, no existing file
+changed (`src/lib/marketing-advisor-context.ts` is read-only input, never edited). Verified:
+`npm run typecheck` clean, `npx eslint` clean on both new files, `npm run test` passing with 29 new
+tests and no regressions, `npm run build -- --webpack` succeeds.
+
+The LLM Advisor call and Opportunity approval remain not started.
 
 ---
 
