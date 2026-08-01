@@ -3,6 +3,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
+  ASSET_GENERATION_IMAGE_DIMENSIONS,
+  buildAssetGenerationSpec,
+  type AssetGenerationSpecV1,
+} from "../src/lib/asset-generation-spec.ts";
+import {
+  type GeneratedAssetFileCandidate,
+} from "../src/lib/asset-generation-validation.ts";
+import {
   buildMockAssetJobResult,
   claimQueuedAssetJobWithAttempt,
   completeRunningAssetJob,
@@ -24,6 +32,7 @@ import {
 } from "../src/lib/asset-jobs.ts";
 import { finishAssetJobAttempt, type AssetJobAttemptRow } from "../src/lib/asset-job-attempts.ts";
 import { fromCreativePackageRow, type CreativePackageRow } from "../src/lib/creative-packages.ts";
+import { BRAND_BIBLE } from "../src/lib/marketing-advisor-context.ts";
 
 type ErrorLike = { code?: string; message: string };
 
@@ -95,6 +104,7 @@ function makeClient(
   const events: string[] = [];
   let insertCalls = 0;
   let rpcCalls = 0;
+  let creativePackageSelectCalls = 0;
   let beforeRpcCalled = false;
 
   function matches(row: Record<string, unknown>, filters: Array<{ column: string; value: string }>): boolean {
@@ -160,6 +170,7 @@ function makeClient(
       if (table === "creative_packages") {
         return {
           select() {
+            creativePackageSelectCalls += 1;
             return queryBuilder(creativePackages);
           },
         };
@@ -323,6 +334,21 @@ function makeClient(
     get rpcCalls() {
       return rpcCalls;
     },
+    get creativePackageSelectCalls() {
+      return creativePackageSelectCalls;
+    },
+  };
+}
+
+function validGeneratedAssetFileCandidate(overrides: Partial<GeneratedAssetFileCandidate> = {}): GeneratedAssetFileCandidate {
+  return {
+    position: 0,
+    mimeType: "image/png",
+    width: ASSET_GENERATION_IMAGE_DIMENSIONS.width,
+    height: ASSET_GENERATION_IMAGE_DIMENSIONS.height,
+    durationMs: null,
+    fileSizeBytes: 1024,
+    ...overrides,
   };
 }
 
@@ -441,6 +467,8 @@ test("buildMockAssetJobResult is deterministic for the same Creative Package and
   assert.equal(result.assetKind, "image");
   assert.equal(result.output.files.length, 1);
   assert.equal(result.output.files[0].position, 0);
+  assert.equal(result.output.files[0].width, 1080);
+  assert.equal(result.output.files[0].height, 1080);
   assert.equal(result.output.files[0].storageBucket, "mock");
   assert.match(result.output.files[0].storagePath, /^mock\//);
 });
@@ -639,7 +667,7 @@ test("runAssetJobWithExecutors fails the job and marks the attempt failed with a
 
 test("runAssetJobWithExecutors fails the job and marks the attempt timed_out when the executor exceeds timeoutMs, without a false cancellation claim, and ignores a late resolution", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
-  let resolveExecutor: (value: unknown) => void = () => {};
+  let resolveExecutor: (value: GeneratedAssetFileCandidate[]) => void = () => {};
   const executors: AssetJobExecutorMap = {
     mock: () =>
       new Promise((resolve) => {
@@ -660,11 +688,87 @@ test("runAssetJobWithExecutors fails the job and marks the attempt timed_out whe
   assert.equal(store.attempts[0].error_code, "timeout");
   assert.equal(store.attempts[0].completed_at, finishedAt);
 
-  resolveExecutor(buildMockAssetJobResult(fromCreativePackageRow(creativePackageRow()), "image"));
+  resolveExecutor([validGeneratedAssetFileCandidate()]);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.attempts[0].status, "timed_out");
   assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-timed-out"]);
+});
+
+test("runAssetJobWithExecutors rejects unsupported assetKind before reading the Creative Package or invoking the executor", async () => {
+  const store = makeClient({ jobs: [assetJobRow({ asset_kind: "carousel" })] });
+  let executorCalls = 0;
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    mock: () => {
+      executorCalls += 1;
+      return [validGeneratedAssetFileCandidate()];
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "failed");
+  assert.equal(store.creativePackageSelectCalls, 0);
+  assert.equal(executorCalls, 0);
+  assert.equal(store.jobs[0].status, "failed");
+  assert.equal(store.jobs[0].last_error, "Unsupported asset kind: carousel.");
+  assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-failed"]);
+});
+
+test("runAssetJobWithExecutors rejects malformed Creative Package content before invoking the executor", async () => {
+  const store = makeClient({
+    creativePackages: [creativePackageRow({ content: { output: { headline: "Missing metadata" } } })],
+    jobs: [assetJobRow()],
+  });
+  let executorCalls = 0;
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    mock: () => {
+      executorCalls += 1;
+      return [validGeneratedAssetFileCandidate()];
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "failed");
+  assert.equal(store.creativePackageSelectCalls, 1);
+  assert.equal(executorCalls, 0);
+  assert.equal(store.jobs[0].status, "failed");
+  assert.equal(store.jobs[0].last_error, "AssetGenerationSpecV1 requires Creative Package content v1.");
+  assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-failed"]);
+});
+
+test("runAssetJobWithExecutors passes a generated spec to the executor and never exposes raw Creative Package content", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const received: { spec: AssetGenerationSpecV1 | null } = { spec: null };
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    mock: (_job, spec) => {
+      received.spec = spec;
+      return [validGeneratedAssetFileCandidate()];
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(received.spec);
+  const spec = received.spec;
+  assert.deepEqual(spec, buildAssetGenerationSpec(fromCreativePackageRow(creativePackageRow()), { assetKind: "image", brandBible: BRAND_BIBLE }));
+  assert.equal(spec.generationIntent.purpose, "marketing-social-feed");
+  assert.equal(spec.generationIntent.outcome, "single-image");
+  assert.equal(store.jobs[0].status, "completed");
+});
+
+test("runAssetJobWithExecutors rejects invalid candidates before completing the job", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    mock: () => [validGeneratedAssetFileCandidate({ width: 512, height: 512 })],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "failed");
+  assert.equal(result.message, "Image asset generation candidate dimensions must be 1080x1080.");
+  assert.equal(store.jobs[0].status, "failed");
+  assert.equal(store.jobs[0].completed_at, null);
+  assert.equal(store.jobs[0].failed_at, finishedAt);
+  assert.deepEqual(store.jobs[0].result, {});
+  assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-failed"]);
 });
 
 test("finish_asset_job and finish_asset_job_attempt always produce terminal timestamps at or after started_at (mixed-clock regression)", async () => {

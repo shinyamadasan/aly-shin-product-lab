@@ -75,7 +75,7 @@ const BUSINESS_FACTS =
 // Hand-condensed from docs/BRAND_BIBLE_V1.md, by section -- kept in sync by the [static] test in
 // tests/marketing-advisor-context.test.ts. Not a live markdown parser: prose this unstructured
 // (before/after copy examples, nested headings) is fragile to parse and the doc changes rarely.
-const BRAND_BIBLE: BrandBible = {
+export const BRAND_BIBLE: BrandBible = {
   mission: "To create consistently delicious coffee and baked goods that make everyday moments feel warmer, more meaningful, and worth sharing.",
   positioning: {
     current: ["Home-based", "Delivery-first", "Coffee", "Brownies", "Cookies"],

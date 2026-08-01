@@ -1,4 +1,10 @@
 import { fromCreativePackageRow, type CreativePackageRecord, type CreativePackageRow } from "./creative-packages.ts";
+import { buildAssetGenerationSpec, type AssetGenerationSpecV1 } from "./asset-generation-spec.ts";
+import {
+  validateGeneratedAssetCandidates,
+  type GeneratedAssetFileCandidate,
+} from "./asset-generation-validation.ts";
+import { BRAND_BIBLE } from "./marketing-advisor-context.ts";
 import {
   finishAssetJobAttempt,
   type AssetJobAttemptClient,
@@ -20,10 +26,9 @@ export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 export const ASSET_KINDS = ["image"] as const;
 export type AssetKind = (typeof ASSET_KINDS)[number];
 
-// One ordered file candidate produced by a job. Deliberately carries declared, not-yet-trusted
-// dimensions/size -- this milestone has no structural validation gate (that is a later, separate
-// milestone); the mock worker's own declared values happen to be accurate because it invents them
-// itself, not because anything here checked them.
+// One ordered file descriptor produced by a completed job. Candidate metadata is structurally
+// validated before this persisted envelope is built, but the dimensions/size remain declared
+// metadata only -- PROP-024 does not decode or inspect real binary bytes.
 export type AssetFileDescriptor = {
   position: number;
   mimeType: string;
@@ -173,9 +178,9 @@ export type AssetJobResultValidation =
 // CreativeJobExecutor exactly. Today's only executor (mock) ignores it.
 export type AssetJobExecutor = (
   job: AssetJobRecord,
-  creativePackage: CreativePackageRecord,
+  spec: AssetGenerationSpecV1,
   context: { signal: AbortSignal },
-) => unknown | Promise<unknown>;
+) => GeneratedAssetFileCandidate[] | Promise<GeneratedAssetFileCandidate[]>;
 export type AssetJobExecutorMap = Partial<Record<AssetJobWorkerType, AssetJobExecutor>>;
 
 const TERMINAL_JOB_STATUSES = new Set<AssetJobStatus>(["completed", "failed"]);
@@ -311,30 +316,44 @@ export function fromAssetJobRow(row: AssetJobRow): AssetJobRecord {
 // asset_jobs -> assets -> asset_files write path without any Supabase Storage integration, which
 // is a later, separate milestone.
 export function buildMockAssetJobResult(creativePackage: CreativePackageRecord, assetKind: AssetKind): AssetJobResultEnvelope {
+  const spec = buildAssetGenerationSpec(creativePackage, { assetKind });
+  const candidates = buildMockGeneratedAssetFileCandidates(spec);
+
   return {
     schemaVersion: "v1",
     worker: "mock",
     assetKind,
     output: {
-      files: [
-        {
-          position: 0,
-          mimeType: "image/png",
-          width: 512,
-          height: 512,
-          durationMs: null,
-          fileSizeBytes: 1024,
-          storageBucket: "mock",
-          storagePath: `mock/${creativePackage.id}/0.png`,
-          publicUrl: "",
-        },
-      ],
+      files: attachMockAssetFileDescriptors(candidates, creativePackage.id),
     },
     metadata: {
       generatedFromCreativePackage: creativePackage.id,
       generatorVersion: "1",
     },
   };
+}
+
+function buildMockGeneratedAssetFileCandidates(spec: AssetGenerationSpecV1): GeneratedAssetFileCandidate[] {
+  return [
+    {
+      position: 0,
+      mimeType: "image/png",
+      width: spec.dimensions.width,
+      height: spec.dimensions.height,
+      durationMs: null,
+      fileSizeBytes: 1024,
+    },
+  ];
+}
+
+function attachMockAssetFileDescriptors(candidates: GeneratedAssetFileCandidate[], creativePackageId: string): AssetFileDescriptor[] {
+  return candidates.map((candidate) => ({
+    ...candidate,
+    // MOCK ONLY: PROP-025 replaces this placeholder with real Storage upload ownership.
+    storageBucket: "mock",
+    storagePath: `mock/${creativePackageId}/${candidate.position}.png`,
+    publicUrl: "",
+  }));
 }
 
 export function sanitizeAssetJobErrorMessage(message: string, maxLength = 500): string {
@@ -557,24 +576,39 @@ export async function runAssetJobWithExecutors(
   if (!isAssetJobWorkerType(job.workerType)) {
     return failJobAndAttempt(`Unsupported worker type: ${job.workerType}.`);
   }
+  const workerType = job.workerType;
 
-  const executor = executors[job.workerType];
+  const executor = executors[workerType];
   if (!executor) {
-    return failJobAndAttempt(`No executor is registered for worker type: ${job.workerType}.`);
+    return failJobAndAttempt(`No executor is registered for worker type: ${workerType}.`);
   }
+
+  if (!isAssetKind(job.assetKind)) {
+    return failJobAndAttempt(`Unsupported asset kind: ${job.assetKind}.`);
+  }
+  const assetKind = job.assetKind;
 
   const creativePackage = await readCreativePackage(client, job.creativePackageId);
   if (!creativePackage.ok || creativePackage.creativePackage.status !== "ready") {
     return failJobAndAttempt("Asset Job could not load a ready Creative Package.");
+  }
+  const readyCreativePackage = creativePackage.creativePackage;
+
+  let spec: AssetGenerationSpecV1;
+  try {
+    spec = buildAssetGenerationSpec(readyCreativePackage, { assetKind, brandBible: BRAND_BIBLE });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return failJobAndAttempt(message);
   }
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT_MS;
   const controller = new AbortController();
   let timedOut = false;
 
-  let resultEnvelope: unknown;
+  let candidateResult: unknown;
   try {
-    resultEnvelope = await new Promise<unknown>((resolve, reject) => {
+    candidateResult = await new Promise<GeneratedAssetFileCandidate[]>((resolve, reject) => {
       const timer = setTimeout(() => {
         timedOut = true;
         // Only stops waiting -- nothing here can forcibly terminate in-flight executor work.
@@ -583,7 +617,7 @@ export async function runAssetJobWithExecutors(
         reject(new Error(`Asset Job execution exceeded ${timeoutMs}ms timeout.`));
       }, timeoutMs);
 
-      Promise.resolve(executor(job, creativePackage.creativePackage, { signal: controller.signal })).then(
+      Promise.resolve(executor(job, spec, { signal: controller.signal })).then(
         (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -599,6 +633,24 @@ export async function runAssetJobWithExecutors(
     return failJobAndAttempt(timedOut ? message : `Worker execution failed: ${message}`, timedOut ? "timed_out" : "failed");
   }
 
+  const candidateValidation = validateGeneratedAssetCandidates(candidateResult, spec);
+  if (!candidateValidation.ok) {
+    return failJobAndAttempt(candidateValidation.message);
+  }
+
+  const resultEnvelope: AssetJobResultEnvelope = {
+    schemaVersion: "v1",
+    worker: workerType,
+    assetKind,
+    output: {
+      files: attachMockAssetFileDescriptors(candidateValidation.candidates, readyCreativePackage.id),
+    },
+    metadata: {
+      generatedFromCreativePackage: readyCreativePackage.id,
+      generatorVersion: "1",
+    },
+  };
+
   const jobResult = await completeRunningAssetJob(client, job, resultEnvelope);
   const attempt = await finishAssetJobAttempt(
     client,
@@ -610,7 +662,7 @@ export async function runAssetJobWithExecutors(
 }
 
 export async function runMockAssetJob(client: AssetJobExecutionClient, id: string, options: AssetJobRunnerOptions = {}): Promise<AssetJobRunnerResult> {
-  return runAssetJobWithExecutors(client, id, { mock: (job, creativePackage) => buildMockAssetJobResult(creativePackage, isAssetKind(job.assetKind) ? job.assetKind : "image") }, options);
+  return runAssetJobWithExecutors(client, id, { mock: (_job, spec) => buildMockGeneratedAssetFileCandidates(spec) }, options);
 }
 
 export async function runQueuedMockAssetJobs(client: AssetJobExecutionClient, limit = 1, options: AssetJobRunnerOptions = {}) {
