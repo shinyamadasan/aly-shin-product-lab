@@ -1029,6 +1029,14 @@ Opportunity Review UI was solving the wrong problem):
    unchanged) surfaces it directly in the existing, unmodified Opportunity Review UI
    (New/Accept/Dismiss/Expire) — no new review screen, no manual re-keying step. Implemented —
    PROP-022 (`marketing-advisor persist --session-dir <path>`).
+7. **Asset Generation Foundation** — a new, provider-agnostic subsystem one layer past Creative
+   Package: `asset_jobs`/`asset_job_attempts`/`assets`/`asset_files`, an `AssetJobExecutor`
+   contract mirroring `CreativeJobExecutor` exactly, and a `mock` executor proving the full
+   claim → execute → validate → materialize loop end to end with zero real provider, zero Supabase
+   Storage, and zero UI. First milestone of a longer, separately-approved roadmap
+   (`planning/PROPOSALS.md` PROP-023 onward) that only ever adds a real provider, Storage upload,
+   review UI, and additional asset kinds (carousel/reel/short video/story graphic) as later, thin,
+   independently-authorized slices. Implemented — PROP-023.
 
 ### Marketing Context Builder implementation record (2026-07-30)
 
@@ -1413,6 +1421,95 @@ with no new route.
 
 PROP-021A (Advisor Review CLI) and the `business_strategy` advisor remain the only unimplemented
 pieces named anywhere in this sequence.
+
+### Asset Generation Foundation implementation record (2026-08-01)
+
+Implemented on a new branch/worktree, `feat/asset-generation-foundation`, branched from
+`feat/marketing-advisor-invocation`'s tip (`ecf401c`, PROP-022's own commit) — a new subsystem
+track, not a continuation of the Marketing Advisor CLI track above. Full proposal record:
+`planning/PROPOSALS.md` PROP-023. First milestone of a separately-approved, multi-milestone
+architecture and roadmap document (PROP-023 through PROP-031) building on the already-shipped
+Opportunity → Creative Job → Creative Package pipeline, one layer past the Package — the boundary
+between "thinking" and "creating."
+
+**The binding constraint this whole roadmap is organized around:** providers (image/video
+generation APIs) will improve, change shape, or be replaced over a 3–5 year horizon; the schema,
+orchestration, and review surface must stay stable through every one of those swaps. This
+milestone's job is proving that boundary is real, not generating a single real image.
+
+**Reuse over reinvention.** `src/lib/creative-jobs.ts`'s `CreativeJobExecutor` /
+`runCreativeJobWithExecutors` pattern (claim job + attempt atomically → look up an executor by
+`worker_type` → race it against a timeout via `AbortController` → validate → persist) is mirrored
+exactly by the new `AssetJobExecutor` / `runAssetJobWithExecutors` in `src/lib/asset-jobs.ts` —
+same shape, same job-first/attempt-second finish ordering, same database-clock-only terminal
+timestamps (`finish_asset_job`/`finish_asset_job_attempt`, mirroring
+`finish_creative_job`/`finish_creative_job_attempt`). No new orchestration concept was invented for
+having a different domain (assets instead of text).
+
+**New schema, four tables, all with the same guarded-preflight/disallowed-column migration
+discipline as every existing table in this app:**
+- `asset_jobs` (`supabase-add-asset-jobs.sql`) — the execution wrapper. Deliberately **not** unique
+  on `creative_package_id`, unlike `creative_jobs`' unique `opportunity_id`: a Creative Package may
+  have zero, one, or many Asset Jobs over time (retries, regenerations, future variants) — the
+  first many-per-parent layer in this pipeline.
+- `asset_job_attempts` (`supabase-add-asset-job-attempts.sql`) — append-only diagnostics, mirroring
+  `creative_job_attempts` exactly, including its already-reserved `provider`/`model` columns
+  (nullable, unused until PROP-027's first real provider) and its own deferred
+  cost/token-accounting columns. Also carries `claim_asset_job_with_attempt` directly (no separate
+  bare "claim one row" function to later deprecate, since attempt-tracking ships in the same
+  milestone as the job table here — unlike the historical `creative_jobs`/`creative_job_attempts`
+  split across two milestones).
+- `assets` (`supabase-add-assets.sql`) — the durable review unit, one per completed Job (unique
+  `asset_job_id`, `on delete restrict`, mirroring `creative_packages`' own restrict-delete
+  precedent). Ships **only** the `generated` status — `approved`/`rejected` and the
+  `reviewed_by`/`reviewed_at`/`rejection_reason` columns they need are explicitly guarded against
+  in this migration and ship in PROP-028, the milestone that actually builds the human review gate.
+- `asset_files` (`supabase-add-asset-files.sql`) — literal storage pointers, 1..N ordered rows per
+  Asset (position-unique). No Supabase Storage bucket, no `storage.objects` policy, and no real
+  upload code in this migration — Storage integration is PROP-025. The mock worker populates
+  `storage_bucket`/`storage_path` with clearly-labeled placeholder values (`"mock"`, never a real
+  bucket name) to prove the full write path, mirroring how the Creative Job mock executor prefixes
+  its output "MOCK ONLY" rather than omitting the fields a real worker will eventually populate.
+
+**Provider isolation is structural, not conventional.** `provider`/`model`/raw payloads live only
+in `asset_job_attempts` — never on `asset_jobs.result` or `assets.content`. Nothing in the Asset
+schema, the (not-yet-built) review UI, or any future downstream consumer can ever branch on which
+provider produced an asset; provider identity is reachable only by deliberately joining
+`asset → asset_job → asset_job_attempt` for audit purposes.
+
+**The "freeze point" carries forward from PROP-022.** `buildAssetContentFromCompletedJob`
+(`src/lib/assets.ts`) drops a completed job's file descriptors from its own small, permanent
+content snapshot (`{metadata: {generatedFromCreativePackage, sourceAssetJobId, generatorVersion}}`)
+— file descriptors become `asset_files` rows via a separate, pure, order-preserving projection
+(`insertAssetFilesForAsset`, `src/lib/asset-files.ts`), never frozen into `assets.content` itself.
+
+**A documented, accepted non-atomicity**, in the same category as this app's own purchase-import
+confirmation before its RPC milestone: `createAssetFromCompletedJob` inserts the `assets` row, then
+its `asset_files` rows, as two sequential writes, not one transaction/RPC. If the second write
+fails, the `assets` row is never rolled back or deleted — retrying is always safe, since the next
+call finds the existing Asset and only re-attempts the file insert. Proven by a dedicated test.
+
+**Track A's dormant "M7 — Image-gen adapter for `content_assets`"** (§16's full M1–M9 sequence,
+never started, targeting a different, unbuilt `content_drafts`/`content_assets` schema from the
+parallel M0–M9 track) is superseded by this milestone and everything after it. Track A's own
+`content_drafts`/`content_assets` design should not be built — see the note appended to §16 below.
+
+`tests/asset-jobs-schema.test.ts`, `asset-job-attempts-schema.test.ts`, `assets-schema.test.ts`,
+`asset-files-schema.test.ts`, `asset-job-finish-functions-schema.test.ts` (44 tests) prove every
+migration's required/disallowed columns, indexes, RLS, and guard-preflight text directly against
+the SQL source. `tests/asset-job-attempts.test.ts` (10), `asset-jobs.test.ts` (28), `assets.test.ts`
+(22, covering `assets.ts` and `asset-files.ts` together) prove the claim/execute/complete/fail
+loop, the mixed-clock and double-finish regressions carried forward from the Creative Job pipeline,
+the mock executor's deterministic and clearly-labeled output, structural-validation rejection
+reasons (including a dedicated duplicate-file-position rejection test, added during the pre-commit
+review), the materializer's create/existing/race/partial-failure paths, and scope guards (no
+provider name, no `fetch`, no Supabase SDK import) on every new file — 104 new tests in total.
+
+No Supabase Storage bucket, no real provider, no UI, no approve/reject, no carousel/video/story
+kind, no provider-selection surface, no publishing — all explicitly out of scope for this milestone
+per the approved roadmap, and left for PROP-024 through PROP-031. Verified: `npm run typecheck`
+clean, scoped `eslint` clean on all 9 new files, new tests 104/104 passing, full suite green, `npm
+run build -- --webpack` succeeds with no new route.
 
 ---
 
@@ -1976,3 +2073,12 @@ Brand Profile has no product dependency — it now gates M1.5 instead.
 
 **Done: M1.** **Greenlight-ready once M1.5's audit lands: M2, M3, M4, M8.** **Blocked on an owner
 decision: M1.5 (the product-readiness audit), M5, M6, M7, M9.**
+
+**M7, superseded (2026-08-01) — do not build.** M7's `content_assets` schema was never built, and
+the "Marketing Advisor v1" track above (a separate, actually-shipped sequence) has since produced
+its own real asset-generation subsystem one layer past Creative Package — `asset_jobs`/
+`asset_job_attempts`/`assets`/`asset_files`, provider-agnostic by design (see that section's "Asset
+Generation Foundation implementation record"). Building M3's `content_drafts`/`content_assets`
+schema or M7's image-gen adapter on top of it would create two competing, disagreeing
+asset-generation designs in this document. Track A's M3/M6/M7 rows are left in the table above as a
+historical record of the original plan, not as work still available to greenlight.
