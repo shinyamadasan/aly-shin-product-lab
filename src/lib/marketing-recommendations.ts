@@ -14,6 +14,11 @@ export type RecommendationType = (typeof RECOMMENDATION_TYPES)[number];
 export type RecommendationConfidence = "high" | "medium" | "low";
 export type RecommendationPriority = 1 | 2 | 3 | 4 | 5;
 
+// Deterministic, pre-AI-boundary artifact -- versioned the same way as MarketingAdvisorContext's
+// and MarketingBrief's own `version: 1`. Bumped by hand if this engine's output shape ever
+// changes; read by scripts/marketing-advisor/ to record which version produced a given session.
+export const MARKETING_RECOMMENDATIONS_VERSION = 1;
+
 export type NeglectedProductEvidence = {
   productId: string;
   productName: string;

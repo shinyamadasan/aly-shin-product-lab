@@ -1018,9 +1018,13 @@ Opportunity Review UI was solving the wrong problem):
 4. **Advisor (LLM) invocation** — send the Brief to an LLM (manually, via the same Claude Code
    export/import workflow already proven for the Creative Job text worker), get back a
    `MarketingOpportunitySuggestion[]` response, validate it, and lift it into `OpportunityDraft[]`
-   via PROP-020's own functions. Not started — the prompt-text builder and invocation mechanism
-   (manual export/import vs. local CLI spawn) remain undecided.
-5. **Approval** — now a much smaller remaining step than originally scoped, since PROP-020's own
+   via PROP-020's own functions. **Decision made and implemented: manual export/import**, not a
+   local CLI spawn — a `marketing-advisor export`/`import` CLI producing a durable, versioned
+   "Marketing Advisor Session" per run. Implemented — PROP-021.
+5. **PROP-021A: Advisor Review CLI** — a `marketing-advisor review <session-dir>` command
+   rendering a completed session's `drafts.json` for human inspection before anything is
+   persisted. Still no UI, still no Supabase write. Named during PROP-021's planning, not started.
+6. **Approval** — now a much smaller remaining step than originally scoped, since PROP-020/021's
    output already *is* an `OpportunityDraft[]`: persisting a generated draft (via the existing,
    already-tested `toOpportunityRow`/insert path) surfaces it directly in the existing, unmodified
    Opportunity Review UI (New/Accept/Dismiss/Expire) — no new review screen, no manual re-keying
@@ -1227,6 +1231,97 @@ route.
 
 The prompt-text builder, the invocation mechanism, and actual Supabase persistence of a generated
 `OpportunityDraft` remain not started — see milestone 4/5 above.
+
+### Marketing Advisor Invocation implementation record (2026-07-31)
+
+Implemented on branch `feat/marketing-advisor-invocation`, branched from
+`feat/marketing-opportunity-drafts` (tip `c41c279`, PROP-020). Full proposal record:
+`planning/PROPOSALS.md` PROP-021. Resolves the one open question PROP-020 left flagged: **manual
+export/import**, mirroring the Creative Job text worker's proven CLI shape, not a local `claude`
+CLI spawn (Daily Advisor's own pattern) — matching the owner's explicit "manual-first" framing.
+
+**The "Advisor Runtime" framing.** Nothing in this milestone is marketing-specific except the
+Context, the Prompt, and the Output schema — the export → human/AI → import → validate → output
+*mechanics* are the first instance of a shape every future advisor (Inventory, Finance, Brand,
+Product, a CEO-level `business_strategy` advisor) would reuse unchanged. Nothing was renamed or
+abstracted into a shared module for this milestone — that would guess at an interface from one
+data point — but the naming reflects it: a `mode: MarketingAdvisorMode` parameter (not
+`useCase: "daily_marketing"`, the naming this design started with and the owner had renamed before
+implementation, since "daily" describes a schedule, not what a mode actually produces) on
+`buildMarketingAdvisorPrompt`, with exactly one implemented value, `"opportunity_generation"`,
+today.
+
+New `scripts/marketing-advisor/marketing-advisor-prompt.ts`: `buildMarketingAdvisorPrompt(brief,
+mode?)` builds `{system, user}` — `user` is the full `MarketingBrief` embedded verbatim as JSON (no
+condensed re-summarization, so the AI never sees anything the validator won't also check against);
+`system` interpolates PROP-020's own real `MAX_SUGGESTIONS_PER_RESPONSE`/
+`MAX_CITED_RECOMMENDATIONS_PER_SUGGESTION`/`MAX_TITLE_LENGTH`/`MAX_REASON_LENGTH` constants and the
+Brief's real `generatedAt` value directly into the instruction text, so the prompt can never drift
+from what the validator enforces and the model can copy the timestamp verbatim rather than
+reproduce it. `mode`'s only branch mirrors `marketing-opportunity-drafts.ts`'s own
+exhaustiveness-checked `entityIdFor` pattern.
+
+New `scripts/marketing-advisor/marketing-advisor-manual-export.ts`: the "Marketing Advisor
+Session" primitives. `buildMarketingAdvisorSessionId(advisor, exportedAt)` is deterministic, never
+random (`` `${advisor}-${exportedAt.replace(/:/g, "-")}` ``, millisecond precision kept
+specifically so two exports in the same second never collide) — the same string names the session
+directory, the manifest's `sessionId` field, and (not yet wired, but now possible) a future
+`originSessionId` on any Opportunity/Creative Job/Package downstream. `manifest.json` is **not**
+an immutable export-time snapshot — the owner's explicit revision during planning — it carries a
+`status` field (`exported`/`completed`/`validation_failed`/`lift_failed`) plus `importedAt`,
+updated exactly once by `updateMarketingAdvisorManifestStatus` at the very end of `import`, never
+mid-pipeline, never on a read failure that means nothing about the session actually changed. Also
+carries `contextVersion`/`recommendationVersion`/`briefVersion`/`promptVersion` (the latter two new
+constants — `MARKETING_ADVISOR_PROMPT_VERSION` and, in `marketing-recommendations.ts`,
+`MARKETING_RECOMMENDATIONS_VERSION`, both `1` today) — so a session can always be traced to exactly
+which version of each upstream piece produced it.
+
+New `scripts/marketing-advisor/marketing-advisor-read.ts`: read-only input assembly behind
+`--source sample|supabase` (default `sample`, matching "manual-first, nothing automatic by
+default"). **`products` always comes from `src/lib/sample-data.ts`'s static catalog regardless of
+`--source`** — confirmed by direct read of `product-lab.tsx` that Product Lab has no Supabase
+`products` table at all; only `ingredients`/`journal` (`content_journal`) vary by source, and the
+`content_journal` row mapping reuses the already-shipped, already-tested `mapContentJournalRow`
+rather than re-implementing it. The Supabase path's client type structurally has no
+insert/update/delete/upsert/rpc methods at all — read-only by construction, not just convention.
+
+New `scripts/marketing-advisor/run.ts`: the CLI. Two subcommands, `export`/`import` — **no
+`run-api`-equivalent exists at all**, the strongest available form of "no automatic paid calls"
+(mirrors the Creative Job worker's own manual path having zero fetch-capable code reachable from
+its default commands). `export` writes `brief.json`/`prompt.md`/`manifest.json` into
+`marketing-advisor/output/<sessionId>/` by default (a repo-root directory, mirroring Daily
+Advisor's own `daily-advisor/output/` convention exactly, confirmed by direct read of
+`scripts/daily-advisor/run.ts`), overridable with `--session-dir`. `import` reads
+`<session-dir>/brief.json` plus `--result-file`, writes `response.json` as a byte-for-byte copy
+*before* validation runs (a rejected reply is preserved for audit exactly as faithfully as an
+accepted one), calls `validateMarketingOpportunitySuggestions`/`buildOpportunityDraftsFromSuggestions`
+unchanged, defensively re-checks every lifted draft against the real `validateOpportunityDraft`,
+writes `drafts.json`, and updates the manifest's `status`/`importedAt`. `npm run marketing-advisor
+-- export|import` added as a script alias.
+
+`tests/marketing-advisor-prompt.test.ts` (10 tests) and `tests/marketing-advisor-run.test.ts` (21
+tests) added — 31 new tests total. Notably: a real `globalThis.fetch` monkeypatch proving `import`
+makes zero network calls (the same strongest-available proof the Creative Job worker already
+established); an equivalence proof that `import`'s output exactly matches calling PROP-020's
+validator/lifter directly; manifest-lifecycle tests (re-run safety, "untouched on a read failure
+before anything about the session changed," the single-clock-read discipline tying
+`exportedAt`/`briefGeneratedAt`/`sessionId` together). Beyond the automated suite, the real CLI was
+smoke-tested end-to-end by hand: a live `export --source sample`, a hand-built valid reply citing a
+real `no_marketing_history` recommendation for Brownies, and `import` — producing a fully-formed,
+schema-correct `OpportunityDraft` exactly as designed.
+
+No schema/migration change, no new table, no new UI, no packages installed. One additive,
+zero-behavior-change line in `src/lib/marketing-recommendations.ts`
+(`MARKETING_RECOMMENDATIONS_VERSION`); every other PROP-018/019/020 file — including
+`marketing-brief.ts`, `marketing-opportunity-suggestions.ts`, `marketing-opportunity-drafts.ts`,
+`marketing-advisor-context.ts`, `opportunities.ts` — completely untouched. Verified: `npm run
+typecheck` clean, `npx eslint` clean on all touched/new files, `npm run test` passing 867/867 (1
+pre-existing unrelated skip, up from 836 — the 31 new tests), `npm run build -- --webpack`
+succeeds with no new route.
+
+PROP-021A (Advisor Review CLI) and Approval (persistence) remain not started — see milestones 5/6
+above. The `business_strategy` advisor remains unimplemented; only the `mode` naming seam exists
+for it.
 
 ---
 
