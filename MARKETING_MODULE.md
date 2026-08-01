@@ -1024,11 +1024,11 @@ Opportunity Review UI was solving the wrong problem):
 5. **PROP-021A: Advisor Review CLI** — a `marketing-advisor review <session-dir>` command
    rendering a completed session's `drafts.json` for human inspection before anything is
    persisted. Still no UI, still no Supabase write. Named during PROP-021's planning, not started.
-6. **Approval** — now a much smaller remaining step than originally scoped, since PROP-020/021's
-   output already *is* an `OpportunityDraft[]`: persisting a generated draft (via the existing,
-   already-tested `toOpportunityRow`/insert path) surfaces it directly in the existing, unmodified
-   Opportunity Review UI (New/Accept/Dismiss/Expire) — no new review screen, no manual re-keying
-   step. Not started.
+6. **Approval / Queue Opportunities** — persisting a completed session's validated
+   `OpportunityDraft[]` (via Daily Advisor's own already-tested `persistOpportunityDrafts`, reused
+   unchanged) surfaces it directly in the existing, unmodified Opportunity Review UI
+   (New/Accept/Dismiss/Expire) — no new review screen, no manual re-keying step. Implemented —
+   PROP-022 (`marketing-advisor persist --session-dir <path>`).
 
 ### Marketing Context Builder implementation record (2026-07-30)
 
@@ -1319,9 +1319,100 @@ typecheck` clean, `npx eslint` clean on all touched/new files, `npm run test` pa
 pre-existing unrelated skip, up from 836 — the 31 new tests), `npm run build -- --webpack`
 succeeds with no new route.
 
-PROP-021A (Advisor Review CLI) and Approval (persistence) remain not started — see milestones 5/6
-above. The `business_strategy` advisor remains unimplemented; only the `mode` naming seam exists
-for it.
+PROP-021A (Advisor Review CLI) remains not started — see milestone 5 above. The `business_strategy`
+advisor remains unimplemented; only the `mode` naming seam exists for it.
+
+### Marketing Opportunity Persistence implementation record (2026-07-31)
+
+Implemented on branch `feat/marketing-advisor-invocation` (same branch/worktree as PROP-021, built
+on top of its commit — not a new worktree, per the plan's own "Base" section). Full proposal
+record: `planning/PROPOSALS.md` PROP-022. Completes milestone 6 above and the last operational gap
+in the owner's own daily routine: context → recommendations → AI synthesis → import/validate →
+**queue for review** → accept/dismiss in the existing UI → generate content from accepted
+Opportunities.
+
+**Reuse over reinvention.** The milestone's real job turned out narrower than "build persistence":
+Daily Advisor's own `persistOpportunityDrafts`/`OpportunityPersistenceClient`
+(`scripts/daily-advisor/opportunity-persistence.ts`) already implements dedup (a DB-level unique
+index on `deduplication_key`), terminal-status preservation (the update path never writes `status`,
+and skips entirely when the existing row's status is terminal), and per-draft outcome reporting —
+reused completely unchanged, as the only Supabase client type this milestone needs.
+
+**"Queue Opportunities" to a human, `persist` to the code.** Every user-facing surface (`--help`
+text, log/summary messages) uses "Queue Opportunities"/"queued for review" language; the CLI
+subcommand and code stay `persist`. The success message never contains the word "persisted."
+
+**The persistence-boundary transform.** New `scripts/marketing-advisor/marketing-advisor-evidence.ts`
+(`buildSessionMetadata`, `buildRecommendationSnapshot`, `buildSessionStats`,
+`enrichDraftForPersistence`) — pure functions, no I/O. `enrichDraftForPersistence` strips
+`evidence.citedRecommendations` (PROP-020's full, engine-internal recommendation objects, still
+written unchanged into the disposable, gitignored `drafts.json`) and replaces it with
+`recommendationSnapshot` (five stable fields per cited recommendation) plus four version fields
+(`originSessionId`, `advisorVersion`, `contextVersion`, `recommendationVersion`, `promptVersion`)
+and a `sessionStats` funnel (`totalRecommendationsInBrief`, `totalSuggestionsFromAI` — deliberately
+*not* "how many were persisted," a chicken-and-egg count only knowable after the write, and already
+recorded honestly at the session/manifest level instead). The point: a disposable local artifact can
+safely carry rich engine-internal objects; the moment something becomes a permanent database row, it
+needs a smaller, cross-type-stable shape instead.
+
+**A deterministic "is this still worth creating?" gate, not another AI call.** New
+`scripts/marketing-advisor/marketing-advisor-queue-eligibility.ts` (`MIN_REASON_LENGTH=20`,
+`MAX_SESSION_AGE_DAYS=7`, `runQueueEligibilityChecks`) — zero Supabase/network dependency,
+internally organized into two commented sections along an axis the owner drew during planning:
+**Validity** (per-draft, isolated facts — already-expired, reason-too-short) and **Quality**
+(comparative judgments against sibling drafts in the same batch — duplicate title, duplicate
+product, the latter resolved by parsing the product/entity id straight out of each draft's own
+`sourceRuleIds` rather than depending on `citedRecommendations`). A session-level staleness check
+refuses the entire attempt unless `--force`. Deliberately **not** built: a database lookup for
+similar Opportunities from *other* sessions — named during planning for a future, undesigned
+"Opportunity Intelligence Dashboard" milestone, keeping this milestone to safe persistence of one
+session rather than cross-session intelligence.
+
+**Orchestration.** New `scripts/marketing-advisor/marketing-advisor-persist.ts`
+(`updateMarketingAdvisorManifestAfterPersist`, `runPersistCommand`) sequences: read manifest (status
+must be `completed`/`persisted`/`persist_failed`) → read brief (integrity-checked against
+`manifest.briefGeneratedAt`) → read response/drafts → enrich every draft → **structural gate**
+(`validateOpportunityDraft` on every enriched draft, all-or-nothing — one bad draft aborts the whole
+attempt before any client call, exit 1, manifest → `persist_failed`, mirroring `import`'s own
+`lift_failed` precedent) → queue eligibility (bypassed entirely by `--force`, but never the
+structural gate) → the reused `persistOpportunityDrafts` → write `persistence-result.json` → update
+`manifest.json` to `persisted`/`persist_failed` with a legible `{title, rule, recommendationIds}[]`
+exclusion list, never a bare count. Touched `marketing-advisor-manual-export.ts`: new
+`MARKETING_ADVISOR_VERSION="1"` constant; `MARKETING_ADVISOR_SESSION_STATUSES` gains
+`persisted`/`persist_failed`; `MarketingAdvisorManifest` gains `advisorVersion`/`persistedAt`/
+`persistence`; PROP-021's own `updateMarketingAdvisorManifestStatus` left completely unchanged.
+Touched `run.ts`: new `persist --session-dir <path> [--force]` subcommand, authenticating exactly
+one Supabase client (typed `OpportunityPersistenceClient`) via the same `.env.advisor.local`
+convention as `export --source supabase`.
+
+`tests/marketing-advisor-persist.test.ts` (24 tests) — evidence enrichment's exact field set; all
+four eligibility rules individually proven; session staleness refusal and `--force` bypass; the
+structural gate's all-or-nothing abort, including under `--force` (proving it's never bypassed);
+rerun safety, terminal-status preservation, and partial-failure-then-retry-recovers, all proven
+against a stateful fake `OpportunityPersistenceClient`; exact `persistence-result.json`/
+`manifest.persistence.excluded` shapes; "queued"/"review" message language; and scope guards on all
+three new files.
+
+**Two edge cases, confirmed intentional by a pre-commit final review.** An empty `drafts.json` (the
+AI proposed zero suggestions this session — already documented by PROP-021's own prompt as a
+legitimate outcome) and a batch where every draft is excluded by queue eligibility both reach
+`persistOpportunityDrafts` with an empty `eligible` array. That function makes zero Supabase calls
+for an empty array and returns `ok: true` with all-zero counts, so both cases succeed trivially: the
+manifest goes to `persisted`, `persistence-result.json` records zero everything (plus the full
+exclusion list, for the second case), and the CLI prints "Queued 0 Opportunity(ies) for review" —
+not an error, since nothing failed and nothing was left to attempt. This was already the code's
+behavior; the review found it untested and undocumented, not wrong — both gaps are now closed by a
+dedicated test each plus a code comment in `marketing-advisor-persist.ts`.
+
+No schema/migration change, no new table, no new UI, no packages installed, no service-role key.
+`src/lib/opportunities.ts`, `src/lib/marketing-brief.ts`, `src/lib/marketing-opportunity-drafts.ts`,
+and `scripts/daily-advisor/opportunity-persistence.ts` left completely untouched. Verified: `npm run
+typecheck` clean, `npx eslint` clean on all touched/new files, `npm run test` passing 890/891 (1
+pre-existing unrelated skip, up from 867 — the 24 new tests), `npm run build -- --webpack` succeeds
+with no new route.
+
+PROP-021A (Advisor Review CLI) and the `business_strategy` advisor remain the only unimplemented
+pieces named anywhere in this sequence.
 
 ---
 

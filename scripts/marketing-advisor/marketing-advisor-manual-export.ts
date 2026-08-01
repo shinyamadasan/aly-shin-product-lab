@@ -3,13 +3,21 @@ import path from "node:path";
 import type { MarketingBrief } from "../../src/lib/marketing-brief.ts";
 import type { MarketingAdvisorMode, MarketingAdvisorPrompt } from "./marketing-advisor-prompt.ts";
 
-export const MARKETING_ADVISOR_SESSION_STATUSES = ["exported", "completed", "validation_failed", "lift_failed"] as const;
+// Versions the session-artifact shape itself (this manifest schema) -- bumped by hand if a future
+// change adds/removes a session file or a required manifest field. Distinct from promptVersion
+// (the prompt's own wording) and contextVersion/recommendationVersion (the two upstream engines).
+export const MARKETING_ADVISOR_VERSION = "1";
+
+export const MARKETING_ADVISOR_SESSION_STATUSES = [
+  "exported", "completed", "validation_failed", "lift_failed", "persisted", "persist_failed",
+] as const;
 export type MarketingAdvisorSessionStatus = (typeof MARKETING_ADVISOR_SESSION_STATUSES)[number];
 
 export type MarketingAdvisorManifest = {
   schemaVersion: "1";
   sessionId: string;
   advisor: "marketing";
+  advisorVersion: string;
   mode: MarketingAdvisorMode;
   source: "sample" | "supabase";
   status: MarketingAdvisorSessionStatus;
@@ -20,6 +28,15 @@ export type MarketingAdvisorManifest = {
   recommendationVersion: number;
   briefVersion: number;
   promptVersion: string;
+  persistedAt: string | null;
+  persistence: {
+    attemptedAt: string;
+    inserted: number;
+    updated: number;
+    skipped: number;
+    failed: number;
+    excluded: Array<{ title: string; rule: string; recommendationIds: string[] }>;
+  } | null;
 };
 
 // Deterministic, never random -- same advisor/exportedAt always produce the same id. Millisecond
@@ -42,6 +59,7 @@ export function buildMarketingAdvisorManifest(input: {
     schemaVersion: "1",
     sessionId: input.sessionId,
     advisor: "marketing",
+    advisorVersion: MARKETING_ADVISOR_VERSION,
     mode: input.mode,
     source: input.source,
     status: "exported",
@@ -52,6 +70,8 @@ export function buildMarketingAdvisorManifest(input: {
     recommendationVersion: input.recommendationVersion,
     briefVersion: input.brief.version,
     promptVersion: input.promptVersion,
+    persistedAt: null,
+    persistence: null,
   };
 }
 

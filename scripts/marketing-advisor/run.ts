@@ -18,13 +18,15 @@ import {
   type MarketingAdvisorReadClient,
   type MarketingAdvisorSource,
 } from "./marketing-advisor-read.ts";
+import { runPersistCommand, type PersistOutcome } from "./marketing-advisor-persist.ts";
 import { loadEnvFile, readSupabaseCredentials } from "../daily-advisor/env.ts";
+import type { OpportunityPersistenceClient } from "../daily-advisor/opportunity-persistence.ts";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const DEFAULT_OUTPUT_ROOT = path.join(PROJECT_ROOT, "marketing-advisor", "output");
 
-export type Subcommand = "export" | "import";
-const SUBCOMMANDS: readonly Subcommand[] = ["export", "import"];
+export type Subcommand = "export" | "import" | "persist";
+const SUBCOMMANDS: readonly Subcommand[] = ["export", "import", "persist"];
 
 export function parseSubcommand(argv: string[]): Subcommand | null {
   const [candidate] = argv;
@@ -147,8 +149,13 @@ function printUsage(): void {
   log("info", "Usage:");
   log("info", "  node scripts/marketing-advisor/run.ts export [--mode opportunity_generation] [--source sample|supabase] [--session-dir <path>]");
   log("info", "  node scripts/marketing-advisor/run.ts import --session-dir <path> --result-file <path> [--out <path>]");
+  log("info", "  node scripts/marketing-advisor/run.ts persist --session-dir <path> [--force]");
+  log("info", "    Queue this session's Opportunities for review in the existing /opportunities Review UI.");
+  log("info", "    --force skips the queue eligibility checks (staleness, duplicate titles/products, short");
+  log("info", "    reasons, already-expired) -- never skips structural validation.");
   log("info", "");
-  log("info", "Both commands are free and require no API key -- export/import use your existing Claude Code subscription manually.");
+  log("info", "export/import are free and require no API key -- they use your existing Claude Code subscription manually.");
+  log("info", "persist authenticates against Supabase using .env.advisor.local, same as export --source supabase.");
   log("info", "There is no automated or paid invocation mode in this milestone.");
 }
 
@@ -169,6 +176,7 @@ async function main(): Promise<void> {
       "session-dir": { type: "string" },
       "result-file": { type: "string" },
       out: { type: "string" },
+      force: { type: "boolean" },
     },
   });
 
@@ -212,22 +220,50 @@ async function main(): Promise<void> {
     process.exit(outcome.exitCode);
   }
 
-  // import
-  if (!values["session-dir"]) {
-    log("error", "--session-dir is required for import.");
-    process.exit(2);
+  if (subcommand === "import") {
+    if (!values["session-dir"]) {
+      log("error", "--session-dir is required for import.");
+      process.exit(2);
+    }
+    if (!values["result-file"]) {
+      log("error", "--result-file is required for import.");
+      process.exit(2);
+    }
+
+    const outcome = await runImportCommand({ sessionDir: values["session-dir"], resultFile: values["result-file"], outFile: values.out, now });
+    if (outcome.drafts) {
+      console.log(JSON.stringify(outcome.drafts, null, 2));
+    }
+    log(outcome.exitCode === 0 ? "info" : "error", outcome.message ?? "");
+    process.exit(outcome.exitCode);
   }
-  if (!values["result-file"]) {
-    log("error", "--result-file is required for import.");
+
+  // persist
+  if (!values["session-dir"]) {
+    log("error", "--session-dir is required for persist.");
     process.exit(2);
   }
 
-  const outcome = await runImportCommand({ sessionDir: values["session-dir"], resultFile: values["result-file"], outFile: values.out, now });
-  if (outcome.drafts) {
-    console.log(JSON.stringify(outcome.drafts, null, 2));
+  loadEnvFile(path.join(PROJECT_ROOT, ".env.advisor.local"));
+  const credsResult = readSupabaseCredentials();
+  if (!credsResult.ok) {
+    log("error", `Missing required Supabase credentials in .env.advisor.local: ${credsResult.missing.join(", ")}`);
+    process.exit(2);
   }
-  log(outcome.exitCode === 0 ? "info" : "error", outcome.message ?? "");
-  process.exit(outcome.exitCode);
+  const client = createClient(credsResult.credentials.url, credsResult.credentials.anonKey);
+  const { error: signInError } = await client.auth.signInWithPassword({
+    email: credsResult.credentials.email,
+    password: credsResult.credentials.password,
+  });
+  if (signInError) {
+    log("error", `Failed to authenticate against Supabase: ${signInError.message}`);
+    process.exit(2);
+  }
+
+  const opportunityClient = client as unknown as OpportunityPersistenceClient;
+  const persistOutcome: PersistOutcome = await runPersistCommand(opportunityClient, { sessionDir: values["session-dir"], now, force: values.force ?? false });
+  log(persistOutcome.exitCode === 0 ? "info" : "error", persistOutcome.message ?? "");
+  process.exit(persistOutcome.exitCode);
 }
 
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename);
