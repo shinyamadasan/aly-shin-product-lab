@@ -1,4 +1,4 @@
-import type { AiReviewRecord, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, ProductBatch, PurchaseImport, PurchaseImportRow, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { AiReviewRecord, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -37,6 +37,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
 export const storageKey = "aly-shin-product-lab-v1";
 
 export type LabState = {
+  products: Product[];
   batches: ProductBatch[];
   batchPhotos: BatchPhoto[];
   costingEntries: CostingEntry[];
@@ -55,6 +56,7 @@ export type LabState = {
 };
 
 export const emptyState: LabState = {
+  products: [],
   batches: [],
   batchPhotos: [],
   costingEntries: [],

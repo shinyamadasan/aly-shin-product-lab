@@ -51,7 +51,7 @@ export function RecentEntries({
           empty="No batches saved yet."
           items={labState.batches.slice(0, 3).map((batch) => ({
             id: batch.id,
-            title: `${productName(batch.productId)} ${batch.batchVersion}`,
+            title: `${productName(batch.productId, labState.products)} ${batch.batchVersion}`,
             detail: `Decision: ${batch.launchDecision}. Issue: ${batch.wentWrong || "none logged"}. Next: ${batch.improveNext || "not set"}.`,
             onDelete: deleteBatch ? () => deleteBatch(batch.id) : undefined,
             onEdit: editBatch ? () => editBatch(batch) : undefined,
@@ -77,7 +77,7 @@ export function RecentEntries({
 
             return {
               id: costing.id,
-              title: `${productName(costing.productId)}${linkedBatch?.batchVersion ? ` ${linkedBatch.batchVersion}` : ""}`,
+              title: `${productName(costing.productId, labState.products)}${linkedBatch?.batchVersion ? ` ${linkedBatch.batchVersion}` : ""}`,
               detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`, "needs yield")}. Margin ${formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`, "needs yield")}.`,
               onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
               onEdit: editCosting ? () => editCosting(costing) : undefined,
@@ -89,7 +89,7 @@ export function RecentEntries({
           empty="No Journey entries saved yet."
           items={labState.journal.slice(0, 3).map((entry) => ({
             id: entry.id,
-            title: `${productName(entry.productId)}: ${entry.postIdeas || "uncategorized"}`,
+            title: `${productName(entry.productId, labState.products)}: ${entry.postIdeas || "uncategorized"}`,
             detail: `${entry.entryType ? `Type: ${journeyTypeLabel(entry.entryType)}. ` : ""}Captured: ${entry.mediaCaptured || "none logged"}. Next: ${entry.nextAction || "not set"}.`,
             onDelete: deleteJournal ? () => deleteJournal(entry.id) : undefined,
             onEdit: editJournal ? () => editJournal(entry) : undefined,

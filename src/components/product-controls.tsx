@@ -1,16 +1,18 @@
 import type React from "react";
-import { products } from "@/lib/sample-data";
+import type { Product } from "@/lib/product-lab-types";
 import { JOURNEY_ENTRY_TYPES } from "@/lib/journal";
 import { CONTENT_DRAFT_STATUSES, CONTENT_TYPE_OPTIONS } from "@/lib/content-drafts";
 
 export function ProductSelect({
   includeNoProductOption,
   onChange,
+  products,
   selectedProductId,
   value,
 }: {
   includeNoProductOption?: boolean;
   onChange?: (event: React.ChangeEvent<HTMLSelectElement>) => void;
+  products: Product[];
   selectedProductId?: string;
   value?: string;
 }) {
@@ -114,7 +116,7 @@ export function MediaChecklist({ selectedMedia = "" }: { selectedMedia?: string 
   );
 }
 
-export function productName(productId: string) {
+export function productName(productId: string, products: Product[]) {
   if (!productId) {
     return "No product";
   }
