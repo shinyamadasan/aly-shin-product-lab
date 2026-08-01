@@ -21,7 +21,7 @@ import {
   Sparkles,
   Star,
 } from "lucide-react";
-import { products, readinessRules } from "@/lib/sample-data";
+import { readinessRules } from "@/lib/sample-data";
 import {
   getClosestToLaunch,
   getPauseCandidates,
@@ -32,7 +32,7 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
@@ -74,6 +74,7 @@ import {
 } from "@/lib/batches";
 import { archiveItem, canHardDeleteItem, getItemReferenceSummary, itemReferenceCount, restoreItem } from "@/lib/inventory-safety";
 import { canDeleteDraftBatch, canVoidBatch, getBatchReferenceSummary, getEffectiveBatchStatus, markBatchCompleted, voidBatch } from "@/lib/batch-safety";
+import { canDeleteProduct, getProductReferenceCount, totalProductReferenceCount } from "@/lib/product-safety";
 
 // Keep these in sync with the file_size_limit / allowed_mime_types set on the
 // batch-photos bucket in supabase-add-batch-photos-storage.sql -- that bucket
@@ -127,6 +128,8 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
   const [isInventoryTableMissing, setIsInventoryTableMissing] = useState(false);
   const [isPurchaseImportPackagesMissing, setIsPurchaseImportPackagesMissing] = useState(false);
+  const [isProductDecisionColumnMissing, setIsProductDecisionColumnMissing] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
@@ -172,7 +175,8 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
       return;
     }
 
-    const [batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
+    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
+      supabase.from("products").select("*").order("name", { ascending: true }),
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
@@ -205,8 +209,9 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     setIsEquipmentTableMissing(Boolean(equipmentMissing));
     setIsAiReviewsTableMissing(Boolean(aiReviewsMissing));
     setIsInventoryTableMissing(ingredientsMissing);
-    if (batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
+    if (productResult.error || batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
       const error =
+        productResult.error?.message ||
         batchResult.error?.message ||
         batchPhotoResult.error?.message ||
         costingEntryResult.error?.message ||
@@ -227,6 +232,16 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
     }
 
     setLabState({
+      products: (productResult.data ?? []).map((row) => ({
+        id: row.id,
+        name: row.name,
+        category: row.category,
+        role: row.product_role,
+        status: row.status,
+        description: row.description ?? "",
+        image: row.main_photo_url ?? "",
+        decision: row.decision ?? "Needs proof",
+      })),
       batches: (batchResult.data ?? []).map((row) => ({
         id: row.id,
         productId: row.product_id,
@@ -489,18 +504,97 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
   }
 
   const metrics = useMemo(() => {
-    const launchCandidates = products.filter((product) => {
+    const launchCandidates = labState.products.filter((product) => {
       const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
       return readiness.percent >= 100;
     }).length;
 
     return {
-      productCount: products.length,
+      productCount: labState.products.length,
       launchCandidates,
-      needsProof: products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings).proofBatches === 0).length,
+      needsProof: labState.products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings).proofBatches === 0).length,
       tastingEntries: labState.tastings.length,
     };
   }, [labState]);
+
+  async function saveProduct(formData: FormData) {
+    const productId = String(formData.get("id") || "");
+    const product: Product = {
+      id: productId || crypto.randomUUID(),
+      name: String(formData.get("name") || "").trim(),
+      category: String(formData.get("category") || "").trim(),
+      role: formData.get("role") as Product["role"],
+      status: formData.get("status") as Product["status"],
+      description: String(formData.get("description") || "").trim(),
+      image: String(formData.get("image") || "").trim(),
+      decision: formData.get("decision") as Product["decision"],
+    };
+
+    if (supabase && session) {
+      const payload = {
+        name: product.name,
+        category: product.category,
+        product_role: product.role,
+        status: product.status,
+        description: product.description,
+        main_photo_url: product.image || null,
+        decision: product.decision,
+      };
+      const query = productId
+        ? supabase.from("products").update(payload).eq("id", productId)
+        : supabase.from("products").insert({ id: product.id, ...payload });
+      const { error } = await query;
+      const missingDecisionColumn = Boolean(error && isMissingColumnError(error));
+      setMessage(
+        error
+          ? missingDecisionColumn
+            ? `Product save failed because products is missing the decision column. Run supabase-add-product-decision.sql in Supabase, then retry. Details: ${error.message}`
+            : `Product save failed: ${error.message}`
+          : "Product saved.",
+      );
+      setMessageTone(error ? "bad" : "good");
+      setIsProductDecisionColumnMissing(missingDecisionColumn);
+      if (!error) {
+        setEditingProduct(null);
+        await loadSupabaseData();
+      }
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      // Sorted by name, matching the Supabase query's `.order("name")` -- Product has no
+      // createdAt field client-side, so name is the only sort key available identically in both
+      // persistence modes. Sorting on every write (not just once at load) keeps this true even
+      // as products are added/edited/deleted, without needing a display-time sort at every one of
+      // the ~10 places labState.products is read.
+      products: (productId ? current.products.map((entry) => (entry.id === productId ? product : entry)) : [product, ...current.products])
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }));
+    setEditingProduct(null);
+    setMessage("Product saved locally.");
+    setMessageTone("good");
+  }
+
+  async function deleteProduct(productId: string) {
+    if (supabase && session) {
+      const { error } = await supabase.from("products").delete().eq("id", productId);
+      setMessage(error ? `Product delete failed: ${error.message}` : "Product deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingProduct?.id === productId) {
+        setEditingProduct(null);
+      }
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({ ...current, products: current.products.filter((entry) => entry.id !== productId) }));
+    if (editingProduct?.id === productId) {
+      setEditingProduct(null);
+    }
+    setMessage("Product deleted locally.");
+    setMessageTone("good");
+  }
 
   async function saveBatch(formData: FormData) {
     const batchId = String(formData.get("id") || "");
@@ -1852,10 +1946,10 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
-              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
-                <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
+                <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} products={labState.products} saveJournal={saveJournal} />
               </div>
             </section>
           ) : null}
@@ -1866,7 +1960,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} saveCosting={saveCosting} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} products={labState.products} saveCosting={saveCosting} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
                 <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} labState={labState} only="costing" />
@@ -1906,7 +2000,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
-              <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} saveJournal={saveJournal} />
+              <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} products={labState.products} saveJournal={saveJournal} />
               <div className="space-y-5">
                 <ContentJournalGuide />
                 <RecentEntries deleteJournal={deleteJournal} editJournal={setEditingJournal} labState={labState} only="journal" />
@@ -1914,7 +2008,7 @@ export default function ProductLab({ view = "dashboard", initialInventoryTab }: 
             </section>
           ) : null}
 
-          {view === "admin" ? <ProductAdminPage labState={labState} /> : null}
+          {view === "admin" ? <ProductAdminPage cancelEdit={() => setEditingProduct(null)} deleteProduct={deleteProduct} editProduct={setEditingProduct} isProductDecisionColumnMissing={isProductDecisionColumnMissing} labState={labState} product={editingProduct} saveProduct={saveProduct} /> : null}
 
           {view === "launch" ? <LaunchOfferBuilder labState={labState} /> : null}
 
@@ -2125,8 +2219,13 @@ function ProductDetailPage({
   labState: LabState;
   saveAiReview: (review: { productId: string; batchId: string; action: AiAction; specialists: SpecialistId[]; prompt: string; response: string }) => void;
 }) {
-  const [selectedProductId, setSelectedProductId] = useState(products[0].id);
-  const product = products.find((item) => item.id === selectedProductId) ?? products[0];
+  const [selectedProductId, setSelectedProductId] = useState(labState.products[0]?.id ?? "");
+  const product = labState.products.find((item) => item.id === selectedProductId) ?? labState.products[0];
+
+  if (!product) {
+    return <p className="text-sm leading-6 text-[#6f5a4c]">No products yet. Add one from the Product Admin page first.</p>;
+  }
+
   const batches = labState.batches.filter((batch) => batch.productId === product.id);
   const latestBatch = batches[0];
   const costing = labState.costings.find((entry) => entry.productId === product.id);
@@ -2145,7 +2244,7 @@ function ProductDetailPage({
           <label className="grid max-w-sm gap-1 text-sm font-medium">
             Product
             <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" value={selectedProductId} onChange={(event) => setSelectedProductId(event.target.value)}>
-              {products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              {labState.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
           <h3 className="mt-4 text-2xl font-semibold">{product.name}</h3>
@@ -2241,9 +2340,9 @@ function getProductGap(stats: ReturnType<typeof getProductStats>) {
 }
 
 function ReadinessPanels({ labState }: { labState: LabState }) {
-  const closestToLaunch = getClosestToLaunch(products, labState.batches, labState.costings, labState.tastings);
-  const pauseCandidates = getPauseCandidates(products, labState.batches, labState.costings, labState.tastings);
-  const reviewItems = getShinReviewItems(products, labState.batches, labState.costings, labState.tastings);
+  const closestToLaunch = getClosestToLaunch(labState.products, labState.batches, labState.costings, labState.tastings);
+  const pauseCandidates = getPauseCandidates(labState.products, labState.batches, labState.costings, labState.tastings);
+  const reviewItems = getShinReviewItems(labState.products, labState.batches, labState.costings, labState.tastings);
 
   return (
     <>
@@ -2272,7 +2371,7 @@ function ReadinessPanels({ labState }: { labState: LabState }) {
 }
 
 function ContextBrain({ labState }: { labState: LabState }) {
-  const needsProof = getProductsNeedingProof(products, labState.batches);
+  const needsProof = getProductsNeedingProof(labState.products, labState.batches);
   const averageRating = labState.tastings.length
     ? Math.round((labState.tastings.reduce((total, tasting) => total + tasting.rating, 0) / labState.tastings.length) * 10) / 10
     : null;
@@ -2294,7 +2393,7 @@ function ContextBrain({ labState }: { labState: LabState }) {
         <div className="border-t border-[#eaded2] p-5">
           <h4 className="font-semibold">What&apos;s missing, per product</h4>
           <div className="mt-3 divide-y divide-[#f0e4d8]">
-            {products.map((product) => {
+            {labState.products.map((product) => {
               const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
               return (
                 <div className="flex items-center justify-between gap-3 py-3 text-sm" key={product.id}>
@@ -2433,7 +2532,7 @@ function BatchHistoryPage({
       labState.batches.map((batch) => {
         const { formula, steps } = parseBatchRecord(batch.ingredientsNotes);
         return [
-          productName(batch.productId),
+          productName(batch.productId, labState.products),
           batch.batchVersion,
           batch.dateMade,
           batch.launchDecision,
@@ -2455,7 +2554,7 @@ function BatchHistoryPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
-            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -2480,7 +2579,7 @@ function BatchHistoryPage({
               <article className="p-5" key={batch.id}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <h4 className="font-semibold">{productName(batch.productId)} {batch.batchVersion}</h4>
+                    <h4 className="font-semibold">{productName(batch.productId, labState.products)} {batch.batchVersion}</h4>
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-[#6f5a4c]">
                       <span>{batch.dateMade} / {batch.launchDecision}</span>
                       <Tag tone={effectiveStatus === "voided" ? "danger" : effectiveStatus === "completed" ? "green" : "warm"}>{effectiveStatus}</Tag>
@@ -2519,7 +2618,7 @@ function BatchHistoryPage({
           })}
         </div>
       </div>
-      <ProofBatchesPrintReport batches={labState.batches} />
+      <ProofBatchesPrintReport batches={labState.batches} products={labState.products} />
     </section>
   );
 }
@@ -2649,7 +2748,7 @@ function BatchComparisonSection({ currentBatch, previousBatch }: { currentBatch:
   );
 }
 
-function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
+function ProofBatchesPrintReport({ batches, products }: { batches: ProductBatch[]; products: Product[] }) {
   return (
     <div className="print-report" id="proof-batches-print-report">
       <h1>Aly & Shin Proof Batch Records</h1>
@@ -2672,7 +2771,7 @@ function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
             const { formula, steps } = parseBatchRecord(batch.ingredientsNotes);
             return (
               <tr key={batch.id}>
-                <td>{productName(batch.productId)}</td>
+                <td>{productName(batch.productId, products)}</td>
                 <td>{batch.batchVersion}</td>
                 <td>{batch.dateMade}</td>
                 <td>{formatBatchFormula(formula) || "No formula saved"}</td>
@@ -2689,7 +2788,23 @@ function ProofBatchesPrintReport({ batches }: { batches: ProductBatch[] }) {
   );
 }
 
-function ProductAdminPage({ labState }: { labState: LabState }) {
+function ProductAdminPage({
+  cancelEdit,
+  deleteProduct,
+  editProduct,
+  isProductDecisionColumnMissing,
+  labState,
+  product,
+  saveProduct,
+}: {
+  cancelEdit: () => void;
+  deleteProduct: (productId: string) => void;
+  editProduct: (product: Product) => void;
+  isProductDecisionColumnMissing: boolean;
+  labState: LabState;
+  product: Product | null;
+  saveProduct: (formData: FormData) => void;
+}) {
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
@@ -2699,38 +2814,72 @@ function ProductAdminPage({ labState }: { labState: LabState }) {
           <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Use this as your backend checklist for what each product needs before your wife spends more kitchen time.</p>
         </div>
         <div className="divide-y divide-[#f0e4d8]">
-          {products.map((product) => {
-            const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+          {labState.products.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No products yet. Add the first one on the right.</p> : null}
+          {labState.products.map((item) => {
+            const stats = getProductStats(item, labState.batches, labState.costings, labState.tastings);
+            const referenceCount = getProductReferenceCount(item.id, labState);
+            const referenceTotal = totalProductReferenceCount(referenceCount);
+            const deletable = canDeleteProduct(referenceCount);
             return (
-              <article className="grid gap-3 p-4 md:grid-cols-[1fr_240px]" key={product.id}>
+              <article className="grid gap-3 p-4 md:grid-cols-[1fr_240px]" key={item.id}>
                 <div>
-                  <h4 className="font-semibold">{product.name}</h4>
-                  <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">{product.description}</p>
+                  <h4 className="font-semibold">{item.name}</h4>
+                  <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">{item.description}</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <StatusPill label={`${stats.proofBatches} proof`} done={stats.proofBatches > 0} />
                     <StatusPill label="Costing" done={stats.costingDone} />
                     <StatusPill label={`${stats.tastingCount}/5 tastings`} done={stats.tastingCount >= 5} />
                   </div>
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    <button className="text-sm font-semibold text-[#8f5632] underline" onClick={() => editProduct(item)} type="button">Edit</button>
+                    <button
+                      className="text-sm font-semibold text-[#8a3827] underline disabled:cursor-not-allowed disabled:text-[#c2a794] disabled:no-underline"
+                      disabled={!deletable}
+                      onClick={() => (window.confirm(`Permanently delete ${item.name}? This cannot be undone.`) ? deleteProduct(item.id) : undefined)}
+                      type="button"
+                    >
+                      Delete
+                    </button>
+                    {!deletable ? <span className="text-xs text-[#8a7465]">{referenceTotal} linked record{referenceTotal === 1 ? "" : "s"} (batches/costing/tasting/journal) — set status to Paused instead, or clear those records first.</span> : null}
+                  </div>
                 </div>
                 <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm leading-6 text-[#5f4a3d]">
                   <p className="font-semibold">Admin decision</p>
                   <p>{stats.proofBatches === 0 ? "Needs first proof batch" : `Latest: ${stats.latestDecision}`}</p>
-                  <p>{product.category === "Coffee" ? "Keep as later add-on test." : "Eligible for proof cycle."}</p>
+                  <p>{item.category === "Coffee" ? "Keep as later add-on test." : "Eligible for proof cycle."}</p>
                 </div>
               </article>
             );
           })}
         </div>
       </div>
-      <Panel title="Admin Limits" icon={<ShieldAlert size={18} />}>
-        <p className="text-sm leading-6 text-[#5f4a3d]">This board controls priorities for now. Full product create/edit should be a dedicated database change later, because products are still seeded from the app and Supabase together.</p>
-      </Panel>
+      <FormPanel title={product ? "Edit product" : "Add product"} icon={<PackageCheck size={18} />}>
+        {isProductDecisionColumnMissing ? (
+          <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
+            Product database fields are not ready yet. Run <strong>supabase-add-product-decision.sql</strong> once, then save again.
+          </div>
+        ) : null}
+        <form action={saveProduct} className="grid gap-3" key={product?.id ?? "new-product"}>
+          <input name="id" type="hidden" value={product?.id ?? ""} />
+          <Input name="name" label="Product name" placeholder="Ube Cookies" defaultValue={product?.name} />
+          <Input name="category" label="Category" placeholder="Baked goods" defaultValue={product?.category} />
+          <Select name="role" label="Role" options={["Hero candidate", "Bundle product", "Premium upgrade", "Add-on candidate"]} defaultValue={product?.role ?? "Hero candidate"} />
+          <Select name="status" label="Status" options={["testing", "costed", "tasting", "launch_candidate", "paused"]} defaultValue={product?.status ?? "testing"} />
+          <Select name="decision" label="Decision" options={["Needs proof", "Retest", "Candidate", "Add-on test"]} defaultValue={product?.decision ?? "Needs proof"} />
+          <Textarea name="description" label="Description" placeholder="Short description of the product idea." defaultValue={product?.description} />
+          <Input name="image" label="Photo path (optional)" placeholder="/product-images/whatever.png" helper="Only if you've already added a photo file under public/product-images/. Leave blank for now." defaultValue={product?.image} />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button>{product ? "Update product" : "Save product"}</Button>
+            {product ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+          </div>
+        </form>
+      </FormPanel>
     </section>
   );
 }
 
 function LaunchOfferBuilder({ labState }: { labState: LabState }) {
-  const candidates = products.filter((product) => {
+  const candidates = labState.products.filter((product) => {
     const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
     return stats.proofBatches > 0 && stats.costingDone;
   });
@@ -2760,7 +2909,7 @@ function LaunchOfferBuilder({ labState }: { labState: LabState }) {
 
 function ContentStudio({ labState }: { labState: LabState }) {
   const latest = labState.journal[0];
-  const product = latest ? productName(latest.productId) : "Selected product";
+  const product = latest ? productName(latest.productId, labState.products) : "Selected product";
   const angle = latest?.postIdeas || "product proof";
   const lesson = latest?.lessonLearned || "Show what changed and what you learned from the test.";
   const next = latest?.nextAction || "Pick the strongest clip and draft one simple post.";
@@ -2808,7 +2957,7 @@ function DashboardPage({
   session: Session | null;
   signOut: () => void;
 }) {
-  const productsNeedingProof = getProductsNeedingProof(products, labState.batches);
+  const productsNeedingProof = getProductsNeedingProof(labState.products, labState.batches);
   const proofDayCopy = productsNeedingProof.length
     ? `Test ${productsNeedingProof.map((product) => product.name).join(", ")}. Capture yield, timing, texture, packaging behavior, freshness after 12/24 hours, and willingness to pay.`
     : "Every product has at least one proof batch logged. Pick the weakest formula and run a focused retest.";
@@ -2866,12 +3015,15 @@ function ProductReadiness({ labState }: { labState: LabState }) {
         <p className="max-w-md text-sm leading-6 text-[#6f5a4c]">Saved in this browser for now. Supabase will make this shared for both users.</p>
       </div>
       <div className="divide-y divide-[#f0e4d8]">
-        {products.map((product) => {
+        {labState.products.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No products yet. Add one from the Product Admin page.</p> : null}
+        {labState.products.map((product) => {
           const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
           const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
           return (
             <article className="grid gap-4 p-4 md:grid-cols-[92px_1fr_170px]" key={product.id}>
-              <div className="relative h-24 overflow-hidden rounded-md border border-[#eaded2] bg-[#fbf2e8]"><Image src={product.image} alt={product.name} fill sizes="92px" className="object-contain p-2" /></div>
+              <div className="relative h-24 overflow-hidden rounded-md border border-[#eaded2] bg-[#fbf2e8]">
+                {product.image ? <Image src={product.image} alt={product.name} fill sizes="92px" className="object-contain p-2" /> : <div className="flex h-full items-center justify-center text-xs text-[#a88b6f]">No photo</div>}
+              </div>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">{product.name}</h4><Tag tone="warm">{product.role}</Tag><Tag tone={product.category === "Coffee" ? "danger" : "green"}>{getProductPriority(product)}</Tag></div>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-[#6f5a4c]">{product.description}</p>
@@ -2910,7 +3062,7 @@ function DecisionSidebar({ labState }: { labState: LabState }) {
           {latestJournal.length === 0 ? <p className="text-sm text-[#6f5a4c]">No journal entries yet. Save one from Content Journal after real kitchen work.</p> : null}
           {latestJournal.map((entry) => (
             <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3" key={entry.id}>
-              <p className="text-sm font-semibold">{productName(entry.productId)} — {entry.entryDate}</p>
+              <p className="text-sm font-semibold">{productName(entry.productId, labState.products)} — {entry.entryDate}</p>
               <p className="mt-1 text-sm leading-5 text-[#6f5a4c]">{entry.lessonLearned || entry.whatWasMade || "No lesson logged yet"}</p>
               <p className="mt-2 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{entry.nextAction || "Next action not set"}</p>
             </div>
@@ -2928,6 +3080,7 @@ function BatchForm({
   cancelEdit,
   deleteBatchPhoto,
   ingredients,
+  products,
   saveBatch,
   supplies,
   uploadBatchPhotos,
@@ -2938,6 +3091,7 @@ function BatchForm({
   cancelEdit: () => void;
   deleteBatchPhoto: (photo: BatchPhoto) => void;
   ingredients: Ingredient[];
+  products: Product[];
   saveBatch: (formData: FormData) => void;
   supplies: SupplyEntry[];
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
@@ -2948,7 +3102,7 @@ function BatchForm({
   const [formBatchId] = useState(() => batch?.id ?? crypto.randomUUID());
   const [stagedPhotos, setStagedPhotos] = useState<Array<{ file: File; previewUrl: string; rowId: string }>>([]);
   const [isSavingWithPhotos, setIsSavingWithPhotos] = useState(false);
-  const [selectedProductId, setSelectedProductId] = useState(batch?.productId ?? products[0].id);
+  const [selectedProductId, setSelectedProductId] = useState(batch?.productId ?? products[0]?.id ?? "");
   const [formulaMessage, setFormulaMessage] = useState("");
   const [formulaRows, setFormulaRows] = useState<BatchFormulaRow[]>(() => {
     const savedRows = parseBatchIngredients(batch?.ingredientsNotes ?? "");
@@ -2956,7 +3110,7 @@ function BatchForm({
       return savedRows;
     }
 
-    return buildFormulaRowsFromPreviousBatch(batches.find((item) => item.productId === (batch?.productId ?? products[0].id)));
+    return buildFormulaRowsFromPreviousBatch(batches.find((item) => item.productId === (batch?.productId ?? products[0]?.id ?? "")));
   });
 
   const [processStepRows, setProcessStepRows] = useState<BatchProcessStepRow[]>(() => {
@@ -3143,7 +3297,7 @@ function BatchForm({
         <datalist id="formulaStepSuggestions">
           {stepNameSuggestions.map((step) => <option key={step} value={step} />)}
         </datalist>
-        <ProductSelect onChange={(event) => changeProduct(event.target.value)} value={selectedProductId} />
+        <ProductSelect onChange={(event) => changeProduct(event.target.value)} products={products} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
           <Input name="dateMade" label="Date made" type="date" defaultValue={batch?.dateMade ?? getToday()} />
@@ -4620,6 +4774,7 @@ function CostingForm({
   ingredients,
   message,
   messageTone,
+  products,
   saveCosting,
   supplies,
 }: {
@@ -4631,6 +4786,7 @@ function CostingForm({
   ingredients: Ingredient[];
   message: string;
   messageTone: "good" | "bad" | "info";
+  products: Product[];
   saveCosting: (formData: FormData) => void;
   supplies: SupplyEntry[];
 }) {
@@ -4647,7 +4803,7 @@ function CostingForm({
     () => costing?.batchId || batches.find((item) => item.productId === costing?.productId)?.id || batchesByProduct[0]?.productBatches[0]?.id || "",
   );
   const selectedBatch = batches.find((item) => item.id === selectedBatchId);
-  const selectedProductId = selectedBatch?.productId ?? costing?.productId ?? products[0].id;
+  const selectedProductId = selectedBatch?.productId ?? costing?.productId ?? products[0]?.id ?? "";
   const savedIngredients = costing
     ? ingredientEntries.filter((entry) => (costing.batchId ? entry.batchId === costing.batchId : entry.productId === costing.productId && !entry.batchId))
     : [];
@@ -4678,7 +4834,7 @@ function CostingForm({
 
     return formulaRows.length > 0
       ? autoCostRows(formulaRows)
-      : [{ batchId: costing?.batchId ?? "", brandName: "", cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0].id, quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }];
+      : [{ batchId: costing?.batchId ?? "", brandName: "", cost: 0, id: "", ingredientName: "", productId: costing?.productId ?? products[0]?.id ?? "", quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }];
   });
   const [utilityRows, setUtilityRows] = useState<CostingUtilityRow[]>(() => {
     if (structuredDetail?.utilityRows?.length) {
@@ -4875,7 +5031,7 @@ function CostingForm({
   }
 
   function downloadCosting() {
-    const filenameBase = `${productName(selectedProductId)}${selectedBatch?.batchVersion ? ` ${selectedBatch.batchVersion}` : ""}`;
+    const filenameBase = `${productName(selectedProductId, products)}${selectedBatch?.batchVersion ? ` ${selectedBatch.batchVersion}` : ""}`;
     const filename = `${filenameBase.toLowerCase().replaceAll(" ", "-")}-costing.csv`;
     downloadCsv(
       filename,
@@ -5194,6 +5350,7 @@ function CostingForm({
         packagingRows={packagingRows}
         batchVersion={selectedBatch?.batchVersion ?? ""}
         productId={selectedProductId}
+        products={products}
         suggestedPrice={suggestedPrice}
         suggestedTargetPrice={suggestedTargetPrice}
         targetFoodCost={targetFoodCost}
@@ -5267,6 +5424,7 @@ function CostingPrintReport({
   packagingCost,
   packagingRows,
   productId,
+  products,
   suggestedPrice,
   suggestedTargetPrice,
   targetFoodCost,
@@ -5310,6 +5468,7 @@ function CostingPrintReport({
   packagingCost: number;
   packagingRows: CostingNamedCostRow[];
   productId: string;
+  products: Product[];
   suggestedPrice: number;
   suggestedTargetPrice: number | null;
   targetFoodCost: number;
@@ -5329,7 +5488,7 @@ function CostingPrintReport({
   return (
     <div className="print-report" id="costing-print-report">
       <h1>Aly & Shin Costing Sheet</h1>
-      <p>{productName(productId)}{batchVersion ? ` ${batchVersion}` : ""} / Generated {getToday()}</p>
+      <p>{productName(productId, products)}{batchVersion ? ` ${batchVersion}` : ""} / Generated {getToday()}</p>
 
       <h2>Summary</h2>
       <table>
@@ -5671,10 +5830,12 @@ function BatchTastingSection({
 function JournalForm({
   cancelEdit,
   entry,
+  products,
   saveJournal,
 }: {
   cancelEdit: () => void;
   entry: ContentJournalEntry | null;
+  products: Product[];
   saveJournal: (formData: FormData) => void;
 }) {
   const mediaOnly = entry?.mediaCaptured.split(". Link: ")[0] ?? "";
@@ -5684,7 +5845,7 @@ function JournalForm({
     <FormPanel title={entry ? "Edit content capture" : "Content capture record"} icon={<NotebookPen size={18} />}>
       <form action={saveJournal} className="grid gap-3" key={entry?.id ?? "new-journal"}>
         <input name="id" type="hidden" value={entry?.id ?? ""} />
-        <ProductSelect selectedProductId={entry?.productId} />
+        <ProductSelect products={products} selectedProductId={entry?.productId} />
         <div className="grid gap-3 sm:grid-cols-2">
           <Input name="entryDate" label="Capture date" type="date" defaultValue={entry?.entryDate ?? getToday()} />
           <Select name="contentAngle" label="Best use" options={["product proof", "behind the scenes", "packaging test", "tasting feedback", "lesson learned", "launch teaser", "not content-worthy"]} defaultValue={entry?.postIdeas ?? "product proof"} />

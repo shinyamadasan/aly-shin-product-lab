@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
-import { products } from "@/lib/sample-data";
 import type { LabState } from "@/lib/lab-state";
 import { parseBatchIngredients } from "@/lib/batches";
 import { productName } from "@/components/product-controls";
@@ -21,7 +20,7 @@ export function BakePage({
   labState: LabState;
   saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
 }) {
-  const batchesByProduct = products
+  const batchesByProduct = labState.products
     .map((product) => ({
       product,
       productBatches: labState.batches.filter((item) => item.productId === product.id).sort((a, b) => (b.dateMade || "").localeCompare(a.dateMade || "")),
@@ -81,7 +80,7 @@ export function BakePage({
     }
     isConfirmingRef.current = true;
     setIsConfirming(true);
-    const batchLabel = `${productName(selectedBatch.productId)} ${selectedBatch.batchVersion}`;
+    const batchLabel = `${productName(selectedBatch.productId, labState.products)} ${selectedBatch.batchVersion}`;
     await confirmBake(selectedBatch.id, batchLabel, multiplier, deductions, allowNegative);
     isConfirmingRef.current = false;
     setIsConfirming(false);

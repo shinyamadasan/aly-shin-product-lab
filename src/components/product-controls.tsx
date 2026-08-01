@@ -1,12 +1,14 @@
 import type React from "react";
-import { products } from "@/lib/sample-data";
+import type { Product } from "@/lib/product-lab-types";
 
 export function ProductSelect({
   onChange,
+  products,
   selectedProductId,
   value,
 }: {
   onChange?: (event: React.ChangeEvent<HTMLSelectElement>) => void;
+  products: Product[];
   selectedProductId?: string;
   value?: string;
 }) {
@@ -47,6 +49,6 @@ export function MediaChecklist({ selectedMedia = "" }: { selectedMedia?: string 
   );
 }
 
-export function productName(productId: string) {
+export function productName(productId: string, products: Product[]) {
   return products.find((product) => product.id === productId)?.name ?? productId;
 }

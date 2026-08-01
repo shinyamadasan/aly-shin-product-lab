@@ -3,6 +3,12 @@
 > Catalog by area, with status. The source of truth for whether a feature EXISTS —
 > not whether it is good.
 
+## Products
+
+| Status | What it adds |
+|---|---|
+| Done | Add/Edit/Delete a product from the Product Admin page (`/admin`). Products were previously a hardcoded 6-item array (`src/lib/sample-data.ts`) with no way to add a new one at all -- they now load from and save to the `products` Supabase table (or `localStorage` in offline mode), the same dual-mode pattern as every other entity. A new product immediately appears in the Proof Day product picker and, once it has a proof batch, the Costing page's batch selector -- the same flow the original 6 products already went through. Delete is reference-gated: a product with any linked batches/costing/tasting/journal records can't be hard-deleted (set `status` to Paused instead); an unused product can be deleted outright. |
+
 ## Inventory
 
 Delivered incrementally as 5 milestones; each one ships as its own working, tested slice.

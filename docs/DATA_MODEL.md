@@ -2,6 +2,54 @@
 
 > State shapes, storage keys, and persistence paths.
 
+## Products
+
+### `products` (Supabase table, `supabase-schema.sql` + `supabase-add-product-decision.sql`)
+
+`id` (`text primary key` -- a human-readable slug for the original seeded products, e.g.
+`"brownies"`; a `crypto.randomUUID()` for every product added through the app since nothing else
+in the codebase parses or pattern-matches a product id's format, only equality-checks it), `name`,
+`category`, `product_role`, `status` (default `'testing'`), `description`, `notes` (unused at the
+app layer), `main_photo_url` (nullable), `decision` (added by `supabase-add-product-decision.sql`,
+default `'Needs proof'`), `created_at`/`updated_at`. No `check` constraints on the classification
+columns (`product_role`, `status`, `decision`) -- matches this app's existing convention; the
+TypeScript union types below are the source of truth for allowed values.
+
+### `Product` (`src/lib/product-lab-types.ts`)
+
+```ts
+type ProductStatus = "testing" | "costed" | "tasting" | "launch_candidate" | "paused";
+type ProductRole = "Hero candidate" | "Bundle product" | "Premium upgrade" | "Add-on candidate";
+
+type Product = {
+  id: string;
+  name: string;
+  category: string;
+  role: ProductRole;
+  status: ProductStatus;
+  description: string;
+  image: string; // "" when unset -- maps to main_photo_url
+  decision: "Needs proof" | "Retest" | "Candidate" | "Add-on test";
+};
+```
+
+### `LabState.products` (`src/lib/lab-state.ts`)
+
+Loaded via `loadSupabaseData()`'s `Promise.all` alongside every other entity when Supabase is
+configured (`supabase.from("products").select("*")`); read from/written to
+`window.localStorage` otherwise -- the same dual-mode pattern as every other entity in this file.
+Products were previously a hardcoded array (`src/lib/sample-data.ts`) with no create/edit/delete
+path at all; they are now app-editable via `saveProduct`/`deleteProduct` (`src/app/product-lab.tsx`)
+and the Product Admin page (`/admin`).
+
+Delete is reference-gated, not a plain cascade delete, even though Postgres would happily cascade
+(`product_batches.product_id references products(id) on delete cascade`, and similarly for
+`costing_entries`, `costing_summaries`, `tasting_feedback`, `content_journal`). `getProductReferenceCount`/
+`canDeleteProduct` (`src/lib/product-safety.ts`) block a hard delete whenever a product has any
+linked batches/costing/tasting/journal rows -- the UI points at setting `status` to `"paused"`
+instead. This mirrors the existing `canHardDeleteItem`/`getItemReferenceSummary` convention
+(`src/lib/inventory-safety.ts`) already used for ingredients.
+
 ## Inventory
 
 ### `ingredients` (Supabase table, `supabase-add-inventory.sql`)
