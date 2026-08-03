@@ -55,9 +55,15 @@ instead. This mirrors the existing `canHardDeleteItem`/`getItemReferenceSummary`
 ### `ingredients` (Supabase table, `supabase-add-inventory.sql`)
 
 The ingredient master record. `id` (`uuid`), `name` (unique, case/whitespace-insensitive),
-`base_unit` (`g|kg|ml|L|pcs`), `current_quantity`, `low_stock_threshold`,
-`target_stock_quantity`, `nearest_expiration_date` (nullable), `average_unit_cost` (nullable),
-`notes`, `is_active`, `created_at`/`updated_at`.
+`base_unit` (canonical only -- `g|ml|pcs`, see "Canonical units" below), `current_quantity`,
+`low_stock_threshold`, `target_stock_quantity`, `nearest_expiration_date` (nullable),
+`average_unit_cost` (nullable), `notes`, `is_active`, `created_at`/`updated_at`.
+`supabase-migrate-canonical-base-units.sql` adds three nullable marker columns --
+`base_unit_migrated_from`, `base_unit_migrated_at`, `base_unit_migration_flagged_reason` -- and a
+`NOT VALID` CHECK constraint restricting `base_unit` to `('g','ml','pcs')` (a deliberate, narrow
+exception to this schema's usual "no CHECK constraints on classification columns, TS is the source
+of truth" convention, since this exact column being unconstrained was the root cause of a class of
+unit-mismatch bugs).
 
 ### `Ingredient` (`src/lib/product-lab-types.ts`)
 
@@ -66,8 +72,91 @@ The camelCase TS shape `loadSupabaseData()` maps `ingredients` rows into, and wh
 columns flatten to `""`/`0`, matching every other entity in this file (e.g.
 `SupplyEntry.qualityRating: number`) rather than `| null`.
 
+#### Canonical units
+
+`CANONICAL_UNITS = { mass: "g", volume: "ml", count: "pcs" }` (`src/lib/product-lab-types.ts`) is
+the single source of truth for the three units an ingredient's own `baseUnit` can ever be --
+`IngredientBaseUnit` is derived from it (`(typeof CANONICAL_UNITS)[keyof typeof CANONICAL_UNITS]`),
+not a separately hand-typed union. kg/L (and tbsp/tsp/cup) remain valid **purchase and recipe
+input units forever** -- a purchase can be logged in kg, a recipe can call for a tablespoon -- but
+they are always converted (via `unit-conversion.ts`'s `convertToBaseUnit`/`convertUnit`) into the
+ingredient's own canonical unit before ever touching `current_quantity`/`average_unit_cost` or the
+ledger. `getMeasurementFamily(baseUnit)` derives "mass"/"volume"/"count" from `CANONICAL_UNITS` --
+it is not a stored column, since a stored value would just be redundant with `baseUnit` and could
+drift from it.
+
+Every ingredient-inventory-mutation path shares this one conversion implementation: CSV purchase
+import, manual "Log a Purchase" (`src/lib/supply-inventory-effect.ts`), Bake, the purchase-history
+repair/backfill, and stock adjustments (`src/lib/stock-adjustment.ts`, see below). Costing's
+supplier-matching (`src/lib/supplies.ts`) tries the same canonical conversion first and only falls
+back to its own density-based mass&lt;-&gt;volume *estimate* when no real conversion exists (e.g. a
+cup of flour into grams) -- that estimate is a distinct, Costing-only capability and is never used
+for an actual inventory mutation.
+
+Pre-existing `kg`/`L` ingredients are converted to `g`/`ml` by
+`supabase-migrate-canonical-base-units.sql` (idempotent -- rescales `current_quantity` ×1000 and
+`average_unit_cost` ÷1000, preserving total valuation exactly, and rescales that ingredient's
+`inventory_transactions` rows the same way so the ledger's running balance stays reconciled). A row
+whose `base_unit` isn't one of the five legacy values, or whose numeric fields are non-finite, is
+flagged (`base_unit_migration_flagged_reason`) and left untouched rather than guessed at.
+
+#### Flagged rows: visibility and the `NOT VALID` constraint's real behavior
+
+`ingredients_base_unit_check` (`check (base_unit in ('g','ml','pcs'))`) is added `NOT VALID`, which
+means exactly two things -- no more, no less: (1) pre-existing rows are not scanned/rejected at the
+moment the constraint is added, so a flagged row keeps its legacy `base_unit` value without
+aborting the migration, and (2) every **new** INSERT or UPDATE is enforced against this constraint,
+starting immediately. The part that is easy to miss: enforcement on (2) is **whole-row**, not
+column-scoped -- Postgres re-validates every CHECK constraint against a row's full post-update
+state on any UPDATE, regardless of which columns that particular UPDATE actually changed. A flagged
+ingredient (still at `base_unit = 'kg'`, say) will therefore fail a purchase, a bake, a stock
+adjustment, an archive/restore, or a plain rename -- any `update ingredients ... where id = ...` --
+even though none of those touch `base_unit` themselves, because the row's `base_unit` still
+violates the constraint after the update.
+
+Because of this, flagged ingredients are surfaced read-only wherever they exist, before an
+operator can run into the failure unexplained:
+
+- `getFlaggedIngredients(ingredients)` (`src/lib/inventory-status.ts`) -- ingredients with
+  `baseUnitMigrationFlaggedReason` set, regardless of active/archived status (the constraint can
+  still block a write to an archived row).
+- The Inventory page (Items tab) renders a "Needs manual reconciliation" banner above the
+  ingredient list whenever this list is non-empty, naming each ingredient, its current `baseUnit`,
+  and the flagged reason.
+- The ingredient edit form locks a flagged ingredient's base-unit field to its current value via a
+  hidden input (rather than the normal g/ml/pcs `<select>`), because that `<select>`'s options
+  never include the row's actual legacy value -- without this, saving an unrelated field edit
+  would silently resubmit whichever option the browser defaults an unmatched `<select>` to,
+  reinterpreting the ingredient's unit without ever running the real conversion.
+- Any `ingredients`-table update that still fails against this constraint (i.e. the operator tries
+  to save before reconciling) is translated by `describeIngredientConstraintError`
+  (`src/lib/inventory-errors.ts`, matched by Postgres error code `23514` plus the constraint name,
+  not by message text) into an actionable message instead of raw Postgres text. Nothing repairs or
+  reinterprets the row automatically; the operator must reconcile it.
+
+**Manual reconciliation procedure** (deliberately manual -- no in-app "fix" or "clear flag"
+button exists, and none should be added without a human deciding the correct canonical family
+first):
+
+1. Identify the correct canonical family for the ingredient (mass → `g`, volume → `ml`, count →
+   `pcs`) from its name/context and the flagged reason.
+2. Convert `current_quantity` and `average_unit_cost` into that canonical unit by hand, preserving
+   total valuation (`current_quantity × average_unit_cost` must be unchanged before/after -- the
+   same invariant the automatic migration preserves for `kg`/`L` rows).
+3. If the ingredient has any `inventory_transactions` rows, rescale their
+   `quantity_change`/`quantity_before`/`quantity_after` by the same factor, so the ledger's running
+   balance still reconciles with the corrected `current_quantity`.
+4. Update `ingredients.base_unit` to the corrected canonical unit, and only then clear
+   `base_unit_migration_flagged_reason` (set it to `null`) -- clearing the flag is the last step,
+   never the first, since it is the signal that reconciliation is complete.
+5. Once every flagged row is reconciled (no remaining
+   `base_unit_migration_flagged_reason is not null` rows), validate the constraint by hand:
+   `alter table ingredients validate constraint ingredients_base_unit_check;`.
+
 ```ts
-type IngredientBaseUnit = "g" | "kg" | "ml" | "L" | "pcs";
+const CANONICAL_UNITS = { mass: "g", volume: "ml", count: "pcs" } as const;
+type CanonicalUnit = (typeof CANONICAL_UNITS)[keyof typeof CANONICAL_UNITS];
+type IngredientBaseUnit = CanonicalUnit; // "g" | "ml" | "pcs"
 
 type Ingredient = {
   id: string;
@@ -77,7 +166,7 @@ type Ingredient = {
   lowStockThreshold: number;
   targetStockQuantity: number;
   nearestExpirationDate: string; // "" when unset
-  averageUnitCost: number;       // 0 when unset
+  averageUnitCost: number;       // 0 when unset -- never touched by Bake or a stock adjustment
   notes: string;
   isActive: boolean;
 };
@@ -125,21 +214,44 @@ type PurchaseImportRow = {
 
 ### `inventory_transactions` (Supabase table)
 
-The append-only ledger. One row per ingredient per confirmed operation. `transaction_type` and
-`source_type` are plain `text` (no `check` constraint) with more values reserved than are
-currently produced -- `consume`/`adjustment`/`waste` and `bake`/`manual` exist in the type today
-so a later milestone needs no migration to start using them.
+The append-only ledger. One row per ingredient per confirmed operation, always in the ingredient's
+own canonical unit. `transaction_type` and `source_type` are plain `text` (no `check` constraint).
+`purchase` (CSV import and manual purchase), `consume` (Bake), and `adjustment` (stock adjustments,
+`supabase-add-inventory-adjustment.sql`) are all produced today; `waste` remains reserved/unused.
+`reason`/`actor` (added by `supabase-add-inventory-adjustment.sql`, nullable, additive) are only
+ever set on an `adjustment` row -- every purchase/bake transaction leaves both null.
 
 ```ts
-type InventoryTransactionType = "purchase" | "consume" | "adjustment" | "waste"; // "purchase" (M2) and "consume" (M3) produced so far
-type InventoryTransactionSourceType = "purchase_import" | "bake" | "manual"; // "purchase_import" (M2) and "bake" (M3) produced so far
+type InventoryTransactionType = "purchase" | "consume" | "adjustment" | "waste";
+type InventoryTransactionSourceType = "purchase_import" | "bake" | "manual";
+type StockAdjustmentReason = "household_use" | "waste_or_spoilage" | "recipe_testing" | "spillage" | "stock_count_correction" | "other";
 
 type InventoryTransaction = {
   id: string; ingredientId: string; transactionType: InventoryTransactionType;
   quantityChange: number; quantityBefore: number; quantityAfter: number;
   sourceType: InventoryTransactionSourceType; sourceId: string; note: string; createdAt: string;
+  reason?: StockAdjustmentReason; actor?: string | null;
 };
 ```
+
+#### Stock adjustments (`src/lib/stock-adjustment.ts`)
+
+Inventory moved outside baking -- household use, waste/spoilage, a recipe test, spillage, a
+physical stock-count correction, or anything else. Deliberately parallel to Bake, not built on top
+of it: `applyStockAdjustment` normalizes the entered quantity via the same canonical-unit
+conversion every other path uses, applies the same negative-stock policy `applyBakeConfirmation`
+already enforces (blocked unless an explicit `allowNegative` override is passed), and never
+touches `averageUnitCost`, recipe usage, or batch costing -- an adjustment changes quantity and
+derived value only, exactly like Bake's consume path.
+
+A correction is a **reversal, never a deletion**: `reverseStockAdjustment` submits an exact
+negation as a brand-new ledger row, reusing the existing `sourceId` field to point at the
+transaction it undoes (`transactionType === "adjustment" && sourceId !== ""` is what makes a
+reversal recognizable) -- no new column needed, and no row is ever edited or removed. RPC
+`apply_inventory_adjustment` (`supabase-add-inventory-adjustment.sql`) persists a forward
+adjustment or a reversal identically -- both are just another call to the same function with a
+pre-computed payload; the SQL layer does no business-logic computation, matching every other RPC
+in this schema.
 
 ### `LabState` additions (`src/lib/lab-state.ts`)
 

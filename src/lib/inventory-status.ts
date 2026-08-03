@@ -73,6 +73,15 @@ export function getExpiringIngredients(ingredients: Ingredient[], today: string,
     .sort((a, b) => Date.parse(a.nearestExpirationDate) - Date.parse(b.nearestExpirationDate));
 }
 
+// Ingredients supabase-migrate-canonical-base-units.sql could not safely convert -- an
+// unrecognized legacy base_unit, or a non-finite numeric field -- left exactly as they were
+// rather than guessed at. Deliberately not filtered to active ingredients only: a flag is a
+// data-integrity issue regardless of whether the ingredient is currently in active use, and the
+// NOT VALID base_unit constraint can still block a write to an archived-but-flagged row.
+export function getFlaggedIngredients(ingredients: Ingredient[]) {
+  return ingredients.filter((ingredient) => Boolean(ingredient.baseUnitMigrationFlaggedReason));
+}
+
 // Powers all 3 Dashboard summary cards (low stock, out of stock, expiring) in one pass.
 export function getInventorySummaryCounts(ingredients: Ingredient[], today: string, expiresSoonDays: number = DEFAULT_EXPIRES_SOON_DAYS) {
   const active = ingredients.filter((ingredient) => ingredient.isActive);

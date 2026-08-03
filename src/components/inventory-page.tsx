@@ -1,13 +1,18 @@
 import { Boxes } from "lucide-react";
 import { useRef, useState } from "react";
-import type { Ingredient, IngredientCategory, SupplyEntry } from "@/lib/product-lab-types";
+import type { Ingredient, IngredientCategory, StockAdjustmentReason, SupplyEntry } from "@/lib/product-lab-types";
+import { CANONICAL_UNITS } from "@/lib/product-lab-types";
 import { getToday, type LabState } from "@/lib/lab-state";
 import { getInventoryValue } from "@/lib/inventory-cost";
-import { getExpirationStatus, getStockStatus } from "@/lib/inventory-status";
+import { getExpirationStatus, getFlaggedIngredients, getStockStatus } from "@/lib/inventory-status";
 import { buildInventoryItemViews } from "@/lib/inventory-items";
+import { createMutationGuard } from "@/lib/mutation-guard";
 import { Button, FormPanel, Input, Select, SecondaryButton, Tag, Textarea } from "@/components/ui";
 
-export const baseUnitOptions = ["g", "kg", "ml", "L", "pcs"];
+// Every ingredient's own base unit is canonical -- kg/L stay valid purchase/recipe input units,
+// converted before ever reaching this list. Derived from CANONICAL_UNITS so there's exactly one
+// place these three unit strings are spelled out.
+export const baseUnitOptions = Object.values(CANONICAL_UNITS);
 
 // Deliberately excludes "equipment" -- Equipment already has its own table and workflow (see
 // IngredientCategory in product-lab-types.ts). "" (rendered as "Not set") is a valid choice, not
@@ -17,6 +22,16 @@ export const ingredientCategoryLabel: Record<IngredientCategory, string> = {
   ingredient: "Ingredient",
   packaging: "Packaging",
   consumable: "Consumable",
+  other: "Other",
+};
+
+export const stockAdjustmentReasonOptions: StockAdjustmentReason[] = ["household_use", "waste_or_spoilage", "recipe_testing", "spillage", "stock_count_correction", "other"];
+export const stockAdjustmentReasonLabel: Record<StockAdjustmentReason, string> = {
+  household_use: "Household use",
+  waste_or_spoilage: "Waste or spoilage",
+  recipe_testing: "Recipe testing",
+  spillage: "Spillage",
+  stock_count_correction: "Stock-count correction",
   other: "Other",
 };
 
@@ -75,7 +90,86 @@ function LowStockThresholdField({ ingredient }: { ingredient: Ingredient | null 
   );
 }
 
+// Stock moved outside baking -- household use, waste/spoilage, a recipe test, spillage, a
+// stock-count correction, or anything else. Deliberately separate from the ingredient edit form
+// and the purchase log: this never changes averageUnitCost, recipe usage, or batch costing (see
+// src/lib/stock-adjustment.ts). Collapsed by default so it doesn't compete for attention with the
+// day-to-day Edit/Buy/Archive actions.
+function AdjustStockRow({
+  ingredient,
+  adjustStock,
+}: {
+  ingredient: Ingredient;
+  adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [allowNegative, setAllowNegative] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  // A ref, not just isSubmitting state, guards re-entrancy -- the same reason Bake/Purchase
+  // Import guard with a useRef, not just useState (see bake-page.tsx's isConfirmingRef): a fast
+  // double-click can invoke handleSubmit twice before setIsSubmitting's effect on this closure
+  // lands on the next render. Keyed (even though only ever used with one key here) so this uses
+  // the same mechanism as the Timeline's per-row Reverse guard.
+  const guardRef = useRef(createMutationGuard<string>());
+
+  async function handleSubmit(formData: FormData) {
+    if (guardRef.current.isActive(ingredient.id)) {
+      return;
+    }
+    const quantity = Number(formData.get("quantity") || 0);
+    const unit = String(formData.get("unit") || ingredient.baseUnit).trim();
+    const reason = String(formData.get("reason") || "other") as StockAdjustmentReason;
+    const direction = formData.get("direction") === "increase" ? "increase" : "decrease";
+    const note = String(formData.get("note") || "").trim();
+
+    setIsSubmitting(true);
+    try {
+      await guardRef.current.run(ingredient.id, () => adjustStock(ingredient.id, quantity, unit, reason, direction, note, allowNegative));
+    } finally {
+      setIsSubmitting(false);
+    }
+    setIsOpen(false);
+    setAllowNegative(false);
+  }
+
+  if (!isOpen) {
+    return (
+      <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen(true)} type="button">
+        Adjust Stock
+      </button>
+    );
+  }
+
+  return (
+    <form action={handleSubmit} className="mt-3 grid w-full gap-2 rounded-md border border-[#d8c7b7] bg-[#f7f2ea] p-3 sm:grid-cols-2">
+      <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" defaultValue="decrease" name="direction">
+        <option value="decrease">Decrease stock</option>
+        <option value="increase">Increase stock</option>
+      </select>
+      <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" defaultValue="household_use" name="reason">
+        {stockAdjustmentReasonOptions.map((option) => (
+          <option key={option} value={option}>
+            {stockAdjustmentReasonLabel[option]}
+          </option>
+        ))}
+      </select>
+      <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="quantity" placeholder={`Quantity (${ingredient.baseUnit})`} step="0.01" type="number" />
+      <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" defaultValue={ingredient.baseUnit} name="unit" placeholder="Unit" />
+      <input className="col-span-full h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="note" placeholder="Note (optional)" />
+      <label className="col-span-full flex items-center gap-2 text-xs font-medium text-[#6f5a4c]">
+        <input checked={allowNegative} onChange={(event) => setAllowNegative(event.target.checked)} type="checkbox" />
+        Allow negative stock and adjust anyway
+      </label>
+      <div className="col-span-full flex gap-2">
+        <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting} type="submit">{isSubmitting ? "Saving..." : "Save adjustment"}</button>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen(false)} type="button">Cancel</button>
+      </div>
+    </form>
+  );
+}
+
 export function InventoryPage({
+  adjustStock,
   cancelEdit,
   deleteIngredient,
   editIngredient,
@@ -87,6 +181,7 @@ export function InventoryPage({
   restoreIngredient,
   saveIngredient,
 }: {
+  adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEdit: () => void;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
@@ -101,6 +196,7 @@ export function InventoryPage({
   const ingredients = labState.ingredients.filter((item) => item.isActive);
   const archivedIngredients = labState.ingredients.filter((item) => !item.isActive);
   const itemViews = buildInventoryItemViews(ingredients, labState.supplies);
+  const flaggedIngredients = getFlaggedIngredients(labState.ingredients);
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
@@ -114,7 +210,21 @@ export function InventoryPage({
           <input name="id" type="hidden" value={ingredient?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-2">
             <Input name="name" label="Ingredient name" placeholder="Fresh Milk" defaultValue={ingredient?.name} />
-            <Select name="baseUnit" label="Base unit" options={baseUnitOptions} defaultValue={ingredient?.baseUnit || "g"} />
+            {ingredient?.baseUnitMigrationFlaggedReason ? (
+              // Flagged rows keep whatever legacy base_unit the migration left them at (e.g. a
+              // value outside g/ml/pcs) -- baseUnitOptions only offers the three canonical units,
+              // so a normal <select> here would silently default to the first option and
+              // resubmit a DIFFERENT base_unit on save, reinterpreting the ingredient exactly
+              // where the migration deliberately chose not to guess. A hidden input preserves the
+              // current value exactly instead.
+              <div className="grid gap-1 text-sm font-medium">
+                Base unit
+                <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-sm">{ingredient.baseUnit} (flagged, not editable here)</p>
+                <input name="baseUnit" type="hidden" value={ingredient.baseUnit} />
+              </div>
+            ) : (
+              <Select name="baseUnit" label="Base unit" options={baseUnitOptions} defaultValue={ingredient?.baseUnit || "g"} />
+            )}
           </div>
           <label className="grid gap-1 text-sm font-medium">
             Category (optional)
@@ -155,6 +265,23 @@ export function InventoryPage({
         <p className="mt-2">This is the master list of ingredients tracked in inventory. Quantity changes from purchases or baking come in later milestones -- for now, current quantity is only editable when an ingredient is first created.</p>
         <p className="mt-2">Archive hides an Item from active workflows while preserving purchases, stock history, formulas, and reports.</p>
       </div>
+
+      {flaggedIngredients.length > 0 ? (
+        <div className="rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d] xl:col-span-2">
+          <p className="text-xs font-semibold uppercase tracking-[0.16em]">Needs manual reconciliation</p>
+          <p className="mt-2">
+            The unit-normalization migration could not safely convert {flaggedIngredients.length} ingredient{flaggedIngredients.length === 1 ? "" : "s"} below -- each was left exactly as it was, not guessed at. Until its unit and quantity are corrected by hand, edits to it (including a purchase, a bake, or a stock adjustment) may fail to save.
+          </p>
+          <ul className="mt-3 grid gap-2">
+            {flaggedIngredients.map((item) => (
+              <li className="rounded-md border border-[#e0a458] bg-white px-3 py-2" key={item.id}>
+                <span className="font-semibold">{item.name}</span> -- current unit <span className="font-mono">{item.baseUnit}</span> -- {item.baseUnitMigrationFlaggedReason}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3">Next step: open the Item, review its unit and quantity against a physical count, and correct them by hand (see docs/DATA_MODEL.md&apos;s reconciliation steps). The flag is only cleared after that manual reconciliation -- this page never clears or reinterprets it automatically.</p>
+        </div>
+      ) : null}
 
       <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2">
         <div className="border-b border-[#eaded2] p-5">
@@ -218,10 +345,11 @@ export function InventoryPage({
                   <p className="mt-1 font-semibold">PHP {value.toFixed(2)}</p>
                   <p className="text-[#6f5a4c]">{item.averageUnitCost ? `@ PHP ${item.averageUnitCost.toFixed(2)}` : "No cost set"}</p>
                 </div>
-                <div className="flex gap-2 lg:flex-col">
+                <div className="flex flex-wrap gap-2 lg:flex-col">
                   <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editIngredient(item)} type="button">Edit</button>
                   <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => logPurchaseForIngredient(item)} type="button">Buy</button>
                   <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Archive ${item.name}? It will be hidden from active workflows, but all purchase, stock, formula, and report history will be preserved.`) ? deleteIngredient(item.id) : undefined} type="button">Archive</button>
+                  <AdjustStockRow adjustStock={adjustStock} ingredient={item} />
                 </div>
               </article>
             );

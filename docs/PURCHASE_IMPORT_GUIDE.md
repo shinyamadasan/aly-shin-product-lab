@@ -25,7 +25,9 @@ Best practices for AI receipt extraction:
 - If using package columns, put package size in `package_size` and `package_unit`, not only in `item_name`.
 - Use plain decimal numbers only. Do not include currency symbols or commas.
 - Use ISO dates: `YYYY-MM-DD`.
-- Prefer canonical units: `g`, `kg`, `ml`, `L`, `pcs`.
+- Any of `g`, `kg`, `ml`, `L`, `pcs` works as a receipt unit -- kg/L are converted into the matched
+  Item's own canonical unit (always `g`, `ml`, or `pcs`; see "Unit Handling" below) before
+  affecting stock, the same as any other convertible unit.
 - Do not include subtotal, tax, discount, payment method, change, or loyalty rows as inventory items.
 - Repeat `supplier`, `receipt_number`, and `purchase_date` on every row for maximum compatibility.
 
@@ -179,9 +181,14 @@ Suggested partial matches are not automatically confirmed. The operator must con
 
 ## Unit Handling
 
-Supported normalized units:
+An Item's own `baseUnit` is always one of the three **canonical units** -- `g` (mass), `ml`
+(volume), or `pcs` (count); see `CANONICAL_UNITS` in `src/lib/product-lab-types.ts`. `kg` and `L`
+are receipt/recipe **input units only** -- always valid to type on a CSV row, always converted
+into the matched Item's canonical unit before ever affecting stock.
 
-| Canonical unit | Accepted inputs |
+Recognized unit spellings, normalized before matching or converting:
+
+| Normalized form | Accepted inputs |
 |---|---|
 | `g` | `g`, `gram`, `grams` |
 | `kg` | `kg`, `kilogram`, `kilograms` |
@@ -192,7 +199,8 @@ Supported normalized units:
 | `tsp` | `tsp`, `teaspoon`, `teaspoons` |
 | `cup` | `cup`, `cups` |
 
-Automatic conversions:
+Automatic conversions (`unit-conversion.ts`'s `convertUnit`, the same primitive every other
+inventory-mutation path and Costing's supplier matching share):
 
 | From | To | Factor |
 |---|---|---:|
@@ -207,7 +215,8 @@ Automatic conversions:
 | `cup` | `ml` | `240` |
 | `cup` | `L` | `0.24` |
 
-Unsupported conversions, such as mass to volume or volume to mass, leave the row pending for operator correction.
+Unsupported conversions, such as mass to volume or volume to mass, leave the row pending for
+operator correction -- never guessed at, regardless of which canonical unit the matched Item uses.
 
 ## Purchase History Records
 

@@ -407,6 +407,38 @@
 - AI-recommended priority: P2
 - status:      pending
 
+### PROP-023 — Live staging-Postgres execution test of the canonical-unit migration and its rollback
+- ▶ Decision: Approve — the migration mutates live inventory quantities/costs and its own comments claim idempotency and valuation-preservation properties that have never actually been run against a real Postgres instance.
+- ▶ Risk: High — touches ingredient quantities, average costs, and ledger rows directly; the same "when unsure, say High" default this contract already uses for anything ingredient/inventory-transaction-shaped (see PROP-018).
+- type:        chore
+- source captures: raised during ultrareview of the canonical-unit-normalization + stock-adjustment PR (2026-08-03)
+- goal alignment:  supports — the same "correct, not guessed" principle behind PROP-011/PROP-018; a migration this codebase will only ever run once per environment deserves to be proven, not just reasoned about.
+- expected user value: dev/ops — confidence that running `supabase-migrate-canonical-base-units.sql` against the real production database won't silently misconvert a null cost, double-scale a ledger row, or fail to be idempotent on a second accidental run.
+- evidence:    `tests/canonical-unit-migration-schema.test.ts` verifies the migration's SQL only via regex against its raw text (matching this repo's existing convention -- `manual-purchase-inventory-effect-schema.test.ts` does the same for a different migration -- since no live-DB test harness exists anywhere in this suite). That proves the SQL *contains* the right shapes, not that Postgres actually *executes* them the way the comments claim: that a NULL `average_unit_cost` truly survives `/ 1000` unchanged, that the ×1000/÷1000 rescale and the ledger rescale are atomic together, and that running the file twice is a true no-op. Separately, the rollback procedure described in this PR's plan and review (bounding the ledger reversal to `created_at < base_unit_migrated_at`) was never implemented as an executable script -- only documented as manual prose -- so this proposal's scope includes writing that script before it can be tested, not just testing something that already exists.
+- effort:      M — needs a disposable staging Postgres instance (local Docker Postgres or a scratch Supabase project) seeded with representative `kg`/`L`/flagged ingredients and ledger history, a small runner script or manual `psql` session to apply the migration twice and assert the valuation/idempotency invariants, and writing the rollback script itself before it can be exercised.
+- dependencies: none blocking; independent of the shipped PR, which already isolates ambiguous rows and preserves valuation by construction (verified by unit-level arithmetic tests) -- this proposal is about proving that construction holds against a real database, not fixing a known defect.
+- confidence:  high on what needs proving; medium on tooling -- whether this repo already has a preferred disposable-Postgres setup (e.g. a Supabase local dev stack) or one needs to be stood up for this specifically.
+- ambiguity:   whether the rollback script belongs in this proposal or should be split into its own (the migration test and the rollback test share the same staging setup, so bundling them is likely cheaper, but the rollback script itself is new code that didn't exist before this proposal).
+- why now vs later: not urgent for merge (the shipped migration is idempotent and valuation-preserving by unit-test-verified construction) -- but should happen before this migration is ever run against real production data, since a live-DB verification is the only way to catch a Postgres-specific surprise (numeric precision, transaction semantics, constraint timing) that a text-only test structurally cannot.
+- AI-recommended priority: P1
+- status:      pending
+
+### PROP-024 — Test a unit change in `planSupplyEdit`'s "recalculated" branch (e.g. `1 kg` edited to `750 g`)
+- ▶ Decision: Approve — cheap, safe, closes a known and specifically-named test gap.
+- ▶ Risk: Low — adding a test only; no production code change implied unless it surfaces a real defect, and inspection of the current implementation already shows the logic to be correct.
+- type:        chore
+- source captures: raised during ultrareview of the canonical-unit-normalization + stock-adjustment PR (2026-08-03)
+- goal alignment:  supports — extends the same "editing a past purchase must not corrupt current quantity or average cost" guarantee this PR already tests for the "quantity-only" branch, to the more common "recalculated" branch (the purchase is still the newest thing that happened to the ingredient).
+- expected user value: dev -- a regression that broke unit-aware recalculation (e.g. reusing `previousSupply.packQuantity`'s raw value instead of re-converting `nextSupply` through `convertToBaseUnit` in the recalculated branch) would not be caught by the current suite today.
+- evidence:    `tests/supply-inventory-effect.test.ts`'s existing "recalculates exactly" test keeps the unit identical (`"ml"`) across both the previous and next revision of the edited purchase; only the separate "quantity-only" branch has a dedicated unit-change test (`"planSupplyEdit's quantity-only path converts both revisions before taking the delta"`). `src/lib/supply-inventory-effect.ts`'s `planSupplyEdit` recalculated branch calls `reverseSupplyPurchaseEffect(ingredient, previousSupply)` then `applySupplyPurchaseEffect(reversed, nextSupply, ...)` -- each independently converts via the supply's own `unit` against the ingredient's current canonical unit, so a mid-edit unit change (e.g. `1 kg` → `750 g`) should already net out correctly by construction, but this is currently unverified by any test.
+- effort:      S — one new test in `tests/supply-inventory-effect.test.ts`, following the existing fixture/assertion conventions in that file.
+- dependencies: none
+- confidence:  high — the code path and the expected assertion are both already identified precisely.
+- ambiguity:   none
+- why now vs later: not blocking (the underlying logic is already verified correct by inspection) -- but cheap enough that there's no reason to defer it past the next time `supply-inventory-effect.ts` is touched.
+- AI-recommended priority: P2
+- status:      pending
+
 ## Proposal contract
 *(the structured shape triage produces — keep this shape so downstream stages stay swappable)*
 ```

@@ -161,7 +161,18 @@ export type AiReviewRecord = {
   createdAt: string;
 };
 
-export type IngredientBaseUnit = "g" | "kg" | "ml" | "L" | "pcs";
+// Single source of truth for the three canonical inventory units -- mass, volume, and count all
+// normalize into exactly one of these before touching current_quantity/average_unit_cost. Every
+// consumer (unit-conversion.ts's helpers, inventory-page.tsx's option list, the canonical-unit
+// migration) references this constant instead of repeating "g"/"ml"/"pcs" as bare literals.
+export const CANONICAL_UNITS = { mass: "g", volume: "ml", count: "pcs" } as const;
+export type CanonicalUnit = (typeof CANONICAL_UNITS)[keyof typeof CANONICAL_UNITS];
+
+// An ingredient's own stored unit is always canonical -- kg/L remain valid purchase/recipe
+// *input* units forever (see unit-conversion.ts's convertToBaseUnit), converted before ever
+// reaching this field. supabase-migrate-canonical-base-units.sql converts any pre-existing kg/L
+// ingredient row to g/ml.
+export type IngredientBaseUnit = CanonicalUnit;
 
 // Deliberately excludes "equipment" -- Equipment already has its own table and workflow. "" means
 // not set (existing ingredients read this way until edited; no backfill).
@@ -180,6 +191,11 @@ export type Ingredient = {
   notes: string;
   isActive: boolean;
   archivedAt?: string;
+  // Set only when supabase-migrate-canonical-base-units.sql could not safely convert this row (an
+  // unrecognized legacy base_unit, or a non-finite numeric field) -- surfaced read-only in the
+  // Inventory page so an operator can reconcile it by hand; the app never writes to or clears
+  // this field itself.
+  baseUnitMigrationFlaggedReason?: string | null;
 };
 
 // "suggested" is a strong partial-name match -- unlike every other method here, it never resolves
@@ -262,6 +278,11 @@ export type PurchaseImportRow = {
 export type InventoryTransactionType = "purchase" | "consume" | "adjustment" | "waste";
 export type InventoryTransactionSourceType = "purchase_import" | "bake" | "manual";
 
+// Stock moved outside baking -- household use, spoilage, a recipe test, spillage, a physical
+// stock-count correction, or anything else. Never affects recipe usage or batch costing; see
+// src/lib/stock-adjustment.ts.
+export type StockAdjustmentReason = "household_use" | "waste_or_spoilage" | "recipe_testing" | "spillage" | "stock_count_correction" | "other";
+
 export type InventoryTransaction = {
   id: string;
   ingredientId: string;
@@ -273,6 +294,10 @@ export type InventoryTransaction = {
   sourceId: string;
   note: string;
   createdAt: string;
+  // Only ever set on an "adjustment" transaction -- every purchase/bake/repair transaction leaves
+  // both undefined.
+  reason?: StockAdjustmentReason;
+  actor?: string | null;
 };
 
 export type EquipmentCalculationMode = "depreciation" | "replacement-reserve" | "gas-burn-rate";

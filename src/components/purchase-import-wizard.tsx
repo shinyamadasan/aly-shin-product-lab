@@ -7,8 +7,7 @@ import type { Ingredient, PurchaseImportRow, PurchaseImportRowStatus } from "@/l
 import { parseCsvFile, type ParsedCsv } from "@/lib/csv-parser";
 import { applyColumnMapping, isColumnMappingComplete, suggestColumnMapping, type ColumnField, type ColumnMapping, type MappedRow } from "@/lib/csv-column-mapping";
 import { buildExcludeRowChanges, buildPurchaseImportRowDrafts, guessIngredientCategory, isPurchaseImportReadyToConfirm, resolveRowQuantity, summarizePurchaseImportRows, type PurchaseImportRowDraft } from "@/lib/purchase-import";
-import { convertToBaseUnit } from "@/lib/unit-conversion";
-import { normalizeUnitText } from "@/lib/ingredient-normalization";
+import { convertToBaseUnit, guessCanonicalUnit } from "@/lib/unit-conversion";
 import { findReliableBrandForItem } from "@/lib/purchase-history";
 import { getPurchaseImportReview, isMeaningfulReceiptAlias, isPurchaseImportRowSafeToConfirm, type PurchaseImportReviewStatus } from "@/lib/purchase-import-review";
 import { suggestBrandFromKnownBrands, traceFindPartialMatch } from "@/lib/ingredient-matching";
@@ -69,11 +68,11 @@ function rowToMappedRow(row: PurchaseImportRow): MappedRow {
 }
 
 // A sensible starting point for the "Create New Item" form's base unit -- the row's own package
-// or flat unit, canonicalized. Falls back to "g" (never blocks on an unrecognized unit like "box"
-// or "pack"), same as the app's existing default for a from-scratch ingredient.
+// or flat unit, mapped to its canonical family (so a raw "kg"/"L" purchase still guesses the
+// correct family, g/ml, rather than the fallback). Falls back to "g" for an unrecognized unit like
+// "box" or "pack", same as the app's existing default for a from-scratch ingredient.
 function guessBaseUnitForRow(row: PurchaseImportRow): Ingredient["baseUnit"] {
-  const normalized = normalizeUnitText(row.rawPackageUnit.trim() || row.rawUnit);
-  return (baseUnitOptions as string[]).includes(normalized) ? (normalized as Ingredient["baseUnit"]) : "g";
+  return guessCanonicalUnit(row.rawPackageUnit.trim() || row.rawUnit);
 }
 
 export function PurchaseImportWizard({

@@ -1,4 +1,5 @@
 import { normalizeBrandText, normalizeIngredientName } from "./ingredient-normalization.ts";
+import { convertUnit } from "./unit-conversion.ts";
 import type { Ingredient, SupplyEntry } from "./product-lab-types.ts";
 
 export type PurchaseHistoryFilter = {
@@ -72,13 +73,23 @@ export function getChronologicalPurchases(purchases: SupplyEntry[]) {
 export function getPurchaseGroupSummary(group: PurchaseItemGroup): PurchaseGroupSummary {
   const [latestPurchase] = group.purchases;
   const latestUnitCost = latestPurchase && latestPurchase.packQuantity > 0 ? latestPurchase.totalCost / latestPurchase.packQuantity : 0;
-  const normalizedUnits = new Set(group.purchases.map((purchase) => purchase.unit.trim().toLowerCase()).filter(Boolean));
-  const canTotalQuantity = normalizedUnits.size === 1;
-  const totalPurchasedQuantity = canTotalQuantity ? group.purchases.reduce((total, purchase) => total + Number(purchase.packQuantity || 0), 0) : 0;
-  const totalPurchasedUnit = canTotalQuantity ? group.purchases.find((purchase) => purchase.unit.trim())?.unit.trim() ?? "" : "";
-  const pricedPurchases = group.purchases.filter((purchase) => purchase.packQuantity > 0 && purchase.totalCost > 0 && (!totalPurchasedUnit || purchase.unit.trim().toLowerCase() === totalPurchasedUnit.toLowerCase()));
+
+  // Total in the most recent purchase's own unit, converting every other purchase into it first --
+  // "1kg" and "500g" purchases of the same ingredient are compatible and should combine, even
+  // though their recorded units differ. Only a purchase whose unit genuinely doesn't convert (e.g.
+  // mass vs volume, or count vs mass) blocks the total, same all-or-nothing "Mixed units" fallback
+  // as before -- it's just no longer triggered merely by kg vs g.
+  const candidateUnit = group.purchases.find((purchase) => purchase.unit.trim())?.unit.trim() ?? "";
+  const canTotalQuantity = candidateUnit.length > 0 && group.purchases.every((purchase) => !purchase.unit.trim() || convertUnit(1, purchase.unit, candidateUnit) !== null);
+  const totalPurchasedUnit = canTotalQuantity ? candidateUnit : "";
+  const totalPurchasedQuantity = canTotalQuantity
+    ? group.purchases.reduce((total, purchase) => total + (convertUnit(purchase.packQuantity, purchase.unit || totalPurchasedUnit, totalPurchasedUnit) ?? 0), 0)
+    : 0;
+  const pricedPurchases = group.purchases.filter(
+    (purchase) => purchase.packQuantity > 0 && purchase.totalCost > 0 && (!totalPurchasedUnit || !purchase.unit.trim() || convertUnit(1, purchase.unit, totalPurchasedUnit) !== null),
+  );
   const totalCost = pricedPurchases.reduce((total, purchase) => total + purchase.totalCost, 0);
-  const totalQuantityForCost = pricedPurchases.reduce((total, purchase) => total + purchase.packQuantity, 0);
+  const totalQuantityForCost = pricedPurchases.reduce((total, purchase) => total + (convertUnit(purchase.packQuantity, purchase.unit || totalPurchasedUnit, totalPurchasedUnit) ?? 0), 0);
 
   return {
     averageUnitCost: canTotalQuantity && totalQuantityForCost > 0 ? totalCost / totalQuantityForCost : 0,

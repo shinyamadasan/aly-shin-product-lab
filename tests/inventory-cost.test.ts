@@ -7,7 +7,7 @@ function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
   return {
     id: crypto.randomUUID(),
     name: "Fresh Milk",
-    baseUnit: "L",
+    baseUnit: "ml",
     category: "",
     currentQuantity: 10,
     lowStockThreshold: 2,
