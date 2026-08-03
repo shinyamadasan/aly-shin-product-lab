@@ -33,6 +33,7 @@ import {
 import { finishAssetJobAttempt, type AssetJobAttemptRow } from "../src/lib/asset-job-attempts.ts";
 import { fromCreativePackageRow, type CreativePackageRow } from "../src/lib/creative-packages.ts";
 import { BRAND_BIBLE } from "../src/lib/marketing-advisor-context.ts";
+import { GENERATED_ASSETS_BUCKET } from "../src/lib/asset-binary.ts";
 
 type ErrorLike = { code?: string; message: string };
 
@@ -43,6 +44,15 @@ const startedAt = "2026-07-31T10:01:00.000Z";
 // later than startedAt so latency/ordering assertions are meaningful. Nothing in production ever
 // computes this value or passes it in.
 const finishedAt = "2026-07-31T10:05:00.000Z";
+const validBytes = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d,
+  0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x04, 0x38,
+  0x00, 0x00, 0x04, 0x38,
+  0x08, 0x04, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+]);
 
 function creativePackageRow(overrides: Partial<CreativePackageRow> = {}): CreativePackageRow {
   return {
@@ -102,6 +112,7 @@ function makeClient(
   const jobs = [...(options.jobs ?? [])];
   const attempts: AssetJobAttemptRow[] = [];
   const events: string[] = [];
+  const uploadedObjects = new Map<string, Uint8Array>();
   let insertCalls = 0;
   let rpcCalls = 0;
   let creativePackageSelectCalls = 0;
@@ -291,6 +302,62 @@ function makeClient(
         };
       }
 
+      if (functionName === "complete_asset_job_with_files") {
+        return {
+          async maybeSingle() {
+            rpcCalls += 1;
+            const index = jobs.findIndex((row) => row.id === (args.p_asset_job_id as string) && row.status === "running");
+            if (index === -1) {
+              return { data: null, error: null };
+            }
+            jobs[index] = {
+              ...jobs[index],
+              status: "completed",
+              result: args.p_result as AssetJobRow["result"],
+              last_error: null,
+              completed_at: finishedAt,
+              failed_at: null,
+              updated_at: finishedAt,
+            };
+            events.push("complete-job-with-files");
+            const file = (args.p_files as Array<Record<string, unknown>>)[0];
+            return {
+              data: {
+                job: jobs[index],
+                asset: {
+                  id: "asset-1",
+                  asset_job_id: jobs[index].id,
+                  status: "generated",
+                  asset_kind: jobs[index].asset_kind,
+                  schema_version: "v1",
+                  content: { metadata: { generatedFromCreativePackage: jobs[index].creative_package_id, sourceAssetJobId: jobs[index].id, generatorVersion: "1" } },
+                  created_at: finishedAt,
+                  updated_at: finishedAt,
+                },
+                files: [
+                  {
+                    id: "file-1",
+                    asset_id: "asset-1",
+                    position: Number(file.position),
+                    storage_bucket: String(file.storage_bucket),
+                    storage_path: String(file.storage_path),
+                    public_url: String(file.public_url),
+                    mime_type: String(file.mime_type),
+                    file_size_bytes: Number(file.file_size_bytes),
+                    width: Number(file.width),
+                    height: Number(file.height),
+                    duration_ms: null,
+                    checksum_sha256: String(file.checksum_sha256),
+                    created_at: finishedAt,
+                  },
+                ],
+              },
+              error: null,
+            };
+          },
+        };
+      }
+
       assert.equal(functionName, "finish_asset_job_attempt");
       return {
         // Mirrors finish_asset_job_attempt's own guards: id + status='running' + p_outcome in
@@ -320,6 +387,33 @@ function makeClient(
         },
       };
     },
+    storage: {
+      from(bucket: string) {
+        assert.equal(bucket, GENERATED_ASSETS_BUCKET);
+        return {
+          async upload(path: string, body: Uint8Array) {
+            events.push(`upload:${path}`);
+            if (uploadedObjects.has(path)) {
+              return { data: null, error: { statusCode: "409", message: "The resource already exists" } };
+            }
+            uploadedObjects.set(path, body);
+            return { data: { path }, error: null };
+          },
+          async download(path: string) {
+            events.push(`download:${path}`);
+            const data = uploadedObjects.get(path);
+            return data ? { data, error: null } : { data: null, error: { message: "not found" } };
+          },
+          async remove(paths: string[]) {
+            events.push(`remove:${paths.join(",")}`);
+            for (const path of paths) {
+              uploadedObjects.delete(path);
+            }
+            return { data: [], error: null };
+          },
+        };
+      },
+    },
   } as unknown as AssetJobExecutionClient;
 
   return {
@@ -347,7 +441,8 @@ function validGeneratedAssetFileCandidate(overrides: Partial<GeneratedAssetFileC
     width: ASSET_GENERATION_IMAGE_DIMENSIONS.width,
     height: ASSET_GENERATION_IMAGE_DIMENSIONS.height,
     durationMs: null,
-    fileSizeBytes: 1024,
+    fileSizeBytes: validBytes.length,
+    bytes: validBytes,
     ...overrides,
   };
 }
@@ -547,7 +642,7 @@ test("runMockAssetJob separates claim, execution, and completion", async () => {
   assert.equal(store.jobs[0].last_error, null);
   if (result.ok) {
     assert.equal(result.job.status, "completed");
-    assert.match(JSON.stringify(result.job.result), /"storageBucket":"mock"/);
+    assert.match(JSON.stringify(result.job.result), /"storageBucket":"generated-assets"/);
   }
 });
 
@@ -633,12 +728,14 @@ test("runQueuedMockAssetJobs finds queued mock jobs and processes only that set"
   assert.equal(store.jobs.find((job) => job.id === "job-complete")?.status, "completed");
 });
 
-test("runAssetJobWithExecutors finishes the job before finishing its attempt", async () => {
+test("runAssetJobWithExecutors materializes files and completes the job before finishing its attempt", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
   const result = await runMockAssetJob(store.client, "asset-job-1");
 
   assert.equal(result.ok, true);
-  assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed"]);
+  assert.equal(store.events[0], "claim-job");
+  assert.equal(store.events[1]?.startsWith("upload:asset-jobs/asset-job-1/attempt-1/"), true);
+  assert.deepEqual(store.events.slice(2), ["complete-job-with-files", "finish-attempt-completed"]);
 });
 
 test("runAssetJobWithExecutors records a completed attempt with a positive latency_ms and no error_code", async () => {
@@ -652,6 +749,31 @@ test("runAssetJobWithExecutors records a completed attempt with a positive laten
   assert.equal(store.attempts[0].completed_at, finishedAt);
   assert.equal(store.attempts[0].latency_ms, Date.parse(finishedAt) - Date.parse(startedAt));
   assert.ok((store.attempts[0].latency_ms ?? -1) > 0);
+});
+
+test("runAssetJobWithExecutors reports attempt finalization failure after successful combined materialization without rollback", async () => {
+  const store = makeClient({
+    jobs: [assetJobRow()],
+    finishAttemptRpcError: { message: "attempt write failed" },
+  });
+  const result = await runMockAssetJob(store.client, "asset-job-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(store.jobs[0].status, "completed");
+  assert.equal(store.jobs[0].completed_at, finishedAt);
+  assert.equal(store.jobs[0].failed_at, null);
+  assert.equal(result.materialization?.ok, true);
+  assert.equal(result.attempt?.ok, false);
+  if (result.attempt && !result.attempt.ok) {
+    assert.equal(result.attempt.message, "attempt write failed");
+  }
+  assert.deepEqual(store.events, [
+    "claim-job",
+    result.materialization?.ok ? `upload:${result.materialization.materialized.files[0].storagePath}` : "upload",
+    "complete-job-with-files",
+  ]);
+  assert.equal(store.events.includes("fail-job"), false);
+  assert.equal(store.events.some((event) => event.startsWith("remove:")), false);
 });
 
 test("runAssetJobWithExecutors fails the job and marks the attempt failed with a bounded error_code and error_message", async () => {

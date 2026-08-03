@@ -17,6 +17,7 @@ import { buildMockAssetJobResult, fromAssetJobRow, type AssetJobRow } from "../s
 import { type AssetJobAttemptRow } from "../src/lib/asset-job-attempts.ts";
 import { fromAssetFileRow, insertAssetFilesForAsset, listAssetFilesForAsset, type AssetFileClient, type AssetFileRow } from "../src/lib/asset-files.ts";
 import { fromCreativePackageRow, type CreativePackageRow } from "../src/lib/creative-packages.ts";
+import { GENERATED_ASSETS_BUCKET } from "../src/lib/asset-binary.ts";
 
 type ErrorLike = { code?: string; message: string };
 
@@ -112,6 +113,7 @@ function makeClient(
     assetInsertError?: ErrorLike;
     fileInsertError?: ErrorLike;
     uniqueRaceAsset?: AssetRow;
+    completeWithFilesError?: ErrorLike;
   } = {},
 ) {
   const creativePackages = [...(options.creativePackages ?? [creativePackageRow()])];
@@ -120,6 +122,7 @@ function makeClient(
   const files = [...(options.files ?? [])];
   const attempts: AssetJobAttemptRow[] = [];
   const events: string[] = [];
+  const uploadedObjects = new Map<string, Uint8Array>();
   let assetInsertCalls = 0;
   let fileInsertCalls = 0;
 
@@ -330,6 +333,59 @@ function makeClient(
         };
       }
 
+      if (functionName === "complete_asset_job_with_files") {
+        return {
+          async maybeSingle() {
+            if (options.completeWithFilesError) {
+              return { data: null, error: options.completeWithFilesError };
+            }
+            const index = jobs.findIndex((row) => row.id === (args.p_asset_job_id as string) && row.status === "running");
+            if (index === -1) {
+              return { data: null, error: null };
+            }
+            jobs[index] = {
+              ...jobs[index],
+              status: "completed",
+              result: args.p_result as AssetJobRow["result"],
+              last_error: null,
+              completed_at: finishedAt,
+              failed_at: null,
+              updated_at: finishedAt,
+            };
+            events.push("complete-job-with-files");
+            const file = (args.p_files as Array<Record<string, unknown>>)[0];
+            const asset = {
+              id: "asset-1",
+              asset_job_id: jobs[index].id!,
+              status: "generated",
+              asset_kind: jobs[index].asset_kind,
+              schema_version: "v1",
+              content: { metadata: { generatedFromCreativePackage: jobs[index].creative_package_id, sourceAssetJobId: jobs[index].id, generatorVersion: "1" } },
+              created_at: finishedAt,
+              updated_at: finishedAt,
+            } satisfies AssetRow;
+            const assetFile = {
+              id: "file-1",
+              asset_id: asset.id,
+              position: Number(file.position),
+              storage_bucket: String(file.storage_bucket),
+              storage_path: String(file.storage_path),
+              public_url: String(file.public_url),
+              mime_type: String(file.mime_type),
+              file_size_bytes: Number(file.file_size_bytes),
+              width: Number(file.width),
+              height: Number(file.height),
+              duration_ms: null,
+              checksum_sha256: String(file.checksum_sha256),
+              created_at: finishedAt,
+            } satisfies AssetFileRow;
+            if (!assets.some((row) => row.id === asset.id)) assets.push(asset);
+            if (!files.some((row) => row.id === assetFile.id)) files.push(assetFile);
+            return { data: { job: jobs[index], asset, files: [assetFile] }, error: null };
+          },
+        };
+      }
+
       assert.equal(functionName, "finish_asset_job_attempt");
       return {
         async maybeSingle() {
@@ -351,6 +407,31 @@ function makeClient(
           return { data: attempts[index], error: null };
         },
       };
+    },
+    storage: {
+      from(bucket: string) {
+        assert.equal(bucket, GENERATED_ASSETS_BUCKET);
+        return {
+          async upload(path: string, body: Uint8Array) {
+            events.push(`upload:${path}`);
+            if (uploadedObjects.has(path)) {
+              return { data: null, error: { statusCode: "409", message: "The resource already exists" } };
+            }
+            uploadedObjects.set(path, body);
+            return { data: { path }, error: null };
+          },
+          async download(path: string) {
+            events.push(`download:${path}`);
+            const data = uploadedObjects.get(path);
+            return data ? { data, error: null } : { data: null, error: { message: "not found" } };
+          },
+          async remove(paths: string[]) {
+            events.push(`remove:${paths.join(",")}`);
+            for (const path of paths) uploadedObjects.delete(path);
+            return { data: [], error: null };
+          },
+        };
+      },
     },
   } as unknown as AssetRunnerClient;
 
@@ -526,12 +607,14 @@ test("getAssetForJob returns not-found without pretending an asset exists", asyn
   assert.equal(result.reason, "not-found");
 });
 
-test("runMockAssetJobAndMaterializeAsset completes the job before materializing the asset and its files", async () => {
+test("runMockAssetJobAndMaterializeAsset uses the byte-backed runner materialization path", async () => {
   const store = makeClient({ jobs: [completedAssetJobRow({ status: "queued", attempt_count: 0, result: {}, started_at: null, completed_at: null })] });
   const result = await runMockAssetJobAndMaterializeAsset(store.client, "asset-job-1");
 
   assert.equal(result.ok, true);
-  assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed", "insert-asset", "insert-files"]);
+  assert.equal(store.events[0], "claim-job");
+  assert.equal(store.events[1]?.startsWith("upload:asset-jobs/asset-job-1/attempt-1/"), true);
+  assert.deepEqual(store.events.slice(2), ["complete-job-with-files", "finish-attempt-completed"]);
   assert.equal(store.jobs[0].status, "completed");
   assert.equal(store.jobs[0].attempt_count, 1);
   assert.equal(store.assets.length, 1);
@@ -543,18 +626,18 @@ test("runMockAssetJobAndMaterializeAsset completes the job before materializing 
   }
 });
 
-test("runMockAssetJobAndMaterializeAsset keeps a completed job completed if materialization fails", async () => {
+test("runMockAssetJobAndMaterializeAsset fails the running job if byte-backed materialization fails", async () => {
   const store = makeClient({
     jobs: [completedAssetJobRow({ status: "queued", attempt_count: 0, result: {}, started_at: null, completed_at: null })],
-    assetInsertError: { message: "asset write failed" },
+    completeWithFilesError: { message: "asset write failed" },
   });
   const result = await runMockAssetJobAndMaterializeAsset(store.client, "asset-job-1");
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
   assert.equal(result.message, "asset write failed");
-  assert.equal(store.jobs[0].status, "completed");
-  assert.equal(store.jobs[0].completed_at, finishedAt);
+  assert.equal(store.jobs[0].status, "failed");
+  assert.equal(store.jobs[0].completed_at, null);
   assert.equal(store.assets.length, 0);
 });
 

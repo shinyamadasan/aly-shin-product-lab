@@ -10,6 +10,7 @@ import {
 } from "./asset-jobs.ts";
 import type { AssetJobAttemptClient } from "./asset-job-attempts.ts";
 import { insertAssetFilesForAsset, listAssetFilesForAsset, type AssetFileClient, type AssetFileRecord } from "./asset-files.ts";
+import type { AssetJobFileMaterializationClient } from "./asset-file-materialization.ts";
 
 export const ASSET_STATUSES = ["generated"] as const;
 export type AssetStatus = (typeof ASSET_STATUSES)[number];
@@ -83,7 +84,7 @@ export type AssetClient = {
 
 // Everything needed to run a mock Asset Job and materialize its Asset + Asset Files in one call --
 // mirrors CreativePackageRunnerClient's own composition exactly.
-export type AssetRunnerClient = AssetClient & AssetFileClient & AssetJobClient & AssetJobAttemptClient;
+export type AssetRunnerClient = AssetClient & AssetFileClient & AssetJobClient & AssetJobAttemptClient & AssetJobFileMaterializationClient;
 
 export type AssetDetailResult =
   | { ok: true; asset: AssetRecord }
@@ -312,16 +313,25 @@ export async function runMockAssetJobAndMaterializeAsset(
     return { ok: false, reason: jobResult.reason, message: jobResult.message, job: jobResult.job };
   }
 
-  const assetResult = await createAssetFromCompletedJob(client, jobResult.job.id);
-  if (!assetResult.ok) {
-    return { ok: false, reason: assetResult.reason, message: assetResult.message, job: jobResult.job };
+  const materialized = jobResult.materialization;
+  if (materialized?.ok) {
+    return {
+      ok: true,
+      job: materialized.materialized.job,
+      outcome: materialized.outcome,
+      asset: materialized.materialized.asset,
+      files: materialized.materialized.files,
+    };
   }
 
-  return {
-    ok: true,
-    job: jobResult.job,
-    outcome: assetResult.outcome,
-    asset: assetResult.asset,
-    files: assetResult.files,
-  };
+  const existing = await getAssetForJob(client, jobResult.job.id);
+  if (!existing.ok) {
+    return { ok: false, reason: existing.reason, message: existing.message, job: jobResult.job };
+  }
+  const files = await listAssetFilesForAsset(client, existing.asset.id);
+  if (!files.ok) {
+    return { ok: false, reason: files.reason, message: files.message, job: jobResult.job };
+  }
+
+  return { ok: true, job: jobResult.job, outcome: "existing", asset: existing.asset, files: files.files };
 }

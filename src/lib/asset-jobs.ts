@@ -4,6 +4,12 @@ import {
   validateGeneratedAssetCandidates,
   type GeneratedAssetFileCandidate,
 } from "./asset-generation-validation.ts";
+import { validateAssetCandidateBytes, type InspectedAssetCandidate } from "./asset-binary.ts";
+import {
+  materializeAssetJobFiles,
+  type AssetJobFileMaterializationClient,
+  type AssetJobFileMaterializationResult,
+} from "./asset-file-materialization.ts";
 import { BRAND_BIBLE } from "./marketing-advisor-context.ts";
 import {
   finishAssetJobAttempt,
@@ -137,7 +143,7 @@ export type AssetJobClient = {
 // Kept separate from AssetJobClient for the same reason CreativeJobExecutionClient is kept
 // separate from CreativeJobClient -- callers that only ever read/create jobs aren't forced to
 // satisfy an attempts-table shape they never touch.
-export type AssetJobExecutionClient = AssetJobClient & AssetJobAttemptClient;
+export type AssetJobExecutionClient = AssetJobClient & AssetJobAttemptClient & AssetJobFileMaterializationClient;
 
 export type AssetJobDetailResult =
   | { ok: true; job: AssetJobRecord }
@@ -148,13 +154,14 @@ export type AssetJobCreateResult =
   | { ok: false; reason: "missing-table" | "not-found" | "not-ready" | "failed"; message: string };
 
 export type AssetJobRunnerResult =
-  | { ok: true; outcome: "completed"; job: AssetJobRecord; attempt?: AssetJobAttemptFinishResult }
+  | { ok: true; outcome: "completed"; job: AssetJobRecord; attempt?: AssetJobAttemptFinishResult; materialization?: AssetJobFileMaterializationResult }
   | {
       ok: false;
       reason: "missing-table" | "not-found" | "not-queued" | "conflict" | "failed" | "timeout";
       message: string;
       job?: AssetJobRecord;
       attempt?: AssetJobAttemptFinishResult;
+      materialization?: AssetJobFileMaterializationResult;
     };
 
 export type AssetJobClaimWithAttemptResult =
@@ -334,6 +341,7 @@ export function buildMockAssetJobResult(creativePackage: CreativePackageRecord, 
 }
 
 function buildMockGeneratedAssetFileCandidates(spec: AssetGenerationSpecV1): GeneratedAssetFileCandidate[] {
+  const bytes = buildMockPngBytes(spec.dimensions.width, spec.dimensions.height);
   return [
     {
       position: 0,
@@ -341,19 +349,51 @@ function buildMockGeneratedAssetFileCandidates(spec: AssetGenerationSpecV1): Gen
       width: spec.dimensions.width,
       height: spec.dimensions.height,
       durationMs: null,
-      fileSizeBytes: 1024,
+      fileSizeBytes: bytes.length,
+      bytes,
     },
   ];
 }
 
 function attachMockAssetFileDescriptors(candidates: GeneratedAssetFileCandidate[], creativePackageId: string): AssetFileDescriptor[] {
-  return candidates.map((candidate) => ({
-    ...candidate,
-    // MOCK ONLY: PROP-025 replaces this placeholder with real Storage upload ownership.
-    storageBucket: "mock",
-    storagePath: `mock/${creativePackageId}/${candidate.position}.png`,
-    publicUrl: "",
-  }));
+  return candidates.map((candidate) => {
+    const metadata = {
+      position: candidate.position,
+      mimeType: candidate.mimeType,
+      width: candidate.width,
+      height: candidate.height,
+      durationMs: candidate.durationMs,
+      fileSizeBytes: candidate.fileSizeBytes,
+    };
+    return {
+      ...metadata,
+      // Legacy compatibility only: production runner success now uses real Storage materialization.
+      storageBucket: "mock",
+      storagePath: `mock/${creativePackageId}/${candidate.position}.png`,
+      publicUrl: "",
+    };
+  });
+}
+
+function buildMockPngBytes(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x08, 0x04, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+  ]);
+  bytes[16] = (width >>> 24) & 0xff;
+  bytes[17] = (width >>> 16) & 0xff;
+  bytes[18] = (width >>> 8) & 0xff;
+  bytes[19] = width & 0xff;
+  bytes[20] = (height >>> 24) & 0xff;
+  bytes[21] = (height >>> 16) & 0xff;
+  bytes[22] = (height >>> 8) & 0xff;
+  bytes[23] = height & 0xff;
+  return bytes;
 }
 
 export function sanitizeAssetJobErrorMessage(message: string, maxLength = 500): string {
@@ -638,27 +678,27 @@ export async function runAssetJobWithExecutors(
     return failJobAndAttempt(candidateValidation.message);
   }
 
-  const resultEnvelope: AssetJobResultEnvelope = {
-    schemaVersion: "v1",
-    worker: workerType,
-    assetKind,
-    output: {
-      files: attachMockAssetFileDescriptors(candidateValidation.candidates, readyCreativePackage.id),
-    },
-    metadata: {
-      generatedFromCreativePackage: readyCreativePackage.id,
-      generatorVersion: "1",
-    },
-  };
+  const inspected: InspectedAssetCandidate[] = [];
+  for (const candidate of candidateValidation.candidates) {
+    const byteValidation = validateAssetCandidateBytes(candidate);
+    if (!byteValidation.ok) {
+      return failJobAndAttempt(byteValidation.message);
+    }
+    inspected.push(byteValidation.inspected);
+  }
 
-  const jobResult = await completeRunningAssetJob(client, job, resultEnvelope);
-  const attempt = await finishAssetJobAttempt(
-    client,
-    attemptId,
-    jobResult.ok ? "completed" : "failed",
-    jobResult.ok ? {} : { errorCode: "failed", errorMessage: jobResult.message },
-  );
-  return { ...jobResult, attempt };
+  const materialization = await materializeAssetJobFiles(client, { job, inspected });
+  if (!materialization.ok) {
+    const jobResult = await failRunningAssetJob(client, job, materialization.message);
+    if (jobResult.ok) {
+      return { ...jobResult, materialization };
+    }
+    const attempt = await finishAssetJobAttempt(client, attemptId, "failed", { errorCode: materialization.reason, errorMessage: jobResult.message });
+    return { ...jobResult, attempt, materialization };
+  }
+
+  const attempt = await finishAssetJobAttempt(client, attemptId, "completed");
+  return { ok: true, outcome: "completed", job: materialization.materialized.job, attempt, materialization };
 }
 
 export async function runMockAssetJob(client: AssetJobExecutionClient, id: string, options: AssetJobRunnerOptions = {}): Promise<AssetJobRunnerResult> {

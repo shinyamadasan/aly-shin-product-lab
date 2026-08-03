@@ -37,6 +37,15 @@ function creativePackageRow(overrides: Partial<CreativePackageRow> = {}): Creati
 }
 
 const spec = buildAssetGenerationSpec(fromCreativePackageRow(creativePackageRow()), { assetKind: "image" });
+const validBytes = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d,
+  0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x04, 0x38,
+  0x00, 0x00, 0x04, 0x38,
+  0x08, 0x04, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+]);
 
 function candidate(overrides: Partial<GeneratedAssetFileCandidate> = {}): GeneratedAssetFileCandidate {
   return {
@@ -45,7 +54,8 @@ function candidate(overrides: Partial<GeneratedAssetFileCandidate> = {}): Genera
     width: spec.dimensions.width,
     height: spec.dimensions.height,
     durationMs: null,
-    fileSizeBytes: 1024,
+    fileSizeBytes: validBytes.length,
+    bytes: validBytes,
     ...overrides,
   };
 }
@@ -65,6 +75,16 @@ test("validateGeneratedAssetCandidates accepts one metadata-level image candidat
 
 test("validateGeneratedAssetCandidates rejects malformed candidate input", () => {
   const result = validateGeneratedAssetCandidates({ position: 0 }, spec);
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "malformed-candidates");
+  }
+});
+
+test("validateGeneratedAssetCandidates rejects non-Uint8Array bytes before byte inspection", () => {
+  const malformed = { ...candidate(), bytes: "not-bytes" };
+  const result = validateGeneratedAssetCandidates([malformed], spec);
 
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -128,7 +148,7 @@ test("validateGeneratedAssetCandidates rejects empty or oversized file metadata"
   }
 });
 
-test("asset-generation-validation stays pure, provider agnostic, and metadata-only", () => {
+test("asset-generation-validation stays pure, provider agnostic, and metadata-first", () => {
   const source = readFileSync(new URL("../src/lib/asset-generation-validation.ts", import.meta.url), "utf8");
 
   for (const forbidden of [
@@ -147,6 +167,7 @@ test("asset-generation-validation stays pure, provider agnostic, and metadata-on
     /Remotion/i,
     /storageBucket|storagePath|publicUrl/,
     /decode/i,
+    /sha256/i,
   ]) {
     assert.doesNotMatch(source, forbidden);
   }

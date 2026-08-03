@@ -7,6 +7,7 @@ export type GeneratedAssetFileCandidate = {
   height: number | null;
   durationMs: number | null;
   fileSizeBytes: number;
+  bytes: Uint8Array;
 };
 
 export const GENERATED_ASSET_ALLOWED_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
@@ -45,7 +46,8 @@ function isGeneratedAssetFileCandidate(value: unknown): value is GeneratedAssetF
     (value.height === null || typeof value.height === "number") &&
     (value.durationMs === null || typeof value.durationMs === "number") &&
     typeof value.fileSizeBytes === "number" &&
-    Number.isFinite(value.fileSizeBytes)
+    Number.isFinite(value.fileSizeBytes) &&
+    value.bytes instanceof Uint8Array
   );
 }
 
