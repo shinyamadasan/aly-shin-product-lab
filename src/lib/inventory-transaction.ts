@@ -1,4 +1,4 @@
-import type { InventoryTransaction, InventoryTransactionSourceType, InventoryTransactionType } from "./product-lab-types.ts";
+import type { InventoryTransaction, InventoryTransactionSourceType, InventoryTransactionType, StockAdjustmentReason } from "./product-lab-types.ts";
 
 export type BuildInventoryTransactionParams = {
   ingredientId: string;
@@ -16,6 +16,9 @@ export type BuildInventoryTransactionParams = {
   // behavior relies on it.
   id?: string;
   createdAt?: string;
+  // Only ever set by stock-adjustment.ts -- every purchase/bake/repair caller omits both.
+  reason?: StockAdjustmentReason;
+  actor?: string | null;
 };
 
 // The single place that knows an InventoryTransaction's shape. Every confirmation function
@@ -34,6 +37,10 @@ export function buildInventoryTransaction(params: BuildInventoryTransactionParam
     sourceId: params.sourceId,
     note: params.note,
     createdAt: params.createdAt ?? new Date().toISOString(),
+    // Only ever set by stock-adjustment.ts -- every purchase/bake/repair caller omits both, so
+    // the object's shape (and every existing exact-shape test) is byte-for-byte unchanged for them.
+    ...(params.reason !== undefined ? { reason: params.reason } : {}),
+    ...(params.actor !== undefined ? { actor: params.actor } : {}),
   };
 }
 
@@ -50,5 +57,7 @@ export function toInventoryTransactionRow(transaction: InventoryTransaction) {
     source_type: transaction.sourceType,
     source_id: transaction.sourceId,
     note: transaction.note,
+    ...(transaction.reason !== undefined ? { reason: transaction.reason } : {}),
+    ...(transaction.actor !== undefined ? { actor: transaction.actor } : {}),
   };
 }

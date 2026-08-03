@@ -293,7 +293,7 @@ test("resolveRowQuantity never reports an item-name error -- that's buildPurchas
 });
 
 test("buildPurchaseImportRowDrafts uses package math end to end (the spec's Van Houten example)", () => {
-  const chocolate = ingredient({ id: "vh-id", name: "Van Houten Dark Chocolate", baseUnit: "kg" });
+  const chocolate = ingredient({ id: "vh-id", name: "Van Houten Dark Chocolate", baseUnit: "g" });
 
   const [draft] = buildPurchaseImportRowDrafts(
     [mappedRow({ itemName: "Van Houten Dark Chocolate", category: "ingredient", packageCount: "2", packageSize: "1", packageUnit: "kg", unitPrice: "563", totalPrice: "" })],
@@ -303,7 +303,7 @@ test("buildPurchaseImportRowDrafts uses package math end to end (the spec's Van 
 
   assert.equal(draft.rowStatus, "matched");
   assert.equal(draft.parsedQuantity, 2);
-  assert.equal(draft.convertedQuantity, 2);
+  assert.equal(draft.convertedQuantity, 2000);
   assert.equal(draft.parsedTotalPrice, 1126);
   assert.equal(draft.parsedPackageCount, 2);
   assert.equal(draft.parsedPackageSize, 1);
@@ -329,7 +329,7 @@ test("buildPurchaseImportRowDrafts marks a package row invalid, not matched, whe
 });
 
 test("buildPurchaseImportRowDrafts prefills brand only when every existing supply for that ingredient agrees", () => {
-  const chocolate = ingredient({ id: "vh-id", name: "Van Houten Dark Chocolate", baseUnit: "kg" });
+  const chocolate = ingredient({ id: "vh-id", name: "Van Houten Dark Chocolate", baseUnit: "g" });
   const priorPurchase: SupplyEntry = {
     id: "s1",
     ingredientId: "",
@@ -356,7 +356,7 @@ test("buildPurchaseImportRowDrafts prefills brand only when every existing suppl
 });
 
 test("buildPurchaseImportRowDrafts leaves brand blank when there is no reliable history, requiring the operator to fill it in", () => {
-  const chocolate = ingredient({ id: "vh-id", name: "Van Houten Dark Chocolate", baseUnit: "kg" });
+  const chocolate = ingredient({ id: "vh-id", name: "Van Houten Dark Chocolate", baseUnit: "g" });
 
   const [draft] = buildPurchaseImportRowDrafts(
     [mappedRow({ itemName: "Van Houten Dark Chocolate", packageCount: "2", packageSize: "1", packageUnit: "kg", unitPrice: "563" })],
@@ -398,7 +398,7 @@ test("buildPurchaseImportRowDrafts requires a manual match for a receipt spellin
 // exactly as the real importer produces (packageCount/packageSize/packageUnit/unitPrice, not a
 // hand-built MappedRow missing fields a real upload would always populate).
 test("buildPurchaseImportRowDrafts suggests a brand-history match end to end for the exact reported CSV row", () => {
-  const chocolate = ingredient({ id: "choc-id", name: "Dark Chocolate Compound", baseUnit: "kg" });
+  const chocolate = ingredient({ id: "choc-id", name: "Dark Chocolate Compound", baseUnit: "g" });
   const history: SupplyEntry = {
     id: "supply-1",
     ingredientId: "",
@@ -427,7 +427,7 @@ test("buildPurchaseImportRowDrafts suggests a brand-history match end to end for
 });
 
 test("buildPurchaseImportRowDrafts suggests a second brand-history match for a different brand/ingredient in the same upload", () => {
-  const cocoa = ingredient({ id: "cocoa-id", name: "Classic Cocoa Powder", baseUnit: "kg" });
+  const cocoa = ingredient({ id: "cocoa-id", name: "Classic Cocoa Powder", baseUnit: "g" });
   const history: SupplyEntry = {
     id: "supply-2",
     ingredientId: "",

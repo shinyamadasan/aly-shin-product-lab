@@ -76,16 +76,16 @@ test("resolveBakeFormula marks an unsupported unit as unconverted even when the 
 
 test("resolveBakeFormula converts g<->kg and ml<->L against the ingredient's base unit", () => {
   const flour = ingredient({ id: "flour-id", name: "Flour", baseUnit: "g" });
-  const milk = ingredient({ id: "milk-id", name: "Milk", baseUnit: "L" });
+  const milk = ingredient({ id: "milk-id", name: "Milk", baseUnit: "ml" });
 
   const resolved = resolveBakeFormula(
-    [formulaRow({ ingredient: "Flour", quantity: 0.5, unit: "kg" }), formulaRow({ ingredient: "Milk", quantity: 250, unit: "ml" })],
+    [formulaRow({ ingredient: "Flour", quantity: 0.5, unit: "kg" }), formulaRow({ ingredient: "Milk", quantity: 0.25, unit: "L" })],
     [flour, milk],
     [],
   );
 
   assert.equal(resolved[0].convertedQuantity, 500);
-  assert.equal(resolved[1].convertedQuantity, 0.25);
+  assert.equal(resolved[1].convertedQuantity, 250);
 });
 
 test("resolveBakeFormula keeps the same ingredient used in two different steps as two separate rows", () => {

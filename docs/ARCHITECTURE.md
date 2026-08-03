@@ -119,7 +119,10 @@ batch's existing formula directly via `parseBatchIngredients()` in `src/lib/batc
 for classification columns, e.g. `product_batches.launch_decision`; the TypeScript type is the
 source of truth for allowed values), `current_quantity`, `low_stock_threshold`,
 `target_stock_quantity`, `nearest_expiration_date`, `average_unit_cost`, `notes`, `is_active`.
-Same RLS/grant template as `supabase-add-supplies.sql`.
+Same RLS/grant template as `supabase-add-supplies.sql`. **Superseded by Milestone 6**:
+`base_unit`'s five-value range let the same ingredient's canonical unit itself be ambiguous
+(kg vs g) -- see Milestone 6 for why it's now restricted to three canonical values with a real
+CHECK constraint.
 
 **`src/lib/inventory-status.ts`** -- `getStockStatus(ingredient)`: `"out"` at quantity `<= 0`,
 `"low"` at quantity `<= lowStockThreshold` (inclusive), `"good"` otherwise.
@@ -168,9 +171,13 @@ synonyms. Named generically (not receipt-specific) because it's meant to be reus
 formula-row resolution in a later milestone -- same function, same alias table.
 
 **Unit conversion** (`src/lib/unit-conversion.ts`) -- `convertToBaseUnit(qty, fromUnit,
-ingredient)`: same-unit identity, or the two fixed metric-family conversions (`g<->kg`,
-`ml<->L`). Nothing else -- an unsupported unit returns `null`, which blocks that row for manual
-fix rather than guessing. No saved per-ingredient package conversions in this milestone.
+ingredient)`: same-unit identity, or the fixed metric-family conversions (`g<->kg`, `ml<->L`).
+Nothing else -- an unsupported unit returns `null`, which blocks that row for manual fix rather
+than guessing. No saved per-ingredient package conversions in this milestone. *(tbsp/tsp/cup ->
+ml/L support was added the day after this milestone shipped, PROP-011 in `planning/PROPOSALS.md`;
+Milestone 6 generalizes this into `convertUnit(qty, fromUnit, toUnit)`, a two-arbitrary-unit
+primitive `convertToBaseUnit` now wraps, shared by every inventory-mutation path and Costing's own
+supplier matching.)*
 
 **Weighted-average cost** (`src/lib/inventory-cost.ts` `computeWeightedAverageUnitCost`) --
 `new_average = (current_qty * current_avg + added_qty * added_unit_cost) / (current_qty +
@@ -353,11 +360,123 @@ Handler or equivalent) sitting in front of Supabase, re-deriving or re-checking 
 instead of trusting a caller-supplied `jsonb` payload. Not needed while the trusted-first-party
 assumption holds; the assumption itself is the thing to watch.
 
-### Not yet built (later milestones)
+### Milestone 6 -- Canonical units, manual-purchase inventory integration, stock adjustments
 
-Manual stock adjustment/waste recording (`adjustment`/`waste` transaction types already reserved
-in the schema/types since M2/M3). No further Supply Inventory Loop milestones are planned beyond
-M5 unless requested.
+**Root cause:** `ingredients.base_unit` (M1) was never restricted to a true canonical unit -- kg
+and L were just as valid a choice as g and ml. Three independent, non-shared unit-handling
+implementations grew up around this: `unit-conversion.ts`'s `convertToBaseUnit` (correct, used
+only by CSV import and Bake), `supplies.ts`'s own weaker synonym table + density-guessing
+(Costing's supplier matching only, structurally unable to convert kg&lt;-&gt;g or L&lt;-&gt;ml at
+all), and manual "Log a Purchase" (no conversion at all -- it only ever wrote `supply_entries`; it
+never updated `ingredients.current_quantity`/`average_unit_cost` or wrote a ledger row, unlike
+every other purchase path). A complete fix for the manual-purchase gap
+(`src/lib/supply-inventory-effect.ts` + its test file) had been written once but never merged to
+any branch -- recovered from a dangling, unreachable commit (an untracked-files auto-snapshot) and
+finished here.
+
+**Canonical units** (`src/lib/product-lab-types.ts`) -- `CANONICAL_UNITS = { mass: "g", volume:
+"ml", count: "pcs" }` is the single source of truth for the three units an ingredient's own
+`baseUnit` can ever be; `IngredientBaseUnit` is derived from it, not a separately hand-typed union.
+kg/L (and tbsp/tsp/cup) remain valid purchase/recipe *input* units forever -- converted via
+`unit-conversion.ts` before ever reaching an ingredient's own unit. `getMeasurementFamily(baseUnit)`
+derives "mass"/"volume"/"count" from `CANONICAL_UNITS` as a pure label, not a stored column (a
+stored value would just be redundant with `baseUnit`, with real drift risk and no query benefit).
+
+**One shared conversion primitive** -- `unit-conversion.ts`'s `convertToBaseUnit` is now a thin
+wrapper over a new general `convertUnit(quantity, fromUnit, toUnit)`, used by every
+inventory-mutation path (CSV import, Bake -- both unchanged, already correct) plus two paths fixed
+in this milestone: `supplies.ts` (Costing's supplier matching -- its old duplicate synonym table is
+gone, delegating to `ingredient-normalization.ts`'s `normalizeUnitText`; its density-based
+mass&lt;-&gt;volume *estimate* is retained as a distinct capability, tried only after `convertUnit`
+returns `null`, and is never reachable from an actual inventory-mutation path) and
+`purchase-history.ts` (`getPurchaseGroupSummary` converts-then-sums instead of deciding by raw
+unit-string equality, so a kg purchase and a g purchase of the same ingredient total correctly
+instead of showing "Mixed units").
+
+**Migration** (`supabase-migrate-canonical-base-units.sql`) -- idempotent: rescales any pre-existing
+`kg`/`L` ingredient's `current_quantity` (×1000) and `average_unit_cost` (÷1000, preserving total
+valuation exactly) and flips its `base_unit` to `g`/`ml` in one statement, then rescales that
+ingredient's `inventory_transactions` rows the same way so the ledger's running balance stays
+reconciled. Idempotency is anchored to "ids actually rescaled in this run" (captured via
+`returning ... into` an array), not a separate marker check -- a second run's own `where base_unit
+= 'kg'/'L'` predicate matches nothing once the column is already canonical. Three nullable marker
+columns (`base_unit_migrated_from`, `base_unit_migrated_at`,
+`base_unit_migration_flagged_reason`) support both auditing and a bounded rollback. A row whose
+`base_unit` isn't one of the five legacy values, or whose numeric fields are non-finite, is
+flagged and left untouched -- never guessed at. `supply_entries`/`purchase_import_rows` (purchase
+history and import audit trail) are never touched -- only the inventory effect and cost-per-
+canonical-unit are normalized, not historical package records. A `NOT VALID` CHECK constraint
+(`base_unit in ('g','ml','pcs')`) enforces the restriction on every new write immediately without
+scanning or failing on pre-existing flagged rows.
+
+**Manual-purchase inventory integration** (`src/lib/supply-inventory-effect.ts`,
+`supabase-add-manual-purchase-inventory-effect.sql`, RPCs `save_supply_with_inventory_effect`/
+`delete_supply_with_inventory_effect`/`repair_supply_inventory_effects` -- these RPCs existed,
+unused, before this milestone) -- `applySupplyPurchaseEffect` now converts `supply.packQuantity`
+via `convertToBaseUnit` before adding it to `currentQuantity` or blending it into
+`averageUnitCost` (the one substantive bug in the recovered implementation: it previously assumed
+the purchase's unit already matched the ingredient's own). `planSupplyEdit`/`planSupplyDelete` plan
+(without persisting) the three-way edit/delete outcome -- `recalculated` when this purchase is
+still the newest thing that happened to the ingredient, `quantity-only` (with
+`HISTORICAL_COST_WARNING`) otherwise, `not-applied` when this purchase never had an inventory
+effect in the first place -- and now return an `error` outcome instead of guessing when a
+revision's unit doesn't convert. `saveSupply`/`deleteSupply` (`product-lab.tsx`) call these plus
+the existing RPCs instead of a bare `supply_entries` write. `repairMissingSupplyInventoryEffects`
+(one-time, idempotent, ingredient-level backfill for purchases logged before this fix shipped) is
+wired to an explicit, operator-triggered "Repair missing purchase effects" button -- **never run
+automatically on load** -- since it will produce a real, one-time jump in
+`current_quantity`/`average_unit_cost` for any ingredient whose entire purchase history is manual,
+and reports exactly what it changed so the operator can sanity-check against physical stock first.
+
+**Stock adjustments** (`src/lib/stock-adjustment.ts`, `supabase-add-inventory-adjustment.sql`,
+RPC `apply_inventory_adjustment`) -- inventory moved outside baking: `household_use`,
+`waste_or_spoilage`, `recipe_testing`, `spillage`, `stock_count_correction`, `other`
+(`StockAdjustmentReason`). Deliberately parallel to Bake, not built on top of it:
+`applyStockAdjustment` normalizes the entered unit via the same `convertToBaseUnit`, applies the
+same negative-stock policy `applyBakeConfirmation` already enforces (same error-message format,
+blocked unless an explicit `allowNegative` override), and never touches `averageUnitCost`, recipe
+usage, or batch costing -- enforced structurally, not just by convention: `stock-adjustment.ts`
+imports nothing from `costing.ts`, `supplies.ts`, or `batches.ts`. `inventory_transactions` gains
+two nullable, additive columns -- `reason`, `actor` -- set only on an `adjustment` row; every
+purchase/bake/repair transaction leaves both unset. A correction is a **reversal, never a
+deletion**: `reverseStockAdjustment` submits an exact negation as a new ledger row, reusing the
+existing `sourceId` field to point at the transaction it undoes (no new column needed for this);
+the same `apply_inventory_adjustment` RPC persists a forward adjustment or a reversal identically.
+UI: a collapsed-by-default "Adjust Stock" action per ingredient (`inventory-page.tsx`) and a
+"Reverse" action on not-yet-reversed adjustment rows in the Inventory Timeline.
+
+**Double-submission guard** (`src/lib/mutation-guard.ts`) -- Adjust Stock and Reverse are the
+first two mutating actions added since Milestone 3 found (and fixed, via `bake-page.tsx`'s
+`isConfirmingRef`) that a state-only re-entrancy guard misses a true synchronous double-click,
+since `setState`'s effect on a render's own closures only lands on the next render. Rather than
+duplicating that `useRef<boolean>` pattern twice with hand-rolled boilerplate, `createMutationGuard`
+generalizes it into a small, key-scoped, synchronously-checked-and-set guard: `AdjustStockRow` uses
+one keyed by ingredient id, the Inventory Timeline uses one keyed by transaction id (so reversing
+one row's guard never disables an unrelated row's). Each caller checks `isActive(key)` as its first
+statement and wraps the actual mutation in `run(key, fn)`, which always releases the key in a
+`finally`, success or failure, so a failed attempt can be retried. This is UI-side protection only,
+not a database-level idempotency key: unlike manual purchases (which reuse `supply_entries`' own
+stable id as the ledger's upsert identity, guarded by
+`inventory_transactions_manual_purchase_source_identity_idx`), each adjustment mints a fresh
+`crypto.randomUUID()` per call, so nothing yet protects against a retry initiated below the UI
+layer (e.g. automatic network-level retry logic). No such retry logic exists anywhere in this app
+today, so this mirrors the existing risk profile rather than adding a new one -- flagged as a
+residual, accepted gap, not a new idempotency system.
+
+**Flagged-ingredient visibility** -- `getFlaggedIngredients()` (`inventory-status.ts`) surfaces any
+ingredient the canonical-unit migration left flagged (see docs/DATA_MODEL.md's "Flagged rows"
+section for the full NOT VALID constraint behavior and the manual reconciliation procedure) as a
+read-only "Needs manual reconciliation" banner on the Inventory page, and locks that ingredient's
+base-unit field to a hidden input in the edit form so an unrelated field edit can never silently
+resubmit a different (guessed) base_unit. `describeIngredientConstraintError()`
+(`src/lib/inventory-errors.ts`) recognizes the specific Postgres check_violation
+(`ingredients_base_unit_check`, matched by SQLSTATE `23514` plus constraint name, not message
+text) this produces and rewrites it into an actionable message at every `ingredients`-table
+mutation call site (purchases, Bake, repair, adjustments, and plain ingredient
+save/archive/restore) -- any other error passes through unchanged.
+
+**Not yet built:** nothing further planned for the Supply Inventory Loop beyond this milestone
+unless requested.
 
 ## AI Advisor (`src/services/ai/`)
 

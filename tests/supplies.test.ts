@@ -1,6 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findReliableBrandForIngredient, findReliableSupplierForIngredient, getAutoCostedIngredientRow, getAutoCostedIngredientRowForItems, getMatchingPurchaseHistoryForIngredient, getMatchingSupplies } from "../src/lib/supplies.ts";
+import {
+  findReliableBrandForIngredient,
+  findReliableSupplierForIngredient,
+  getAutoCostedIngredientRow,
+  getAutoCostedIngredientRowForItems,
+  getConversionLabel,
+  getConvertedQuantityForSupply,
+  getMatchingPurchaseHistoryForIngredient,
+  getMatchingSupplies,
+  getSupplyUsedCost,
+} from "../src/lib/supplies.ts";
 import type { CostingIngredientRow, Ingredient, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 function supply(overrides: Partial<SupplyEntry> = {}): SupplyEntry {
@@ -120,6 +130,41 @@ test("unit compatibility is preserved: exact unit matches without conversion", (
   const matches = getMatchingSupplies([incompatibleUnit, compatible], "Beryl's", "Classic Cocoa Powder", "g");
 
   assert.deepEqual(matches.map((match) => match.id), ["compatible"]);
+});
+
+// Regression: supplies.ts used to have its own weaker unit synonym table that couldn't convert
+// kg<->g or L<->ml at all -- a recipe row in grams could never auto-cost against a kg-recorded
+// purchase. Now it delegates to the same shared convertUnit CSV import/Bake/manual-purchase use.
+test("getSupplyUsedCost converts a kg-recorded purchase into a gram-based usage via a real conversion, not a guess", () => {
+  const sugarPurchase = supply({ id: "sugar", ingredientName: "Sugar", unit: "kg", packQuantity: 1, totalCost: 90 });
+
+  assert.equal(getSupplyUsedCost(sugarPurchase, 200, "g"), 18);
+});
+
+test("getMatchingSupplies matches a gram-recorded recipe row against a kg-recorded purchase", () => {
+  const kgPurchase = supply({ id: "kg-purchase", unit: "kg" });
+
+  const matches = getMatchingSupplies([kgPurchase], "Beryl's", "Classic Cocoa Powder", "g");
+
+  assert.deepEqual(matches.map((match) => match.id), ["kg-purchase"]);
+});
+
+test("getConversionLabel does not mark a real kg<->g conversion as an estimate", () => {
+  const sugarPurchase = supply({ id: "sugar-kg", ingredientName: "Sugar", unit: "kg" });
+
+  assert.doesNotMatch(getConversionLabel(200, "g", sugarPurchase), / estimate$/);
+});
+
+// The density-based mass<->volume estimate is a distinct, still-needed capability for cases a real
+// conversion can never resolve (there is no fixed ratio between a cup and a gram in general) --
+// it must keep working as a fallback, and must still be labeled as an estimate.
+test("the density-based mass<->volume estimate still works as a fallback when no real conversion exists", () => {
+  const flourPurchase = supply({ id: "flour", ingredientName: "All-Purpose Flour", unit: "g", packQuantity: 1000, totalCost: 530 });
+
+  // 1 cup of flour, density-guessed at 0.53 g/ml -> 240ml * 0.53 = 127.2g.
+  const converted = getConvertedQuantityForSupply(1, "cup", flourPurchase);
+  assert.ok(Math.abs(converted - 127.2) < 0.01);
+  assert.match(getConversionLabel(1, "cup", flourPurchase), / estimate$/);
 });
 
 test("manual overrides still take precedence over auto-selection", () => {

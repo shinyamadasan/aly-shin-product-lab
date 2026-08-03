@@ -117,6 +117,33 @@ test("groupPurchasesByItem puts two purchases with the same ingredientId into on
   assert.equal(summary.totalPurchasedUnit, "g");
 });
 
+// Regression: two purchases of the same ingredient recorded in "kg" and "g" used to be treated as
+// incompatible purely because the raw unit strings differed, showing "Mixed units" instead of a
+// real combined total.
+test("getPurchaseGroupSummary totals a kg purchase and a g purchase of the same ingredient instead of reporting Mixed units", () => {
+  const item = ingredient({ id: "sugar-id", name: "Sugar", baseUnit: "g" });
+  const kgPurchase = purchase({ id: "kg-purchase", ingredientId: "sugar-id", ingredientName: "Sugar", purchaseDate: "2026-01-01", packQuantity: 1, unit: "kg", totalCost: 90 });
+  const gPurchase = purchase({ id: "g-purchase", ingredientId: "sugar-id", ingredientName: "Sugar", purchaseDate: "2026-02-01", packQuantity: 500, unit: "g", totalCost: 45 });
+
+  const [group] = groupPurchasesByItem([item], [gPurchase, kgPurchase]);
+  const summary = getPurchaseGroupSummary(group);
+
+  assert.equal(summary.totalPurchasedUnit, "g");
+  assert.equal(summary.totalPurchasedQuantity, 1500);
+});
+
+test("getPurchaseGroupSummary still reports Mixed units for a genuinely incompatible pair", () => {
+  const item = ingredient({ id: "eggs-id", name: "Eggs", baseUnit: "pcs" });
+  const massPurchase = purchase({ id: "mass", ingredientId: "eggs-id", ingredientName: "Eggs", unit: "g", purchaseDate: "2026-01-01" });
+  const countPurchase = purchase({ id: "count", ingredientId: "eggs-id", ingredientName: "Eggs", unit: "pcs", purchaseDate: "2026-02-01" });
+
+  const [group] = groupPurchasesByItem([item], [countPurchase, massPurchase]);
+  const summary = getPurchaseGroupSummary(group);
+
+  assert.equal(summary.totalPurchasedUnit, "");
+  assert.equal(summary.totalPurchasedQuantity, 0);
+});
+
 test("same purchase name with different ingredientIds remains separate Item groups", () => {
   const chocolate = ingredient({ id: "choc-id", name: "Dark Chocolate Compound" });
   const sugar = ingredient({ id: "sugar-id", name: "Refined Sugar" });

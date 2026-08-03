@@ -1,26 +1,10 @@
 import type { CostingIngredientRow, Ingredient, SupplyEntry } from "./product-lab-types";
-import { normalizeBrandText, normalizeIngredientName } from "./ingredient-normalization.ts";
+import { normalizeBrandText, normalizeIngredientName, normalizeUnitText } from "./ingredient-normalization.ts";
+import { convertUnit } from "./unit-conversion.ts";
 import { findReliableBrandForItem, findReliableSupplierForItem, getPurchaseHistoryForIngredientReference, getPurchaseSortTime } from "./purchase-history.ts";
 
 export function normalizeSupplyText(value: string) {
   return value.trim().toLowerCase();
-}
-
-export function normalizeUnit(value: string) {
-  const unit = normalizeSupplyText(value);
-  if (unit === "gram" || unit === "grams") {
-    return "g";
-  }
-  if (unit === "milliliter" || unit === "milliliters") {
-    return "ml";
-  }
-  if (unit === "tablespoon" || unit === "tablespoons") {
-    return "tbsp";
-  }
-  if (unit === "teaspoon" || unit === "teaspoons") {
-    return "tsp";
-  }
-  return unit;
 }
 
 // A supply record with no usable pack size or price can't produce a real unit cost, so it is
@@ -44,7 +28,7 @@ export function getMatchingSupplies(supplies: SupplyEntry[], brandName: string, 
       }
       const brandMatches = !brandName.trim() || normalizeSupplyText(supply.brandName) === normalizeSupplyText(brandName);
       const ingredientMatches = normalizeSupplyText(supply.ingredientName) === normalizeSupplyText(ingredientName);
-      const exactUnitMatch = normalizeUnit(supply.unit) === normalizeUnit(unit);
+      const exactUnitMatch = normalizeUnitText(supply.unit) === normalizeUnitText(unit);
       const convertibleUnitMatch = Boolean(getConvertedQuantityForSupply(1, unit, supply));
       return brandMatches && ingredientMatches && (exactUnitMatch || convertibleUnitMatch);
     })
@@ -63,7 +47,7 @@ export function getMatchingPurchaseHistoryForIngredient(
       if (!isValidSupplyForCosting(supply)) {
         return false;
       }
-      const exactUnitMatch = normalizeUnit(supply.unit) === normalizeUnit(unit);
+      const exactUnitMatch = normalizeUnitText(supply.unit) === normalizeUnitText(unit);
       const convertibleUnitMatch = Boolean(getConvertedQuantityForSupply(1, unit, supply));
       return exactUnitMatch || convertibleUnitMatch;
     });
@@ -106,28 +90,37 @@ function getIngredientGramPerMl(ingredientName: string) {
   return gramPerMlByIngredient.find((entry) => entry.keywords.some((keyword) => normalizedIngredient.includes(keyword)))?.gramPerMl;
 }
 
-export function getConvertedQuantity(quantity: number, fromUnit: string, toUnit: string, ingredientName: string) {
-  const normalizedFrom = normalizeUnit(fromUnit);
-  const normalizedTo = normalizeUnit(toUnit);
-  if (!quantity || normalizedFrom === normalizedTo) {
-    return quantity;
+// Tries the shared, exact metric-family conversion (unit-conversion.ts's convertUnit -- the same
+// implementation Bake/CSV-import/manual-purchase use) first. Only when that returns null -- a
+// genuine mass<->volume case, like a cup of flour into grams -- falls back to this module's own
+// density-based estimate. Never used for inventory mutation, Costing display only.
+function computeConvertedQuantity(quantity: number, fromUnit: string, toUnit: string, ingredientName: string): { quantity: number; isEstimate: boolean } {
+  if (!quantity) {
+    return { quantity, isEstimate: false };
+  }
+
+  const exact = convertUnit(quantity, fromUnit, toUnit);
+  if (exact !== null) {
+    return { quantity: exact, isEstimate: false };
+  }
+
+  const normalizedFrom = normalizeUnitText(fromUnit);
+  const normalizedTo = normalizeUnitText(toUnit);
+  if (normalizedTo !== "g") {
+    return { quantity: 0, isEstimate: false };
   }
 
   const ml = volumeUnitMl[normalizedFrom] ? quantity * volumeUnitMl[normalizedFrom] : 0;
   if (!ml) {
-    return 0;
+    return { quantity: 0, isEstimate: false };
   }
 
-  if (normalizedTo === "ml") {
-    return ml;
-  }
+  const gramPerMl = getIngredientGramPerMl(ingredientName);
+  return { quantity: gramPerMl ? ml * gramPerMl : 0, isEstimate: Boolean(gramPerMl) };
+}
 
-  if (normalizedTo === "g" || normalizedTo === "gram" || normalizedTo === "grams") {
-    const gramPerMl = getIngredientGramPerMl(ingredientName);
-    return gramPerMl ? ml * gramPerMl : 0;
-  }
-
-  return 0;
+export function getConvertedQuantity(quantity: number, fromUnit: string, toUnit: string, ingredientName: string) {
+  return computeConvertedQuantity(quantity, fromUnit, toUnit, ingredientName).quantity;
 }
 
 export function getConvertedQuantityForSupply(quantity: number, usedUnit: string, supply: SupplyEntry) {
@@ -135,12 +128,11 @@ export function getConvertedQuantityForSupply(quantity: number, usedUnit: string
 }
 
 export function getConversionLabel(quantity: number, fromUnit: string, supply: SupplyEntry) {
-  const convertedQuantity = getConvertedQuantityForSupply(quantity, fromUnit, supply);
-  if (!convertedQuantity || normalizeUnit(fromUnit) === normalizeUnit(supply.unit)) {
+  const { quantity: convertedQuantity, isEstimate } = computeConvertedQuantity(quantity, fromUnit, supply.unit, supply.ingredientName);
+  if (!convertedQuantity || normalizeUnitText(fromUnit) === normalizeUnitText(supply.unit)) {
     return "";
   }
 
-  const isEstimate = normalizeUnit(supply.unit) !== "ml";
   return `${quantity}${fromUnit} = ${convertedQuantity.toFixed(1)}${supply.unit}${isEstimate ? " estimate" : ""}`;
 }
 

@@ -33,7 +33,7 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
@@ -66,6 +66,9 @@ import type { PurchaseImportRowDraft } from "@/lib/purchase-import";
 import { applyBakeConfirmation } from "@/lib/bake-confirm";
 import type { BakeDeduction } from "@/lib/bake-deduction";
 import { toInventoryTransactionRow } from "@/lib/inventory-transaction";
+import { applySupplyPurchaseEffect, planSupplyDelete, planSupplyEdit, repairMissingSupplyInventoryEffects, type SupplyRepairResult } from "@/lib/supply-inventory-effect";
+import { applyStockAdjustment, reverseStockAdjustment } from "@/lib/stock-adjustment";
+import { describeIngredientConstraintError } from "@/lib/inventory-errors";
 import {
   getAutoCostedIngredientRowForItems,
   getConversionLabel,
@@ -403,6 +406,7 @@ export default function ProductLab({
         notes: row.notes ?? "",
         isActive: row.is_active ?? true,
         archivedAt: row.archived_at ?? "",
+        baseUnitMigrationFlaggedReason: row.base_unit_migration_flagged_reason ?? null,
       })),
       ingredientAliases: ingredientsMissing ? [] : (ingredientAliasResult.data ?? []).map((row) => ({
         id: row.id,
@@ -466,6 +470,8 @@ export default function ProductLab({
         sourceId: row.source_id ?? "",
         note: row.note ?? "",
         createdAt: row.created_at ?? "",
+        reason: row.reason ?? undefined,
+        actor: row.actor ?? null,
       })),
     });
   }
@@ -1116,6 +1122,13 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
+  // Manual "Log a Purchase" used to only write supply_entries -- it never updated
+  // ingredients.current_quantity/average_unit_cost or wrote a ledger row, unlike CSV import and
+  // Bake. applySupplyPurchaseEffect/planSupplyEdit (src/lib/supply-inventory-effect.ts) now decide
+  // the inventory-side effect the same way those two paths already do (converting into the
+  // ingredient's own canonical unit first); save_supply_with_inventory_effect (in
+  // supabase-add-manual-purchase-inventory-effect.sql) persists supply_entries, the ingredient
+  // update, and the ledger row together as one atomic transaction.
   async function saveSupply(formData: FormData) {
     const supplyId = String(formData.get("id") || "");
     const ingredientId = String(formData.get("ingredientId") || "").trim();
@@ -1125,6 +1138,14 @@ export default function ProductLab({
       setMessageTone("bad");
       return;
     }
+
+    const previousSupply = supplyId ? labState.supplies.find((entry) => entry.id === supplyId) : undefined;
+    if (previousSupply && previousSupply.ingredientId && previousSupply.ingredientId !== ingredientId) {
+      setMessage("Changing which Item a purchase belongs to isn't supported. Delete this purchase and log it again under the new Item.");
+      setMessageTone("bad");
+      return;
+    }
+
     const supply: SupplyEntry = {
       id: supplyId || crypto.randomUUID(),
       ingredientId,
@@ -1140,30 +1161,66 @@ export default function ProductLab({
       notes: String(formData.get("notes") || "").trim(),
     };
 
+    const today = new Date().toISOString();
+    let ingredientUpdate: Ingredient | null = null;
+    let transactionUpsert: InventoryTransaction | null = null;
+    let historicalCostWarning = "";
+
+    if (!previousSupply) {
+      const effect = applySupplyPurchaseEffect(ingredient, supply, supply.id, today);
+      if ("error" in effect) {
+        setMessage(effect.error);
+        setMessageTone("bad");
+        return;
+      }
+      ingredientUpdate = effect.ingredient;
+      transactionUpsert = effect.transaction;
+    } else {
+      const plan = planSupplyEdit(ingredient, previousSupply, supply, labState.inventoryTransactions, today);
+      if (plan.kind === "error") {
+        setMessage(plan.message);
+        setMessageTone("bad");
+        return;
+      }
+      if (plan.kind === "recalculated") {
+        ingredientUpdate = plan.ingredient;
+        transactionUpsert = plan.transaction;
+      } else if (plan.kind === "quantity-only") {
+        ingredientUpdate = plan.ingredient;
+        historicalCostWarning = plan.warning;
+      }
+      // "not-applied": this purchase never affected inventory (e.g. logged before this fix
+      // shipped) -- ingredientUpdate/transactionUpsert stay null; only supply_entries changes.
+    }
+
     if (supabase && session) {
-      const payload = {
-        ingredient_id: supply.ingredientId || null,
-        ingredient_name: supply.ingredientName,
-        brand_name: supply.brandName,
-        supplier_name: supply.supplierName,
-        purchase_date: supply.purchaseDate,
-        pack_quantity: supply.packQuantity,
-        unit: supply.unit,
-        total_cost: supply.totalCost,
-        quality_rating: supply.qualityRating,
-        notes: supply.notes,
-      };
-      const query = supplyId
-        ? supabase.from("supply_entries").update(payload).eq("id", supplyId)
-        : supabase.from("supply_entries").insert(payload);
-      const { error } = await query;
+      const { error } = await supabase.rpc("save_supply_with_inventory_effect", {
+        p_supply_id: supply.id,
+        p_is_new_supply: !supplyId,
+        p_supply: {
+          ingredient_id: supply.ingredientId || null,
+          ingredient_name: supply.ingredientName,
+          brand_name: supply.brandName,
+          supplier_name: supply.supplierName,
+          purchase_date: supply.purchaseDate,
+          pack_quantity: supply.packQuantity,
+          unit: supply.unit,
+          total_cost: supply.totalCost,
+          quality_rating: supply.qualityRating,
+          notes: supply.notes,
+        },
+        p_ingredient_update: ingredientUpdate ? { id: ingredientUpdate.id, current_quantity: ingredientUpdate.currentQuantity, average_unit_cost: ingredientUpdate.averageUnitCost } : null,
+        p_transaction_upsert: transactionUpsert ? toInventoryTransactionRow(transactionUpsert) : null,
+      });
       const missingPurchaseColumn = Boolean(error && isMissingColumnError(error));
       setMessage(
         error
           ? missingPurchaseColumn
             ? `Purchase save failed because supply_entries is missing a required purchase column. Run supabase-add-supplies.sql in Supabase, then retry. Details: ${error.message}`
-            : `Purchase save failed: ${error.message}`
-          : "Purchase saved.",
+            : `Purchase save failed: ${describeIngredientConstraintError(error)}`
+          : historicalCostWarning
+            ? `Purchase saved. ${historicalCostWarning}`
+            : "Purchase saved.",
       );
       setMessageTone(error ? "bad" : "good");
       setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries") || error?.message.includes("brand_name") || error?.message.includes("ingredient_id")));
@@ -1176,17 +1233,49 @@ export default function ProductLab({
 
     setLabState((current) => ({
       ...current,
+      ingredients: ingredientUpdate ? current.ingredients.map((item) => (item.id === ingredientUpdate!.id ? ingredientUpdate! : item)) : current.ingredients,
+      inventoryTransactions: transactionUpsert
+        ? [transactionUpsert, ...current.inventoryTransactions.filter((entry) => entry.id !== transactionUpsert!.id)]
+        : current.inventoryTransactions,
       supplies: supplyId ? current.supplies.map((entry) => (entry.id === supplyId ? supply : entry)) : [supply, ...current.supplies],
     }));
     setEditingSupply(null);
-    setMessage("Purchase saved locally.");
+    setMessage(historicalCostWarning ? `Purchase saved locally. ${historicalCostWarning}` : "Purchase saved locally.");
     setMessageTone("good");
   }
 
   async function deleteSupply(supplyId: string) {
+    const previousSupply = labState.supplies.find((entry) => entry.id === supplyId);
+    const ingredient = previousSupply ? labState.ingredients.find((item) => item.id === previousSupply.ingredientId) : undefined;
+
+    let ingredientUpdate: Ingredient | null = null;
+    let transactionIdToRemove: string | null = null;
+    let historicalCostWarning = "";
+
+    if (previousSupply && ingredient) {
+      const plan = planSupplyDelete(ingredient, previousSupply, labState.inventoryTransactions);
+      if (plan.kind === "error") {
+        setMessage(plan.message);
+        setMessageTone("bad");
+        return;
+      }
+      if (plan.kind === "reversed") {
+        ingredientUpdate = plan.ingredient;
+        transactionIdToRemove = plan.transactionIdToRemove;
+      } else if (plan.kind === "quantity-only") {
+        ingredientUpdate = plan.ingredient;
+        historicalCostWarning = plan.warning;
+      }
+      // "not-applied": nothing to reverse.
+    }
+
     if (supabase && session) {
-      const { error } = await supabase.from("supply_entries").delete().eq("id", supplyId);
-      setMessage(error ? `Purchase delete failed: ${error.message}` : "Purchase deleted.");
+      const { error } = await supabase.rpc("delete_supply_with_inventory_effect", {
+        p_supply_id: supplyId,
+        p_ingredient_update: ingredientUpdate ? { id: ingredientUpdate.id, current_quantity: ingredientUpdate.currentQuantity, average_unit_cost: ingredientUpdate.averageUnitCost } : null,
+        p_transaction_id_to_remove: transactionIdToRemove,
+      });
+      setMessage(error ? `Purchase delete failed: ${describeIngredientConstraintError(error)}` : historicalCostWarning ? `Purchase deleted. ${historicalCostWarning}` : "Purchase deleted.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingSupply?.id === supplyId) {
         setEditingSupply(null);
@@ -1195,11 +1284,173 @@ export default function ProductLab({
       return;
     }
 
-    setLabState((current) => ({ ...current, supplies: current.supplies.filter((entry) => entry.id !== supplyId) }));
+    setLabState((current) => ({
+      ...current,
+      ingredients: ingredientUpdate ? current.ingredients.map((item) => (item.id === ingredientUpdate!.id ? ingredientUpdate! : item)) : current.ingredients,
+      inventoryTransactions: transactionIdToRemove ? current.inventoryTransactions.filter((entry) => entry.id !== transactionIdToRemove) : current.inventoryTransactions,
+      supplies: current.supplies.filter((entry) => entry.id !== supplyId),
+    }));
     if (editingSupply?.id === supplyId) {
       setEditingSupply(null);
     }
-    setMessage("Purchase deleted locally.");
+    setMessage(historicalCostWarning ? `Purchase deleted locally. ${historicalCostWarning}` : "Purchase deleted locally.");
+    setMessageTone("good");
+  }
+
+  function describeSupplyRepairResult(result: SupplyRepairResult): string {
+    const parts: string[] = [];
+    if (result.changedIngredients.length > 0) {
+      parts.push(`Backfilled ${result.transactions.length} purchase${result.transactions.length === 1 ? "" : "s"} across ${result.changedIngredients.length} Item${result.changedIngredients.length === 1 ? "" : "s"}.`);
+    }
+    if (result.unconvertible.length > 0) {
+      parts.push(`${result.unconvertible.length} purchase${result.unconvertible.length === 1 ? "" : "s"} could not be converted and were left untouched -- check the unit on those purchases.`);
+    }
+    return parts.join(" ") || "Nothing to repair -- every Item's purchase history is already reflected in inventory.";
+  }
+
+  // Explicit, operator-triggered only -- never run automatically on load. This will produce a
+  // real, one-time jump in current_quantity/average_unit_cost for any Item whose entire purchase
+  // history is manual (never touched by CSV import or Bake, since manual purchases never affected
+  // inventory before this fix). The summary this reports is for the operator to sanity-check
+  // against physical stock before trusting the new numbers, not just a confirmation toast.
+  async function repairSupplyInventoryEffects() {
+    const today = new Date().toISOString();
+    const result = repairMissingSupplyInventoryEffects(labState.ingredients, labState.supplies, labState.inventoryTransactions, today);
+
+    if (result.changedIngredients.length === 0 && result.unconvertible.length === 0) {
+      setMessage(describeSupplyRepairResult(result));
+      setMessageTone("good");
+      return;
+    }
+
+    if (supabase && session) {
+      const { error } = await supabase.rpc("repair_supply_inventory_effects", {
+        p_ingredient_updates: result.changedIngredients.map((ingredient) => ({ id: ingredient.id, current_quantity: ingredient.currentQuantity, average_unit_cost: ingredient.averageUnitCost })),
+        p_transactions: result.transactions.map((transaction) => toInventoryTransactionRow(transaction)),
+      });
+
+      if (error) {
+        setMessage(`Repair failed: ${describeIngredientConstraintError(error)}`);
+        setMessageTone("bad");
+        return;
+      }
+
+      setMessage(describeSupplyRepairResult(result));
+      setMessageTone(result.unconvertible.length > 0 ? "bad" : "good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      ingredients: current.ingredients.map((ingredient) => result.changedIngredients.find((updated) => updated.id === ingredient.id) ?? ingredient),
+      inventoryTransactions: [...result.transactions, ...current.inventoryTransactions],
+    }));
+    setMessage(describeSupplyRepairResult(result));
+    setMessageTone(result.unconvertible.length > 0 ? "bad" : "good");
+  }
+
+  // Stock moved outside baking -- household use, waste/spoilage, a recipe test, spillage, a
+  // stock-count correction, or anything else. Deliberately parallel to Bake (see
+  // src/lib/stock-adjustment.ts): normalizes the entered unit, respects the same negative-stock
+  // policy, and never touches averageUnitCost, recipe usage, or batch costing.
+  async function adjustStock(ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) {
+    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      setMessage("Item not found.");
+      setMessageTone("bad");
+      return;
+    }
+
+    const actor = session?.user?.email ?? null;
+    const result = applyStockAdjustment({ ingredient, quantity, unit, reason, direction, note, actor, allowNegative, today: new Date().toISOString() });
+
+    if ("error" in result) {
+      setMessage(result.error);
+      setMessageTone("bad");
+      return;
+    }
+
+    const { ingredient: updatedIngredient, transaction } = result;
+
+    if (supabase && session) {
+      const { error } = await supabase.rpc("apply_inventory_adjustment", {
+        p_ingredient_update: { id: updatedIngredient.id, current_quantity: updatedIngredient.currentQuantity },
+        p_transaction: toInventoryTransactionRow(transaction),
+      });
+
+      if (error) {
+        setMessage(`Stock adjustment failed: ${describeIngredientConstraintError(error)}`);
+        setMessageTone("bad");
+        return;
+      }
+
+      setMessage("Stock adjustment recorded.");
+      setMessageTone("good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      ingredients: current.ingredients.map((item) => (item.id === updatedIngredient.id ? updatedIngredient : item)),
+      inventoryTransactions: [transaction, ...current.inventoryTransactions],
+    }));
+    setMessage("Stock adjustment recorded locally.");
+    setMessageTone("good");
+  }
+
+  // Reverses an adjustment by submitting another one (see reverseStockAdjustment's own comment) --
+  // never deletes or edits the original ledger row.
+  async function reverseInventoryAdjustment(transactionId: string) {
+    const originalTransaction = labState.inventoryTransactions.find((entry) => entry.id === transactionId);
+    if (!originalTransaction) {
+      setMessage("Adjustment not found.");
+      setMessageTone("bad");
+      return;
+    }
+    const ingredient = labState.ingredients.find((item) => item.id === originalTransaction.ingredientId);
+    if (!ingredient) {
+      setMessage("Item not found.");
+      setMessageTone("bad");
+      return;
+    }
+
+    const actor = session?.user?.email ?? null;
+    const result = reverseStockAdjustment(ingredient, originalTransaction, actor, new Date().toISOString());
+
+    if ("error" in result) {
+      setMessage(result.error);
+      setMessageTone("bad");
+      return;
+    }
+
+    const { ingredient: updatedIngredient, transaction } = result;
+
+    if (supabase && session) {
+      const { error } = await supabase.rpc("apply_inventory_adjustment", {
+        p_ingredient_update: { id: updatedIngredient.id, current_quantity: updatedIngredient.currentQuantity },
+        p_transaction: toInventoryTransactionRow(transaction),
+      });
+
+      if (error) {
+        setMessage(`Reversal failed: ${describeIngredientConstraintError(error)}`);
+        setMessageTone("bad");
+        return;
+      }
+
+      setMessage("Adjustment reversed.");
+      setMessageTone("good");
+      await loadSupabaseData();
+      return;
+    }
+
+    setLabState((current) => ({
+      ...current,
+      ingredients: current.ingredients.map((item) => (item.id === updatedIngredient.id ? updatedIngredient : item)),
+      inventoryTransactions: [transaction, ...current.inventoryTransactions],
+    }));
+    setMessage("Adjustment reversed locally.");
     setMessageTone("good");
   }
 
@@ -1252,7 +1503,7 @@ export default function ProductLab({
         error
           ? missingCategoryColumn
             ? `Ingredient save failed: run supabase-add-ingredient-category.sql once, then save again. (${error.message})`
-            : `Ingredient save failed. Run supabase-add-inventory.sql first if this is your first time: ${error.message}`
+            : `Ingredient save failed. Run supabase-add-inventory.sql first if this is your first time: ${describeIngredientConstraintError(error)}`
           : "Ingredient saved."
       );
       setMessageTone(error ? "bad" : "good");
@@ -1285,7 +1536,7 @@ export default function ProductLab({
     const archived = archiveItem(ingredient, new Date().toISOString());
     if (supabase && session) {
       const { error } = await supabase.from("ingredients").update({ is_active: false, archived_at: archived.archivedAt || null }).eq("id", ingredientId);
-      setMessage(error ? `Ingredient archive failed: ${error.message}` : "Ingredient archived. History is preserved.");
+      setMessage(error ? `Ingredient archive failed: ${describeIngredientConstraintError(error)}` : "Ingredient archived. History is preserved.");
       setMessageTone(error ? "bad" : "good");
       if (!error && editingIngredient?.id === ingredientId) {
         setEditingIngredient(null);
@@ -1312,7 +1563,7 @@ export default function ProductLab({
     const restored = restoreItem(ingredient);
     if (supabase && session) {
       const { error } = await supabase.from("ingredients").update({ is_active: true, archived_at: null }).eq("id", ingredientId);
-      setMessage(error ? `Ingredient restore failed: ${error.message}` : "Ingredient restored.");
+      setMessage(error ? `Ingredient restore failed: ${describeIngredientConstraintError(error)}` : "Ingredient restored.");
       setMessageTone(error ? "bad" : "good");
       await loadSupabaseData();
       return;
@@ -1647,7 +1898,7 @@ export default function ProductLab({
       });
 
       if (error) {
-        setMessage(`Import confirm failed: ${error.message}`);
+        setMessage(`Import confirm failed: ${describeIngredientConstraintError(error)}`);
         setMessageTone("bad");
         setIsPurchaseImportPackagesMissing(isMissingColumnError(error));
         return;
@@ -1702,7 +1953,7 @@ export default function ProductLab({
       });
 
       if (error) {
-        setMessage(`Bake confirm failed: ${error.message}`);
+        setMessage(`Bake confirm failed: ${describeIngredientConstraintError(error)}`);
         setMessageTone("bad");
         return;
       }
@@ -2079,6 +2330,7 @@ export default function ProductLab({
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
           {view === "inventory" ? (
             <InventoryWorkspace
+              adjustStock={adjustStock}
               cancelEditIngredient={() => setEditingIngredient(null)}
               cancelEditSupply={() => setEditingSupply(null)}
               confirmPurchaseImport={confirmPurchaseImport}
@@ -2095,6 +2347,8 @@ export default function ProductLab({
               isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               isSuppliesTableMissing={isSuppliesTableMissing}
               labState={labState}
+              repairSupplyInventoryEffects={repairSupplyInventoryEffects}
+              reverseInventoryAdjustment={reverseInventoryAdjustment}
               saveIngredient={saveIngredient}
               saveIngredientAlias={saveIngredientAlias}
               saveSupply={saveSupply}
@@ -4301,6 +4555,7 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
 // behind their own routes.
 function InventoryWorkspace({
   initialTab,
+  adjustStock,
   cancelEditIngredient,
   deleteIngredient,
   editIngredient,
@@ -4312,6 +4567,8 @@ function InventoryWorkspace({
   deleteSupply,
   editSupply,
   isSuppliesTableMissing,
+  repairSupplyInventoryEffects,
+  reverseInventoryAdjustment,
   saveSupply,
   supply,
   confirmPurchaseImport,
@@ -4325,6 +4582,7 @@ function InventoryWorkspace({
   labState,
 }: {
   initialTab?: InventoryTab;
+  adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEditIngredient: () => void;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
@@ -4336,6 +4594,8 @@ function InventoryWorkspace({
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
   isSuppliesTableMissing: boolean;
+  repairSupplyInventoryEffects: () => void;
+  reverseInventoryAdjustment: (transactionId: string) => Promise<void>;
   saveSupply: (formData: FormData) => void;
   supply: SupplyEntry | null;
   confirmPurchaseImport: (importId: string) => Promise<void>;
@@ -4405,7 +4665,7 @@ function InventoryWorkspace({
             </button>
           </div>
           {purchasesTab === "manual" ? (
-            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
+            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
           ) : (
             <PurchaseImportWizard
               confirmPurchaseImport={confirmPurchaseImport}
@@ -4425,10 +4685,10 @@ function InventoryWorkspace({
 
       {tab === "need-to-buy" ? <NeedToBuyPage labState={labState} /> : null}
 
-      {tab === "history" ? <InventoryTimeline labState={labState} /> : null}
+      {tab === "history" ? <InventoryTimeline labState={labState} reverseInventoryAdjustment={reverseInventoryAdjustment} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
+        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
       ) : null}
     </div>
   );
@@ -4440,6 +4700,7 @@ function PurchaseLogPage({
   editSupply,
   isSuppliesTableMissing,
   labState,
+  repairSupplyInventoryEffects,
   saveIngredient,
   saveSupply,
   supply,
@@ -4449,6 +4710,7 @@ function PurchaseLogPage({
   editSupply: (supply: SupplyEntry) => void;
   isSuppliesTableMissing: boolean;
   labState: LabState;
+  repairSupplyInventoryEffects: () => void;
   saveIngredient: (formData: FormData) => Promise<string | null>;
   saveSupply: (formData: FormData) => void;
   supply: SupplyEntry | null;
@@ -4544,6 +4806,19 @@ function PurchaseLogPage({
               <button className={`h-9 rounded-md border px-3 text-sm font-semibold ${purchaseView === "all" ? "border-[#8f5632] bg-[#8f5632] text-white" : "border-[#d8c7b7] bg-white text-[#5f4a3d]"}`} onClick={() => setPurchaseView("all")} type="button">All Purchases</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("supplies-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadPurchases} type="button">Download CSV</button>
+              <button
+                className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]"
+                onClick={() =>
+                  window.confirm(
+                    "Apply every Item's full purchase history to current stock and average cost, for any Item never touched by a purchase before? This can move stock quantities and costs -- check the result against physical stock afterward.",
+                  )
+                    ? repairSupplyInventoryEffects()
+                    : undefined
+                }
+                type="button"
+              >
+                Repair missing purchase effects
+              </button>
             </div>
           </div>
           {purchaseView === "all" ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Transaction log: each row is one purchase record, so repeated Item names are expected.</p> : null}

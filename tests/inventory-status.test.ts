@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getExpirationStatus, getExpiringIngredients, getInventorySummaryCounts, getNeedToBuyList, getStockStatus, getSuggestedBuyQuantity } from "../src/lib/inventory-status.ts";
+import { getExpirationStatus, getExpiringIngredients, getFlaggedIngredients, getInventorySummaryCounts, getNeedToBuyList, getStockStatus, getSuggestedBuyQuantity } from "../src/lib/inventory-status.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
 function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
@@ -162,4 +162,19 @@ test("getInventorySummaryCounts excludes inactive ingredients from every count",
   const inactive = ingredient({ id: "inactive", currentQuantity: 0, nearestExpirationDate: "2026-07-20", isActive: false });
 
   assert.deepEqual(getInventorySummaryCounts([inactive], TODAY), { lowCount: 0, outCount: 0, expiringCount: 0 });
+});
+
+// B.1/B.2: flagged ingredients are visibly identified; unflagged ones are not.
+test("getFlaggedIngredients returns only ingredients with a base_unit_migration_flagged_reason set", () => {
+  const flagged = ingredient({ id: "flagged", baseUnitMigrationFlaggedReason: "unrecognized_base_unit:oz" });
+  const clean = ingredient({ id: "clean", baseUnitMigrationFlaggedReason: null });
+  const neverTouched = ingredient({ id: "never-touched" });
+
+  assert.deepEqual(getFlaggedIngredients([flagged, clean, neverTouched]).map((item) => item.id), ["flagged"]);
+});
+
+test("getFlaggedIngredients includes an archived ingredient's flag -- the NOT VALID constraint can still block a write to it", () => {
+  const flaggedArchived = ingredient({ id: "flagged-archived", baseUnitMigrationFlaggedReason: "non_finite_numeric_field", isActive: false });
+
+  assert.deepEqual(getFlaggedIngredients([flaggedArchived]).map((item) => item.id), ["flagged-archived"]);
 });
