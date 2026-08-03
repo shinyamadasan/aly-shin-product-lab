@@ -1511,6 +1511,64 @@ per the approved roadmap, and left for PROP-024 through PROP-031. Verified: `npm
 clean, scoped `eslint` clean on all 9 new files, new tests 104/104 passing, full suite green, `npm
 run build -- --webpack` succeeds with no new route.
 
+### PROP-025 implementation record (2026-08-03)
+
+Implemented on `feat/asset-generation-foundation` and committed as
+`af49bab765a44711057985b99a612a21ea944d72` (`Implement PROP-025 asset byte materialization`).
+This milestone extends the already-approved Asset Job path only:
+
+Creative Package → Asset Job → AssetGenerationSpec → AssetJobExecutor →
+GeneratedAssetFileCandidate with real `Uint8Array` bytes → metadata validation → binary
+inspection/byte validation → private Storage handling → `complete_asset_job_with_files` RPC →
+Asset + Asset Files → finish Asset Job attempt.
+
+The implementation adds real byte handling without changing Creative Job result envelopes,
+`src/lib/creative-jobs.ts`, or `scripts/creative-workers/**`. `GeneratedAssetFileCandidate` now
+requires `bytes: Uint8Array`; metadata validation still runs first, and `src/lib/asset-binary.ts`
+separately performs bounded deterministic PNG/JPEG/WebP inspection, SHA-256 hashing, byte/metadata
+comparison, and deterministic Storage path construction keyed by `asset_job_id`. The production
+success path now routes through `src/lib/asset-file-materialization.ts`, which uploads to private
+Storage before the combined RPC, verifies pre-existing deterministic objects by authenticated
+download + byte/hash inspection before reuse, tracks `uploadedThisRun` separately from
+`reusedExistingPaths`, and removes only current-run uploads on pre-RPC/RPC failure. Pre-existing
+objects are never deleted automatically.
+
+Two additive SQL files were created and applied live in order:
+1. `supabase-add-generated-assets-storage.sql` — private `generated-assets` bucket, 10 MB limit,
+   PNG/JPEG/WebP only, authenticated object policy scoped to that bucket, no public read policy.
+2. `supabase-add-asset-job-file-materialization.sql` — `complete_asset_job_with_files(uuid, jsonb,
+   jsonb)`, which locks a running Asset Job, verifies/reuses exactly one Asset by `asset_job_id`,
+   verifies/reuses Asset File identity, raises idempotency conflicts inside PostgreSQL before the
+   Job terminal update, then completes the Job with database-sourced timestamps. The final migration
+   includes explicit grant hardening: `PUBLIC` execute is revoked and `authenticated` execute is
+   granted.
+
+Live verification:
+- Live Storage SQL verified: `generated-assets` exists, `public = false`, `file_size_limit =
+  10485760`, MIME types exactly `image/png`, `image/jpeg`, `image/webp`, authenticated-only object
+  policy, no anonymous/public read policy.
+- Live materialization RPC verified: function creation succeeded, signature is
+  `complete_asset_job_with_files(uuid, jsonb, jsonb)`, no `creative_job_id` coupling, running-job
+  guard present, identity checks before Job completion, database-sourced `completed_at`/
+  `updated_at`.
+- RPC grant hardening verified live: `PUBLIC`/`anon` cannot execute; `authenticated` can execute.
+- Live fixture-byte Storage smoke passed with deterministic PNG bytes only, no paid provider and
+  no real image-generation API. It created one Asset Job Attempt, one Asset, one Asset File, and
+  one private Storage object; authenticated download + binary/hash verification passed; anonymous
+  public URL fetch did not return `200`.
+- Manual live cleanup completed afterward: the exact smoke Asset File, Asset, Asset Job Attempt,
+  dedicated Asset Job, and Storage object were removed. Final live Asset subsystem row counts:
+  `asset_jobs = 0`, `asset_job_attempts = 0`, `assets = 0`, `asset_files = 0`.
+
+Final local verification after grant hardening: `npm run typecheck` clean; scoped `eslint` clean;
+focused PROP-025 tests 88/88 passing; `npm test` passing 1042/1043 (1 pre-existing skip, 0
+failed); `npm run build -- --webpack` succeeds; `git diff --check` reports no whitespace errors
+(only Windows LF-to-CRLF warnings on tracked files).
+
+Known limitations: image assets only; fixture/mock asset worker only; no real provider adapter yet;
+no UI/review/approval flow; no carousel, video, publishing, signed URL UI, or public Storage read
+path.
+
 ---
 
 ## 1. Current-state summary
