@@ -229,6 +229,10 @@ export async function getAssetForJob(client: AssetClient, assetJobId: string): P
   }
 }
 
+export async function readAssetForAssetJob(client: AssetClient, assetJobId: string): Promise<AssetDetailResult> {
+  return getAssetForJob(client, assetJobId);
+}
+
 async function existingAssetWithFiles(client: AssetClient & AssetFileClient, assetJobId: string): Promise<AssetCreateResult | null> {
   const existing = await getAssetForJob(client, assetJobId);
   if (!existing.ok) {

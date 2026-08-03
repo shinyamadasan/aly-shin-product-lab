@@ -4,12 +4,8 @@ import {
   validateGeneratedAssetCandidates,
   type GeneratedAssetFileCandidate,
 } from "./asset-generation-validation.ts";
-import { validateAssetCandidateBytes, type InspectedAssetCandidate } from "./asset-binary.ts";
-import {
-  materializeAssetJobFiles,
-  type AssetJobFileMaterializationClient,
-  type AssetJobFileMaterializationResult,
-} from "./asset-file-materialization.ts";
+import type { InspectedAssetCandidate } from "./asset-binary.ts";
+import type { AssetJobFileMaterializationClient, AssetJobFileMaterializationResult } from "./asset-file-materialization.ts";
 import { BRAND_BIBLE } from "./marketing-advisor-context.ts";
 import {
   finishAssetJobAttempt,
@@ -169,6 +165,10 @@ export type AssetJobClaimWithAttemptResult =
   | { ok: false; reason: "missing-table" | "not-found" | "not-queued" | "failed"; message: string; job?: AssetJobRecord };
 
 export type QueuedAssetJobsResult =
+  | { ok: true; jobs: AssetJobRecord[] }
+  | { ok: false; reason: "missing-table" | "failed"; message: string };
+
+export type CreativePackageAssetJobsResult =
   | { ok: true; jobs: AssetJobRecord[] }
   | { ok: false; reason: "missing-table" | "failed"; message: string };
 
@@ -505,6 +505,25 @@ export async function listQueuedAssetJobs(client: AssetJobClient, limit = 1, wor
   }
 }
 
+export async function listAssetJobsForCreativePackage(client: AssetJobClient, creativePackageId: string): Promise<CreativePackageAssetJobsResult> {
+  const result = await client
+    .from("asset_jobs")
+    .select<AssetJobRow>("*")
+    .eq("creative_package_id", creativePackageId)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
+
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+
+  try {
+    return { ok: true, jobs: (result.data ?? []).map(fromAssetJobRow) };
+  } catch (err) {
+    return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function claimQueuedAssetJobWithAttempt(client: AssetJobClient, id: string): Promise<AssetJobClaimWithAttemptResult> {
   const result = await client.rpc("claim_asset_job_with_attempt", { p_job_id: id }).maybeSingle();
   if (result.error) {
@@ -679,6 +698,7 @@ export async function runAssetJobWithExecutors(
   }
 
   const inspected: InspectedAssetCandidate[] = [];
+  const { validateAssetCandidateBytes } = await import("./asset-binary.ts");
   for (const candidate of candidateValidation.candidates) {
     const byteValidation = validateAssetCandidateBytes(candidate);
     if (!byteValidation.ok) {
@@ -687,6 +707,7 @@ export async function runAssetJobWithExecutors(
     inspected.push(byteValidation.inspected);
   }
 
+  const { materializeAssetJobFiles } = await import("./asset-file-materialization.ts");
   const materialization = await materializeAssetJobFiles(client, { job, inspected });
   if (!materialization.ok) {
     const jobResult = await failRunningAssetJob(client, job, materialization.message);

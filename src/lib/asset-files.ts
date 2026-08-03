@@ -145,3 +145,7 @@ export async function listAssetFilesForAsset(client: AssetFileClient, assetId: s
     return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
   }
 }
+
+export async function listOrderedAssetFilesForAsset(client: AssetFileClient, assetId: string): Promise<AssetFilesListResult> {
+  return listAssetFilesForAsset(client, assetId);
+}
