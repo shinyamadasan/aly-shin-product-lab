@@ -8,6 +8,7 @@ import { getExpirationStatus, getFlaggedIngredients, getStockStatus } from "@/li
 import { buildInventoryItemViews } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { Button, FormPanel, Input, Select, SecondaryButton, Tag, Textarea } from "@/components/ui";
+import { useEditNavigation } from "@/hooks/use-edit-navigation";
 
 // Every ingredient's own base unit is canonical -- kg/L stay valid purchase/recipe input units,
 // converted before ever reaching this list. Derived from CANONICAL_UNITS so there's exactly one
@@ -193,6 +194,7 @@ export function InventoryPage({
   restoreIngredient: (ingredientId: string) => void;
   saveIngredient: (formData: FormData) => void;
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(ingredient?.id ?? null);
   const ingredients = labState.ingredients.filter((item) => item.isActive);
   const archivedIngredients = labState.ingredients.filter((item) => !item.isActive);
   const itemViews = buildInventoryItemViews(ingredients, labState.supplies);
@@ -200,7 +202,10 @@ export function InventoryPage({
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
-      <FormPanel title={ingredient ? "Edit ingredient" : "Add ingredient"} icon={<Boxes size={18} />}>
+      <FormPanel ref={editorRef} title={ingredient ? "Edit ingredient" : "Add ingredient"} icon={<Boxes size={18} />}>
+        {ingredient ? (
+          <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">Editing: {ingredient.name}</p>
+        ) : null}
         {isInventoryTableMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
             Inventory database fields are not ready yet. Run <strong>supabase-add-inventory.sql</strong> once, then save again.
@@ -209,7 +214,7 @@ export function InventoryPage({
         <form action={saveIngredient} className="grid gap-3" key={ingredient?.id ?? "new-ingredient"}>
           <input name="id" type="hidden" value={ingredient?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-2">
-            <Input name="name" label="Ingredient name" placeholder="Fresh Milk" defaultValue={ingredient?.name} />
+            <Input name="name" label="Ingredient name" placeholder="Fresh Milk" defaultValue={ingredient?.name} ref={fieldRef} />
             {ingredient?.baseUnitMigrationFlaggedReason ? (
               // Flagged rows keep whatever legacy base_unit the migration left them at (e.g. a
               // value outside g/ml/pcs) -- baseUnitOptions only offers the three canonical units,
@@ -296,7 +301,7 @@ export function InventoryPage({
             const value = getInventoryValue(item);
             const lastPurchaseDate = latestPurchase?.purchaseDate ?? "";
             return (
-              <article className="grid gap-4 p-5 lg:grid-cols-[1fr_130px_130px_190px_130px_120px]" key={item.id}>
+              <article className={`grid gap-4 p-5 lg:grid-cols-[1fr_130px_130px_190px_130px_120px] ${item.id === ingredient?.id ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`} key={item.id}>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag>

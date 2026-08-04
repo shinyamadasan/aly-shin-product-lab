@@ -1,11 +1,11 @@
 import type React from "react";
 
-export function Input(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string; helper?: string }) {
-  const { label, helper, ...inputProps } = props;
+export function Input(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string; helper?: string; ref?: React.Ref<HTMLInputElement> }) {
+  const { label, helper, ref, ...inputProps } = props;
   return (
     <label className="grid gap-1 text-sm font-medium">
       {label}
-      <input className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" {...inputProps} />
+      <input className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" ref={ref} {...inputProps} />
       {helper ? <span className="text-xs font-normal leading-5 text-[#6f5a4c]">{helper}</span> : null}
     </label>
   );
@@ -21,11 +21,11 @@ export function Textarea({ label, helper, ...props }: React.TextareaHTMLAttribut
   );
 }
 
-export function Select({ label, options, ...props }: React.SelectHTMLAttributes<HTMLSelectElement> & { label: string; options: string[] }) {
+export function Select({ label, options, ref, ...props }: React.SelectHTMLAttributes<HTMLSelectElement> & { label: string; options: string[]; ref?: React.Ref<HTMLSelectElement> }) {
   return (
     <label className="grid gap-1 text-sm font-medium">
       {label}
-      <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" {...props}>
+      <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" ref={ref} {...props}>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
@@ -61,8 +61,8 @@ export function Panel({ title, icon, children }: { title: string; icon: React.Re
   return <aside className="rounded-lg border border-[#e1d4c4] bg-white p-5"><div className="mb-4 flex items-center gap-2"><span className="text-[#9a5b2f]">{icon}</span><h3 className="font-semibold">{title}</h3></div>{children}</aside>;
 }
 
-export function FormPanel({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
-  return <section className="rounded-lg border border-[#e1d4c4] bg-white p-5"><div className="mb-4 flex items-center gap-2"><span className="text-[#9a5b2f]">{icon}</span><h3 className="text-lg font-semibold">{title}</h3></div>{children}</section>;
+export function FormPanel({ title, icon, children, ref }: { title: string; icon: React.ReactNode; children: React.ReactNode; ref?: React.Ref<HTMLElement> }) {
+  return <section className="rounded-lg border border-[#e1d4c4] bg-white p-5" ref={ref}><div className="mb-4 flex items-center gap-2"><span className="text-[#9a5b2f]">{icon}</span><h3 className="text-lg font-semibold">{title}</h3></div>{children}</section>;
 }
 
 export function MessageBox({
