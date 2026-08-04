@@ -122,3 +122,13 @@ export function productName(productId: string, products: Product[]) {
   }
   return products.find((product) => product.id === productId)?.name ?? productId;
 }
+
+// The "Brownies V3" display name shown across Batches (list, edit banner, delete/void
+// confirmations), Bake, Costing (RecentEntries, downloadCosting, CostingPrintReport, edit banner,
+// duplicate-conflict message), and print headers -- one place for that composition instead of the
+// many copies that used to drift independently. batchVersion is optional so this also covers
+// legacy/unlinked records that have no batch.
+export function batchDisplayName(productId: string, batchVersion: string, products: Product[]) {
+  const name = productName(productId, products);
+  return batchVersion ? `${name} ${batchVersion}` : name;
+}

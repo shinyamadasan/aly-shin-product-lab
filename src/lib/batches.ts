@@ -79,6 +79,35 @@ export function parseBatchProcessSteps(notes: string): string[] {
   return parseBatchRecord(notes).steps;
 }
 
+// Trim + case-fold so "Brownies V3", "Brownies v3", and " Brownies V3 " all compare equal. Mirrors
+// the DB's own lower(trim(batch_version)) expression index (supabase-add-batch-version-uniqueness.sql)
+// -- keep both in sync if this normalization ever changes.
+export function normalizeBatchVersion(batchVersion: string): string {
+  return batchVersion.trim().toLowerCase();
+}
+
+export type BatchConflictCandidate = {
+  batchId: string;
+  productId: string;
+  batchVersion: string;
+};
+
+// Same-product batch versions must be unique after normalization (see PRODUCT_LAB_CONTEXT.md's
+// Batches section). candidate.batchId excludes the record being saved from its own conflict
+// check, so editing a batch without changing its version always stays valid. Mirrors
+// findConflictingCosting's shape (src/lib/costing.ts).
+export function findConflictingBatch(batches: ProductBatch[], candidate: BatchConflictCandidate): ProductBatch | null {
+  const normalizedVersion = normalizeBatchVersion(candidate.batchVersion);
+  return (
+    batches.find((entry) => {
+      if (entry.id === candidate.batchId) {
+        return false;
+      }
+      return entry.productId === candidate.productId && normalizeBatchVersion(entry.batchVersion) === normalizedVersion;
+    }) ?? null
+  );
+}
+
 // batches is always loaded sorted newest-first (see loadSupabaseData's .order("created_at", { ascending:
 // false })), so a batch's previous version is simply the next match for the same product later in
 // the array -- same assumption the rest of the app already makes (buildFormulaRowsFromPreviousBatch,
