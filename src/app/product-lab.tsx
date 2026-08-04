@@ -47,7 +47,7 @@ import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButto
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
 import type { OpportunityStatusFilter } from "@/lib/opportunity-review";
-import { ContentStatusSelect, ContentTypeSelect, JourneyTypeSelect, MediaChecklist, ProductSelect, batchDisplayName, productName } from "@/components/product-controls";
+import { ContentStatusSelect, ContentTypeSelect, JourneyTypeSelect, MediaChecklist, ProductSelect, batchDisplayName, costingDisplayName, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
 import { buildContentJournalPayload, mapContentJournalRow } from "@/lib/journal";
 import {
@@ -58,7 +58,7 @@ import {
   createDraftFromJourney,
   mapContentDraftRow,
 } from "@/lib/content-drafts";
-import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
+import { findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch } from "@/lib/costing";
 import { isDuplicateKeyError } from "@/lib/database-errors";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
@@ -866,6 +866,20 @@ export default function ProductLab({
     const costingId = String(formData.get("id") || "");
     const productId = String(formData.get("productId"));
     const batchId = String(formData.get("batchId") || "");
+
+    if (isBatchProductMismatch(labState.batches, { productId, batchId })) {
+      setMessage("This batch does not belong to the selected product. Refresh and try again.");
+      setMessageTone("bad");
+      return;
+    }
+
+    const conflictingCosting = findConflictingCosting(labState.costings, { costingId, productId, batchId });
+    if (conflictingCosting) {
+      setMessage(`A costing for "${costingDisplayName(conflictingCosting, labState.products, labState.batches)}" already exists. Edit that record instead of saving a new one.`);
+      setMessageTone("bad");
+      return;
+    }
+
     const ingredientRowIds = String(formData.get("ingredientRowIds") || "")
       .split(",")
       .filter(Boolean);
@@ -1081,7 +1095,8 @@ export default function ProductLab({
         ? supabase.from("costing_summaries").update(payload).eq("id", costingId)
         : supabase.from("costing_summaries").insert(payload);
       const { error } = await query;
-      setMessage(error ? `Costing save failed: ${error.message}` : costingId ? "Costing updated." : "Costing saved.");
+      const duplicateMessage = "A costing for this batch already exists. Refresh and edit that record instead.";
+      setMessage(error ? (isDuplicateKeyError(error) ? duplicateMessage : `Costing save failed: ${error.message}`) : costingId ? "Costing updated." : "Costing saved.");
       setMessageTone(error ? "bad" : "good");
       if (!error) {
         setEditingCosting(null);
@@ -5348,7 +5363,16 @@ function CostingForm({
 
     return rows.length > 0 ? rows : [{ cost: 0, name: "", note: "", rowId: crypto.randomUUID() }];
   });
-  const [packagingRows, setPackagingRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultPackagingComponents, structuredDetail?.packagingRows, costing?.packagingCost ?? 0));
+  // Only ever seed the 9 named defaults (Box, Sticker, Cup...) when there's real structured
+  // detail to fill them from -- a brand-new costing renders 0 rows, and a legacy costing with
+  // just a lump-sum packagingCost gets exactly 1 row carrying that amount, not 9 mostly-blank
+  // ones. "Add packaging" (NamedCostSection) is the only way to add more either way.
+  const [packagingRows, setPackagingRows] = useState<CostingNamedCostRow[]>(() => {
+    if (structuredDetail?.packagingRows?.length) {
+      return buildNamedCostRows(defaultPackagingComponents, structuredDetail.packagingRows, costing?.packagingCost ?? 0);
+    }
+    return costing?.packagingCost ? [{ cost: costing.packagingCost, name: "Packaging", note: "", rowId: crypto.randomUUID() }] : [];
+  });
   const [overheadRows, setOverheadRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultOverheadRows, structuredDetail?.overheadRows));
   const [equipmentUsage, setEquipmentUsage] = useState<EquipmentUsageRow[]>(() => structuredDetail?.equipmentUsage ?? []);
   const [wasteRows, setWasteRows] = useState<CostingNamedCostRow[]>(() => buildNamedCostRows(defaultWasteRows, structuredDetail?.wasteRows, costing?.wasteAllowance ?? 0));
@@ -5781,11 +5805,11 @@ function CostingForm({
           <Input name="targetFoodCost" label="Target food cost %" type="number" step="0.01" value={targetFoodCost || ""} onChange={(event) => setTargetFoodCost(Number(event.target.value || 0))} helper="Use 0.35 for 35%. Suggested target price updates below." />
         </div>
         <div className="grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
-          <CostingMetric label="Batch cost" value={`PHP ${totalBatchCost.toFixed(2)}`} />
-          <CostingMetric label="Cost per piece" value={formatCostingMetric(costPerPiece, (value) => `PHP ${value.toFixed(2)}`)} />
+          <CostingMetric featured label="Batch cost" value={`PHP ${totalBatchCost.toFixed(2)}`} />
+          <CostingMetric featured label="Cost per piece" value={formatCostingMetric(costPerPiece, (value) => `PHP ${value.toFixed(2)}`)} />
           <CostingMetric label="Operating profit/unit" value={formatCostingMetric(grossProfit, (value) => `PHP ${value.toFixed(2)}`)} />
           <CostingMetric label="Food cost" value={formatCostingMetric(foodCostPercent, (value) => `${value.toFixed(1)}%`)} />
-          <CostingMetric label="Operating margin" value={formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)} />
+          <CostingMetric featured label="Operating margin" value={formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)} />
           <CostingMetric label="Markup" value={formatCostingMetric(markup, (value) => `${value.toFixed(1)}%`)} />
           <CostingMetric label="Break-even" value={formatCostingMetric(breakEvenUnits, (value) => (contributionMarginPerPiece && contributionMarginPerPiece > 0 ? `${value} pcs` : "Price below cost"))} />
           <CostingMetric label="Target price" value={formatCostingMetric(suggestedTargetPrice, (value) => `PHP ${value.toFixed(2)}`)} />
@@ -6090,11 +6114,11 @@ function CostingPrintReport({
   );
 }
 
-function CostingMetric({ label, value }: { label: string; value: string }) {
+function CostingMetric({ label, value, featured = false }: { label: string; value: string; featured?: boolean }) {
   return (
     <div>
       <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ddb778]">{label}</p>
-      <p className="mt-2 text-lg font-semibold">{value}</p>
+      <p className={`mt-2 font-semibold ${featured ? "text-2xl" : "text-lg"}`}>{value}</p>
     </div>
   );
 }

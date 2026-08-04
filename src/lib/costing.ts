@@ -1,4 +1,4 @@
-import type { CostingSummary } from "./product-lab-types";
+import type { CostingSummary, ProductBatch } from "./product-lab-types";
 
 export type CostingMetrics = {
   costPerPiece: number | null;
@@ -93,4 +93,38 @@ export function getCostingTotals(costing: CostingSummary) {
   const metrics = getCostingMetrics({ costingYield, directCost, indirectCost, suggestedPrice: costing.suggestedPrice, targetFoodCost, totalBatchCost });
 
   return { ...metrics, costingYield, directCost, indirectCost, targetFoodCost, totalBatchCost, utilityTotal };
+}
+
+export type CostingConflictCandidate = {
+  costingId: string;
+  productId: string;
+  batchId: string;
+};
+
+// Costings have no free-text name -- the invariant this guards is record identity: one costing
+// per batch, or (for legacy costings saved before batch-scoping existed) one unlinked costing per
+// product. candidate.costingId excludes the record being saved from its own conflict check, so
+// editing a costing without changing its product/batch always stays valid.
+export function findConflictingCosting(costings: CostingSummary[], candidate: CostingConflictCandidate): CostingSummary | null {
+  return (
+    costings.find((entry) => {
+      if (entry.id === candidate.costingId) {
+        return false;
+      }
+      return candidate.batchId ? entry.batchId === candidate.batchId : entry.productId === candidate.productId && !entry.batchId;
+    }) ?? null
+  );
+}
+
+// CostingForm's batch picker derives productId from whichever batch is selected, so a mismatch
+// shouldn't occur through normal use -- but saveCosting reads both values straight off FormData
+// without cross-checking them, and findConflictingCosting's unlinked-costing bucket above depends
+// on batchId genuinely belonging to productId. Empty batchId is the legitimate "unlinked legacy
+// costing" case, not a mismatch.
+export function isBatchProductMismatch(batches: ProductBatch[], candidate: { productId: string; batchId: string }): boolean {
+  if (!candidate.batchId) {
+    return false;
+  }
+  const batch = batches.find((item) => item.id === candidate.batchId);
+  return !batch || batch.productId !== candidate.productId;
 }
