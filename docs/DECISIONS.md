@@ -51,3 +51,50 @@ already-established `canHardDeleteItem`/`getItemReferenceSummary` convention
 (`src/lib/inventory-safety.ts`) used for ingredients, applied to products for the same reason.
 
 Verify: src/lib/product-safety.ts contains "export function canDeleteProduct"
+
+## D-004 — AGENTS.md governance sections reference existing workflow/review docs instead of duplicating them
+
+**Decision:** The governance sections in `AGENTS.md` (Milestone Baseline Gate, Architecture
+Protection, Recovery Rules, Planning Rules, Review Rules) were revised, and a sixth section
+(Long-Term Design Principles) was removed, so that:
+
+- Milestone Baseline Gate no longer restates a formal-milestone checklist; it points to
+  `WORKFLOW.md`'s Planning/Execution events and `planning/TASK.md` for that, and adds a separate,
+  lightweight track for direct, user-instructed work with no fabricated "required base commit."
+- Architecture Protection names the three places approved architecture is expected to live
+  (`docs/ARCHITECTURE.md`, a subsystem doc such as `MARKETING_MODULE.md`, or an explicitly approved
+  implementation plan) and adds an explicit stop-and-document fallback when none exists.
+- Recovery Rules keeps its existing bullets and adds four concrete requirements for destructive
+  recovery SQL (guarded preflight checks, proof of safety, rollback notes, explicit human review),
+  cross-referencing Review Rules rather than inventing a separate process.
+- Planning Rules and Review Rules were condensed to point at `WORKFLOW.md`/`planning/TASK.md` and
+  at `SELF_REVIEW.md`/`REVIEW.md`/`QA.md` respectively, instead of restating thinner, duplicate
+  versions of processes this repo already documents in more detail. "Independent" was removed from
+  Review Rules since this repo's sanctioned review model is its own established self-review, QA,
+  and review-log process (`SELF_REVIEW.md`, `QA.md`, `REVIEW.md`), not a second independent
+  reviewer.
+- The Long-Term Design Principles section (the `Opportunity -> Creative Job -> Creative Package ->
+  Asset Job -> Asset -> Publish` diagram) was removed rather than revised, since it asserted an
+  architecture that isn't actually settled.
+
+**Why:** These sections were originally added in reaction to a real incident: a prior session built
+an `assets`/`asset_files` schema and a `materialize_asset_with_files` RPC directly against
+`creative_jobs`, which was later identified as an accidental draft and required a dedicated
+1400-line recovery migration (`supabase-recover-prop023-asset-schema.sql`, on the unmerged
+`feat/asset-generation-foundation` branch) to remove. The original wording, written in the moment,
+duplicated process this repo already has documented in more detail elsewhere (`WORKFLOW.md`'s
+Planning/Self-Review/Task-Completion events, `SELF_REVIEW.md`'s Code Health checklist, `REVIEW.md`'s
+verdict log, `QA.md`'s correctness gate), risking the two versions drifting apart over time. It also
+didn't distinguish formal milestones (tracked in `planning/TASK.md`, with a real "required base
+commit" to check) from direct, user-instructed conversational work — which is how the Batch,
+Costing, and Edit Navigation work in this session actually shipped, with no registered milestone and
+no base commit ever declared for it to check against.
+
+`docs/ARCHITECTURE.md` still has no section documenting Creative Jobs, Creative Packages, or Assets
+— a real, pre-existing gap this decision does not resolve. It's recorded here, as context, rather
+than asserted as settled architecture (the removed diagram) or filed as a new planning proposal: the
+asset subsystem's design is still unsettled (see the discarded `assets.ts`/`supabase-add-assets.sql`
+work and the separate, more complete but unmerged `feat/asset-generation-foundation` branch), so
+documenting it properly has to wait for that to be resolved first.
+
+Verify: AGENTS.md does not contain "Every implementation must undergo an independent review"
