@@ -60,6 +60,7 @@ import {
 } from "@/lib/content-drafts";
 import { findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch } from "@/lib/costing";
 import { isDuplicateKeyError } from "@/lib/database-errors";
+import { useEditNavigation } from "@/hooks/use-edit-navigation";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
@@ -2350,7 +2351,7 @@ export default function ProductLab({
               <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} products={labState.products} saveCosting={saveCosting} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
-                <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} labState={labState} only="costing" />
+                <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
               </div>
             </section>
           ) : null}
@@ -2397,6 +2398,7 @@ export default function ProductLab({
                   createContentFromJourney={createContentFromJourney}
                   creatingContentForEntryId={creatingContentForEntryId}
                   deleteJournal={deleteJournal}
+                  editingJournalId={editingJournal?.id}
                   editJournal={setEditingJournal}
                   labState={labState}
                   only="journal"
@@ -2921,6 +2923,8 @@ function BatchHistoryPage({
   voidBatch: (batchId: string, reason: string) => void;
 }) {
   const [copiedBatchId, setCopiedBatchId] = useState("");
+  // Captured before the batches.map() below, which shadows `batch` with its own loop variable.
+  const editingBatchId = batch?.id ?? null;
 
   async function copyFormula(batchId: string, formula: BatchFormulaRow[]) {
     const text = formatBatchFormula(formula);
@@ -2983,7 +2987,7 @@ function BatchHistoryPage({
             const effectiveStatus = getEffectiveBatchStatus(batch, labState.inventoryTransactions);
             const canVoid = canVoidBatch(batch, labState.inventoryTransactions);
             return (
-              <article className="p-5" key={batch.id}>
+              <article className={`p-5 ${batch.id === editingBatchId ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`} key={batch.id}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <h4 className="font-semibold">{batchDisplayName(batch.productId, batch.batchVersion, labState.products)}</h4>
@@ -3212,6 +3216,7 @@ function ProductAdminPage({
   product: Product | null;
   saveProduct: (formData: FormData) => void;
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(product?.id ?? null);
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
@@ -3228,7 +3233,7 @@ function ProductAdminPage({
             const referenceTotal = totalProductReferenceCount(referenceCount);
             const deletable = canDeleteProduct(referenceCount);
             return (
-              <article className="grid gap-3 p-4 md:grid-cols-[1fr_240px]" key={item.id}>
+              <article className={`grid gap-3 p-4 md:grid-cols-[1fr_240px] ${item.id === product?.id ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`} key={item.id}>
                 <div>
                   <h4 className="font-semibold">{item.name}</h4>
                   <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">{item.description}</p>
@@ -3260,7 +3265,10 @@ function ProductAdminPage({
           })}
         </div>
       </div>
-      <FormPanel title={product ? "Edit product" : "Add product"} icon={<PackageCheck size={18} />}>
+      <FormPanel ref={editorRef} title={product ? "Edit product" : "Add product"} icon={<PackageCheck size={18} />}>
+        {product ? (
+          <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">Editing: {product.name}</p>
+        ) : null}
         {isProductDecisionColumnMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
             Product database fields are not ready yet. Run <strong>supabase-add-product-decision.sql</strong> once, then save again.
@@ -3268,7 +3276,7 @@ function ProductAdminPage({
         ) : null}
         <form action={saveProduct} className="grid gap-3" key={product?.id ?? "new-product"}>
           <input name="id" type="hidden" value={product?.id ?? ""} />
-          <Input name="name" label="Product name" placeholder="Ube Cookies" defaultValue={product?.name} />
+          <Input name="name" label="Product name" placeholder="Ube Cookies" defaultValue={product?.name} ref={fieldRef} />
           <Input name="category" label="Category" placeholder="Baked goods" defaultValue={product?.category} />
           <Select name="role" label="Role" options={["Hero candidate", "Bundle product", "Premium upgrade", "Add-on candidate"]} defaultValue={product?.role ?? "Hero candidate"} />
           <Select name="status" label="Status" options={["testing", "costed", "tasting", "launch_candidate", "paused"]} defaultValue={product?.status ?? "testing"} />
@@ -3355,7 +3363,10 @@ function ContentStudio({
               <p className="text-sm text-[#6f5a4c]">No content drafts yet. Create one from a Journey entry, or start one below.</p>
             ) : null}
             {sortedDrafts.map((draft) => (
-              <div className="border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0" key={draft.id}>
+              <div
+                className={`border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0 ${draft.id === editingDraft?.id ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8] pl-2" : ""}`}
+                key={draft.id}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <p className="text-sm font-medium">{draft.title || "Untitled draft"}</p>
                   <button className="shrink-0 text-xs font-semibold text-[#8f5632] underline" onClick={() => setEditingDraft(draft)} type="button">
@@ -3384,8 +3395,12 @@ function ContentDraftForm({
   draft: ContentDraft | null;
   saveDraft: (formData: FormData) => void;
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(draft?.id ?? null);
   return (
-    <FormPanel icon={<Sparkles size={18} />} title={draft ? "Edit content draft" : "New content draft"}>
+    <FormPanel icon={<Sparkles size={18} />} ref={editorRef} title={draft ? "Edit content draft" : "New content draft"}>
+      {draft ? (
+        <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">Editing: {draft.title || "Untitled draft"}</p>
+      ) : null}
       <form action={saveDraft} className="grid gap-3" key={draft?.id ?? "new-draft"}>
         <input name="id" type="hidden" value={draft?.id ?? ""} />
         {/* journeyEntryId/sourceSnapshot never appear as an editable control -- only ever a
@@ -3398,7 +3413,7 @@ function ContentDraftForm({
             <p className="whitespace-pre-line text-sm leading-6 text-[#5f4a3d]">{draft.sourceSnapshot}</p>
           </Panel>
         ) : null}
-        <Input defaultValue={draft?.title} label="Title" name="title" placeholder="Example: Brownies V2 texture reel" />
+        <Input defaultValue={draft?.title} label="Title" name="title" placeholder="Example: Brownies V2 texture reel" ref={fieldRef} />
         <div className="grid gap-3 sm:grid-cols-2">
           <ContentTypeSelect selectedType={draft?.contentType} />
           <ContentStatusSelect selectedStatus={draft?.status} />
@@ -3583,6 +3598,7 @@ function BatchForm({
   supplies: SupplyEntry[];
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(batch?.id ?? null);
   // Generated once and reused as the batch's real id, even before it's saved -- lets photos be
   // staged and uploaded against a real batch_id the moment the save succeeds, instead of only
   // being addable after the record already exists and you're back on the Batches list.
@@ -3775,7 +3791,12 @@ function BatchForm({
   }
 
   return (
-    <FormPanel title={batch ? "Edit proof batch" : "Proof batch record"} icon={<FlaskConical size={18} />}>
+    <FormPanel ref={editorRef} title={batch ? "Edit proof batch" : "Proof batch record"} icon={<FlaskConical size={18} />}>
+      {batch ? (
+        <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
+          Editing: {batchDisplayName(batch.productId, batch.batchVersion, products)}
+        </p>
+      ) : null}
       <form action={submitBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
         <input name="id" type="hidden" value={formBatchId} />
         <input name="existingId" type="hidden" value={batch?.id ?? ""} />
@@ -3786,7 +3807,7 @@ function BatchForm({
         </datalist>
         <ProductSelect onChange={(event) => changeProduct(event.target.value)} products={products} value={selectedProductId} />
         <div className="grid gap-3 sm:grid-cols-2">
-          <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." />
+          <Input name="batchVersion" label="Batch/version tested" placeholder="Brownies V2 - less sugar" defaultValue={batch?.batchVersion} helper="Name the exact test, not just V1/V2." ref={fieldRef} />
           <Input name="dateMade" label="Date made" type="date" defaultValue={batch?.dateMade ?? getToday()} />
         </div>
         <Textarea
@@ -4328,10 +4349,12 @@ function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingr
 function PurchaseRecordRow({
   deleteSupply,
   editSupply,
+  isActive,
   supply,
 }: {
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
+  isActive?: boolean;
   supply: SupplyEntry;
 }) {
   const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
@@ -4347,7 +4370,7 @@ function PurchaseRecordRow({
   ].join("\n\n");
 
   return (
-    <article className="grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_140px]" key={supply.id}>
+    <article className={`grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_140px] ${isActive ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`} key={supply.id}>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Tag tone="green">{brandLabel}</Tag>
@@ -4743,6 +4766,10 @@ function PurchaseLogPage({
   saveSupply: (formData: FormData) => void;
   supply: SupplyEntry | null;
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(supply?.id ?? null);
+  // Captured once here since chronologicalPurchases.map() below shadows `supply` with its own
+  // loop variable.
+  const editingSupplyId = supply?.id ?? null;
   const [purchaseView, setPurchaseView] = useState<"by-item" | "all">("by-item");
   const brandOptions = getUniqueSupplyValues(labState.supplies, "brandName");
   const supplierOptions = getUniqueSupplyValues(labState.supplies, "supplierName");
@@ -4789,7 +4816,12 @@ function PurchaseLogPage({
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
-      <FormPanel title={supply ? "Edit purchase" : "Log purchase"} icon={<PackageCheck size={18} />}>
+      <FormPanel ref={editorRef} title={supply ? "Edit purchase" : "Log purchase"} icon={<PackageCheck size={18} />}>
+        {supply ? (
+          <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
+            Editing: {supply.brandName ? `${supply.brandName} ` : ""}{supply.ingredientName}
+          </p>
+        ) : null}
         {isSuppliesTableMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
             Purchase database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
@@ -4803,7 +4835,7 @@ function PurchaseLogPage({
             <SupplyValuePicker name="supplierName" label="Supplier" options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
-            <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? getToday()} />
+            <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? getToday()} ref={fieldRef} />
             <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
             <SupplyValuePicker name="unit" label="Unit" options={unitOptions} placeholder="g" value={supply?.unit} />
             <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
@@ -4889,7 +4921,7 @@ function PurchaseLogPage({
                   <details className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3]">
                     <summary className="cursor-pointer p-3 text-sm font-semibold text-[#5f4a3d]">Purchase history</summary>
                     <div className="divide-y divide-[#ead9c8] bg-white">
-                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} key={purchase.id} supply={purchase} />)}
+                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
                     </div>
                   </details>
                 </article>
@@ -4902,7 +4934,7 @@ function PurchaseLogPage({
                   <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">These purchase records do not resolve to a current Item. Records with unknown Item IDs are kept here and are not matched by name.</p>
                 </div>
                 <div className="divide-y divide-[#f0e4d8]">
-                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} key={purchase.id} supply={purchase} />)}
+                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
                 </div>
               </section>
             ) : null}
@@ -4910,7 +4942,7 @@ function PurchaseLogPage({
         ) : (
         <div className="divide-y divide-[#f0e4d8]">
           {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
-          {chronologicalPurchases.map((supply) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} key={supply.id} supply={supply} />)}
+          {chronologicalPurchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
         </div>
         )}
       </div>
@@ -4978,6 +5010,7 @@ function EquipmentPage({
   labState: LabState;
   saveEquipment: (formData: FormData) => void;
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(equipment?.id ?? null);
   const [calculationMode, setCalculationMode] = useState<EquipmentCalculationMode>(equipment?.calculationMode ?? "depreciation");
 
   function downloadEquipment() {
@@ -5011,7 +5044,10 @@ function EquipmentPage({
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
-      <FormPanel title={equipment ? "Edit equipment" : "Add equipment"} icon={<PackageCheck size={18} />}>
+      <FormPanel ref={editorRef} title={equipment ? "Edit equipment" : "Add equipment"} icon={<PackageCheck size={18} />}>
+        {equipment ? (
+          <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">Editing: {equipment.name}</p>
+        ) : null}
         {isEquipmentTableMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
             Equipment database fields are not ready yet. Run <strong>supabase-add-equipment.sql</strong> once, then save again.
@@ -5020,7 +5056,7 @@ function EquipmentPage({
         <form action={saveEquipment} className="grid gap-3" key={equipment?.id ?? "new-equipment"}>
           <input name="id" type="hidden" value={equipment?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-3">
-            <Input name="name" label={calculationMode === "gas-burn-rate" ? "Gas name" : "Equipment name"} placeholder={calculationMode === "gas-burn-rate" ? "Gas / LPG" : "Table Oven"} defaultValue={equipment?.name} />
+            <Input name="name" label={calculationMode === "gas-burn-rate" ? "Gas name" : "Equipment name"} placeholder={calculationMode === "gas-burn-rate" ? "Gas / LPG" : "Table Oven"} defaultValue={equipment?.name} ref={fieldRef} />
             <Input name="brand" label={calculationMode === "gas-burn-rate" ? "Gas supplier / brand" : "Brand"} placeholder={calculationMode === "gas-burn-rate" ? "Petron / Solane / local" : "La Germania"} defaultValue={equipment?.brand} />
             <Input name="model" label={calculationMode === "gas-burn-rate" ? "Gas note" : "Model"} placeholder={calculationMode === "gas-burn-rate" ? "11kg refill" : "SL-100-10W"} defaultValue={equipment?.model} />
           </div>
@@ -5110,7 +5146,7 @@ function EquipmentPage({
           {labState.equipment.map((item) => {
             const totals = getEquipmentTotals(item);
             return (
-              <article className="grid gap-4 p-5 lg:grid-cols-[1fr_150px_150px_150px_70px]" key={item.id}>
+              <article className={`grid gap-4 p-5 lg:grid-cols-[1fr_150px_150px_150px_70px] ${item.id === equipment?.id ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`} key={item.id}>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Tag tone={item.isActive ? "green" : "danger"}>{item.isActive ? "Active" : "Inactive"}</Tag>
@@ -5298,6 +5334,7 @@ function CostingForm({
   saveCosting: (formData: FormData) => void;
   supplies: SupplyEntry[];
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLSelectElement>(costing?.id ?? null);
   // Costing is scoped to a specific proof batch/version (e.g. "Brownies V3"), not just a
   // product -- so the same product can have separate costing per version instead of only ever
   // reflecting whichever batch happened to be "latest" when the costing was last saved.
@@ -5575,7 +5612,12 @@ function CostingForm({
   }
 
   return (
-    <FormPanel title={costing ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
+    <FormPanel ref={editorRef} title={costing ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
+      {costing ? (
+        <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
+          Editing: {costingDisplayName(costing, products, batches)}
+        </p>
+      ) : null}
       {appliedMessage ? <MessageBox message={appliedMessage} tone={appliedMessageTone} /> : null}
       <form action={saveCosting} className="grid gap-3">
         <input name="id" type="hidden" value={costing?.id ?? ""} />
@@ -5590,7 +5632,7 @@ function CostingForm({
         <label className="grid gap-1 text-sm font-medium">
           Product batch
           {batchesByProduct.length > 0 ? (
-            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => changeBatch(event.target.value)} value={selectedBatchId}>
+            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => changeBatch(event.target.value)} ref={fieldRef} value={selectedBatchId}>
               {batchesByProduct.map((group) => (
                 <optgroup key={group.product.id} label={group.product.name}>
                   {group.productBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.batchVersion}</option>)}
@@ -6355,16 +6397,22 @@ function JournalForm({
   products: Product[];
   saveJournal: (formData: FormData) => void;
 }) {
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(entry?.id ?? null);
   const mediaOnly = entry?.mediaCaptured.split(". Link: ")[0] ?? "";
   const mediaLink = entry?.mediaCaptured.split(". Link: ")[1] ?? "";
 
   return (
-    <FormPanel title={entry ? "Edit Journey entry" : "New Journey entry"} icon={<NotebookPen size={18} />}>
+    <FormPanel ref={editorRef} title={entry ? "Edit Journey entry" : "New Journey entry"} icon={<NotebookPen size={18} />}>
+      {entry ? (
+        <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
+          Editing: {productName(entry.productId, products)}: {entry.postIdeas || "uncategorized"}
+        </p>
+      ) : null}
       <form action={saveJournal} className="grid gap-3" key={entry?.id ?? "new-journal"}>
         <input name="id" type="hidden" value={entry?.id ?? ""} />
         <ProductSelect includeNoProductOption products={products} selectedProductId={entry?.productId} />
         <div className="grid gap-3 sm:grid-cols-3">
-          <Input name="entryDate" label="Capture date" type="date" defaultValue={entry?.entryDate ?? getToday()} />
+          <Input name="entryDate" label="Capture date" type="date" defaultValue={entry?.entryDate ?? getToday()} ref={fieldRef} />
           <JourneyTypeSelect selectedType={entry?.entryType} />
           <Select name="contentAngle" label="Best use" options={["product proof", "behind the scenes", "packaging test", "tasting feedback", "lesson learned", "launch teaser", "not content-worthy"]} defaultValue={entry?.postIdeas ?? "product proof"} />
         </div>

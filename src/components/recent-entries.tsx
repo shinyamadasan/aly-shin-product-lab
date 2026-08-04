@@ -13,6 +13,9 @@ export function RecentEntries({
   deleteJournal,
   editBatch,
   editCosting,
+  editingBatchId,
+  editingCostingId,
+  editingJournalId,
   editJournal,
   labState,
   only,
@@ -27,6 +30,11 @@ export function RecentEntries({
   deleteJournal?: (journalId: string) => void;
   editBatch?: (batch: ProductBatch) => void;
   editCosting?: (costing: CostingSummary) => void;
+  // Id of whichever record is currently loaded into its form's edit state, if any -- lets the
+  // matching row in this list highlight itself so it's obvious which saved record is open.
+  editingBatchId?: string | null;
+  editingCostingId?: string | null;
+  editingJournalId?: string | null;
   editJournal?: (entry: ContentJournalEntry) => void;
   labState: LabState;
   only?: "batches" | "costing" | "journal";
@@ -53,6 +61,7 @@ export function RecentEntries({
             id: batch.id,
             title: batchDisplayName(batch.productId, batch.batchVersion, labState.products),
             detail: `Decision: ${batch.launchDecision}. Issue: ${batch.wentWrong || "none logged"}. Next: ${batch.improveNext || "not set"}.`,
+            isActive: batch.id === editingBatchId,
             onDelete: deleteBatch ? () => deleteBatch(batch.id) : undefined,
             onEdit: editBatch ? () => editBatch(batch) : undefined,
           }))}
@@ -79,6 +88,7 @@ export function RecentEntries({
               id: costing.id,
               title: batchDisplayName(costing.productId, linkedBatch?.batchVersion ?? "", labState.products),
               detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`, "needs yield")}. Margin ${formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`, "needs yield")}.`,
+              isActive: costing.id === editingCostingId,
               onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
               onEdit: editCosting ? () => editCosting(costing) : undefined,
             };
@@ -91,6 +101,7 @@ export function RecentEntries({
             id: entry.id,
             title: `${productName(entry.productId, labState.products)}: ${entry.postIdeas || "uncategorized"}`,
             detail: `${entry.entryType ? `Type: ${journeyTypeLabel(entry.entryType)}. ` : ""}Captured: ${entry.mediaCaptured || "none logged"}. Next: ${entry.nextAction || "not set"}.`,
+            isActive: entry.id === editingJournalId,
             onDelete: deleteJournal ? () => deleteJournal(entry.id) : undefined,
             onEdit: editJournal ? () => editJournal(entry) : undefined,
             onCreateContent: createContentFromJourney ? () => createContentFromJourney(entry) : undefined,
@@ -113,6 +124,7 @@ function RecentList({
     id: string;
     title: string;
     detail: string;
+    isActive?: boolean;
     onDelete?: () => void;
     onEdit?: () => void;
     onCreateContent?: () => void;
@@ -125,7 +137,10 @@ function RecentList({
       <div className="mt-3 space-y-3">
         {items.length === 0 ? <p className="text-sm text-[#6f5a4c]">{empty}</p> : null}
         {items.map((item) => (
-          <div className="border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0" key={item.id}>
+          <div
+            className={`border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0 ${item.isActive ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8] pl-2" : ""}`}
+            key={item.id}
+          >
             <div className="flex items-start justify-between gap-3">
               <p className="text-sm font-medium">{item.title}</p>
               {item.onEdit || item.onDelete || item.onCreateContent ? (
