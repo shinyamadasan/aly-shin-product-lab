@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
 import { parseBatchIngredients } from "@/lib/batches";
-import { productName } from "@/components/product-controls";
+import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { FormPanel, Tag } from "@/components/ui";
@@ -80,7 +80,7 @@ export function BakePage({
     }
     isConfirmingRef.current = true;
     setIsConfirming(true);
-    const batchLabel = `${productName(selectedBatch.productId, labState.products)} ${selectedBatch.batchVersion}`;
+    const batchLabel = batchDisplayName(selectedBatch.productId, selectedBatch.batchVersion, labState.products);
     await confirmBake(selectedBatch.id, batchLabel, multiplier, deductions, allowNegative);
     isConfirmingRef.current = false;
     setIsConfirming(false);

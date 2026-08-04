@@ -3,7 +3,7 @@ import type { LabState } from "@/lib/lab-state";
 import type { ContentJournalEntry, CostingSummary, ProductBatch } from "@/lib/product-lab-types";
 import { journeyTypeLabel } from "@/lib/journal";
 import { isCreateContentPending } from "@/lib/content-drafts";
-import { productName } from "@/components/product-controls";
+import { batchDisplayName, productName } from "@/components/product-controls";
 
 export function RecentEntries({
   createContentFromJourney,
@@ -51,7 +51,7 @@ export function RecentEntries({
           empty="No batches saved yet."
           items={labState.batches.slice(0, 3).map((batch) => ({
             id: batch.id,
-            title: `${productName(batch.productId, labState.products)} ${batch.batchVersion}`,
+            title: batchDisplayName(batch.productId, batch.batchVersion, labState.products),
             detail: `Decision: ${batch.launchDecision}. Issue: ${batch.wentWrong || "none logged"}. Next: ${batch.improveNext || "not set"}.`,
             onDelete: deleteBatch ? () => deleteBatch(batch.id) : undefined,
             onEdit: editBatch ? () => editBatch(batch) : undefined,
@@ -77,7 +77,7 @@ export function RecentEntries({
 
             return {
               id: costing.id,
-              title: `${productName(costing.productId, labState.products)}${linkedBatch?.batchVersion ? ` ${linkedBatch.batchVersion}` : ""}`,
+              title: batchDisplayName(costing.productId, linkedBatch?.batchVersion ?? "", labState.products),
               detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`, "needs yield")}. Margin ${formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`, "needs yield")}.`,
               onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
               onEdit: editCosting ? () => editCosting(costing) : undefined,

@@ -47,7 +47,7 @@ import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButto
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
 import type { OpportunityStatusFilter } from "@/lib/opportunity-review";
-import { ContentStatusSelect, ContentTypeSelect, JourneyTypeSelect, MediaChecklist, ProductSelect, productName } from "@/components/product-controls";
+import { ContentStatusSelect, ContentTypeSelect, JourneyTypeSelect, MediaChecklist, ProductSelect, batchDisplayName, productName } from "@/components/product-controls";
 import { RecentEntries } from "@/components/recent-entries";
 import { buildContentJournalPayload, mapContentJournalRow } from "@/lib/journal";
 import {
@@ -59,6 +59,7 @@ import {
   mapContentDraftRow,
 } from "@/lib/content-drafts";
 import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
+import { isDuplicateKeyError } from "@/lib/database-errors";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
@@ -81,6 +82,7 @@ import { getChronologicalPurchases, getPurchaseGroupSummary, getPurchaseHistoryF
 import { getAllocatedEquipmentCost, getEquipmentTotals, REFERENCE_COOKING_MINUTES } from "@/lib/equipment";
 import {
   diffFormulaRows,
+  findConflictingBatch,
   getPreviousBatch,
   parseBatchIngredients,
   parseBatchProcessSteps,
@@ -632,10 +634,20 @@ export default function ProductLab({
     // signal for whether this was actually a pre-existing row, for messaging and upsert semantics.
     const isExisting = Boolean(formData.get("existingId"));
     const existingBatch = labState.batches.find((item) => item.id === batchId);
+    const productId = String(formData.get("productId"));
+    const batchVersion = String(formData.get("batchVersion") || "V1");
+
+    const conflictingBatch = findConflictingBatch(labState.batches, { batchId, productId, batchVersion });
+    if (conflictingBatch) {
+      setMessage(`"${batchDisplayName(productId, conflictingBatch.batchVersion, labState.products)}" already exists for this product. Edit that batch instead, or use a different version name.`);
+      setMessageTone("bad");
+      return;
+    }
+
     const batch: ProductBatch = {
       id: batchId || crypto.randomUUID(),
-      productId: String(formData.get("productId")),
-      batchVersion: String(formData.get("batchVersion") || "V1"),
+      productId,
+      batchVersion,
       status: existingBatch?.status ?? "draft",
       completedAt: existingBatch?.completedAt ?? "",
       voidedAt: existingBatch?.voidedAt ?? "",
@@ -678,7 +690,8 @@ export default function ProductLab({
         void_reason: batch.voidReason || null,
       };
       const { error } = await supabase.from("product_batches").upsert(payload);
-      setMessage(error ? `Batch save failed: ${error.message}` : isExisting ? "Batch updated." : "Batch saved.");
+      const duplicateMessage = `"${batchDisplayName(batch.productId, batch.batchVersion, labState.products)}" already exists for this product. Edit that batch instead, or use a different version name.`;
+      setMessage(error ? (isDuplicateKeyError(error) ? duplicateMessage : `Batch save failed: ${error.message}`) : isExisting ? "Batch updated." : "Batch saved.");
       setMessageTone(error ? "bad" : "good");
       if (!error) {
         setEditingBatch(null);
@@ -2958,7 +2971,7 @@ function BatchHistoryPage({
               <article className="p-5" key={batch.id}>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <h4 className="font-semibold">{productName(batch.productId, labState.products)} {batch.batchVersion}</h4>
+                    <h4 className="font-semibold">{batchDisplayName(batch.productId, batch.batchVersion, labState.products)}</h4>
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-[#6f5a4c]">
                       <span>{batch.dateMade} / {batch.launchDecision}</span>
                       <Tag tone={effectiveStatus === "voided" ? "danger" : effectiveStatus === "completed" ? "green" : "warm"}>{effectiveStatus}</Tag>
@@ -5511,7 +5524,7 @@ function CostingForm({
   }
 
   function downloadCosting() {
-    const filenameBase = `${productName(selectedProductId, products)}${selectedBatch?.batchVersion ? ` ${selectedBatch.batchVersion}` : ""}`;
+    const filenameBase = batchDisplayName(selectedProductId, selectedBatch?.batchVersion ?? "", products);
     const filename = `${filenameBase.toLowerCase().replaceAll(" ", "-")}-costing.csv`;
     downloadCsv(
       filename,
@@ -5968,7 +5981,7 @@ function CostingPrintReport({
   return (
     <div className="print-report" id="costing-print-report">
       <h1>Aly & Shin Costing Sheet</h1>
-      <p>{productName(productId, products)}{batchVersion ? ` ${batchVersion}` : ""} / Generated {getToday()}</p>
+      <p>{batchDisplayName(productId, batchVersion, products)} / Generated {getToday()}</p>
 
       <h2>Summary</h2>
       <table>
