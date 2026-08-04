@@ -1,5 +1,5 @@
 import type React from "react";
-import type { Product } from "@/lib/product-lab-types";
+import type { Product, ProductBatch } from "@/lib/product-lab-types";
 import { JOURNEY_ENTRY_TYPES } from "@/lib/journal";
 import { CONTENT_DRAFT_STATUSES, CONTENT_TYPE_OPTIONS } from "@/lib/content-drafts";
 
@@ -131,4 +131,9 @@ export function productName(productId: string, products: Product[]) {
 export function batchDisplayName(productId: string, batchVersion: string, products: Product[]) {
   const name = productName(productId, products);
   return batchVersion ? `${name} ${batchVersion}` : name;
+}
+
+export function costingDisplayName(costing: { productId: string; batchId: string }, products: Product[], batches: ProductBatch[]) {
+  const batch = batches.find((item) => item.id === costing.batchId);
+  return batchDisplayName(costing.productId, batch?.batchVersion ?? "", products);
 }

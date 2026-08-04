@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "../src/lib/costing.ts";
-import type { CostingSummary } from "../src/lib/product-lab-types.ts";
+import { findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch } from "../src/lib/costing.ts";
+import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
+import type { CostingSummary, ProductBatch } from "../src/lib/product-lab-types.ts";
 
 function baseCosting(overrides: Partial<CostingSummary> = {}): CostingSummary {
   return {
@@ -21,6 +22,28 @@ function baseCosting(overrides: Partial<CostingSummary> = {}): CostingSummary {
     equipmentCost: 10,
     suggestedPrice: 50,
     notes: "Costing yield: 8",
+    ...overrides,
+  };
+}
+
+function baseBatch(overrides: Partial<ProductBatch> = {}): ProductBatch {
+  return {
+    id: "batch-1",
+    productId: "product-1",
+    batchVersion: "V1",
+    dateMade: "2026-01-01",
+    ingredientsNotes: "",
+    prepTimeMinutes: 0,
+    bakeTimeMinutes: 0,
+    coolingTimeMinutes: 0,
+    usablePieces: 0,
+    imperfectPieces: 0,
+    stressLevel: 0,
+    tasteNotes: "",
+    textureNotes: "",
+    wentWrong: "",
+    improveNext: "",
+    launchDecision: "retest",
     ...overrides,
   };
 }
@@ -125,4 +148,74 @@ test("formatCostingMetric shows the unavailable label for null and formats real 
   assert.equal(formatCostingMetric(null, (value) => `PHP ${value.toFixed(2)}`), "Need yield");
   assert.equal(formatCostingMetric(null, (value) => `PHP ${value.toFixed(2)}`, "needs yield"), "needs yield");
   assert.equal(formatCostingMetric(12.5, (value) => `PHP ${value.toFixed(2)}`), "PHP 12.50");
+});
+
+test("findConflictingCosting: first costing for a batch succeeds (no conflict)", () => {
+  const conflict = findConflictingCosting([], { costingId: "", productId: "product-1", batchId: "batch-1" });
+  assert.equal(conflict, null);
+});
+
+test("findConflictingCosting: second costing for the same batch is rejected", () => {
+  const existing = baseCosting({ id: "costing-1", batchId: "batch-1" });
+  const conflict = findConflictingCosting([existing], { costingId: "", productId: "product-1", batchId: "batch-1" });
+  assert.equal(conflict, existing);
+});
+
+test("findConflictingCosting: editing the existing costing succeeds (excludes itself)", () => {
+  const existing = baseCosting({ id: "costing-1", batchId: "batch-1" });
+  const conflict = findConflictingCosting([existing], { costingId: "costing-1", productId: "product-1", batchId: "batch-1" });
+  assert.equal(conflict, null);
+});
+
+test("findConflictingCosting: moving another costing onto an occupied batch is rejected", () => {
+  const occupant = baseCosting({ id: "costing-1", batchId: "batch-1" });
+  const mover = baseCosting({ id: "costing-2", batchId: "batch-2" });
+  const conflict = findConflictingCosting([occupant, mover], { costingId: "costing-2", productId: "product-1", batchId: "batch-1" });
+  assert.equal(conflict, occupant);
+});
+
+test("findConflictingCosting: two different batches of the same product can each have a costing", () => {
+  const first = baseCosting({ id: "costing-1", batchId: "batch-1" });
+  const conflict = findConflictingCosting([first], { costingId: "", productId: "product-1", batchId: "batch-2" });
+  assert.equal(conflict, null);
+});
+
+test("findConflictingCosting: only one unlinked costing per product is allowed", () => {
+  const existing = baseCosting({ id: "costing-1", batchId: "" });
+  const conflict = findConflictingCosting([existing], { costingId: "", productId: "product-1", batchId: "" });
+  assert.equal(conflict, existing);
+});
+
+test("findConflictingCosting: unlinked costings for different products do not conflict", () => {
+  const existing = baseCosting({ id: "costing-1", productId: "product-1", batchId: "" });
+  const conflict = findConflictingCosting([existing], { costingId: "", productId: "product-2", batchId: "" });
+  assert.equal(conflict, null);
+});
+
+test("isDuplicateKeyError: Postgres 23505 is recognized as a duplicate-key error", () => {
+  assert.equal(isDuplicateKeyError({ code: "23505" }), true);
+});
+
+test("isDuplicateKeyError: other error codes and missing errors are not duplicate-key errors", () => {
+  assert.equal(isDuplicateKeyError({ code: "23503" }), false);
+  assert.equal(isDuplicateKeyError(null), false);
+  assert.equal(isDuplicateKeyError(undefined), false);
+});
+
+test("isBatchProductMismatch: a batch that belongs to the submitted product is not a mismatch", () => {
+  const batch = baseBatch({ id: "batch-1", productId: "product-1" });
+  assert.equal(isBatchProductMismatch([batch], { productId: "product-1", batchId: "batch-1" }), false);
+});
+
+test("isBatchProductMismatch: a batch that belongs to a different product is a mismatch", () => {
+  const batch = baseBatch({ id: "batch-1", productId: "product-1" });
+  assert.equal(isBatchProductMismatch([batch], { productId: "product-2", batchId: "batch-1" }), true);
+});
+
+test("isBatchProductMismatch: a batch id that doesn't exist is a mismatch", () => {
+  assert.equal(isBatchProductMismatch([], { productId: "product-1", batchId: "missing-batch" }), true);
+});
+
+test("isBatchProductMismatch: an empty batchId (unlinked legacy costing) is never a mismatch", () => {
+  assert.equal(isBatchProductMismatch([], { productId: "product-1", batchId: "" }), false);
 });
