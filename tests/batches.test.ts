@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { findConflictingBatch, normalizeBatchVersion } from "../src/lib/batches.ts";
-import { isDuplicateKeyError } from "../src/lib/costing.ts";
+import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
 import type { ProductBatch } from "../src/lib/product-lab-types.ts";
 
 function baseBatch(overrides: Partial<ProductBatch> = {}): ProductBatch {

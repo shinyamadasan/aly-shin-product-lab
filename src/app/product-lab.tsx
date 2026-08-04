@@ -58,7 +58,8 @@ import {
   createDraftFromJourney,
   mapContentDraftRow,
 } from "@/lib/content-drafts";
-import { formatCostingMetric, getCostingMetrics, getCostingTotals, isDuplicateKeyError } from "@/lib/costing";
+import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
+import { isDuplicateKeyError } from "@/lib/database-errors";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
