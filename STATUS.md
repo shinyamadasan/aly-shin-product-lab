@@ -6,15 +6,43 @@
 real-byte materialization and read-only UI (PROP-023–026) both shipped and merged to `main` via
 PR #18 (`feat/asset-generation-foundation`, merge commit `abeb391`, 2026-08-05). A post-merge
 audit and production-infrastructure verification followed the same day — see the two entries
-below and `REVIEW.md`.
-**Active task:** None — PROP-027 (first real asset-generation provider) is the next named
-milestone on the approved PROP-023 roadmap but has **not started** and is not authorized yet.
+below and `REVIEW.md`. PROP-027 (External Creative Workspace as the first real Asset Job executor)
+is **implemented and fully verified on `feat/prop-027`** (commits `5354ddd`..`f5d4976`,
+2026-08-05) but **not yet merged to `main`** — see "Last shipped" below,
+`MARKETING_MODULE.md`'s implementation record, and `planning/PROPOSALS.md`'s PROP-027 entry.
+**Active task:** None — PROP-027's code is done; what remains is human-only (Storage bucket
+confirmation, then the mobile acceptance test) plus the branch merge decision. PROP-028 (the
+approve/reject review gate) is named as the next milestone on the roadmap but is **not started**
+and not authorized yet.
 **Owner:** —
-**Blockers:** none. One item needs the owner's attention outside agent tooling — see "Needs human
-verification" below (Storage bucket visibility).
+**Blockers:** none for further coding. Two items need the owner's attention outside agent tooling
+before PROP-027 can be considered fully done, not just code-complete — see "Needs human
+verification" below (Storage bucket confirmation; the physical-phone acceptance test, which depends
+on the bucket check first).
 
 ## Last shipped
 
+- **2026-08-05 — PROP-027, External Creative Workspace as the first real Asset Job executor**
+  (branch `feat/prop-027`, commits `5354ddd`..`f5d4976`, not yet merged to `main`): fills the Asset
+  Job pipeline's existing executor slot with a human working in any external creative workspace
+  (ChatGPT, Claude, Midjourney, Canva) or a real camera, rather than integrating a paid
+  image-generation API — a CTO-level review rejected the API-first assumption before any code was
+  written, since it served none of the stated business goals and would have failed against this
+  app's own 1080×1080 spec size on the first real call. Ships: Asset Job creation and canonical
+  brief view/copy in the browser; workspace + AI/photograph/human-designed capture; browser
+  upload with validate-before-claim; a matching desktop CLI (`export`/`import`); advisory (not
+  hard) dimension checking so real camera photos and ChatGPT's 1024×1024 output both succeed; and
+  provenance (`sourceWorkspace`/`sourceKind`) stored separately from `provider`/`model`, which stay
+  reserved and untouched for a genuine future API executor. **Zero new SQL migration, RPC, table,
+  or column** — every provenance fact rides inside the already-atomic
+  `complete_asset_job_with_files` call. Full record: `MARKETING_MODULE.md`'s "PROP-027
+  implementation record" and `planning/PROPOSALS.md`'s PROP-027 entry. Verified: `npm run
+  typecheck` clean, scoped `eslint` clean on all 27 new/touched files, `npm test` 1227/1228 (1
+  pre-existing unrelated skip, up from 1172 — 55 new tests), `npm run build -- --webpack` succeeds
+  with no new route, `git diff --check` clean. **Not yet done:** the `generated-assets` Storage
+  bucket's existence was never conclusively confirmed (see "Needs human verification" below) and
+  the spec's own real acceptance gate — the full flow completed on a physical phone — has not been
+  attempted.
 - **2026-08-05 — Production infrastructure verification (post-PR #18 follow-up):** read-only
   verification against the real production Supabase project (not assumed from local migration
   files or docs) confirmed `finish_creative_job` and `finish_creative_job_attempt` (added by
@@ -73,9 +101,16 @@ verification" below (Storage bucket visibility).
 
 - **Confirm the `generated-assets` Storage bucket via the Supabase dashboard directly** (or a
   service-role check) — agent tooling could not conclusively confirm it either way through
-  authenticated-role API access on 2026-08-05 (see above). Low urgency: nothing in production
-  currently reads/writes real Storage objects (0 asset files exist), so this has no user-facing
-  impact today, but should be confirmed before PROP-027 (first real provider) starts.
+  authenticated-role API access on 2026-08-05 (see above). PROP-027's own frozen spec named this a
+  hard blocker to check *before* implementation began; it was not resolved during that milestone
+  either, so it is now carried forward as a blocker for the step after code: the first real browser
+  or CLI upload will fail at the Storage step if the bucket does not exist. Still no user-facing
+  impact today (0 asset files exist in production), but this should be confirmed **before**
+  attempting the PROP-027 mobile acceptance test below, not after.
+- **Run the PROP-027 mobile acceptance test**: the full create → view/copy brief → external
+  workspace → upload → visible-Asset flow, completed on a physical phone in a mobile browser. This
+  is the frozen spec's own stated real acceptance gate (not `npm test`) and has not been attempted
+  by any agent — it requires a physical device. Depends on the Storage bucket check above.
 - **Low-priority follow-up, not urgent:** `planning/PROPOSALS.md` reuses `PROP-018` through
   `PROP-024` for two unrelated proposals each (an older pending product-lab item and a
   since-implemented marketing-advisor/asset item share the same number). Flagged during the PR #18

@@ -1,8 +1,10 @@
 # PROP-027 — Engineering Specification
 
 > **External Creative Workspace as the first real Asset Job executor.**
-> Status: specification. No code, no diffs. Architecture approved by the CTO review (2026-08-05);
-> this document converts those decisions into buildable requirements.
+> Status: **implemented (2026-08-05)** — see `MARKETING_MODULE.md`'s "PROP-027 implementation
+> record" for what actually shipped and `planning/PROPOSALS.md`'s PROP-027 entry for status/
+> verification. This document remains the frozen, as-built specification below; it is not updated
+> in place as a living doc.
 >
 > Approved decisions treated as requirements: external-workspace abstraction (never vendor-coupled),
 > human-as-executor on the existing Asset Job pipeline, browser/mobile upload as the primary path,

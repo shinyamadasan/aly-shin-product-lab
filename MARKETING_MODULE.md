@@ -1569,6 +1569,152 @@ Known limitations: image assets only; fixture/mock asset worker only; no real pr
 no UI/review/approval flow; no carousel, video, publishing, signed URL UI, or public Storage read
 path.
 
+### PROP-027 implementation record (2026-08-05)
+
+Implemented on `feat/prop-027` (worktree `.worktrees/prop-027`), branched from `main` at `dd23b28`
+— after PR #18 (Marketing Advisor v1 + Asset Generation Foundation through PROP-026) was already
+merged and its post-merge audit landed, not from a pre-merge feature-branch tip. Full proposal
+record: `planning/PROPOSALS.md` PROP-027; frozen engineering spec:
+`planning/PROP-027-SPEC.md`. Nine incremental slices, each independently reviewed and approved
+before the next began, committed as `5354ddd`..`f5d4976` (Slice 8 and Slice 9 landed together as
+one commit, `f5d4976`, after a session boundary left Slice 8 uncommitted — recorded honestly rather
+than reconstructed as two separate commits after the fact).
+
+**The decision this milestone tests, and the one that mattered most:** the prior PROP-027
+assumption — integrate a real image-generation API — was challenged and rejected before any code
+was written. A CTO-level architecture review found it served none of the five stated business
+goals (minimize recurring cost, mobile-first, preserve the Asset Job architecture, stay
+provider-agnostic, maximize daily usability) and would have failed on contact: no OpenAI image
+model emits this app's hardcoded 1080×1080 spec size. **What shipped instead fills the Asset Job
+architecture's already-existing, already-tested executor slot with a human working in any external
+creative workspace (ChatGPT, Claude, Midjourney, Canva, or a real camera) — not a new abstraction,
+the one the codebase already had.**
+
+**Architectural decisions that became reality, not just plan:**
+- **`external` is an execution mechanism, never a vendor.** `ASSET_JOB_WORKER_TYPES` gained exactly
+  one value. `provider`/`model` on `asset_job_attempts` — reserved since PROP-023 for a genuine
+  future API executor — remain `null` for every `external` attempt, exactly as for `mock`. No
+  migration, no RPC change; this is a pure TypeScript union addition mirroring
+  `CREATIVE_JOB_WORKER_TYPES`'s own precedent.
+- **Creative origin has its own, separate vocabulary.** `assets.content.metadata` gained four
+  additive optional fields — `sourceWorkspace` (free string, open vocabulary, e.g. "chatgpt" or
+  "camera", never a person's name), `sourceKind` (closed union `ai_generated | photograph |
+  human_designed`), `briefSchemaVersion`, and `briefSha256` (a content hash of the exact rendered
+  brief, for drift detection) — all written once, atomically, inside the already-existing
+  `complete_asset_job_with_files` call. This is the whole of PROP-027's provenance surface. No new
+  column, table, or RPC exists anywhere in this milestone — a direct consequence of an adversarial
+  spec review that retired an earlier draft's planned `set_asset_job_attempt_provenance` RPC once
+  it became clear `provider`/`model` were the wrong field for workspace data in the first place.
+- **The dimension gate became advisory, deliberately, and only for the spec-vs-actual comparison.**
+  A candidate whose dimensions differ from the 1080×1080 spec now records the real dimensions, warns
+  once, and completes — this is what makes ChatGPT's 1024×1024 output (and any real camera photo)
+  usable at all. The declared-vs-decoded byte comparison in `asset-binary.ts` — the actual
+  anti-tamper check — was never touched and still hard-rejects, proven by a dedicated regression
+  test asserting both behaviors from the same pair of inputs.
+- **Validate before claim, everywhere.** Both the browser upload path and the CLI `import` path run
+  full local validation (MIME, size, decode, declared-vs-actual) through one shared boundary,
+  `src/lib/asset-upload-intake.ts`, before either ever calls `runAssetJobWithExecutors`. An invalid
+  file never claims the job or creates an attempt — proven by tests on both call sites.
+- **Duplicate protection is client-side and intentionally partial, not a database guarantee.**
+  `asset_jobs.creative_package_id` has no unique index and is guarded (by an exception raised in
+  `supabase-add-asset-jobs.sql` itself) against ever gaining one — a Creative Package may legitimately
+  have many Asset Jobs over time. The UI disables its create/upload controls synchronously before any
+  network call and reuses an already-queued job on a later page load
+  (`findQueuedExternalAssetJob`), but this does **not** cover two browser tabs or two devices racing
+  each other — recorded as an accepted, owner-only-trust-model limitation (see Known limitations),
+  not a defect awaiting a fix.
+- **Browser materialization runs on the same anon-key, authenticated-session posture as every other
+  write this app already makes.** This is a real, named trust assumption, not an oversight: it holds
+  exactly as long as everyone holding valid login credentials for this Supabase project is a trusted
+  operator, and breaks the instant a credential is issued to anyone who should not have full CRUD on
+  every table. See `planning/PROP-027-SPEC.md` §10, risk 4, for the exact trigger condition.
+
+**New workflow, end to end (US-1 through US-10):**
+```
+Creative Package (status: ready)
+      │  tap "Create asset job"
+      ▼
+Asset Job (queued, worker_type = "external")
+      │  view the canonical rendered brief; copy it -- read-only, never claims the job
+      ▼
+Paste into ChatGPT / Claude / Midjourney / Canva -- or skip entirely and photograph real product
+      │  declare workspace + source kind (both optional); pick the resulting image file
+      ▼
+Upload: pre-claim validation -> claim_asset_job_with_attempt -> byte validation (hard) ->
+        spec-dimension check (advisory) -> private Storage upload -> complete_asset_job_with_files
+      ▼
+Asset Job completed; Asset + Asset File created; the read-only Assets viewer auto-refreshes
+      ▼
+Asset visible on /opportunities, with its real dimensions, sourceWorkspace, and sourceKind
+```
+The CLI mirrors the same path one-for-one (`scripts/asset-workers/run.ts export`/`import`), sharing
+every validation/brief/executor function with the browser -- there is exactly one implementation of
+each step, not two.
+
+**New files:** `src/lib/asset-digest.ts` (portable Web Crypto SHA-256, replacing `node:crypto` so
+the whole validation chain can run in a browser), `src/lib/external-asset-provider.ts` (the
+zero-I/O executor -- returns exactly the bytes it was handed), `src/lib/asset-generation-brief.ts`
+(one canonical brief renderer + `briefSha256`, shared by CLI and browser so they can never disagree
+about what the brief says), `src/lib/asset-upload-intake.ts` (the one bytes-to-candidate boundary,
+source-agnostic by design -- browser picker, drag-and-drop, camera, clipboard, or this repo's own
+CLI all funnel through it), `src/components/creative-package-asset-create.tsx` (job creation, brief
+view/copy, workspace/source-kind capture, upload), `scripts/asset-workers/run.ts` (desktop
+`export`/`import` CLI, mirroring the shipped Creative Job text CLI exactly).
+
+**Modified files:** `src/lib/asset-binary.ts` (P1: portable hashing; P5: renamed byte-level reason
+to `declared-dimension-mismatch`), `src/lib/asset-generation-validation.ts` (P5: spec-level reason
+renamed `spec-dimension-advisory`, downgraded to a warning), `src/lib/asset-file-materialization.ts`
+and `src/lib/asset-jobs.ts` (P2: envelope records the job's real `worker_type`, never a hardcoded
+`"mock"`; P4: provenance threading; the runner's success result now also surfaces validation
+warnings -- previously computed internally but never returned to any caller, which would have left
+the advisory-dimension warning unreachable by any UI), `src/lib/assets.ts` (`AssetContentV1.metadata`
+provenance fields),
+`src/components/creative-package-assets.tsx` (renders `sourceWorkspace`/`sourceKind` and a derived,
+non-stored dimension-advisory note), `src/components/opportunities-page.tsx` (mounts the new
+component; wires an auto-refresh signal to the read-only viewer).
+
+**No SQL migration, no new RPC, no new table or column exists anywhere in this milestone** -- the
+single fact that made the retired provenance-RPC design unnecessary once the vocabulary was
+corrected (see above).
+
+`tests/asset-digest.test.ts`, `asset-generation-brief.test.ts`, `external-asset-provider.test.ts`,
+`asset-upload-intake.test.ts`, `asset-workers-run.test.ts`, `creative-package-asset-create.test.ts`
+are new; `asset-binary.test.ts`, `asset-generation-validation.test.ts`,
+`asset-file-materialization.test.ts`, `asset-jobs.test.ts`, `assets.test.ts`,
+`creative-packages.test.ts`, `asset-ui.test.ts`, and the existing Storage smoke test were extended.
+27 files changed in total; 55 new passing tests (1172 → 1227), full suite otherwise unchanged.
+
+Verified: `npm run typecheck` clean; scoped `eslint` clean on every new/touched file; `npm test`
+1227/1228 (1 pre-existing unrelated skip, unchanged); `npm run build -- --webpack` succeeds with no
+new route; `git diff --check` clean. No inventory/costing/baking file touched; no package installed;
+no Vercel-facing environment change; no shipped `.sql` file edited or added.
+
+**Known limitations, all deliberate:**
+- **The `generated-assets` Storage bucket's existence was never conclusively confirmed.** The
+  frozen spec named this a hard blocker to check *before* implementation began; it was flagged as
+  unconfirmed in `STATUS.md` before this milestone started and was not resolved during it. This
+  does not affect anything verified so far (every test here uses a fake client or local fixture
+  bytes; zero real Storage calls were made), but it is a real prerequisite for the one test that
+  still matters most -- see below.
+- **The mobile acceptance test has not been run.** The spec's own stated real gate -- the full
+  create → brief → copy → external workspace → upload → visible-Asset flow, completed on a physical
+  phone in a mobile browser -- requires human verification and has not been attempted. Confirming
+  the Storage bucket above should happen first, since an upload cannot succeed without it regardless
+  of how correct the code is.
+- No OS-level share-sheet registration (requires a Web App Manifest, `share_target`, and
+  home-screen install -- a materially larger, separate PWA feature; out of scope by design, not an
+  oversight -- see the spec's Non-goals).
+- No desktop drag-and-drop yet -- the upload intake boundary already accepts a plain `Blob`
+  specifically to make this a trivial, low-risk follow-up whenever wanted.
+- No cross-tab/cross-device duplicate prevention (see the client-side-only decision above).
+- No approve/reject review gate -- every uploaded Asset is implicitly `generated`, never `approved`;
+  that gate is PROP-028's entire job and becomes a prerequisite the moment more than one person
+  uploads assets.
+- No real image-generation API, no bulk/batch upload, no carousel/video/story asset kind, no
+  per-person attribution (this app has no per-user identity model anywhere), no resumable/offline
+  upload -- all named and intentionally deferred in the frozen spec's Non-goals, not discovered
+  gaps.
+
 ---
 
 ## 1. Current-state summary
