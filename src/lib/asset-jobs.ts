@@ -170,7 +170,17 @@ export type AssetJobCreateResult =
   | { ok: false; reason: "missing-table" | "not-found" | "not-ready" | "failed"; message: string };
 
 export type AssetJobRunnerResult =
-  | { ok: true; outcome: "completed"; job: AssetJobRecord; attempt?: AssetJobAttemptFinishResult; materialization?: AssetJobFileMaterializationResult }
+  | {
+      ok: true;
+      outcome: "completed";
+      job: AssetJobRecord;
+      attempt?: AssetJobAttemptFinishResult;
+      materialization?: AssetJobFileMaterializationResult;
+      // Advisory-only (PROP-027 P5/AC-4) -- e.g. spec-dimension mismatches. Never blocks completion;
+      // exists so a caller (the browser upload UI) can show the operator what to expect. Empty, not
+      // omitted, when there is nothing to warn about.
+      warnings: string[];
+    }
   | {
       ok: false;
       reason: "missing-table" | "not-found" | "not-queued" | "conflict" | "failed" | "timeout";
@@ -594,6 +604,18 @@ export async function listAssetJobsForCreativePackage(client: AssetJobClient, cr
   }
 }
 
+// The one place that decides which Asset Job a "Create asset job" UI action reuses instead of
+// duplicating -- asset_jobs.creative_package_id has no unique constraint (a Creative Package may
+// have many Asset Jobs over time; supabase-add-asset-jobs.sql's own guard raises an exception if
+// that index is ever made unique), so this is the only protection against a rapid double-tap
+// producing two equivalent queued jobs. Relies on the caller passing jobs already ordered newest
+// first -- exactly what listAssetJobsForCreativePackage returns -- and simply returns the first
+// match rather than independently re-sorting; a caller passing unsorted jobs would get an
+// arbitrary match, not the newest, so this is not a general-purpose query.
+export function findQueuedExternalAssetJob(jobs: AssetJobRecord[]): AssetJobRecord | null {
+  return jobs.find((job) => job.status === "queued" && job.workerType === "external") ?? null;
+}
+
 export async function claimQueuedAssetJobWithAttempt(client: AssetJobClient, id: string): Promise<AssetJobClaimWithAttemptResult> {
   const result = await client.rpc("claim_asset_job_with_attempt", { p_job_id: id }).maybeSingle();
   if (result.error) {
@@ -654,7 +676,11 @@ export async function completeRunningAssetJob(client: AssetJobClient, job: Asset
   }
 
   const result = await finishAssetJobViaRpc(client, job, "completed", validation.result, null);
-  return result.written ? { ok: true, outcome: "completed", job: result.job } : { ok: false, reason: result.reason, message: result.message, job: result.job };
+  // No candidateValidation step happens on this lower-level path (it completes an
+  // already-validated envelope directly, bypassing the executor pipeline) -- warnings is honestly
+  // empty here, not omitted, since runAssetJobWithExecutors' own success path is what actually runs
+  // the spec-dimension advisory check.
+  return result.written ? { ok: true, outcome: "completed", job: result.job, warnings: [] } : { ok: false, reason: result.reason, message: result.message, job: result.job };
 }
 
 export async function failRunningAssetJob(client: AssetJobClient, job: AssetJobRecord, message = "Asset Job execution failed."): Promise<AssetJobRunnerResult> {
@@ -811,7 +837,7 @@ export async function runAssetJobWithExecutors(
   }
 
   const attempt = await finishAssetJobAttempt(client, attemptId, "completed");
-  return { ok: true, outcome: "completed", job: materialization.materialized.job, attempt, materialization };
+  return { ok: true, outcome: "completed", job: materialization.materialized.job, attempt, materialization, warnings: candidateValidation.warnings };
 }
 
 export async function runMockAssetJob(client: AssetJobExecutionClient, id: string, options: AssetJobRunnerOptions = {}): Promise<AssetJobRunnerResult> {

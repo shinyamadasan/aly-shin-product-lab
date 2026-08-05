@@ -17,6 +17,7 @@ import {
   completeRunningAssetJob,
   createAssetJobForReadyCreativePackage,
   failRunningAssetJob,
+  findQueuedExternalAssetJob,
   fromAssetJobRow,
   isAssetJobResultEnvelope,
   isAssetJobStatus,
@@ -52,6 +53,18 @@ const validBytes = new Uint8Array([
   0x49, 0x48, 0x44, 0x52,
   0x00, 0x00, 0x04, 0x38,
   0x00, 0x00, 0x04, 0x38,
+  0x08, 0x04, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+]);
+// Real, decodable 1024x1024 bytes (not merely declared) -- an actual OpenAI/DALL-E-shaped output
+// size, distinct from the 1080x1080 spec, so it exercises the P5 advisory path rather than the
+// byte-level anti-tamper rejection.
+const png1024 = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d,
+  0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x04, 0x00,
+  0x00, 0x00, 0x04, 0x00,
   0x08, 0x04, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00,
 ]);
@@ -545,6 +558,41 @@ test("buildAssetGenerationSpecForJob reports unsupported-asset-kind, not-ready, 
 // creative_packages ever gains a second status value, Asset Job creation is already guarded
 // against it without a follow-up change here.
 
+test("findQueuedExternalAssetJob returns null for an empty list", () => {
+  assert.equal(findQueuedExternalAssetJob([]), null);
+});
+
+test("findQueuedExternalAssetJob ignores mock jobs regardless of status", () => {
+  const jobs = [fromAssetJobRow(assetJobRow({ id: "job-1", status: "queued", worker_type: "mock" }))];
+  assert.equal(findQueuedExternalAssetJob(jobs), null);
+});
+
+test("findQueuedExternalAssetJob ignores external jobs that are not queued", () => {
+  const jobs = [
+    fromAssetJobRow(assetJobRow({ id: "job-1", status: "completed", worker_type: "external" })),
+    fromAssetJobRow(assetJobRow({ id: "job-2", status: "failed", worker_type: "external" })),
+    fromAssetJobRow(assetJobRow({ id: "job-3", status: "running", worker_type: "external" })),
+  ];
+  assert.equal(findQueuedExternalAssetJob(jobs), null);
+});
+
+test("findQueuedExternalAssetJob returns the one queued external job among other jobs", () => {
+  const target = fromAssetJobRow(assetJobRow({ id: "job-2", status: "queued", worker_type: "external" }));
+  const jobs = [
+    fromAssetJobRow(assetJobRow({ id: "job-1", status: "completed", worker_type: "external" })),
+    target,
+    fromAssetJobRow(assetJobRow({ id: "job-3", status: "queued", worker_type: "mock" })),
+  ];
+  assert.equal(findQueuedExternalAssetJob(jobs), target);
+});
+
+test("findQueuedExternalAssetJob returns the first match, trusting caller ordering rather than re-sorting", () => {
+  const newest = fromAssetJobRow(assetJobRow({ id: "job-newest", status: "queued", worker_type: "external", created_at: "2026-08-02T00:00:00.000Z" }));
+  const oldest = fromAssetJobRow(assetJobRow({ id: "job-oldest", status: "queued", worker_type: "external", created_at: "2026-08-01T00:00:00.000Z" }));
+  // Pre-sorted newest-first, exactly like listAssetJobsForCreativePackage's own ordering contract.
+  assert.equal(findQueuedExternalAssetJob([newest, oldest]), newest);
+});
+
 test("claimQueuedAssetJobWithAttempt claims a queued job and creates exactly one running attempt with attempt_number matching post-increment attempt_count", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
   const result = await claimQueuedAssetJobWithAttempt(store.client, "asset-job-1");
@@ -946,6 +994,30 @@ test("runAssetJobWithExecutors threads sourceWorkspace/sourceKind into the compl
     // introduces provider/model -- those are reserved exclusively for a future real API executor.
     assert.equal("provider" in envelope.metadata, false);
     assert.equal("model" in envelope.metadata, false);
+  }
+});
+
+test("runAssetJobWithExecutors surfaces the spec-dimension advisory warning on its success result (AC-4) -- a 1024x1024 image, actually decodable as 1024x1024, succeeds against the 1080x1080 spec with a warning naming the real dimensions", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const candidate = validGeneratedAssetFileCandidate({ width: 1024, height: 1024, fileSizeBytes: png1024.length, bytes: png1024 });
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { mock: () => [candidate] });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /1024x1024/);
+    assert.match(result.warnings[0], /1080x1080/);
+  }
+  assert.equal(store.jobs[0].status, "completed");
+});
+
+test("runAssetJobWithExecutors reports no warnings when the candidate matches the spec exactly", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { mock: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.warnings, []);
   }
 });
 

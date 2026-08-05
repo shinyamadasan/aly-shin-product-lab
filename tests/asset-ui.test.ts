@@ -131,7 +131,7 @@ test("PROP-026 component keeps Asset UI focused, read-only, and driven by Asset 
   const component = readFileSync("src/components/creative-package-assets.tsx", "utf8");
   const page = readFileSync("src/components/opportunities-page.tsx", "utf8");
 
-  assert.match(page, /<CreativePackageAssets creativePackageId=\{selectedPackage\.id\} \/>/);
+  assert.match(page, /<CreativePackageAssets creativePackageId=\{selectedPackage\.id\} refreshSignal=\{assetRefreshToken\} \/>/);
   assert.doesNotMatch(page, /listAssetJobsForCreativePackage|createSignedUrlForAssetFile|listOrderedAssetFilesForAsset|readAssetForAssetJob/);
   assert.match(component, /listAssetJobsForCreativePackageReadOnly/);
   assert.match(component, /readAssetForAssetJobReadOnly/);

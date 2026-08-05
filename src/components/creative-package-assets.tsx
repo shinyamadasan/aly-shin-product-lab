@@ -3,12 +3,13 @@
 import { ImageIcon, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MessageBox, Tag } from "@/components/ui";
+import { ASSET_GENERATION_IMAGE_DIMENSIONS } from "@/lib/asset-generation-spec";
 import type { AssetFileRecord } from "@/lib/asset-files";
 import { createSignedUrlForAssetFile, type AssetFileUrlClient } from "@/lib/asset-file-urls";
 import { listAssetJobsForCreativePackageReadOnly, listOrderedAssetFilesForAssetReadOnly, readAssetForAssetJobReadOnly, type AssetReadClient } from "@/lib/asset-read-model";
 import { createAssetUiRequestCoordinator, shouldStartAutomaticImageRetry } from "@/lib/asset-ui-request-coordinator";
 import type { AssetJobRecord } from "@/lib/asset-jobs";
-import type { AssetRecord } from "@/lib/assets";
+import { isAssetContentV1, type AssetRecord } from "@/lib/assets";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type CreativePackageAssetsClient = AssetReadClient & AssetFileUrlClient;
@@ -75,7 +76,15 @@ function signedStateKey(file: AssetFileRecord): string {
   return file.id;
 }
 
-export function CreativePackageAssets({ creativePackageId }: { creativePackageId: string }) {
+// Derived, not stored -- PROP-027's advisory dimension policy (asset-generation-validation.ts)
+// never persists a "warning" field anywhere; it only records the actual decoded width/height
+// (already on AssetFileRecord). Comparing those against the one canonical spec size here gives the
+// exact same fact the upload-time warning named, with no duplicate storage.
+function isOffSpec(width: number | null, height: number | null): boolean {
+  return width !== null && height !== null && (width !== ASSET_GENERATION_IMAGE_DIMENSIONS.width || height !== ASSET_GENERATION_IMAGE_DIMENSIONS.height);
+}
+
+export function CreativePackageAssets({ creativePackageId, refreshSignal }: { creativePackageId: string; refreshSignal: number }) {
   const [jobs, setJobs] = useState<AssetJobRecord[]>([]);
   const [jobAssets, setJobAssets] = useState<Record<string, JobAssetState>>({});
   const [signedFiles, setSignedFiles] = useState<Record<string, SignedFileState>>({});
@@ -240,7 +249,7 @@ export function CreativePackageAssets({ creativePackageId }: { creativePackageId
       requestCoordinator.current.unmount();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creativePackageId]);
+  }, [creativePackageId, refreshSignal]);
 
   return (
     <section className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
@@ -278,6 +287,12 @@ export function CreativePackageAssets({ creativePackageId }: { creativePackageId
                   <Tag tone={statusTone(job.status)}>Job status: {assetJobStatusLabel(job.status)}</Tag>
                   {job.workerType === "mock" ? <Tag tone="warm">Fixture/mock output</Tag> : null}
                   {assetState.asset ? <Tag tone="green">Asset status: {assetState.asset.status}</Tag> : null}
+                  {assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceWorkspace ? (
+                    <Tag tone="warm">Workspace: {assetState.asset.content.metadata.sourceWorkspace}</Tag>
+                  ) : null}
+                  {assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceKind ? (
+                    <Tag tone="warm">Source: {assetState.asset.content.metadata.sourceKind}</Tag>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-3">
@@ -312,6 +327,9 @@ export function CreativePackageAssets({ creativePackageId }: { creativePackageId
                         <div className="grid gap-3">
                           {metadataBlock("MIME", file.mimeType)}
                           {metadataBlock("Dimensions", file.width && file.height ? `${file.width} x ${file.height}` : "Not recorded")}
+                          {isOffSpec(file.width, file.height) ? (
+                            <MessageBox message={`Actual dimensions differ from the ${ASSET_GENERATION_IMAGE_DIMENSIONS.width}x${ASSET_GENERATION_IMAGE_DIMENSIONS.height} spec -- this is advisory only and does not affect Asset validity.`} tone="info" />
+                          ) : null}
                           {metadataBlock("File size", formatBytes(file.fileSizeBytes))}
                           {metadataBlock("File created", formatDateTime(file.createdAt))}
                         </div>
