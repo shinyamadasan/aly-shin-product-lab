@@ -11,6 +11,7 @@ import {
   type GeneratedAssetFileCandidate,
 } from "../src/lib/asset-generation-validation.ts";
 import {
+  buildAssetGenerationSpecForJob,
   buildMockAssetJobResult,
   claimQueuedAssetJobWithAttempt,
   completeRunningAssetJob,
@@ -512,6 +513,28 @@ test("createAssetJobForReadyCreativePackage allows a second Asset Job for the sa
   if (first.ok && second.ok) {
     assert.notEqual(first.job.id, second.job.id);
   }
+});
+
+test("buildAssetGenerationSpecForJob resolves the same spec as buildAssetGenerationSpec, pre-claim, from only creativePackageId and assetKind", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const result = await buildAssetGenerationSpecForJob(store.client, { creativePackageId: "package-1", assetKind: "image" });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.spec, buildAssetGenerationSpec(fromCreativePackageRow(creativePackageRow()), { assetKind: "image", brandBible: BRAND_BIBLE }));
+  }
+  // Pre-claim: nothing about resolving the spec touches asset_jobs or claims anything.
+  assert.equal(store.jobs[0].status, "queued");
+});
+
+test("buildAssetGenerationSpecForJob reports unsupported-asset-kind, not-ready, and not-found distinctly", async () => {
+  const badKind = await buildAssetGenerationSpecForJob(makeClient().client, { creativePackageId: "package-1", assetKind: "video" });
+  assert.equal(badKind.ok, false);
+  if (!badKind.ok) assert.equal(badKind.reason, "unsupported-asset-kind");
+
+  const missing = await buildAssetGenerationSpecForJob(makeClient({ creativePackages: [] }).client, { creativePackageId: "package-1", assetKind: "image" });
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.reason, "not-found");
 });
 
 // No "refuses non-ready Creative Packages" test here: CreativePackageStatus (creative-packages.ts)

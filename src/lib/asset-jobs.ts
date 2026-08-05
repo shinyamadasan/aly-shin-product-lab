@@ -465,6 +465,42 @@ async function readCreativePackage(client: AssetJobClient, id: string) {
   }
 }
 
+export type AssetGenerationSpecResult =
+  | { ok: true; spec: AssetGenerationSpecV1 }
+  | { ok: false; reason: "unsupported-asset-kind" | "missing-table" | "not-found" | "not-ready" | "failed"; message: string };
+
+// The one place a job's spec is resolved -- reused by runAssetJobWithExecutors (post-claim) and by
+// the desktop CLI's export command (pre-claim, read-only). Deliberately takes only the two fields
+// it needs, not a full job, so a pre-claim caller (which has no attempt/status context yet) can call
+// it just as naturally as the post-claim runner. Job status is each caller's own concern, not this
+// function's -- it only ever resolves "what would this job's spec be," never whether the job is in
+// the right state to use it. reason is a distinct value per failure mode (not just "failed") so a
+// caller that wants runAssetJobWithExecutors's original, less granular message for the "job cannot
+// load its Creative Package at all" case can select on it structurally, never by matching message text.
+export async function buildAssetGenerationSpecForJob(
+  client: AssetJobClient,
+  job: Pick<AssetJobRecord, "creativePackageId" | "assetKind">,
+): Promise<AssetGenerationSpecResult> {
+  if (!isAssetKind(job.assetKind)) {
+    return { ok: false, reason: "unsupported-asset-kind", message: `Unsupported asset kind: ${job.assetKind}.` };
+  }
+  const assetKind = job.assetKind;
+
+  const creativePackage = await readCreativePackage(client, job.creativePackageId);
+  if (!creativePackage.ok) {
+    return { ok: false, reason: creativePackage.reason, message: creativePackage.message };
+  }
+  if (creativePackage.creativePackage.status !== "ready") {
+    return { ok: false, reason: "not-ready", message: "Asset Job could not load a ready Creative Package." };
+  }
+
+  try {
+    return { ok: true, spec: buildAssetGenerationSpec(creativePackage.creativePackage, { assetKind, brandBible: BRAND_BIBLE }) };
+  } catch (err) {
+    return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function getAssetJobById(client: AssetJobClient, id: string): Promise<AssetJobDetailResult> {
   const result = await client.from("asset_jobs").select<AssetJobRow>("*").eq("id", id).maybeSingle();
   if (result.error) {
@@ -681,24 +717,18 @@ export async function runAssetJobWithExecutors(
     return failJobAndAttempt(`No executor is registered for worker type: ${workerType}.`);
   }
 
-  if (!isAssetKind(job.assetKind)) {
-    return failJobAndAttempt(`Unsupported asset kind: ${job.assetKind}.`);
+  // Preserves this function's own three original messages exactly -- "Unsupported asset kind: X.",
+  // a thrown buildAssetGenerationSpec error forwarded verbatim (e.g. malformed package content),
+  // and the generic "...could not load a ready Creative Package." only for the package-read/not-
+  // ready case -- even though the resolution itself now lives in one shared place. Selecting on
+  // reason, never on message text, so this can never silently drift from
+  // buildAssetGenerationSpecForJob's own, more specific messages.
+  const specResult = await buildAssetGenerationSpecForJob(client, job);
+  if (!specResult.ok) {
+    const usesGenericMessage = specResult.reason === "not-found" || specResult.reason === "missing-table" || specResult.reason === "not-ready";
+    return failJobAndAttempt(usesGenericMessage ? "Asset Job could not load a ready Creative Package." : specResult.message);
   }
-  const assetKind = job.assetKind;
-
-  const creativePackage = await readCreativePackage(client, job.creativePackageId);
-  if (!creativePackage.ok || creativePackage.creativePackage.status !== "ready") {
-    return failJobAndAttempt("Asset Job could not load a ready Creative Package.");
-  }
-  const readyCreativePackage = creativePackage.creativePackage;
-
-  let spec: AssetGenerationSpecV1;
-  try {
-    spec = buildAssetGenerationSpec(readyCreativePackage, { assetKind, brandBible: BRAND_BIBLE });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return failJobAndAttempt(message);
-  }
+  const spec = specResult.spec;
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT_MS;
   const controller = new AbortController();
