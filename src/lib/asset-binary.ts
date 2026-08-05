@@ -34,7 +34,7 @@ export type AssetByteValidation =
         | "empty-bytes"
         | "file-too-large"
         | "mime-mismatch"
-        | "dimension-mismatch"
+        | "declared-dimension-mismatch"
         | "file-size-mismatch";
       message: string;
     };
@@ -156,8 +156,11 @@ export async function validateAssetCandidateBytes(candidate: GeneratedAssetFileC
   if (candidate.mimeType !== inspection.facts.actualMimeType) {
     return { ok: false, reason: "mime-mismatch", message: `Generated asset declared MIME ${candidate.mimeType} does not match decoded MIME ${inspection.facts.actualMimeType}.` };
   }
+  // Anti-tamper check, unaffected by the spec-dimension advisory in asset-generation-validation.ts:
+  // this compares the candidate's own declared metadata against its own actual bytes and must
+  // always stay a hard rejection.
   if (candidate.width !== inspection.facts.actualWidth || candidate.height !== inspection.facts.actualHeight) {
-    return { ok: false, reason: "dimension-mismatch", message: `Generated asset declared dimensions ${candidate.width}x${candidate.height} do not match decoded dimensions ${inspection.facts.actualWidth}x${inspection.facts.actualHeight}.` };
+    return { ok: false, reason: "declared-dimension-mismatch", message: `Generated asset declared dimensions ${candidate.width}x${candidate.height} do not match decoded dimensions ${inspection.facts.actualWidth}x${inspection.facts.actualHeight}.` };
   }
   if (candidate.fileSizeBytes !== inspection.facts.byteSize) {
     return { ok: false, reason: "file-size-mismatch", message: `Generated asset declared fileSizeBytes ${candidate.fileSizeBytes} does not match actual byte size ${inspection.facts.byteSize}.` };

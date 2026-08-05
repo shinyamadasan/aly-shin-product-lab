@@ -880,12 +880,15 @@ test("runAssetJobWithExecutors passes a generated spec to the executor and never
 test("runAssetJobWithExecutors rejects invalid candidates before completing the job", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
   const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    // width/height differing from the spec is advisory (PROP-027 P5) and no longer rejects here --
+    // this candidate's declared 512x512 now disagrees with its own (unchanged, real 1080x1080)
+    // bytes instead, so it is caught by the byte-level anti-tamper check one step later.
     mock: () => [validGeneratedAssetFileCandidate({ width: 512, height: 512 })],
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
-  assert.equal(result.message, "Image asset generation candidate dimensions must be 1080x1080.");
+  assert.equal(result.message, "Generated asset declared dimensions 512x512 do not match decoded dimensions 1080x1080.");
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.jobs[0].completed_at, null);
   assert.equal(store.jobs[0].failed_at, finishedAt);

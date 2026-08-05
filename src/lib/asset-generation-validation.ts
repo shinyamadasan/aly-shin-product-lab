@@ -15,17 +15,22 @@ export const GENERATED_ASSET_MIN_DIMENSION_PX = 256;
 export const GENERATED_ASSET_MAX_DIMENSION_PX = 4096;
 export const GENERATED_ASSET_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 
+// Advisory, not a rejection reason: a candidate's declared dimensions differing from the spec's
+// requested dimensions no longer fails validation -- see validateGeneratedAssetCandidates below.
+// Named distinctly from asset-binary.ts's "declared-dimension-mismatch", which is an unrelated,
+// still-hard rejection (a candidate's declared dimensions vs. its own actual bytes).
+export const SPEC_DIMENSION_ADVISORY_REASON = "spec-dimension-advisory";
+
 export type GeneratedAssetCandidateRejectionReason =
   | "malformed-candidates"
   | "wrong-file-count"
   | "unsupported-mime-type"
-  | "dimension-mismatch"
   | "duration-present-for-image"
   | "empty-bytes"
   | "invalid-position";
 
 export type GeneratedAssetCandidateValidation =
-  | { ok: true; candidates: GeneratedAssetFileCandidate[] }
+  | { ok: true; candidates: GeneratedAssetFileCandidate[]; warnings: string[] }
   | { ok: false; reason: GeneratedAssetCandidateRejectionReason; message: string };
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -70,8 +75,14 @@ export function validateGeneratedAssetCandidates(candidates: unknown, spec: Asse
     return { ok: false, reason: "unsupported-mime-type", message: "Image asset generation candidate mimeType is not supported." };
   }
 
+  // Advisory: a real external source (a human's workspace, a camera, a future API with different
+  // native sizes) will rarely land on the spec's exact requested dimensions. This records the
+  // mismatch and proceeds with the candidate's actual dimensions -- it never rejects.
+  const warnings: string[] = [];
   if (candidate.width !== spec.dimensions.width || candidate.height !== spec.dimensions.height) {
-    return { ok: false, reason: "dimension-mismatch", message: `Image asset generation candidate dimensions must be ${spec.dimensions.width}x${spec.dimensions.height}.` };
+    warnings.push(
+      `${SPEC_DIMENSION_ADVISORY_REASON}: candidate dimensions ${candidate.width}x${candidate.height} do not match the requested ${spec.dimensions.width}x${spec.dimensions.height}. Proceeding with the candidate's actual dimensions.`,
+    );
   }
 
   if (candidate.durationMs !== null) {
@@ -82,5 +93,5 @@ export function validateGeneratedAssetCandidates(candidates: unknown, spec: Asse
     return { ok: false, reason: "empty-bytes", message: "Image asset generation candidate fileSizeBytes must be greater than 0 and within the maximum file size." };
   }
 
-  return { ok: true, candidates };
+  return { ok: true, candidates, warnings };
 }

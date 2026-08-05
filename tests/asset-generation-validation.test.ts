@@ -8,6 +8,7 @@ import {
   GENERATED_ASSET_MAX_DIMENSION_PX,
   GENERATED_ASSET_MAX_FILE_SIZE_BYTES,
   GENERATED_ASSET_MIN_DIMENSION_PX,
+  SPEC_DIMENSION_ADVISORY_REASON,
   validateGeneratedAssetCandidates,
   type GeneratedAssetFileCandidate,
 } from "../src/lib/asset-generation-validation.ts";
@@ -70,6 +71,7 @@ test("validateGeneratedAssetCandidates accepts one metadata-level image candidat
   if (result.ok) {
     assert.equal(result.candidates[0].width, 1080);
     assert.equal(result.candidates[0].height, 1080);
+    assert.deepEqual(result.warnings, [], "an exact-dimension match must not produce a warning");
   }
 });
 
@@ -119,12 +121,19 @@ test("validateGeneratedAssetCandidates rejects unsupported MIME types", () => {
   }
 });
 
-test("validateGeneratedAssetCandidates rejects non-exact image dimensions", () => {
+test("validateGeneratedAssetCandidates warns on non-exact image dimensions but still accepts the candidate", () => {
   const result = validateGeneratedAssetCandidates([candidate({ width: 512, height: 512 })], spec);
 
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.equal(result.reason, "dimension-mismatch");
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    // The candidate's actual dimensions pass through unchanged -- never silently coerced to what
+    // the spec requested.
+    assert.equal(result.candidates[0].width, 512);
+    assert.equal(result.candidates[0].height, 512);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], new RegExp(`^${SPEC_DIMENSION_ADVISORY_REASON}:`));
+    assert.match(result.warnings[0], /512x512/);
+    assert.match(result.warnings[0], /1080x1080/);
   }
 });
 
