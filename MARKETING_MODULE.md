@@ -987,6 +987,590 @@ error), build succeeds.
 
 ---
 
+## Marketing Advisor v1 — a separate track (2026-07-30)
+
+**This is a different milestone sequence from M0–M9/M2A–M2C2 above, tracked separately to avoid
+colliding with that numbering.** Where M0–M9 build a Brand/Journey/Content-Studio production
+pipeline, Marketing Advisor v1 answers a narrower, different question: can an LLM read Product
+Lab's real business data and *advise* the owner on what to make content about, without deciding or
+creating anything itself? The owner's own framing: the app should advise, not decide — Product Lab
+stays the operational source of truth, and this system is a new *producer* of `opportunities` rows
+that flows through the already-built Opportunity → Creative Job → Creative Package pipeline
+unchanged, not a new execution path.
+
+Five milestones, each deliberately small (a deterministic recommendation step was inserted between
+Context Builder and the LLM-based Advisor after Context Builder shipped; a deterministic Brief +
+Opportunity Draft Generator step was inserted between the Recommendation Engine and the LLM call
+after design review found that a separate "advice" review layer in front of the already-proven
+Opportunity Review UI was solving the wrong problem):
+1. **Context Builder** — a pure, read-only `MarketingAdvisorContext` object assembled from data
+   that already exists in Product Lab. No AI. Implemented — PROP-018.
+2. **M2A: Deterministic Recommendation Engine** — a pure function reading that same context and
+   producing a ranked list of concrete marketing recommendations using rules alone, no AI. Gives
+   the LLM step below either a real list to show directly or pre-computed hints to fold into its
+   own prompt. Implemented — PROP-019.
+3. **Marketing Brief + Opportunity Draft Generator** — a pure `MarketingBrief` composing the
+   Context and Recommendations; a small, bounded AI suggestion contract (`title`/`reason`/
+   `sourceRecommendationIds` only, nothing mechanical) with an anti-hallucination validator; and a
+   deterministic lifter that mechanically turns a validated suggestion into a full
+   `OpportunityDraft` — priority, supporting evidence, dedup key, source ID, and expiry are all
+   derived or reconstructed, never AI-authored. Implemented — PROP-020.
+4. **Advisor (LLM) invocation** — send the Brief to an LLM (manually, via the same Claude Code
+   export/import workflow already proven for the Creative Job text worker), get back a
+   `MarketingOpportunitySuggestion[]` response, validate it, and lift it into `OpportunityDraft[]`
+   via PROP-020's own functions. **Decision made and implemented: manual export/import**, not a
+   local CLI spawn — a `marketing-advisor export`/`import` CLI producing a durable, versioned
+   "Marketing Advisor Session" per run. Implemented — PROP-021.
+5. **PROP-021A: Advisor Review CLI** — a `marketing-advisor review <session-dir>` command
+   rendering a completed session's `drafts.json` for human inspection before anything is
+   persisted. Still no UI, still no Supabase write. Named during PROP-021's planning, not started.
+6. **Approval / Queue Opportunities** — persisting a completed session's validated
+   `OpportunityDraft[]` (via Daily Advisor's own already-tested `persistOpportunityDrafts`, reused
+   unchanged) surfaces it directly in the existing, unmodified Opportunity Review UI
+   (New/Accept/Dismiss/Expire) — no new review screen, no manual re-keying step. Implemented —
+   PROP-022 (`marketing-advisor persist --session-dir <path>`).
+7. **Asset Generation Foundation** — a new, provider-agnostic subsystem one layer past Creative
+   Package: `asset_jobs`/`asset_job_attempts`/`assets`/`asset_files`, an `AssetJobExecutor`
+   contract mirroring `CreativeJobExecutor` exactly, and a `mock` executor proving the full
+   claim → execute → validate → materialize loop end to end with zero real provider, zero Supabase
+   Storage, and zero UI. First milestone of a longer, separately-approved roadmap
+   (`planning/PROPOSALS.md` PROP-023 onward) that only ever adds a real provider, Storage upload,
+   review UI, and additional asset kinds (carousel/reel/short video/story graphic) as later, thin,
+   independently-authorized slices. Implemented — PROP-023.
+
+### Marketing Context Builder implementation record (2026-07-30)
+
+Implemented on branch `feat/marketing-advisor-context`, branched from
+`fix/creative-job-timestamp-clock-source` (tip `23457b5` — the only lineage with both the full
+Creative Job/Opportunity pipeline and the just-finished database-timestamp hardening). Full
+proposal record: `planning/PROPOSALS.md` PROP-018.
+
+New `src/lib/marketing-advisor-context.ts`: `buildMarketingAdvisorContext(input)`, a pure function
+(no Supabase client, no side effects) returning a versioned (`version: 1`), timestamped
+(`generatedAt`) `MarketingAdvisorContext` object with 8 fields:
+- `businessFacts` — a new, independent hand-condensed constant sourced from
+  `PRODUCT_LAB_CONTEXT.md`. Deliberately **not** `src/services/ai/context.ts`'s `BUSINESS_CONTEXT`
+  — that constant is prompt text for the existing, unrelated Copy-Prompt AI Advisor, and coupling
+  this milestone's business-data contract to it would tie two different features' wording
+  together. `src/services/ai/context.ts` is untouched by this milestone.
+- `products` — passed through unchanged from the caller.
+- `publishingHistory` — derived fresh from `content_journal`/`ContentJournalEntry[]`, per product
+  plus a separate "unassociated" (no-product) bucket, explicitly labeled as based on Journal
+  capture date, not a real publish date (no publish-status field exists anywhere in this schema).
+- `currentGoals`/`promotions` — ship as an explicit, typed absence (`{ hasData: false, reason }`)
+  rather than fabricated content, since neither has any data source anywhere in Product Lab today.
+  The owner explicitly chose read-only scope for this milestone over adding a new input surface.
+- `season` — pure date computation (month/quarter/nearest fixed-date holidays only — deliberately
+  excludes lunar/variable-date holidays and any single-country assumption, since no doc in this
+  repo confirms one).
+- `inventoryHighlights` — thin wiring over the existing, already-tested `inventory-status.ts`
+  functions (`getInventorySummaryCounts`/`getExpiringIngredients`/`getNeedToBuyList`).
+- `brandBible` — a structured `BrandBible` object (`mission`/`positioning`/`targetAudience`/
+  `tone`/`writingPrinciples`/`prohibitedPatterns`), hand-condensed from `docs/BRAND_BIBLE_V1.md`
+  and verified field-by-field against the real doc, not the empty `brand_profiles` table (no UI
+  has ever written to it, and its shape doesn't map cleanly onto the doc's strategic content
+  anyway — see PROP-018 for the full reasoning). Kept honest by a `[static]` test that re-reads
+  the real doc and asserts every condensed string is still a real substring of it.
+
+`tests/marketing-advisor-context.test.ts` added: 27 tests covering assembly/purity/non-mutation,
+every publishing-history edge case (zero-entry products, multi-entry recency, unparsable dates,
+off-catalog products, unassociated entries, same-day capture), the goals/promotions absence,
+season/holiday math (including same-day and rollover cases), inventory-highlights parity against
+the underlying functions called directly, and brand-bible content including the doc-drift guard.
+
+**Pre-commit regression review (2026-07-30) — one root cause, two symptoms, both fixed:** `season`
+and `publishingHistory` both compared a date-only value (always midnight UTC) directly against
+`now` (a real timestamp, rarely exactly midnight) — on a fixed holiday's own calendar date, this
+incorrectly rolled the holiday to next year instead of reporting `daysAway: 0`; a Journal entry
+captured the same calendar day as `now` reported `daysSinceLastCapture: 1` instead of `0`. Fixed
+with a single `startOfUtcDay(timestampMs)` helper, normalized once in `buildMarketingAdvisorContext`
+and used only as the anchor for `buildSeason`/`buildPublishingHistory`'s date-only comparisons —
+`generatedAt` keeps the raw, un-normalized timestamp. 5 regression tests added; both original repro
+cases re-verified directly after the fix.
+
+No schema/migration change, no new table, no new UI, no packages installed. Verified: `npm run
+typecheck` clean, `npx eslint` clean on both new files, `npm run test` passing with 27 new tests
+and no regressions, `npm run build -- --webpack` succeeds.
+
+The LLM Advisor call and Opportunity approval are not started. Two schema-shaped details they'll
+need when actually designed: `OpportunitySourceType`/`OpportunityRecommendedAction` (closed
+TypeScript unions in `src/lib/opportunities.ts`, not DB `CHECK` constraints) will need a new value;
+`opportunities` has a guarded, migration-enforced ban on ever adding a `priority` column
+(`supabase-add-opportunities.sql` raises an exception if one appears), so any Advisor-assigned
+priority must live inside the existing open `evidence` jsonb field.
+
+### M2A: Deterministic Recommendation Engine implementation record (2026-07-30)
+
+Implemented on branch `feat/marketing-recommendations`, branched from
+`feat/marketing-advisor-context` (tip `2ddaeb4`, PROP-018). Full proposal record:
+`planning/PROPOSALS.md` PROP-019. **Naming note:** this file's own M0–M9 track already has an
+unrelated, already-shipped "M2A" (Journey persistence) — this step is tracked formally as PROP-019;
+"M2A" is only the owner's own informal shorthand for "the second step in the Marketing Advisor
+sequence."
+
+New `src/lib/marketing-recommendations.ts`: `buildMarketingRecommendations(context)`, a pure
+function (no Supabase client, no side effects, no AI) composing 5 independent rule functions, each
+reading only fields `MarketingAdvisorContext` already exposes:
+- `buildNeglectedProductRecommendations` — a product with real marketing history that's gone quiet
+  (`daysSinceLastCapture >= 30`). `confidence: "high"`.
+- `buildNoMarketingHistoryRecommendations` — a product never covered at all (`entryCount === 0`).
+  Mutually exclusive with the rule above by construction (verified by a dedicated test), not just
+  convention. `confidence: "high"`.
+- `buildSeasonalOpportunityRecommendations` — a fixed-date holiday within 21 days, product-agnostic
+  (no holiday-to-product mapping exists in scope). `confidence: "high"`.
+- `buildLaunchCandidateFollowUpRecommendations` — an explicitly-labeled proxy for "recent launches
+  needing follow-up": `product.status`/`decision` standing in for a real launch date that doesn't
+  exist anywhere in this schema. Always `confidence: "low"`, and its evidence carries a `basis`
+  string stating this plainly.
+- `buildExpiringIngredientRecommendations` — reads `inventoryHighlights.expiringSoon` directly,
+  never naming a specific product (`Ingredient` has no product-linking field at all).
+  `confidence: "medium"`.
+
+**Scope decision, made with the owner before implementation:** the user's original sketch named six
+rule categories; two ("high-rated but under-promoted products", "recent launches needing
+follow-up") reference signals `MarketingAdvisorContext` doesn't carry (no rating field is reachable
+from its inputs at all; no real launch-date field exists anywhere on `Product`). The owner chose to
+ship 5 rules, redefine the launch-follow-up rule as the honest, low-confidence proxy described
+above, and fully drop "high-rated" as out of scope — blocked on a future `MarketingAdvisorContext`
+extension, not implemented as a fabricated substitute.
+
+`MarketingRecommendation` is a discriminated union keyed by `recommendationType`, with a closed
+`priority: 1|2|3|4|5` (directly renderable as N-of-5 stars, matching the owner's own original
+mockup) and a closed `confidence: "high"|"medium"|"low"` — this is the first runtime-typed
+"confidence" concept anywhere in this codebase (confirmed via search), deliberately not a numeric
+score, since a number would fabricate statistical precision this deterministic engine has no basis
+for. Ranking is fully independent of `src/lib/rule-engine/priority.ts` (confirmed its
+category/severity weights have no honest mapping onto `RecommendationType`); its own
+`compareRecommendations` sorts by priority descending, then confidence descending, then `id`
+ascending as a final deterministic tiebreak. One flagged, deliberate refinement beyond the owner's
+literal rule descriptions: products with `status: "paused"` are excluded from the neglected/
+no-history/launch-follow-up rules, since a paused product isn't a live marketing candidate.
+
+Rules never suppress each other, and this is intentional: a single product can appear in more than
+one recommendation at once (e.g. `neglected_product` and `launch_candidate_follow_up` for the same
+product), since each rule represents its own independent marketing signal. Merging or deduplicating
+across signals for the same product is left to a later campaign-planning milestone, not decided
+here.
+
+`tests/marketing-recommendations.test.ts` added: 29 tests covering every rule's firing/non-firing
+boundary (including the exact 30/21/14-day thresholds), the paused-product exclusion, the rule-1/
+rule-2 mutual exclusivity, evidence shape/content per rule, composition/ranking (priority,
+confidence-tiebreak, id-tiebreak, input-order-independence), an explicit guard proving no rating/
+quality-based recommendation is ever produced, and purity/non-mutation/quiet-context tests
+mirroring PROP-018's own test file precedent.
+
+No schema/migration change, no new table, no new UI, no packages installed, no existing file
+changed (`src/lib/marketing-advisor-context.ts` is read-only input, never edited). Verified:
+`npm run typecheck` clean, `npx eslint` clean on both new files, `npm run test` passing with 29 new
+tests and no regressions, `npm run build -- --webpack` succeeds.
+
+The LLM Advisor call and Opportunity approval remain not started.
+
+### Marketing Brief + Opportunity Draft Generator implementation record (2026-07-31)
+
+Implemented on branch `feat/marketing-opportunity-drafts`, branched from
+`feat/marketing-recommendations` (tip `2dbfec8`, PROP-019). Full proposal record:
+`planning/PROPOSALS.md` PROP-020. This milestone went through four rounds of plan-mode redesign
+before implementation — the full reasoning trail (why the original "Marketing Advice" layer was
+rejected, and the four final corrections that hardened the design) is preserved in the approved
+plan, not repeated in full here.
+
+New `src/lib/marketing-brief.ts`: `buildMarketingBrief(context, recommendations)`, a pure
+composition of `MarketingAdvisorContext` and `MarketingRecommendation[]` — no business logic, no
+AI, `generatedAt` reused verbatim from `context.generatedAt` so this stage never introduces a
+second clock source.
+
+New `src/lib/marketing-opportunity-suggestions.ts`: the AI's entire contract is three fields —
+`title`, `reason`, `sourceRecommendationIds` — down from an original five-field design across two
+earlier rounds of owner refinement (`priority` and `supportingEvidence` both moved to deterministic
+derivation instead of AI authorship). Bounded by four exported constants
+(`MAX_SUGGESTIONS_PER_RESPONSE = 10`, `MAX_CITED_RECOMMENDATIONS_PER_SUGGESTION = 5`,
+`MAX_TITLE_LENGTH = 120`, `MAX_REASON_LENGTH = 600`) so the AI's freedom is bounded on every axis,
+not just content. `validateMarketingOpportunitySuggestions(raw, brief)` checks, in order: JSON
+parse, schema version, metadata (including an anti-staleness check against the exact Brief being
+answered), per-suggestion shape and bounds, the anti-hallucination check (every cited
+recommendation id must exist in `brief.recommendations` — the single most important check, since
+everything above it can be satisfied by a suggestion that is entirely invented), and a batch-level
+`"duplicate-suggestion-identity"` check rejecting two suggestions in the same response that cite the
+identical (canonicalized) set of recommendations.
+
+New `src/lib/marketing-opportunity-drafts.ts`: `buildOpportunityDraftFromSuggestion(suggestion,
+brief)`, a 100% deterministic lifter — no AI, no randomness, no clock read beyond what's already in
+`brief`. Canonicalizes the cited recommendation ids once (sorted, deduplicated) and reuses that
+same order for every downstream field (`sourceRuleIds`, `sourceFindings`, `evidence.
+supportingEvidence`, the dedup key's `entityIds`, `sourceId`), so the same cited set always produces
+the same draft regardless of the AI's original citation order. `evidence.priority` is the maximum
+`RecommendationPriority` across cited recommendations (an opportunity is at least as urgent as its
+single most compelling grounding signal). `evidence.supportingEvidence` is reconstructed — one
+bullet per cited recommendation, built from that recommendation's own `explanation`, never
+AI-authored prose. `deduplicationKey` folds in both the underlying entity ids (product/holiday/
+ingredient) and the canonicalized recommendation-id set itself, so two suggestions about the same
+product with different grounding never collide. `sourceId` is built only from the business date and
+that same canonical id set — deliberately never from `suggestion.title`/`reason`, since AI-authored
+prose isn't guaranteed identical across regenerations of the same underlying situation.
+
+**The `expiresAt` fix, found and documented during planning, not by accident during a review:**
+`calculateOpportunityExpiresAt`'s `"expiry_related"` branch (`src/lib/opportunities.ts:206-230`)
+performs no clamping against `detectedAt` at all, while `validateOpportunityDraft`
+(`opportunities.ts:141-142`) strictly requires `expiresAt` after `detectedAt`. An `expiring_ingredient`
+recommendation whose `nearestExpirationDate` is already in the past relative to the Brief would,
+passed through unmodified, produce an invalid draft. Fixed by clamping the relevant expiry date at
+the Brief's own business date, never earlier — an already-expired or expires-today citation now
+resolves to end of the current business day (maximally urgent, never contradictory), and multiple
+`expiring_ingredient` citations use the earliest date among them before the clamp is applied.
+
+One additive, one-line touch to the already-shipped `src/lib/opportunities.ts`:
+`OpportunitySourceType` widened from `"daily_advisor"` to `"daily_advisor" | "marketing_advisor"` —
+no DB `CHECK` constraint, no migration, confirmed via direct read of `validateOpportunityDraft`
+(only checks non-empty string, never validates against the union at runtime).
+
+`tests/marketing-brief.test.ts` (7 tests), `tests/marketing-opportunity-suggestions.test.ts` (22
+tests), `tests/marketing-opportunity-drafts.test.ts` (25 tests) added, plus one additive test in
+`tests/opportunities.test.ts` confirming the widened `OpportunitySourceType` leaves `"daily_advisor"`
+unaffected — 55 new tests total. The lifter's own tests exercise the real, unmodified
+`validateOpportunityDraft` directly as their strongest correctness proof, rather than
+re-implementing its rules.
+
+No schema/migration change, no new table, no new UI, no packages installed, no existing file
+changed besides the one-line `OpportunitySourceType` widening. Verified: `npm run typecheck` clean,
+`npx eslint` clean on all touched/new files, `npm run test` passing 836/836 (1 pre-existing
+unrelated skip, up from 781 — the 55 new tests), `npm run build -- --webpack` succeeds with no new
+route.
+
+The prompt-text builder, the invocation mechanism, and actual Supabase persistence of a generated
+`OpportunityDraft` remain not started — see milestone 4/5 above.
+
+### Marketing Advisor Invocation implementation record (2026-07-31)
+
+Implemented on branch `feat/marketing-advisor-invocation`, branched from
+`feat/marketing-opportunity-drafts` (tip `c41c279`, PROP-020). Full proposal record:
+`planning/PROPOSALS.md` PROP-021. Resolves the one open question PROP-020 left flagged: **manual
+export/import**, mirroring the Creative Job text worker's proven CLI shape, not a local `claude`
+CLI spawn (Daily Advisor's own pattern) — matching the owner's explicit "manual-first" framing.
+
+**The "Advisor Runtime" framing.** Nothing in this milestone is marketing-specific except the
+Context, the Prompt, and the Output schema — the export → human/AI → import → validate → output
+*mechanics* are the first instance of a shape every future advisor (Inventory, Finance, Brand,
+Product, a CEO-level `business_strategy` advisor) would reuse unchanged. Nothing was renamed or
+abstracted into a shared module for this milestone — that would guess at an interface from one
+data point — but the naming reflects it: a `mode: MarketingAdvisorMode` parameter (not
+`useCase: "daily_marketing"`, the naming this design started with and the owner had renamed before
+implementation, since "daily" describes a schedule, not what a mode actually produces) on
+`buildMarketingAdvisorPrompt`, with exactly one implemented value, `"opportunity_generation"`,
+today.
+
+New `scripts/marketing-advisor/marketing-advisor-prompt.ts`: `buildMarketingAdvisorPrompt(brief,
+mode?)` builds `{system, user}` — `user` is the full `MarketingBrief` embedded verbatim as JSON (no
+condensed re-summarization, so the AI never sees anything the validator won't also check against);
+`system` interpolates PROP-020's own real `MAX_SUGGESTIONS_PER_RESPONSE`/
+`MAX_CITED_RECOMMENDATIONS_PER_SUGGESTION`/`MAX_TITLE_LENGTH`/`MAX_REASON_LENGTH` constants and the
+Brief's real `generatedAt` value directly into the instruction text, so the prompt can never drift
+from what the validator enforces and the model can copy the timestamp verbatim rather than
+reproduce it. `mode`'s only branch mirrors `marketing-opportunity-drafts.ts`'s own
+exhaustiveness-checked `entityIdFor` pattern.
+
+New `scripts/marketing-advisor/marketing-advisor-manual-export.ts`: the "Marketing Advisor
+Session" primitives. `buildMarketingAdvisorSessionId(advisor, exportedAt)` is deterministic, never
+random (`` `${advisor}-${exportedAt.replace(/:/g, "-")}` ``, millisecond precision kept
+specifically so two exports in the same second never collide) — the same string names the session
+directory, the manifest's `sessionId` field, and (not yet wired, but now possible) a future
+`originSessionId` on any Opportunity/Creative Job/Package downstream. `manifest.json` is **not**
+an immutable export-time snapshot — the owner's explicit revision during planning — it carries a
+`status` field (`exported`/`completed`/`validation_failed`/`lift_failed`) plus `importedAt`,
+updated exactly once by `updateMarketingAdvisorManifestStatus` at the very end of `import`, never
+mid-pipeline, never on a read failure that means nothing about the session actually changed. Also
+carries `contextVersion`/`recommendationVersion`/`briefVersion`/`promptVersion` (the latter two new
+constants — `MARKETING_ADVISOR_PROMPT_VERSION` and, in `marketing-recommendations.ts`,
+`MARKETING_RECOMMENDATIONS_VERSION`, both `1` today) — so a session can always be traced to exactly
+which version of each upstream piece produced it.
+
+New `scripts/marketing-advisor/marketing-advisor-read.ts`: read-only input assembly behind
+`--source sample|supabase` (default `sample`, matching "manual-first, nothing automatic by
+default"). **`products` always comes from `src/lib/sample-data.ts`'s static catalog regardless of
+`--source`** — confirmed by direct read of `product-lab.tsx` that Product Lab has no Supabase
+`products` table at all; only `ingredients`/`journal` (`content_journal`) vary by source, and the
+`content_journal` row mapping reuses the already-shipped, already-tested `mapContentJournalRow`
+rather than re-implementing it. The Supabase path's client type structurally has no
+insert/update/delete/upsert/rpc methods at all — read-only by construction, not just convention.
+
+New `scripts/marketing-advisor/run.ts`: the CLI. Two subcommands, `export`/`import` — **no
+`run-api`-equivalent exists at all**, the strongest available form of "no automatic paid calls"
+(mirrors the Creative Job worker's own manual path having zero fetch-capable code reachable from
+its default commands). `export` writes `brief.json`/`prompt.md`/`manifest.json` into
+`marketing-advisor/output/<sessionId>/` by default (a repo-root directory, mirroring Daily
+Advisor's own `daily-advisor/output/` convention exactly, confirmed by direct read of
+`scripts/daily-advisor/run.ts`), overridable with `--session-dir`. `import` reads
+`<session-dir>/brief.json` plus `--result-file`, writes `response.json` as a byte-for-byte copy
+*before* validation runs (a rejected reply is preserved for audit exactly as faithfully as an
+accepted one), calls `validateMarketingOpportunitySuggestions`/`buildOpportunityDraftsFromSuggestions`
+unchanged, defensively re-checks every lifted draft against the real `validateOpportunityDraft`,
+writes `drafts.json`, and updates the manifest's `status`/`importedAt`. `npm run marketing-advisor
+-- export|import` added as a script alias.
+
+`tests/marketing-advisor-prompt.test.ts` (10 tests) and `tests/marketing-advisor-run.test.ts` (21
+tests) added — 31 new tests total. Notably: a real `globalThis.fetch` monkeypatch proving `import`
+makes zero network calls (the same strongest-available proof the Creative Job worker already
+established); an equivalence proof that `import`'s output exactly matches calling PROP-020's
+validator/lifter directly; manifest-lifecycle tests (re-run safety, "untouched on a read failure
+before anything about the session changed," the single-clock-read discipline tying
+`exportedAt`/`briefGeneratedAt`/`sessionId` together). Beyond the automated suite, the real CLI was
+smoke-tested end-to-end by hand: a live `export --source sample`, a hand-built valid reply citing a
+real `no_marketing_history` recommendation for Brownies, and `import` — producing a fully-formed,
+schema-correct `OpportunityDraft` exactly as designed.
+
+No schema/migration change, no new table, no new UI, no packages installed. One additive,
+zero-behavior-change line in `src/lib/marketing-recommendations.ts`
+(`MARKETING_RECOMMENDATIONS_VERSION`); every other PROP-018/019/020 file — including
+`marketing-brief.ts`, `marketing-opportunity-suggestions.ts`, `marketing-opportunity-drafts.ts`,
+`marketing-advisor-context.ts`, `opportunities.ts` — completely untouched. Verified: `npm run
+typecheck` clean, `npx eslint` clean on all touched/new files, `npm run test` passing 867/867 (1
+pre-existing unrelated skip, up from 836 — the 31 new tests), `npm run build -- --webpack`
+succeeds with no new route.
+
+PROP-021A (Advisor Review CLI) remains not started — see milestone 5 above. The `business_strategy`
+advisor remains unimplemented; only the `mode` naming seam exists for it.
+
+### Marketing Opportunity Persistence implementation record (2026-07-31)
+
+Implemented on branch `feat/marketing-advisor-invocation` (same branch/worktree as PROP-021, built
+on top of its commit — not a new worktree, per the plan's own "Base" section). Full proposal
+record: `planning/PROPOSALS.md` PROP-022. Completes milestone 6 above and the last operational gap
+in the owner's own daily routine: context → recommendations → AI synthesis → import/validate →
+**queue for review** → accept/dismiss in the existing UI → generate content from accepted
+Opportunities.
+
+**Reuse over reinvention.** The milestone's real job turned out narrower than "build persistence":
+Daily Advisor's own `persistOpportunityDrafts`/`OpportunityPersistenceClient`
+(`scripts/daily-advisor/opportunity-persistence.ts`) already implements dedup (a DB-level unique
+index on `deduplication_key`), terminal-status preservation (the update path never writes `status`,
+and skips entirely when the existing row's status is terminal), and per-draft outcome reporting —
+reused completely unchanged, as the only Supabase client type this milestone needs.
+
+**"Queue Opportunities" to a human, `persist` to the code.** Every user-facing surface (`--help`
+text, log/summary messages) uses "Queue Opportunities"/"queued for review" language; the CLI
+subcommand and code stay `persist`. The success message never contains the word "persisted."
+
+**The persistence-boundary transform.** New `scripts/marketing-advisor/marketing-advisor-evidence.ts`
+(`buildSessionMetadata`, `buildRecommendationSnapshot`, `buildSessionStats`,
+`enrichDraftForPersistence`) — pure functions, no I/O. `enrichDraftForPersistence` strips
+`evidence.citedRecommendations` (PROP-020's full, engine-internal recommendation objects, still
+written unchanged into the disposable, gitignored `drafts.json`) and replaces it with
+`recommendationSnapshot` (five stable fields per cited recommendation) plus four version fields
+(`originSessionId`, `advisorVersion`, `contextVersion`, `recommendationVersion`, `promptVersion`)
+and a `sessionStats` funnel (`totalRecommendationsInBrief`, `totalSuggestionsFromAI` — deliberately
+*not* "how many were persisted," a chicken-and-egg count only knowable after the write, and already
+recorded honestly at the session/manifest level instead). The point: a disposable local artifact can
+safely carry rich engine-internal objects; the moment something becomes a permanent database row, it
+needs a smaller, cross-type-stable shape instead.
+
+**A deterministic "is this still worth creating?" gate, not another AI call.** New
+`scripts/marketing-advisor/marketing-advisor-queue-eligibility.ts` (`MIN_REASON_LENGTH=20`,
+`MAX_SESSION_AGE_DAYS=7`, `runQueueEligibilityChecks`) — zero Supabase/network dependency,
+internally organized into two commented sections along an axis the owner drew during planning:
+**Validity** (per-draft, isolated facts — already-expired, reason-too-short) and **Quality**
+(comparative judgments against sibling drafts in the same batch — duplicate title, duplicate
+product, the latter resolved by parsing the product/entity id straight out of each draft's own
+`sourceRuleIds` rather than depending on `citedRecommendations`). A session-level staleness check
+refuses the entire attempt unless `--force`. Deliberately **not** built: a database lookup for
+similar Opportunities from *other* sessions — named during planning for a future, undesigned
+"Opportunity Intelligence Dashboard" milestone, keeping this milestone to safe persistence of one
+session rather than cross-session intelligence.
+
+**Orchestration.** New `scripts/marketing-advisor/marketing-advisor-persist.ts`
+(`updateMarketingAdvisorManifestAfterPersist`, `runPersistCommand`) sequences: read manifest (status
+must be `completed`/`persisted`/`persist_failed`) → read brief (integrity-checked against
+`manifest.briefGeneratedAt`) → read response/drafts → enrich every draft → **structural gate**
+(`validateOpportunityDraft` on every enriched draft, all-or-nothing — one bad draft aborts the whole
+attempt before any client call, exit 1, manifest → `persist_failed`, mirroring `import`'s own
+`lift_failed` precedent) → queue eligibility (bypassed entirely by `--force`, but never the
+structural gate) → the reused `persistOpportunityDrafts` → write `persistence-result.json` → update
+`manifest.json` to `persisted`/`persist_failed` with a legible `{title, rule, recommendationIds}[]`
+exclusion list, never a bare count. Touched `marketing-advisor-manual-export.ts`: new
+`MARKETING_ADVISOR_VERSION="1"` constant; `MARKETING_ADVISOR_SESSION_STATUSES` gains
+`persisted`/`persist_failed`; `MarketingAdvisorManifest` gains `advisorVersion`/`persistedAt`/
+`persistence`; PROP-021's own `updateMarketingAdvisorManifestStatus` left completely unchanged.
+Touched `run.ts`: new `persist --session-dir <path> [--force]` subcommand, authenticating exactly
+one Supabase client (typed `OpportunityPersistenceClient`) via the same `.env.advisor.local`
+convention as `export --source supabase`.
+
+`tests/marketing-advisor-persist.test.ts` (24 tests) — evidence enrichment's exact field set; all
+four eligibility rules individually proven; session staleness refusal and `--force` bypass; the
+structural gate's all-or-nothing abort, including under `--force` (proving it's never bypassed);
+rerun safety, terminal-status preservation, and partial-failure-then-retry-recovers, all proven
+against a stateful fake `OpportunityPersistenceClient`; exact `persistence-result.json`/
+`manifest.persistence.excluded` shapes; "queued"/"review" message language; and scope guards on all
+three new files.
+
+**Two edge cases, confirmed intentional by a pre-commit final review.** An empty `drafts.json` (the
+AI proposed zero suggestions this session — already documented by PROP-021's own prompt as a
+legitimate outcome) and a batch where every draft is excluded by queue eligibility both reach
+`persistOpportunityDrafts` with an empty `eligible` array. That function makes zero Supabase calls
+for an empty array and returns `ok: true` with all-zero counts, so both cases succeed trivially: the
+manifest goes to `persisted`, `persistence-result.json` records zero everything (plus the full
+exclusion list, for the second case), and the CLI prints "Queued 0 Opportunity(ies) for review" —
+not an error, since nothing failed and nothing was left to attempt. This was already the code's
+behavior; the review found it untested and undocumented, not wrong — both gaps are now closed by a
+dedicated test each plus a code comment in `marketing-advisor-persist.ts`.
+
+No schema/migration change, no new table, no new UI, no packages installed, no service-role key.
+`src/lib/opportunities.ts`, `src/lib/marketing-brief.ts`, `src/lib/marketing-opportunity-drafts.ts`,
+and `scripts/daily-advisor/opportunity-persistence.ts` left completely untouched. Verified: `npm run
+typecheck` clean, `npx eslint` clean on all touched/new files, `npm run test` passing 890/891 (1
+pre-existing unrelated skip, up from 867 — the 24 new tests), `npm run build -- --webpack` succeeds
+with no new route.
+
+PROP-021A (Advisor Review CLI) and the `business_strategy` advisor remain the only unimplemented
+pieces named anywhere in this sequence.
+
+### Asset Generation Foundation implementation record (2026-08-01)
+
+Implemented on a new branch/worktree, `feat/asset-generation-foundation`, branched from
+`feat/marketing-advisor-invocation`'s tip (`ecf401c`, PROP-022's own commit) — a new subsystem
+track, not a continuation of the Marketing Advisor CLI track above. Full proposal record:
+`planning/PROPOSALS.md` PROP-023. First milestone of a separately-approved, multi-milestone
+architecture and roadmap document (PROP-023 through PROP-031) building on the already-shipped
+Opportunity → Creative Job → Creative Package pipeline, one layer past the Package — the boundary
+between "thinking" and "creating."
+
+**The binding constraint this whole roadmap is organized around:** providers (image/video
+generation APIs) will improve, change shape, or be replaced over a 3–5 year horizon; the schema,
+orchestration, and review surface must stay stable through every one of those swaps. This
+milestone's job is proving that boundary is real, not generating a single real image.
+
+**Reuse over reinvention.** `src/lib/creative-jobs.ts`'s `CreativeJobExecutor` /
+`runCreativeJobWithExecutors` pattern (claim job + attempt atomically → look up an executor by
+`worker_type` → race it against a timeout via `AbortController` → validate → persist) is mirrored
+exactly by the new `AssetJobExecutor` / `runAssetJobWithExecutors` in `src/lib/asset-jobs.ts` —
+same shape, same job-first/attempt-second finish ordering, same database-clock-only terminal
+timestamps (`finish_asset_job`/`finish_asset_job_attempt`, mirroring
+`finish_creative_job`/`finish_creative_job_attempt`). No new orchestration concept was invented for
+having a different domain (assets instead of text).
+
+**New schema, four tables, all with the same guarded-preflight/disallowed-column migration
+discipline as every existing table in this app:**
+- `asset_jobs` (`supabase-add-asset-jobs.sql`) — the execution wrapper. Deliberately **not** unique
+  on `creative_package_id`, unlike `creative_jobs`' unique `opportunity_id`: a Creative Package may
+  have zero, one, or many Asset Jobs over time (retries, regenerations, future variants) — the
+  first many-per-parent layer in this pipeline.
+- `asset_job_attempts` (`supabase-add-asset-job-attempts.sql`) — append-only diagnostics, mirroring
+  `creative_job_attempts` exactly, including its already-reserved `provider`/`model` columns
+  (nullable, unused until PROP-027's first real provider) and its own deferred
+  cost/token-accounting columns. Also carries `claim_asset_job_with_attempt` directly (no separate
+  bare "claim one row" function to later deprecate, since attempt-tracking ships in the same
+  milestone as the job table here — unlike the historical `creative_jobs`/`creative_job_attempts`
+  split across two milestones).
+- `assets` (`supabase-add-assets.sql`) — the durable review unit, one per completed Job (unique
+  `asset_job_id`, `on delete restrict`, mirroring `creative_packages`' own restrict-delete
+  precedent). Ships **only** the `generated` status — `approved`/`rejected` and the
+  `reviewed_by`/`reviewed_at`/`rejection_reason` columns they need are explicitly guarded against
+  in this migration and ship in PROP-028, the milestone that actually builds the human review gate.
+- `asset_files` (`supabase-add-asset-files.sql`) — literal storage pointers, 1..N ordered rows per
+  Asset (position-unique). No Supabase Storage bucket, no `storage.objects` policy, and no real
+  upload code in this migration — Storage integration is PROP-025. The mock worker populates
+  `storage_bucket`/`storage_path` with clearly-labeled placeholder values (`"mock"`, never a real
+  bucket name) to prove the full write path, mirroring how the Creative Job mock executor prefixes
+  its output "MOCK ONLY" rather than omitting the fields a real worker will eventually populate.
+
+**Provider isolation is structural, not conventional.** `provider`/`model`/raw payloads live only
+in `asset_job_attempts` — never on `asset_jobs.result` or `assets.content`. Nothing in the Asset
+schema, the (not-yet-built) review UI, or any future downstream consumer can ever branch on which
+provider produced an asset; provider identity is reachable only by deliberately joining
+`asset → asset_job → asset_job_attempt` for audit purposes.
+
+**The "freeze point" carries forward from PROP-022.** `buildAssetContentFromCompletedJob`
+(`src/lib/assets.ts`) drops a completed job's file descriptors from its own small, permanent
+content snapshot (`{metadata: {generatedFromCreativePackage, sourceAssetJobId, generatorVersion}}`)
+— file descriptors become `asset_files` rows via a separate, pure, order-preserving projection
+(`insertAssetFilesForAsset`, `src/lib/asset-files.ts`), never frozen into `assets.content` itself.
+
+**A documented, accepted non-atomicity**, in the same category as this app's own purchase-import
+confirmation before its RPC milestone: `createAssetFromCompletedJob` inserts the `assets` row, then
+its `asset_files` rows, as two sequential writes, not one transaction/RPC. If the second write
+fails, the `assets` row is never rolled back or deleted — retrying is always safe, since the next
+call finds the existing Asset and only re-attempts the file insert. Proven by a dedicated test.
+
+**Track A's dormant "M7 — Image-gen adapter for `content_assets`"** (§16's full M1–M9 sequence,
+never started, targeting a different, unbuilt `content_drafts`/`content_assets` schema from the
+parallel M0–M9 track) is superseded by this milestone and everything after it. Track A's own
+`content_drafts`/`content_assets` design should not be built — see the note appended to §16 below.
+
+`tests/asset-jobs-schema.test.ts`, `asset-job-attempts-schema.test.ts`, `assets-schema.test.ts`,
+`asset-files-schema.test.ts`, `asset-job-finish-functions-schema.test.ts` (44 tests) prove every
+migration's required/disallowed columns, indexes, RLS, and guard-preflight text directly against
+the SQL source. `tests/asset-job-attempts.test.ts` (10), `asset-jobs.test.ts` (28), `assets.test.ts`
+(22, covering `assets.ts` and `asset-files.ts` together) prove the claim/execute/complete/fail
+loop, the mixed-clock and double-finish regressions carried forward from the Creative Job pipeline,
+the mock executor's deterministic and clearly-labeled output, structural-validation rejection
+reasons (including a dedicated duplicate-file-position rejection test, added during the pre-commit
+review), the materializer's create/existing/race/partial-failure paths, and scope guards (no
+provider name, no `fetch`, no Supabase SDK import) on every new file — 104 new tests in total.
+
+No Supabase Storage bucket, no real provider, no UI, no approve/reject, no carousel/video/story
+kind, no provider-selection surface, no publishing — all explicitly out of scope for this milestone
+per the approved roadmap, and left for PROP-024 through PROP-031. Verified: `npm run typecheck`
+clean, scoped `eslint` clean on all 9 new files, new tests 104/104 passing, full suite green, `npm
+run build -- --webpack` succeeds with no new route.
+
+### PROP-025 implementation record (2026-08-03)
+
+Implemented on `feat/asset-generation-foundation` and committed as
+`af49bab765a44711057985b99a612a21ea944d72` (`Implement PROP-025 asset byte materialization`).
+This milestone extends the already-approved Asset Job path only:
+
+Creative Package → Asset Job → AssetGenerationSpec → AssetJobExecutor →
+GeneratedAssetFileCandidate with real `Uint8Array` bytes → metadata validation → binary
+inspection/byte validation → private Storage handling → `complete_asset_job_with_files` RPC →
+Asset + Asset Files → finish Asset Job attempt.
+
+The implementation adds real byte handling without changing Creative Job result envelopes,
+`src/lib/creative-jobs.ts`, or `scripts/creative-workers/**`. `GeneratedAssetFileCandidate` now
+requires `bytes: Uint8Array`; metadata validation still runs first, and `src/lib/asset-binary.ts`
+separately performs bounded deterministic PNG/JPEG/WebP inspection, SHA-256 hashing, byte/metadata
+comparison, and deterministic Storage path construction keyed by `asset_job_id`. The production
+success path now routes through `src/lib/asset-file-materialization.ts`, which uploads to private
+Storage before the combined RPC, verifies pre-existing deterministic objects by authenticated
+download + byte/hash inspection before reuse, tracks `uploadedThisRun` separately from
+`reusedExistingPaths`, and removes only current-run uploads on pre-RPC/RPC failure. Pre-existing
+objects are never deleted automatically.
+
+Two additive SQL files were created and applied live in order:
+1. `supabase-add-generated-assets-storage.sql` — private `generated-assets` bucket, 10 MB limit,
+   PNG/JPEG/WebP only, authenticated object policy scoped to that bucket, no public read policy.
+2. `supabase-add-asset-job-file-materialization.sql` — `complete_asset_job_with_files(uuid, jsonb,
+   jsonb)`, which locks a running Asset Job, verifies/reuses exactly one Asset by `asset_job_id`,
+   verifies/reuses Asset File identity, raises idempotency conflicts inside PostgreSQL before the
+   Job terminal update, then completes the Job with database-sourced timestamps. The final migration
+   includes explicit grant hardening: `PUBLIC` execute is revoked and `authenticated` execute is
+   granted.
+
+Live verification:
+- Live Storage SQL verified: `generated-assets` exists, `public = false`, `file_size_limit =
+  10485760`, MIME types exactly `image/png`, `image/jpeg`, `image/webp`, authenticated-only object
+  policy, no anonymous/public read policy.
+- Live materialization RPC verified: function creation succeeded, signature is
+  `complete_asset_job_with_files(uuid, jsonb, jsonb)`, no `creative_job_id` coupling, running-job
+  guard present, identity checks before Job completion, database-sourced `completed_at`/
+  `updated_at`.
+- RPC grant hardening verified live: `PUBLIC`/`anon` cannot execute; `authenticated` can execute.
+- Live fixture-byte Storage smoke passed with deterministic PNG bytes only, no paid provider and
+  no real image-generation API. It created one Asset Job Attempt, one Asset, one Asset File, and
+  one private Storage object; authenticated download + binary/hash verification passed; anonymous
+  public URL fetch did not return `200`.
+- Manual live cleanup completed afterward: the exact smoke Asset File, Asset, Asset Job Attempt,
+  dedicated Asset Job, and Storage object were removed. Final live Asset subsystem row counts:
+  `asset_jobs = 0`, `asset_job_attempts = 0`, `assets = 0`, `asset_files = 0`.
+
+Final local verification after grant hardening: `npm run typecheck` clean; scoped `eslint` clean;
+focused PROP-025 tests 88/88 passing; `npm test` passing 1042/1043 (1 pre-existing skip, 0
+failed); `npm run build -- --webpack` succeeds; `git diff --check` reports no whitespace errors
+(only Windows LF-to-CRLF warnings on tracked files).
+
+Known limitations: image assets only; fixture/mock asset worker only; no real provider adapter yet;
+no UI/review/approval flow; no carousel, video, publishing, signed URL UI, or public Storage read
+path.
+
+---
+
 ## 1. Current-state summary
 
 **Stack**: Next.js 16.2.11 (App Router), React 19.2.4, TypeScript, Tailwind v4, Supabase JS
@@ -1547,3 +2131,12 @@ Brand Profile has no product dependency — it now gates M1.5 instead.
 
 **Done: M1.** **Greenlight-ready once M1.5's audit lands: M2, M3, M4, M8.** **Blocked on an owner
 decision: M1.5 (the product-readiness audit), M5, M6, M7, M9.**
+
+**M7, superseded (2026-08-01) — do not build.** M7's `content_assets` schema was never built, and
+the "Marketing Advisor v1" track above (a separate, actually-shipped sequence) has since produced
+its own real asset-generation subsystem one layer past Creative Package — `asset_jobs`/
+`asset_job_attempts`/`assets`/`asset_files`, provider-agnostic by design (see that section's "Asset
+Generation Foundation implementation record"). Building M3's `content_drafts`/`content_assets`
+schema or M7's image-gen adapter on top of it would create two competing, disagreeing
+asset-generation designs in this document. Track A's M3/M6/M7 rows are left in the table above as a
+historical record of the original plan, not as work still available to greenlight.

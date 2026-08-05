@@ -16,6 +16,10 @@ import { toOpportunityRow, type OpportunityDraft, type OpportunityRow } from "..
 
 const fixedNow = "2026-07-29T10:00:00.000Z";
 const startedAt = "2026-07-29T10:01:00.000Z";
+// Stands in for finish_creative_job/finish_creative_job_attempt's own now() -- deliberately
+// later than startedAt so latency/ordering assertions are meaningful. Nothing in production ever
+// passes a timestamp into either RPC.
+const finishedAt = "2026-07-29T10:05:00.000Z";
 
 function opportunityDraft(overrides: Partial<OpportunityDraft> = {}): OpportunityDraft {
   return {
@@ -73,7 +77,6 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
   const attempts: CreativeJobAttemptRow[] = [];
   const packages = [...(options.packages ?? [])];
   let rpcCalls = 0;
-  let jobUpdateCalls = 0;
 
   function matches(row: Record<string, unknown>, filters: Array<{ column: string; value: string }>): boolean {
     return filters.every(({ column, value }) => row[column] === value);
@@ -111,56 +114,12 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
         };
       }
 
-      if (table === "creative_job_attempts") {
-        return {
-          update(updateRow: Partial<CreativeJobAttemptRow>) {
-            const filters: Array<{ column: string; value: string }> = [];
-            const builder = {
-              eq(column: string, value: string) {
-                filters.push({ column, value });
-                return builder;
-              },
-              select() {
-                return {
-                  async maybeSingle() {
-                    const index = attempts.findIndex((row) => matches(row as Record<string, unknown>, filters));
-                    if (index === -1) return { data: null, error: null };
-                    attempts[index] = { ...attempts[index], ...updateRow };
-                    return { data: attempts[index], error: null };
-                  },
-                };
-              },
-            };
-            return builder;
-          },
-        };
-      }
-
+      // creative_job_attempts has no from(...) handler -- finishing an attempt only ever calls
+      // the finish_creative_job_attempt RPC below, matching the production client type.
       if (table === "creative_jobs") {
         return {
           select() {
             return selectBuilder(jobs);
-          },
-          update(updateRow: Partial<CreativeJobRow>) {
-            const filters: Array<{ column: string; value: string }> = [];
-            const builder = {
-              eq(column: string, value: string) {
-                filters.push({ column, value });
-                return builder;
-              },
-              select() {
-                return {
-                  async maybeSingle() {
-                    jobUpdateCalls += 1;
-                    const index = jobs.findIndex((row) => matches(row as Record<string, unknown>, filters));
-                    if (index === -1) return { data: null, error: null };
-                    jobs[index] = { ...jobs[index], ...updateRow };
-                    return { data: jobs[index], error: null };
-                  },
-                };
-              },
-            };
-            return builder;
           },
         };
       }
@@ -193,37 +152,88 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
         },
       };
     },
-    rpc(functionName: string, args: { p_job_id: string }) {
-      assert.equal(functionName, "claim_creative_job_with_attempt");
+    rpc(functionName: string, args: Record<string, unknown>) {
+      if (functionName === "claim_creative_job_with_attempt") {
+        return {
+          async maybeSingle() {
+            rpcCalls += 1;
+            const index = jobs.findIndex((row) => row.id === (args.p_job_id as string) && row.status === "queued");
+            if (index === -1) return { data: null, error: null };
+            jobs[index] = {
+              ...jobs[index],
+              status: "running",
+              attempt_count: jobs[index].attempt_count + 1,
+              started_at: startedAt,
+              updated_at: startedAt,
+            };
+            const attempt: CreativeJobAttemptRow = {
+              id: `attempt-${attempts.length + 1}`,
+              creative_job_id: jobs[index].id!,
+              attempt_number: jobs[index].attempt_count,
+              worker_type: jobs[index].worker_type,
+              status: "running",
+              started_at: startedAt,
+              completed_at: null,
+              latency_ms: null,
+              error_code: null,
+              error_message: null,
+              provider: null,
+              model: null,
+              created_at: fixedNow,
+            };
+            attempts.push(attempt);
+            return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
+          },
+        };
+      }
+
+      if (functionName === "finish_creative_job") {
+        return {
+          // Mirrors finish_creative_job's own guards: id + status='running' + p_outcome in
+          // ('completed','failed').
+          async maybeSingle() {
+            rpcCalls += 1;
+            const outcome = args.p_outcome as string;
+            const validOutcome = outcome === "completed" || outcome === "failed";
+            const index = jobs.findIndex((row) => row.id === (args.p_job_id as string) && row.status === "running");
+            if (index === -1 || !validOutcome) {
+              return { data: null, error: null };
+            }
+            jobs[index] = {
+              ...jobs[index],
+              status: outcome as CreativeJobRow["status"],
+              result: outcome === "completed" ? (args.p_result as CreativeJobRow["result"]) : jobs[index].result,
+              last_error: outcome === "failed" ? (args.p_last_error as string | null) : null,
+              completed_at: outcome === "completed" ? finishedAt : null,
+              failed_at: outcome === "failed" ? finishedAt : null,
+              updated_at: finishedAt,
+            };
+            return { data: jobs[index], error: null };
+          },
+        };
+      }
+
+      assert.equal(functionName, "finish_creative_job_attempt");
       return {
+        // Mirrors finish_creative_job_attempt's own guards: id + status='running' + p_outcome in
+        // ('completed','failed','timed_out').
         async maybeSingle() {
           rpcCalls += 1;
-          const index = jobs.findIndex((row) => row.id === args.p_job_id && row.status === "queued");
-          if (index === -1) return { data: null, error: null };
-          jobs[index] = {
-            ...jobs[index],
-            status: "running",
-            attempt_count: jobs[index].attempt_count + 1,
-            started_at: startedAt,
-            updated_at: startedAt,
+          const outcome = args.p_outcome as string;
+          const validOutcome = outcome === "completed" || outcome === "failed" || outcome === "timed_out";
+          const index = attempts.findIndex((row) => row.id === (args.p_attempt_id as string) && row.status === "running");
+          if (index === -1 || !validOutcome) {
+            return { data: null, error: null };
+          }
+          attempts[index] = {
+            ...attempts[index],
+            status: outcome as CreativeJobAttemptRow["status"],
+            completed_at: finishedAt,
+            latency_ms: Date.parse(finishedAt) - Date.parse(attempts[index].started_at),
+            error_code: outcome === "completed" ? null : (args.p_error_code as string | null),
+            error_message: outcome === "completed" ? null : (args.p_error_message as string | null),
           };
-          const attempt: CreativeJobAttemptRow = {
-            id: `attempt-${attempts.length + 1}`,
-            creative_job_id: jobs[index].id!,
-            attempt_number: jobs[index].attempt_count,
-            worker_type: jobs[index].worker_type,
-            status: "running",
-            started_at: startedAt,
-            completed_at: null,
-            latency_ms: null,
-            error_code: null,
-            error_message: null,
-            provider: null,
-            model: null,
-            created_at: fixedNow,
-          };
-          attempts.push(attempt);
-          return { data: { ...jobs[index], attempt_id: attempt.id, attempt_number: attempt.attempt_number }, error: null };
+          return { data: attempts[index], error: null };
         },
       };
     },
@@ -237,9 +247,6 @@ function makeClient(options: { opportunities?: OpportunityRow[]; jobs?: Creative
     packages,
     get rpcCalls() {
       return rpcCalls;
-    },
-    get jobUpdateCalls() {
-      return jobUpdateCalls;
     },
   };
 }
@@ -276,7 +283,6 @@ test("runExportCommand reads a queued job without claiming or mutating it", asyn
   assert.equal(outcome.exitCode, 0);
   assert.match(outcome.document ?? "", /job job-1/);
   assert.equal(store.rpcCalls, 0);
-  assert.equal(store.jobUpdateCalls, 0);
   assert.equal(store.jobs[0].status, "queued");
   assert.equal(store.jobs[0].attempt_count, 0);
   assert.equal(store.jobs[0].started_at, null);
@@ -289,7 +295,6 @@ test("runExportCommand refuses a job that is not queued and still does not mutat
   assert.equal(outcome.exitCode, 2);
   assert.match(outcome.message ?? "", /is not queued/);
   assert.equal(store.rpcCalls, 0);
-  assert.equal(store.jobUpdateCalls, 0);
 });
 
 test("runImportCommand rejects an invalid manual result before claiming the job", async () => {

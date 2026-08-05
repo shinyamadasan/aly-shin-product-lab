@@ -2,7 +2,7 @@ export const OPPORTUNITY_STATUSES = ["new", "accepted", "dismissed", "expired", 
 export type OpportunityStatus = (typeof OPPORTUNITY_STATUSES)[number];
 
 export type OpportunityRecommendedAction = "create_content";
-export type OpportunitySourceType = "daily_advisor";
+export type OpportunitySourceType = "daily_advisor" | "marketing_advisor";
 export type OpportunityExpirationPolicy = "fresh_batch_same_day_availability" | "general_product_promotion" | "expiry_related";
 
 export type OpportunityEvidence = Record<string, unknown>;
