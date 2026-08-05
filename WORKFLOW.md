@@ -159,6 +159,35 @@ stateDiagram-v2
 
 ---
 
+## Pre-PR Scope Gate (mandatory)
+
+**Trigger:** before opening a PR, and again immediately before merging it — branch state (and
+what `origin/main` has gained from other work) can drift between the two, especially on a branch
+that sat open for a while.
+
+**Why this exists:** a branch stacked on another unmerged feature branch's tip is sometimes the
+right call (PROP-023 legitimately branched from `feat/marketing-advisor-invocation`'s tip rather
+than `main`, since it needed that work's plumbing). The failure isn't stacking branches — it's
+opening or merging a PR without checking what that stacking actually carries along. PR #18 was
+meant to ship PROP-026's two commits and shipped 13, because nobody ran this check first. See
+`REVIEW.md`'s 2026-08-05 entry for the full account.
+
+**Run, from the branch, before opening or merging:**
+```bash
+git fetch origin
+git log --oneline origin/main..HEAD
+git diff --stat origin/main...HEAD
+```
+
+**Rule:** read the commit list this produces. It is exactly what the PR will introduce — nothing
+more, nothing less. **Do not open or merge the PR if that list contains anything beyond what this
+PR is meant to ship** (work from another track, another proposal, or another branch's unmerged
+lineage). If it does, resolve the mismatch first — rebase/cherry-pick onto `main` for a clean
+scope, or explicitly re-scope the PR's stated intent and get the wider bundle re-approved, not
+merged silently under the original, narrower intent.
+
+---
+
 ## When each file changes
 | File | Changes at |
 |---|---|

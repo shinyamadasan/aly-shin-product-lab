@@ -128,3 +128,77 @@ git. Fully covered by 278 passing automated tests (unchanged from Milestone 4 �
 surface exists to test) plus 16 localStorage-mode and 22 real-Supabase-mode browser/database
 checks, including a direct, deliberate-failure proof of atomicity against the live project. All
 temporary test data removed and confirmed gone after verification.
+
+## 2026-08-05 — PR #18 post-merge audit + production infrastructure verification (PROP-018–026)
+
+**Scope:** PR #18 (`feat/asset-generation-foundation` → `main`, merge commit `abeb391`) shipped
+Marketing Advisor v1 (PROP-018–022) and Asset Generation Foundation through real-byte
+materialization and a read-only Creative Package asset UI (PROP-023–026), plus an unrelated
+prerequisite fix (database-clock terminal timestamps for Creative Jobs, commit `23457b5`). This
+entry covers two things done after the fact, since the merge itself was already complete before
+either review started: a post-merge scope-and-health audit of the merge commit, and — as that
+audit's one identified follow-up — a read-only production verification of the Creative Job RPC
+functions and asset infrastructure.
+
+**The PR was not what it was meant to be, and nobody caught it before merging.** It was intended
+to ship exactly PROP-026's two commits (the read-only asset UI and its unmount-race fix). It
+actually merged 13 — five Marketing Advisor commits, the two PROP-023/024 asset-foundation
+commits, PROP-025's byte-materialization work, a schema-recovery migration, and the creative-jobs
+timestamp fix — none of which had been merged to `main` by any earlier PR. Root cause: the branch
+was legitimately stacked on `feat/marketing-advisor-invocation`'s tip (PROP-023's own dependency
+note says so, and that was a reasonable call at the time), but nobody ran a `main`-diff before
+opening or merging the PR, so the entire unmerged lineage rode along silently.
+
+**Verdict on the merge itself: sound, not a revert candidate.** Every one of the 13 commits traces
+to an owner-approved milestone (or, for PROP-026, a directly-authorized handoff) — checked against
+`planning/PROPOSALS.md`'s own Decision/Risk/status records for each. No commit is unfinished,
+speculative, or scope-creeping beyond what its own proposal approved. Full re-verification on
+`main` after the merge: `npm run typecheck` clean, `npm run build -- --webpack` succeeds (same 16
+routes, no new route), `npm test` 1172/1173 passing (1 pre-existing unrelated skip), `git diff
+--check` clean against the merge's first parent. Zero inventory/costing/baking files were touched.
+No new npm package, no new Vercel-facing environment variable — the Marketing Advisor CLI reuses
+the exact `ADVISOR_SUPABASE_*` credentials the already-shipped Daily Advisor CLI already required.
+
+**Not rubber-stamped — one real, unresolved risk the audit found and this entry closes.** Nine new
+SQL migrations landed in this merge. Eight had some form of documented live-verification evidence
+(PROP-025's own smoke-test account, or PROP-023's design notes). One did not:
+`supabase-add-creative-job-finish-functions.sql` (commit `23457b5`) replaces
+`completeRunningCreativeJob`/`failRunningCreativeJob`'s direct `.update()` calls with
+`rpc("finish_creative_job"/"finish_creative_job_attempt", ...)` **with no fallback path** — if
+those functions didn't exist in production, every Creative Job completion or failure would start
+erroring immediately post-deploy, silently breaking an already-live, daily-use feature. No
+"Applied and verified live" record for this migration existed anywhere in `MARKETING_MODULE.md`,
+`planning/PROPOSALS.md`, or this file. **Verified directly against production today, read-only
+first as required — not assumed from the migration file or prior docs.** Signed in as the same
+`authenticated`-role user every script in this repo already uses, then called both functions with
+a nil UUID (`00000000-0000-0000-0000-000000000000`) that matches zero real rows: both returned
+`200 []` — proof the functions exist and execute correctly, with zero side effects (nothing
+matched, nothing changed). **No migration was reapplied**, per the explicit instruction to leave
+an already-present migration alone. The four PROP-023 asset tables and PROP-025's
+`complete_asset_job_with_files` RPC were checked the same way and are present and ready — the RPC
+check is the strongest possible proof available: calling it with a nonexistent Asset Job id made
+it raise its own internal `P0001` business-logic exception ("... was not found in running state"),
+which only a function that actually exists and runs its real guard logic can produce.
+
+**One check came back inconclusive, not negative, and is recorded as such rather than
+overclaimed.** The `generated-assets` Storage bucket could not be confirmed present via two
+independent authenticated-role checks (`getBucket`, `listBuckets` — both empty/not-found). Before
+trusting that as "missing," I'd already caught a same-shaped false negative in this exact session:
+PostgREST's OpenAPI descriptor endpoint returned zero paths for the same authenticated call,
+turning out to require a service-role ("secret") key entirely unrelated to whether anything
+actually exists. I do not have service-role access, and getting it isn't part of this task's
+scope, so I can't fully rule out the same class of false negative for the Storage bucket check.
+Logged in `STATUS.md`'s "Needs human verification" for the owner to confirm via the Supabase
+dashboard directly — not release-impacting today either way, since 0 asset files exist in
+production and nothing auto-triggers Storage writes.
+
+**Process fix, not just a one-off note.** `WORKFLOW.md` now has a mandatory Pre-PR Scope Gate
+(`git log --oneline origin/main..HEAD` + `git diff --stat origin/main...HEAD`, run before opening
+*and* before merging any PR) — the exact check that would have caught this before it shipped.
+
+**Merge gate: `approved`.** This touched five new Supabase migrations with a live production
+project and a private Storage bucket — squarely the red-zone (data/schema/storage) category this
+repo's own risk framework holds for human merge, which is in fact exactly what happened (the owner
+merged PR #18 directly, not an autonomous auto-merge). Nothing found here changes that
+after the fact — reversible via git if ever needed, but the right gate for this category of change
+was, and remains, human review before merge, not `done`.
