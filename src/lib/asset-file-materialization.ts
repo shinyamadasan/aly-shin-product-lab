@@ -5,7 +5,7 @@ import {
   inspectAssetBytes,
   type InspectedAssetCandidate,
 } from "./asset-binary.ts";
-import type { AssetJobRecord, AssetJobResultEnvelope, AssetJobRow } from "./asset-jobs.ts";
+import type { AssetJobRecord, AssetJobResultEnvelope, AssetJobRow, AssetJobWorkerType } from "./asset-jobs.ts";
 import type { AssetRecord, AssetRow } from "./assets.ts";
 
 type SupabaseErrorLike = {
@@ -165,10 +165,13 @@ async function cleanupUploadedObjects(client: AssetJobFileMaterializationClient,
     : { ok: false, removedPaths, failedPaths, message: `Failed to clean up ${failedPaths.length} generated asset object(s).` };
 }
 
-function buildResultEnvelope(job: AssetJobRecord, files: InspectedAssetCandidate[]): AssetJobResultEnvelope {
+// worker records which executor completed the job (an execution-mechanism fact, sourced from the
+// caller's own already-validated dispatch value) -- it is never a stand-in for which creative
+// workspace a human used. That is sourceWorkspace, threaded separately into metadata below (P4).
+function buildResultEnvelope(job: AssetJobRecord, files: InspectedAssetCandidate[], workerType: AssetJobWorkerType): AssetJobResultEnvelope {
   return {
     schemaVersion: "v1",
-    worker: "mock",
+    worker: workerType,
     assetKind: "image",
     output: {
       files: files.map((file) => ({
@@ -211,11 +214,11 @@ function verifyRpcRows(materialized: MaterializedAssetJobFiles, inspected: Inspe
 
 export async function materializeAssetJobFiles(
   client: AssetJobFileMaterializationClient,
-  args: { job: AssetJobRecord; inspected: InspectedAssetCandidate[] },
+  args: { job: AssetJobRecord; inspected: InspectedAssetCandidate[]; workerType: AssetJobWorkerType },
 ): Promise<AssetJobFileMaterializationResult> {
   const uploadedThisRun: string[] = [];
   const reusedExistingPaths: string[] = [];
-  const resultEnvelope = buildResultEnvelope(args.job, args.inspected);
+  const resultEnvelope = buildResultEnvelope(args.job, args.inspected, args.workerType);
 
   for (const image of args.inspected) {
     const path = buildGeneratedAssetObjectPath({ assetJobId: args.job.id, attemptNumber: args.job.attemptCount, sha256: image.sha256, extension: image.extension });

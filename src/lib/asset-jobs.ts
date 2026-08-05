@@ -16,10 +16,14 @@ import {
 export const ASSET_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
 
-// Only "mock" ships in this milestone -- a real provider worker type is added additively
-// (pure-text-union change, no migration) by the milestone that actually wires one up. Mirrors
-// CREATIVE_JOB_WORKER_TYPES' own precedent of listing only what's actually implemented.
-export const ASSET_JOB_WORKER_TYPES = ["mock"] as const;
+// "external" (PROP-027) is the External Creative Workspace executor -- a human working in any
+// creative tool, or a real camera. This is an execution-mechanism value only ("which code path
+// processes this job"), never a stand-in for which specific tool a human used -- that is
+// sourceWorkspace, a separate field on the Asset's own content, not on the job. A real API provider
+// worker type is added additively later (pure-text-union change, no migration) by the milestone
+// that actually wires one up. Mirrors CREATIVE_JOB_WORKER_TYPES' own precedent of listing only
+// what's actually implemented.
+export const ASSET_JOB_WORKER_TYPES = ["mock", "external"] as const;
 export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 
 // Only "image" ships in this milestone. Carousel/reel/short_video/story_graphic are each a later,
@@ -708,7 +712,10 @@ export async function runAssetJobWithExecutors(
   }
 
   const { materializeAssetJobFiles } = await import("./asset-file-materialization.ts");
-  const materialization = await materializeAssetJobFiles(client, { job, inspected });
+  // workerType here is the same already-narrowed value used above to select the executor
+  // (executors[workerType]) -- the envelope's worker field records the executor that actually ran,
+  // never re-derived from the job row after the fact.
+  const materialization = await materializeAssetJobFiles(client, { job, inspected, workerType });
   if (!materialization.ok) {
     const jobResult = await failRunningAssetJob(client, job, materialization.message);
     if (jobResult.ok) {
