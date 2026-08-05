@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-
+import { sha256Hex } from "./asset-digest.ts";
 import {
   GENERATED_ASSET_ALLOWED_MIME_TYPES,
   GENERATED_ASSET_MAX_FILE_SIZE_BYTES,
@@ -119,11 +118,7 @@ function decodeGif(bytes: Uint8Array): boolean {
   return bytes.length >= 10 && (ascii(bytes, 0, 6) === "GIF87a" || ascii(bytes, 0, 6) === "GIF89a");
 }
 
-export function sha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-export function inspectAssetBytes(bytes: Uint8Array): AssetBinaryInspection {
+export async function inspectAssetBytes(bytes: Uint8Array): Promise<AssetBinaryInspection> {
   const decoded = decodePng(bytes) ?? decodeJpeg(bytes) ?? decodeWebp(bytes);
   if (!decoded) {
     return decodeGif(bytes)
@@ -139,13 +134,13 @@ export function inspectAssetBytes(bytes: Uint8Array): AssetBinaryInspection {
     facts: {
       ...decoded,
       byteSize: bytes.length,
-      sha256: sha256Hex(bytes),
+      sha256: await sha256Hex(bytes),
       bytes,
     },
   };
 }
 
-export function validateAssetCandidateBytes(candidate: GeneratedAssetFileCandidate): AssetByteValidation {
+export async function validateAssetCandidateBytes(candidate: GeneratedAssetFileCandidate): Promise<AssetByteValidation> {
   if (candidate.bytes.length === 0) {
     return { ok: false, reason: "empty-bytes", message: "Generated asset bytes must not be empty." };
   }
@@ -153,7 +148,7 @@ export function validateAssetCandidateBytes(candidate: GeneratedAssetFileCandida
     return { ok: false, reason: "file-too-large", message: `Generated asset bytes exceed ${GENERATED_ASSET_MAX_FILE_SIZE_BYTES} bytes.` };
   }
 
-  const inspection = inspectAssetBytes(candidate.bytes);
+  const inspection = await inspectAssetBytes(candidate.bytes);
   if (!inspection.ok) {
     return inspection;
   }

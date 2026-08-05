@@ -136,7 +136,7 @@ async function verifyExistingObject(client: AssetJobFileMaterializationClient, p
   }
 
   const existingBytes = await bytesFromDownloadedObject(downloaded.data);
-  const existingInspection = inspectAssetBytes(existingBytes);
+  const existingInspection = await inspectAssetBytes(existingBytes);
   if (!existingInspection.ok) {
     return { ok: false, message: existingInspection.message };
   }

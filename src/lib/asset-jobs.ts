@@ -700,7 +700,7 @@ export async function runAssetJobWithExecutors(
   const inspected: InspectedAssetCandidate[] = [];
   const { validateAssetCandidateBytes } = await import("./asset-binary.ts");
   for (const candidate of candidateValidation.candidates) {
-    const byteValidation = validateAssetCandidateBytes(candidate);
+    const byteValidation = await validateAssetCandidateBytes(candidate);
     if (!byteValidation.ok) {
       return failJobAndAttempt(byteValidation.message);
     }

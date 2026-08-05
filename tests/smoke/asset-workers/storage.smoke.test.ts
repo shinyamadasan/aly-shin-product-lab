@@ -74,7 +74,7 @@ test("live Supabase Storage completes a fixture-byte Asset Job into a private ge
     assert.equal(jobBeforeRun.error, null);
     assert.ok(jobBeforeRun.data, "LIVE_ASSET_JOB_ID must still point at an Asset Job.");
     const [fixtureCandidate] = await fixtureImageAssetExecutor({} as never, { dimensions: { width: 1080, height: 1080 } } as never, { signal: new AbortController().signal });
-    const fixtureInspection = inspectAssetBytes(fixtureCandidate.bytes);
+    const fixtureInspection = await inspectAssetBytes(fixtureCandidate.bytes);
     assert.equal(fixtureInspection.ok, true);
     if (!fixtureInspection.ok) return;
     const expectedStoragePath = buildGeneratedAssetObjectPath({
@@ -108,7 +108,7 @@ test("live Supabase Storage completes a fixture-byte Asset Job into a private ge
     assert.equal(downloaded.error, null);
     assert.ok(downloaded.data);
     const downloadedBytes = new Uint8Array(await downloaded.data.arrayBuffer());
-    const downloadedInspection = inspectAssetBytes(downloadedBytes);
+    const downloadedInspection = await inspectAssetBytes(downloadedBytes);
     assert.equal(downloadedInspection.ok, true);
     if (!downloadedInspection.ok) return;
     assert.equal(downloadedInspection.facts.actualMimeType, file.mimeType);
