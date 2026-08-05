@@ -103,6 +103,9 @@ export function CreativePackageAssets({ creativePackageId }: { creativePackageId
     for (const file of files) {
       const key = signedStateKey(file);
       const requestVersion = requestCoordinator.current.beginSignedUrl(key);
+      if (requestVersion === null) {
+        continue;
+      }
       updateSignedFiles((current) => ({
         ...current,
         [key]: {
@@ -133,6 +136,9 @@ export function CreativePackageAssets({ creativePackageId }: { creativePackageId
 
   async function refreshMetadata() {
     const requestVersion = requestCoordinator.current.beginMetadata();
+    if (requestVersion === null) {
+      return;
+    }
     setMetadataError("");
     setIsLoadingMetadata(true);
     updateSignedFiles(() => ({}));
@@ -181,6 +187,9 @@ export function CreativePackageAssets({ creativePackageId }: { creativePackageId
 
     setJobAssets(nextAssets);
     setIsLoadingMetadata(false);
+    if (!requestCoordinator.current.isCurrentMetadata(requestVersion)) {
+      return;
+    }
     await refreshSignedUrls(filesToSign, { resetAutoRetry: true });
   }
 
@@ -196,6 +205,9 @@ export function CreativePackageAssets({ creativePackageId }: { creativePackageId
     }
 
     const requestVersion = requestCoordinator.current.beginSignedUrl(key);
+    if (requestVersion === null) {
+      return;
+    }
     updateSignedFiles((state) => ({
       ...state,
       [key]: { ...(state[key] ?? { url: "", error: "", isLoading: false, imageFailed: false }), autoRetried: true, isLoading: true, error: "" },

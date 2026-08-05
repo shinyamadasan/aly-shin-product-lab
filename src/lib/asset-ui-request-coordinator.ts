@@ -1,7 +1,7 @@
 export type AssetUiRequestCoordinator = {
-  beginMetadata(): number;
+  beginMetadata(): number | null;
   isCurrentMetadata(version: number): boolean;
-  beginSignedUrl(fileId: string): number;
+  beginSignedUrl(fileId: string): number | null;
   isCurrentSignedUrl(fileId: string, version: number): boolean;
   unmount(): void;
 };
@@ -22,6 +22,9 @@ export function createAssetUiRequestCoordinator(): AssetUiRequestCoordinator {
 
   return {
     beginMetadata() {
+      if (!mounted) {
+        return null;
+      }
       metadataVersion += 1;
       return metadataVersion;
     },
@@ -29,6 +32,9 @@ export function createAssetUiRequestCoordinator(): AssetUiRequestCoordinator {
       return mounted && version === metadataVersion;
     },
     beginSignedUrl(fileId: string) {
+      if (!mounted) {
+        return null;
+      }
       const nextVersion = (signedUrlVersions.get(fileId) ?? 0) + 1;
       signedUrlVersions.set(fileId, nextVersion);
       return nextVersion;

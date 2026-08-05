@@ -159,6 +159,8 @@ test("PROP-026 metadata request versions ignore a slower first refresh after a n
   const coordinator = createAssetUiRequestCoordinator();
   const slowFirst = coordinator.beginMetadata();
   const fastSecond = coordinator.beginMetadata();
+  assert.ok(slowFirst !== null);
+  assert.ok(fastSecond !== null);
 
   assert.equal(coordinator.isCurrentMetadata(fastSecond), true);
   assert.equal(coordinator.isCurrentMetadata(slowFirst), false);
@@ -169,23 +171,33 @@ test("PROP-026 signed URL request versions are per-file and ignore stale same-fi
   const staleFileA = coordinator.beginSignedUrl("file-a");
   const currentFileB = coordinator.beginSignedUrl("file-b");
   const currentFileA = coordinator.beginSignedUrl("file-a");
+  assert.ok(staleFileA !== null);
+  assert.ok(currentFileB !== null);
+  assert.ok(currentFileA !== null);
 
   assert.equal(coordinator.isCurrentSignedUrl("file-a", staleFileA), false);
   assert.equal(coordinator.isCurrentSignedUrl("file-a", currentFileA), true);
   assert.equal(coordinator.isCurrentSignedUrl("file-b", currentFileB), true);
 });
 
-test("PROP-026 unmount invalidates in-flight metadata and signed URL requests", () => {
+test("PROP-026 unmount invalidates in-flight metadata and signed URL requests, and refuses new requests", () => {
   const coordinator = createAssetUiRequestCoordinator();
   const metadata = coordinator.beginMetadata();
   const fileA = coordinator.beginSignedUrl("file-a");
   const fileB = coordinator.beginSignedUrl("file-b");
+  assert.ok(metadata !== null);
+  assert.ok(fileA !== null);
+  assert.ok(fileB !== null);
 
   coordinator.unmount();
 
   assert.equal(coordinator.isCurrentMetadata(metadata), false);
   assert.equal(coordinator.isCurrentSignedUrl("file-a", fileA), false);
   assert.equal(coordinator.isCurrentSignedUrl("file-b", fileB), false);
+
+  assert.equal(coordinator.beginMetadata(), null);
+  assert.equal(coordinator.beginSignedUrl("file-a"), null);
+  assert.equal(coordinator.beginSignedUrl("file-c"), null);
 });
 
 test("PROP-026 automatic image retry is one-shot, while manual signing can still start later", () => {
@@ -196,8 +208,10 @@ test("PROP-026 automatic image retry is one-shot, while manual signing can still
   assert.equal(shouldStartAutomaticImageRetry({ autoRetried: false, isLoading: true }), false);
 
   const automaticRetry = coordinator.beginSignedUrl("file-a");
+  assert.ok(automaticRetry !== null);
   assert.equal(coordinator.isCurrentSignedUrl("file-a", automaticRetry), true);
   const manualRefresh = coordinator.beginSignedUrl("file-a");
+  assert.ok(manualRefresh !== null);
   assert.equal(coordinator.isCurrentSignedUrl("file-a", automaticRetry), false);
   assert.equal(coordinator.isCurrentSignedUrl("file-a", manualRefresh), true);
 });
@@ -291,4 +305,113 @@ test("PROP-026 read model preserves sorted Job visibility and ordered Asset File
     { table: "asset_jobs", column: "id", ascending: false },
     { table: "asset_files", column: "position", ascending: true },
   ]);
+});
+
+type GuardedRequestOutcome = "not-started" | "stale-skip" | "applied";
+
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+// Mirrors the real "begin -> await async work -> re-check -> apply state" shape used by
+// refreshMetadata (beginMetadata/isCurrentMetadata guard before refreshSignedUrls) and by
+// refreshSignedUrls/retryAfterImageFailure (beginSignedUrl/isCurrentSignedUrl guard before
+// updateSignedFiles), driven by the real coordinator.
+async function simulateGuardedRequest(
+  begin: () => number | null,
+  awaitAsyncWork: () => Promise<void>,
+  isStillCurrent: (version: number) => boolean,
+  applyState: (version: number) => void,
+): Promise<GuardedRequestOutcome> {
+  const requestVersion = begin();
+  if (requestVersion === null) {
+    return "not-started";
+  }
+
+  await awaitAsyncWork();
+
+  if (!isStillCurrent(requestVersion)) {
+    return "stale-skip";
+  }
+
+  applyState(requestVersion);
+  return "applied";
+}
+
+test("PROP-026 orchestration harness applies no state for metadata work still in flight when unmount happens", async () => {
+  const coordinator = createAssetUiRequestCoordinator();
+  const appliedVersions: number[] = [];
+  const gap = createDeferred<void>();
+
+  const refresh = simulateGuardedRequest(
+    () => coordinator.beginMetadata(),
+    () => gap.promise,
+    (version) => coordinator.isCurrentMetadata(version),
+    (version) => appliedVersions.push(version),
+  );
+
+  coordinator.unmount();
+  gap.resolve();
+
+  assert.equal(await refresh, "stale-skip");
+  assert.deepEqual(appliedVersions, []);
+});
+
+test("PROP-026 orchestration harness refuses to start metadata or signed URL work once already unmounted", async () => {
+  const coordinator = createAssetUiRequestCoordinator();
+  coordinator.unmount();
+  const appliedVersions: number[] = [];
+
+  const metadataOutcome = await simulateGuardedRequest(
+    () => coordinator.beginMetadata(),
+    () => Promise.resolve(),
+    (version) => coordinator.isCurrentMetadata(version),
+    (version) => appliedVersions.push(version),
+  );
+  const signedUrlOutcome = await simulateGuardedRequest(
+    () => coordinator.beginSignedUrl("file-a"),
+    () => Promise.resolve(),
+    (version) => coordinator.isCurrentSignedUrl("file-a", version),
+    (version) => appliedVersions.push(version),
+  );
+
+  assert.equal(metadataOutcome, "not-started");
+  assert.equal(signedUrlOutcome, "not-started");
+  assert.deepEqual(appliedVersions, []);
+});
+
+test("PROP-026 a stale metadata refresh never starts signing once a newer refresh has begun", async () => {
+  const coordinator = createAssetUiRequestCoordinator();
+  const appliedVersions: number[] = [];
+  const gapA = createDeferred<void>();
+
+  // Refresh A starts and reaches the point where it would call refreshSignedUrls, but is
+  // held open ("in the gap") until gapA.resolve() is called below.
+  const refreshA = simulateGuardedRequest(
+    () => coordinator.beginMetadata(),
+    () => gapA.promise,
+    (version) => coordinator.isCurrentMetadata(version),
+    (version) => appliedVersions.push(version),
+  );
+
+  // Refresh B starts (bumping the coordinator's metadata version past A's) and completes
+  // its own gather-files step immediately, while A is still stuck in its gap.
+  const outcomeB = await simulateGuardedRequest(
+    () => coordinator.beginMetadata(),
+    () => Promise.resolve(),
+    (version) => coordinator.isCurrentMetadata(version),
+    (version) => appliedVersions.push(version),
+  );
+
+  // A now resumes, past the point where B already advanced the metadata version.
+  gapA.resolve();
+  const outcomeA = await refreshA;
+
+  assert.equal(outcomeB, "applied");
+  assert.equal(outcomeA, "stale-skip");
+  assert.deepEqual(appliedVersions, [2]);
 });
