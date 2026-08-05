@@ -595,12 +595,49 @@ test("validateAssetJobResultEnvelope reports specific rejection reasons", () => 
     [{ ...envelope, output: { files: [] } }, "malformed-output"],
     [{ ...envelope, output: { files: [{ ...envelope.output.files[0], fileSizeBytes: 0 }] } }, "malformed-output"],
     [{ ...envelope, metadata: { generatedFromCreativePackage: "", generatorVersion: "1" } }, "malformed-metadata"],
+    // PROP-027 P4 contract: sourceKind is a closed vocabulary. An arbitrary string here -- notably
+    // including a tempting-but-wrong value like "api_generated" -- must be rejected, not silently
+    // accepted, so it can never become an informal stand-in for a real API provider identity.
+    [{ ...envelope, metadata: { ...envelope.metadata, sourceKind: "api_generated" } }, "malformed-metadata"],
+    [{ ...envelope, metadata: { ...envelope.metadata, sourceWorkspace: 12345 } }, "malformed-metadata"],
   ] as const) {
     const result = validateAssetJobResultEnvelope(candidate);
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.reason, reason);
     }
+  }
+});
+
+test("validateAssetJobResultEnvelope accepts sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 when valid, and never treats provider/model as part of this contract (PROP-027 P4)", () => {
+  const envelope = buildMockAssetJobResult(fromCreativePackageRow(creativePackageRow()), "image");
+  const withProvenance = {
+    ...envelope,
+    metadata: {
+      ...envelope.metadata,
+      sourceWorkspace: "chatgpt",
+      sourceKind: "ai_generated" as const,
+      briefSchemaVersion: "v1",
+      briefSha256: "a".repeat(64),
+    },
+  };
+
+  const result = validateAssetJobResultEnvelope(withProvenance);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.result.metadata.sourceWorkspace, "chatgpt");
+    assert.equal(result.result.metadata.sourceKind, "ai_generated");
+    // Lock the contract: this envelope's metadata type has no provider/model fields at all --
+    // TypeScript itself refuses to let this object carry them (see AssetJobResultEnvelope). This
+    // assertion is the runtime half of that guarantee: even a metadata object populated with every
+    // real provenance field this milestone defines never contains the two reserved-for-API keys.
+    assert.equal("provider" in result.result.metadata, false);
+    assert.equal("model" in result.result.metadata, false);
+  }
+
+  // Every value in ASSET_SOURCE_KINDS must independently be accepted -- not just the one used above.
+  for (const sourceKind of ["ai_generated", "photograph", "human_designed"] as const) {
+    assert.equal(validateAssetJobResultEnvelope({ ...envelope, metadata: { ...envelope.metadata, sourceKind } }).ok, true);
   }
 });
 
@@ -856,6 +893,48 @@ test("runAssetJobWithExecutors rejects malformed Creative Package content before
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.jobs[0].last_error, "AssetGenerationSpecV1 requires Creative Package content v1.");
   assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-failed"]);
+});
+
+test("runAssetJobWithExecutors threads sourceWorkspace/sourceKind into the completed envelope for an external job, and never provider/model (PROP-027 P4)", async () => {
+  const store = makeClient({ jobs: [assetJobRow({ worker_type: "external" })] });
+  const result = await runAssetJobWithExecutors(
+    store.client,
+    "asset-job-1",
+    { external: () => [validGeneratedAssetFileCandidate()] },
+    { sourceWorkspace: "chatgpt", sourceKind: "ai_generated" },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(store.jobs[0].status, "completed");
+  const envelope = store.jobs[0].result;
+  assert.equal(isAssetJobResultEnvelope(envelope), true);
+  if (isAssetJobResultEnvelope(envelope)) {
+    assert.equal(envelope.worker, "external");
+    assert.equal(envelope.metadata.sourceWorkspace, "chatgpt");
+    assert.equal(envelope.metadata.sourceKind, "ai_generated");
+    // Available at zero cost -- spec is already built before materialization is ever reached.
+    assert.equal(envelope.metadata.briefSchemaVersion, "v1");
+    // No canonical brief exists to hash until a later milestone renders one -- absent, not guessed.
+    assert.equal(envelope.metadata.briefSha256, undefined);
+    // Lock the contract: no code path threading real creative-source provenance end to end ever
+    // introduces provider/model -- those are reserved exclusively for a future real API executor.
+    assert.equal("provider" in envelope.metadata, false);
+    assert.equal("model" in envelope.metadata, false);
+  }
+});
+
+test("runAssetJobWithExecutors leaves sourceWorkspace/sourceKind unset for a job whose caller declares neither, rather than inventing empty values", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { mock: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, true);
+  const envelope = store.jobs[0].result;
+  assert.equal(isAssetJobResultEnvelope(envelope), true);
+  if (isAssetJobResultEnvelope(envelope)) {
+    assert.equal(envelope.metadata.sourceWorkspace, undefined);
+    assert.equal(envelope.metadata.sourceKind, undefined);
+    assert.equal(envelope.metadata.briefSchemaVersion, "v1");
+  }
 });
 
 test("runAssetJobWithExecutors passes a generated spec to the executor and never exposes raw Creative Package content", async () => {

@@ -1,5 +1,6 @@
 import {
   fromAssetJobRow,
+  isAssetSourceKind,
   runMockAssetJob,
   validateAssetJobResultEnvelope,
   type AssetJobClient,
@@ -7,6 +8,7 @@ import {
   type AssetJobRow,
   type AssetJobRunnerOptions,
   type AssetJobRunnerResult,
+  type AssetSourceKind,
 } from "./asset-jobs.ts";
 import type { AssetJobAttemptClient } from "./asset-job-attempts.ts";
 import { insertAssetFilesForAsset, listAssetFilesForAsset, type AssetFileClient, type AssetFileRecord } from "./asset-files.ts";
@@ -21,12 +23,18 @@ export type AssetSchemaVersion = (typeof ASSET_SCHEMA_VERSIONS)[number];
 // Deliberately small -- see docs/plan §2/§7: provider, model, raw prompt text, and any raw
 // provider response never reach an Asset's own content. Those live only in asset_job_attempts.
 // This is the "freeze point" snapshot, mirroring AssetContentV1's design in the approved
-// architecture doc exactly.
+// architecture doc exactly. sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 (PROP-027 P4)
+// are the one addition since -- creative-origin provenance only. provider/model are still never
+// fields here; see isAssetContentV1 and the "never blur" regression tests locking this in.
 export type AssetContentV1 = {
   metadata: {
     generatedFromCreativePackage: string;
     sourceAssetJobId: string;
     generatorVersion: "1";
+    sourceWorkspace?: string;
+    sourceKind?: AssetSourceKind;
+    briefSchemaVersion?: string;
+    briefSha256?: string;
   };
 };
 
@@ -141,7 +149,11 @@ export function isAssetContentV1(value: unknown): value is AssetContentV1 {
     metadata.generatedFromCreativePackage.trim().length > 0 &&
     typeof metadata.sourceAssetJobId === "string" &&
     metadata.sourceAssetJobId.trim().length > 0 &&
-    metadata.generatorVersion === "1"
+    metadata.generatorVersion === "1" &&
+    (metadata.sourceWorkspace === undefined || typeof metadata.sourceWorkspace === "string") &&
+    (metadata.sourceKind === undefined || (typeof metadata.sourceKind === "string" && isAssetSourceKind(metadata.sourceKind))) &&
+    (metadata.briefSchemaVersion === undefined || typeof metadata.briefSchemaVersion === "string") &&
+    (metadata.briefSha256 === undefined || typeof metadata.briefSha256 === "string")
   );
 }
 
@@ -209,6 +221,10 @@ export function buildAssetContentFromCompletedJob(job: AssetJobRecord): AssetCon
       generatedFromCreativePackage: validation.result.metadata.generatedFromCreativePackage,
       sourceAssetJobId: job.id,
       generatorVersion: validation.result.metadata.generatorVersion,
+      sourceWorkspace: validation.result.metadata.sourceWorkspace,
+      sourceKind: validation.result.metadata.sourceKind,
+      briefSchemaVersion: validation.result.metadata.briefSchemaVersion,
+      briefSha256: validation.result.metadata.briefSha256,
     },
   };
 }

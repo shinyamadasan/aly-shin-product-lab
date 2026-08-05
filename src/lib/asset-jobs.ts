@@ -32,6 +32,14 @@ export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 export const ASSET_KINDS = ["image"] as const;
 export type AssetKind = (typeof ASSET_KINDS)[number];
 
+// The three ways a human-sourced (non-API) asset can come to exist -- describes creative origin
+// only. Distinct from worker_type (execution mechanism, above) and from provider/model (reserved
+// exclusively for a future real API executor on asset_job_attempts, never populated here -- see
+// PROP-027 retired P3). Small and closed because the distinction has real downstream meaning
+// (fabricated product photography vs. a real photo is not a cosmetic difference).
+export const ASSET_SOURCE_KINDS = ["ai_generated", "photograph", "human_designed"] as const;
+export type AssetSourceKind = (typeof ASSET_SOURCE_KINDS)[number];
+
 // One ordered file descriptor produced by a completed job. Candidate metadata is structurally
 // validated before this persisted envelope is built, but the dimensions/size remain declared
 // metadata only -- PROP-024 does not decode or inspect real binary bytes.
@@ -54,9 +62,17 @@ export type AssetJobResultEnvelope = {
   output: {
     files: AssetFileDescriptor[];
   };
+  // sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 (PROP-027 P4) describe the creative
+  // origin when a human/external workspace produced this asset. provider/model are deliberately
+  // never fields here -- they are reserved exclusively for a future real API executor, on
+  // asset_job_attempts, not this envelope (see retired P3, and the "never blur" regression tests).
   metadata: {
     generatedFromCreativePackage: string;
     generatorVersion: "1";
+    sourceWorkspace?: string;
+    sourceKind?: AssetSourceKind;
+    briefSchemaVersion?: string;
+    briefSha256?: string;
   };
 };
 
@@ -243,6 +259,10 @@ export function isAssetKind(value: string): value is AssetKind {
   return ASSET_KINDS.includes(value as AssetKind);
 }
 
+export function isAssetSourceKind(value: string): value is AssetSourceKind {
+  return ASSET_SOURCE_KINDS.includes(value as AssetSourceKind);
+}
+
 function isAssetFileDescriptor(value: unknown, expectedPosition: number): value is AssetFileDescriptor {
   if (!isJsonObject(value)) {
     return false;
@@ -289,7 +309,17 @@ export function validateAssetJobResultEnvelope(value: unknown): AssetJobResultVa
     return { ok: false, reason: "malformed-output", message: "Asset Job result output must include a non-empty, 0-based, sequentially-positioned files array." };
   }
 
-  if (!isJsonObject(metadata) || typeof metadata.generatedFromCreativePackage !== "string" || metadata.generatedFromCreativePackage.trim().length === 0 || /\s/.test(metadata.generatedFromCreativePackage) || metadata.generatorVersion !== "1") {
+  if (
+    !isJsonObject(metadata) ||
+    typeof metadata.generatedFromCreativePackage !== "string" ||
+    metadata.generatedFromCreativePackage.trim().length === 0 ||
+    /\s/.test(metadata.generatedFromCreativePackage) ||
+    metadata.generatorVersion !== "1" ||
+    (metadata.sourceWorkspace !== undefined && typeof metadata.sourceWorkspace !== "string") ||
+    (metadata.sourceKind !== undefined && (typeof metadata.sourceKind !== "string" || !isAssetSourceKind(metadata.sourceKind))) ||
+    (metadata.briefSchemaVersion !== undefined && typeof metadata.briefSchemaVersion !== "string") ||
+    (metadata.briefSha256 !== undefined && typeof metadata.briefSha256 !== "string")
+  ) {
     return { ok: false, reason: "malformed-metadata", message: "Asset Job result metadata must include a valid generatedFromCreativePackage value and generatorVersion 1." };
   }
 
@@ -601,6 +631,11 @@ export async function failRunningAssetJob(client: AssetJobClient, job: AssetJobR
 
 export type AssetJobRunnerOptions = {
   timeoutMs?: number;
+  // Operator-declared creative-origin provenance for an external job, threaded straight into the
+  // completion envelope's metadata. Never a stand-in for provider/model -- those stay reserved for
+  // a future real API executor and are never set by this option (see PROP-027 P4, retired P3).
+  sourceWorkspace?: string;
+  sourceKind?: AssetSourceKind;
 };
 
 export async function runAssetJobWithExecutors(
@@ -714,8 +749,21 @@ export async function runAssetJobWithExecutors(
   const { materializeAssetJobFiles } = await import("./asset-file-materialization.ts");
   // workerType here is the same already-narrowed value used above to select the executor
   // (executors[workerType]) -- the envelope's worker field records the executor that actually ran,
-  // never re-derived from the job row after the fact.
-  const materialization = await materializeAssetJobFiles(client, { job, inspected, workerType });
+  // never re-derived from the job row after the fact. sourceWorkspace/sourceKind are whatever the
+  // caller declared (undefined for mock jobs, which never pass them); briefSchemaVersion is always
+  // available here at zero cost (spec is already built above). briefSha256 is deliberately absent
+  // until a later milestone actually renders a canonical brief to hash -- inventing one now from
+  // something else (e.g. the spec object) would be a fabricated value, not a real fingerprint.
+  const materialization = await materializeAssetJobFiles(client, {
+    job,
+    inspected,
+    workerType,
+    metadata: {
+      sourceWorkspace: options.sourceWorkspace,
+      sourceKind: options.sourceKind,
+      briefSchemaVersion: spec.schemaVersion,
+    },
+  });
   if (!materialization.ok) {
     const jobResult = await failRunningAssetJob(client, job, materialization.message);
     if (jobResult.ok) {

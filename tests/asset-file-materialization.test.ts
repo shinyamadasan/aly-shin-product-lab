@@ -379,3 +379,46 @@ test("materializeAssetJobFiles records the workerType it is given in the result 
     }
   }
 });
+
+test("materializeAssetJobFiles folds the given metadata into the envelope, and never introduces provider/model (PROP-027 P4 regression)", async () => {
+  const store = makeClient();
+  const result = await materializeAssetJobFiles(store.client, {
+    job,
+    inspected: [await inspected()],
+    workerType: "external",
+    metadata: { sourceWorkspace: "midjourney", sourceKind: "ai_generated", briefSchemaVersion: "v1" },
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const envelope = result.materialized.job.result;
+    assert.equal(isAssetJobResultEnvelope(envelope), true);
+    if (isAssetJobResultEnvelope(envelope)) {
+      assert.equal(envelope.metadata.sourceWorkspace, "midjourney");
+      assert.equal(envelope.metadata.sourceKind, "ai_generated");
+      assert.equal(envelope.metadata.briefSchemaVersion, "v1");
+      // Lock the contract: no metadata passed through this path, however fully populated, ever
+      // introduces provider/model -- those are reserved exclusively for a future real API executor
+      // on asset_job_attempts (see PROP-027 P4, retired P3), never for the Job/Asset content itself.
+      assert.equal("provider" in envelope.metadata, false);
+      assert.equal("model" in envelope.metadata, false);
+    }
+  }
+});
+
+test("materializeAssetJobFiles omits metadata entirely without error, matching every existing call site before PROP-027 P4", async () => {
+  const store = makeClient();
+  const result = await materializeAssetJobFiles(store.client, { job, inspected: [await inspected()], workerType: "mock" });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const envelope = result.materialized.job.result;
+    assert.equal(isAssetJobResultEnvelope(envelope), true);
+    if (isAssetJobResultEnvelope(envelope)) {
+      assert.equal(envelope.metadata.sourceWorkspace, undefined);
+      assert.equal(envelope.metadata.sourceKind, undefined);
+      assert.equal(envelope.metadata.briefSchemaVersion, undefined);
+      assert.equal(envelope.metadata.briefSha256, undefined);
+    }
+  }
+});
