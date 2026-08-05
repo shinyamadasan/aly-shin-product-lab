@@ -575,3 +575,18 @@ test("creative package code does not call external providers or create excluded 
   assert.doesNotMatch(jobSource, /creative-packages/i);
   assert.doesNotMatch(jobSource, /createCreativePackageFromCompletedJob/i);
 });
+
+test("creative_packages is never updated in place -- PROP-027's Asset Job brief immutability depends on this", () => {
+  // buildAssetGenerationSpec (and therefore the rendered brief and briefSha256) is a pure function
+  // of a Creative Package's content, read once inside runAssetJobWithExecutors. That is only a
+  // genuine immutability guarantee -- not an accident -- if a Creative Package's content can never
+  // change after creation. This asserts the one fact that guarantee actually rests on: no code path
+  // anywhere calls .update(...) against the creative_packages table. If this test is ever forced to
+  // change, PROP-027's "same job, same brief, forever" design needs to be revisited, not silently
+  // outdated.
+  const packageSource = readFileSync(new URL("../src/lib/creative-packages.ts", import.meta.url), "utf8");
+  // CreativePackageClient's own type for from("creative_packages") declares select/insert only --
+  // no update method exists to call. This regex is the redundant, independent runtime check: it
+  // fails even if that type were ever loosened without anyone noticing.
+  assert.doesNotMatch(packageSource, /\.update\(/);
+});

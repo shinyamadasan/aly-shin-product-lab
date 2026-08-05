@@ -31,6 +31,7 @@ import {
   type AssetJobRow,
 } from "../src/lib/asset-jobs.ts";
 import { finishAssetJobAttempt, type AssetJobAttemptRow } from "../src/lib/asset-job-attempts.ts";
+import { briefSha256 } from "../src/lib/asset-generation-brief.ts";
 import { fromCreativePackageRow, type CreativePackageRow } from "../src/lib/creative-packages.ts";
 import { BRAND_BIBLE } from "../src/lib/marketing-advisor-context.ts";
 import { GENERATED_ASSETS_BUCKET } from "../src/lib/asset-binary.ts";
@@ -914,8 +915,10 @@ test("runAssetJobWithExecutors threads sourceWorkspace/sourceKind into the compl
     assert.equal(envelope.metadata.sourceKind, "ai_generated");
     // Available at zero cost -- spec is already built before materialization is ever reached.
     assert.equal(envelope.metadata.briefSchemaVersion, "v1");
-    // No canonical brief exists to hash until a later milestone renders one -- absent, not guessed.
-    assert.equal(envelope.metadata.briefSha256, undefined);
+    // Matches an independently-computed hash of the same spec's rendered brief -- proves this is a
+    // real fingerprint of the actual brief text, not merely "some string got set."
+    const expectedSpec = buildAssetGenerationSpec(fromCreativePackageRow(creativePackageRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+    assert.equal(envelope.metadata.briefSha256, await briefSha256(expectedSpec));
     // Lock the contract: no code path threading real creative-source provenance end to end ever
     // introduces provider/model -- those are reserved exclusively for a future real API executor.
     assert.equal("provider" in envelope.metadata, false);

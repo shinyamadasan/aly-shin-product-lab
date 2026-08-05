@@ -747,13 +747,19 @@ export async function runAssetJobWithExecutors(
   }
 
   const { materializeAssetJobFiles } = await import("./asset-file-materialization.ts");
+  const { briefSha256 } = await import("./asset-generation-brief.ts");
   // workerType here is the same already-narrowed value used above to select the executor
   // (executors[workerType]) -- the envelope's worker field records the executor that actually ran,
   // never re-derived from the job row after the fact. sourceWorkspace/sourceKind are whatever the
   // caller declared (undefined for mock jobs, which never pass them); briefSchemaVersion is always
-  // available here at zero cost (spec is already built above). briefSha256 is deliberately absent
-  // until a later milestone actually renders a canonical brief to hash -- inventing one now from
-  // something else (e.g. the spec object) would be a fabricated value, not a real fingerprint.
+  // available here at zero cost (spec is already built above). briefSha256 hashes the exact text
+  // renderAssetGenerationBrief produces for this same spec -- the identical function a future brief
+  // viewer/CLI export will call -- so it is a real fingerprint of what was actually shown, not an
+  // approximation. It is safe to (re-)compute here, at completion time, rather than only at
+  // brief-view time, because buildAssetGenerationSpec's own inputs (a Creative Package's content,
+  // this job's assetKind, the static BRAND_BIBLE) are all immutable once this job exists -- see
+  // tests/creative-packages.test.ts's "never updated in place" test. A materially different brief
+  // always means a different, new Asset Job, never a changed fingerprint on this one.
   const materialization = await materializeAssetJobFiles(client, {
     job,
     inspected,
@@ -762,6 +768,7 @@ export async function runAssetJobWithExecutors(
       sourceWorkspace: options.sourceWorkspace,
       sourceKind: options.sourceKind,
       briefSchemaVersion: spec.schemaVersion,
+      briefSha256: await briefSha256(spec),
     },
   });
   if (!materialization.ok) {
