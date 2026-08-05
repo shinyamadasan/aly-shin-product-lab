@@ -13,8 +13,7 @@ import {
   type AssetJobRecord,
   type AssetSourceKind,
 } from "../../src/lib/asset-jobs.ts";
-import { inspectAssetBytes } from "../../src/lib/asset-binary.ts";
-import type { GeneratedAssetFileCandidate } from "../../src/lib/asset-generation-validation.ts";
+import { buildAssetUploadCandidate } from "../../src/lib/asset-upload-intake.ts";
 import type { AssetGenerationSpecV1 } from "../../src/lib/asset-generation-spec.ts";
 import { renderAssetGenerationBrief } from "../../src/lib/asset-generation-brief.ts";
 import { buildExternalAssetExecutor } from "../../src/lib/external-asset-provider.ts";
@@ -77,11 +76,13 @@ export async function runExportCommand(client: AssetJobExecutionClient, jobId: s
   return { exitCode: 0, document: buildAssetExportDocument(jobResult.job, specResult.spec) };
 }
 
-// Validates the imported bytes BEFORE touching the client at all -- inspectAssetBytes is the same
-// function the production upload path uses, so an invalid file fails here, locally, exactly as it
-// would in the browser, leaving the Asset Job untouched and still queued. Takes already-read bytes,
-// not a file path, so this stays directly unit-testable with in-memory fixtures, matching
-// runImportCommand's own text-worker precedent.
+// Validates the imported bytes BEFORE touching the client at all, via buildAssetUploadCandidate --
+// the same canonical intake boundary a future browser upload uses, so an invalid file fails here,
+// locally, exactly as it would in the browser, leaving the Asset Job untouched and still queued.
+// Takes already-read bytes, not a file path, so this stays directly unit-testable with in-memory
+// fixtures, matching runImportCommand's own text-worker precedent. The CLI holds no independent
+// "bytes -> candidate" logic of its own -- there is exactly one implementation, shared with every
+// other upload source.
 export async function runImportCommand(
   client: AssetJobExecutionClient,
   jobId: string,
@@ -89,22 +90,12 @@ export async function runImportCommand(
   workspace: string,
   sourceKind?: AssetSourceKind,
 ): Promise<CliOutcome> {
-  const inspection = await inspectAssetBytes(bytes);
-  if (!inspection.ok) {
-    return { exitCode: 2, message: `Import file is invalid: ${inspection.message} Asset Job ${jobId} was NOT claimed.` };
+  const intake = await buildAssetUploadCandidate(bytes);
+  if (!intake.ok) {
+    return { exitCode: 2, message: `Import file is invalid: ${intake.message} Asset Job ${jobId} was NOT claimed.` };
   }
 
-  const candidate: GeneratedAssetFileCandidate = {
-    position: 0,
-    mimeType: inspection.facts.actualMimeType,
-    width: inspection.facts.actualWidth,
-    height: inspection.facts.actualHeight,
-    durationMs: null,
-    fileSizeBytes: inspection.facts.byteSize,
-    bytes,
-  };
-
-  const executor = buildExternalAssetExecutor(candidate);
+  const executor = buildExternalAssetExecutor(intake.candidate);
   const result = await runAssetJobWithExecutors(client, jobId, { external: executor }, { sourceWorkspace: workspace, sourceKind });
 
   if (!result.ok) {
