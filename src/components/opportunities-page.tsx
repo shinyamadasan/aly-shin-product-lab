@@ -2,6 +2,7 @@
 
 import { BriefcaseBusiness, CheckCircle2, Clock3, Eye, PackageCheck, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { CreativePackageAssetCreate } from "@/components/creative-package-asset-create";
 import { CreativePackageAssets } from "@/components/creative-package-assets";
 import { MessageBox, Panel, Tag } from "@/components/ui";
 import {
@@ -127,6 +128,7 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
   const [pendingAction, setPendingAction] = useState<OpportunityStatusUpdateTarget | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [assetRefreshToken, setAssetRefreshToken] = useState(0);
   const [now, setNow] = useState(() => new Date().toISOString());
 
   const client = supabase as unknown as OpportunityReviewClient | null;
@@ -519,7 +521,8 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
                           <summary className="cursor-pointer text-sm font-semibold text-[#5f4a3d]">Raw package JSON</summary>
                           <pre className="mt-3 max-h-[300px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-[#231813] p-3 text-xs leading-5 text-[#fff8ef]">{formatOpportunityRawJson(selectedPackage.content)}</pre>
                         </details>
-                        <CreativePackageAssets creativePackageId={selectedPackage.id} />
+                        <CreativePackageAssetCreate creativePackageId={selectedPackage.id} onUploaded={() => setAssetRefreshToken((current) => current + 1)} />
+                        <CreativePackageAssets creativePackageId={selectedPackage.id} refreshSignal={assetRefreshToken} />
                       </details>
                     ) : (
                       <p className="mt-3 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm">No Creative Package has been materialized yet.</p>

@@ -5,7 +5,7 @@ import {
   inspectAssetBytes,
   type InspectedAssetCandidate,
 } from "./asset-binary.ts";
-import type { AssetJobRecord, AssetJobResultEnvelope, AssetJobRow } from "./asset-jobs.ts";
+import type { AssetJobRecord, AssetJobResultEnvelope, AssetJobRow, AssetJobWorkerType, AssetSourceKind } from "./asset-jobs.ts";
 import type { AssetRecord, AssetRow } from "./assets.ts";
 
 type SupabaseErrorLike = {
@@ -136,7 +136,7 @@ async function verifyExistingObject(client: AssetJobFileMaterializationClient, p
   }
 
   const existingBytes = await bytesFromDownloadedObject(downloaded.data);
-  const existingInspection = inspectAssetBytes(existingBytes);
+  const existingInspection = await inspectAssetBytes(existingBytes);
   if (!existingInspection.ok) {
     return { ok: false, message: existingInspection.message };
   }
@@ -165,10 +165,23 @@ async function cleanupUploadedObjects(client: AssetJobFileMaterializationClient,
     : { ok: false, removedPaths, failedPaths, message: `Failed to clean up ${failedPaths.length} generated asset object(s).` };
 }
 
-function buildResultEnvelope(job: AssetJobRecord, files: InspectedAssetCandidate[]): AssetJobResultEnvelope {
+// The creative-origin provenance a caller may declare for a completed job. Deliberately never
+// includes provider/model -- those are reserved exclusively for a future real API executor on
+// asset_job_attempts (see PROP-027 P4, retired P3) and must never be threaded through this path.
+export type AssetJobEnvelopeProvenance = {
+  sourceWorkspace?: string;
+  sourceKind?: AssetSourceKind;
+  briefSchemaVersion?: string;
+  briefSha256?: string;
+};
+
+// worker records which executor completed the job (an execution-mechanism fact, sourced from the
+// caller's own already-validated dispatch value) -- it is never a stand-in for which creative
+// workspace a human used. That is sourceWorkspace, in `provenance` below (P4).
+function buildResultEnvelope(job: AssetJobRecord, files: InspectedAssetCandidate[], workerType: AssetJobWorkerType, provenance: AssetJobEnvelopeProvenance = {}): AssetJobResultEnvelope {
   return {
     schemaVersion: "v1",
-    worker: "mock",
+    worker: workerType,
     assetKind: "image",
     output: {
       files: files.map((file) => ({
@@ -186,6 +199,10 @@ function buildResultEnvelope(job: AssetJobRecord, files: InspectedAssetCandidate
     metadata: {
       generatedFromCreativePackage: job.creativePackageId,
       generatorVersion: "1",
+      sourceWorkspace: provenance.sourceWorkspace,
+      sourceKind: provenance.sourceKind,
+      briefSchemaVersion: provenance.briefSchemaVersion,
+      briefSha256: provenance.briefSha256,
     },
   };
 }
@@ -211,11 +228,11 @@ function verifyRpcRows(materialized: MaterializedAssetJobFiles, inspected: Inspe
 
 export async function materializeAssetJobFiles(
   client: AssetJobFileMaterializationClient,
-  args: { job: AssetJobRecord; inspected: InspectedAssetCandidate[] },
+  args: { job: AssetJobRecord; inspected: InspectedAssetCandidate[]; workerType: AssetJobWorkerType; metadata?: AssetJobEnvelopeProvenance },
 ): Promise<AssetJobFileMaterializationResult> {
   const uploadedThisRun: string[] = [];
   const reusedExistingPaths: string[] = [];
-  const resultEnvelope = buildResultEnvelope(args.job, args.inspected);
+  const resultEnvelope = buildResultEnvelope(args.job, args.inspected, args.workerType, args.metadata);
 
   for (const image of args.inspected) {
     const path = buildGeneratedAssetObjectPath({ assetJobId: args.job.id, attemptNumber: args.job.attemptCount, sha256: image.sha256, extension: image.extension });

@@ -16,10 +16,14 @@ import {
 export const ASSET_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
 
-// Only "mock" ships in this milestone -- a real provider worker type is added additively
-// (pure-text-union change, no migration) by the milestone that actually wires one up. Mirrors
-// CREATIVE_JOB_WORKER_TYPES' own precedent of listing only what's actually implemented.
-export const ASSET_JOB_WORKER_TYPES = ["mock"] as const;
+// "external" (PROP-027) is the External Creative Workspace executor -- a human working in any
+// creative tool, or a real camera. This is an execution-mechanism value only ("which code path
+// processes this job"), never a stand-in for which specific tool a human used -- that is
+// sourceWorkspace, a separate field on the Asset's own content, not on the job. A real API provider
+// worker type is added additively later (pure-text-union change, no migration) by the milestone
+// that actually wires one up. Mirrors CREATIVE_JOB_WORKER_TYPES' own precedent of listing only
+// what's actually implemented.
+export const ASSET_JOB_WORKER_TYPES = ["mock", "external"] as const;
 export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 
 // Only "image" ships in this milestone. Carousel/reel/short_video/story_graphic are each a later,
@@ -27,6 +31,14 @@ export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 // approved Asset Generation roadmap.
 export const ASSET_KINDS = ["image"] as const;
 export type AssetKind = (typeof ASSET_KINDS)[number];
+
+// The three ways a human-sourced (non-API) asset can come to exist -- describes creative origin
+// only. Distinct from worker_type (execution mechanism, above) and from provider/model (reserved
+// exclusively for a future real API executor on asset_job_attempts, never populated here -- see
+// PROP-027 retired P3). Small and closed because the distinction has real downstream meaning
+// (fabricated product photography vs. a real photo is not a cosmetic difference).
+export const ASSET_SOURCE_KINDS = ["ai_generated", "photograph", "human_designed"] as const;
+export type AssetSourceKind = (typeof ASSET_SOURCE_KINDS)[number];
 
 // One ordered file descriptor produced by a completed job. Candidate metadata is structurally
 // validated before this persisted envelope is built, but the dimensions/size remain declared
@@ -50,9 +62,17 @@ export type AssetJobResultEnvelope = {
   output: {
     files: AssetFileDescriptor[];
   };
+  // sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 (PROP-027 P4) describe the creative
+  // origin when a human/external workspace produced this asset. provider/model are deliberately
+  // never fields here -- they are reserved exclusively for a future real API executor, on
+  // asset_job_attempts, not this envelope (see retired P3, and the "never blur" regression tests).
   metadata: {
     generatedFromCreativePackage: string;
     generatorVersion: "1";
+    sourceWorkspace?: string;
+    sourceKind?: AssetSourceKind;
+    briefSchemaVersion?: string;
+    briefSha256?: string;
   };
 };
 
@@ -150,7 +170,17 @@ export type AssetJobCreateResult =
   | { ok: false; reason: "missing-table" | "not-found" | "not-ready" | "failed"; message: string };
 
 export type AssetJobRunnerResult =
-  | { ok: true; outcome: "completed"; job: AssetJobRecord; attempt?: AssetJobAttemptFinishResult; materialization?: AssetJobFileMaterializationResult }
+  | {
+      ok: true;
+      outcome: "completed";
+      job: AssetJobRecord;
+      attempt?: AssetJobAttemptFinishResult;
+      materialization?: AssetJobFileMaterializationResult;
+      // Advisory-only (PROP-027 P5/AC-4) -- e.g. spec-dimension mismatches. Never blocks completion;
+      // exists so a caller (the browser upload UI) can show the operator what to expect. Empty, not
+      // omitted, when there is nothing to warn about.
+      warnings: string[];
+    }
   | {
       ok: false;
       reason: "missing-table" | "not-found" | "not-queued" | "conflict" | "failed" | "timeout";
@@ -239,6 +269,10 @@ export function isAssetKind(value: string): value is AssetKind {
   return ASSET_KINDS.includes(value as AssetKind);
 }
 
+export function isAssetSourceKind(value: string): value is AssetSourceKind {
+  return ASSET_SOURCE_KINDS.includes(value as AssetSourceKind);
+}
+
 function isAssetFileDescriptor(value: unknown, expectedPosition: number): value is AssetFileDescriptor {
   if (!isJsonObject(value)) {
     return false;
@@ -285,7 +319,17 @@ export function validateAssetJobResultEnvelope(value: unknown): AssetJobResultVa
     return { ok: false, reason: "malformed-output", message: "Asset Job result output must include a non-empty, 0-based, sequentially-positioned files array." };
   }
 
-  if (!isJsonObject(metadata) || typeof metadata.generatedFromCreativePackage !== "string" || metadata.generatedFromCreativePackage.trim().length === 0 || /\s/.test(metadata.generatedFromCreativePackage) || metadata.generatorVersion !== "1") {
+  if (
+    !isJsonObject(metadata) ||
+    typeof metadata.generatedFromCreativePackage !== "string" ||
+    metadata.generatedFromCreativePackage.trim().length === 0 ||
+    /\s/.test(metadata.generatedFromCreativePackage) ||
+    metadata.generatorVersion !== "1" ||
+    (metadata.sourceWorkspace !== undefined && typeof metadata.sourceWorkspace !== "string") ||
+    (metadata.sourceKind !== undefined && (typeof metadata.sourceKind !== "string" || !isAssetSourceKind(metadata.sourceKind))) ||
+    (metadata.briefSchemaVersion !== undefined && typeof metadata.briefSchemaVersion !== "string") ||
+    (metadata.briefSha256 !== undefined && typeof metadata.briefSha256 !== "string")
+  ) {
     return { ok: false, reason: "malformed-metadata", message: "Asset Job result metadata must include a valid generatedFromCreativePackage value and generatorVersion 1." };
   }
 
@@ -431,6 +475,42 @@ async function readCreativePackage(client: AssetJobClient, id: string) {
   }
 }
 
+export type AssetGenerationSpecResult =
+  | { ok: true; spec: AssetGenerationSpecV1 }
+  | { ok: false; reason: "unsupported-asset-kind" | "missing-table" | "not-found" | "not-ready" | "failed"; message: string };
+
+// The one place a job's spec is resolved -- reused by runAssetJobWithExecutors (post-claim) and by
+// the desktop CLI's export command (pre-claim, read-only). Deliberately takes only the two fields
+// it needs, not a full job, so a pre-claim caller (which has no attempt/status context yet) can call
+// it just as naturally as the post-claim runner. Job status is each caller's own concern, not this
+// function's -- it only ever resolves "what would this job's spec be," never whether the job is in
+// the right state to use it. reason is a distinct value per failure mode (not just "failed") so a
+// caller that wants runAssetJobWithExecutors's original, less granular message for the "job cannot
+// load its Creative Package at all" case can select on it structurally, never by matching message text.
+export async function buildAssetGenerationSpecForJob(
+  client: AssetJobClient,
+  job: Pick<AssetJobRecord, "creativePackageId" | "assetKind">,
+): Promise<AssetGenerationSpecResult> {
+  if (!isAssetKind(job.assetKind)) {
+    return { ok: false, reason: "unsupported-asset-kind", message: `Unsupported asset kind: ${job.assetKind}.` };
+  }
+  const assetKind = job.assetKind;
+
+  const creativePackage = await readCreativePackage(client, job.creativePackageId);
+  if (!creativePackage.ok) {
+    return { ok: false, reason: creativePackage.reason, message: creativePackage.message };
+  }
+  if (creativePackage.creativePackage.status !== "ready") {
+    return { ok: false, reason: "not-ready", message: "Asset Job could not load a ready Creative Package." };
+  }
+
+  try {
+    return { ok: true, spec: buildAssetGenerationSpec(creativePackage.creativePackage, { assetKind, brandBible: BRAND_BIBLE }) };
+  } catch (err) {
+    return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function getAssetJobById(client: AssetJobClient, id: string): Promise<AssetJobDetailResult> {
   const result = await client.from("asset_jobs").select<AssetJobRow>("*").eq("id", id).maybeSingle();
   if (result.error) {
@@ -524,6 +604,18 @@ export async function listAssetJobsForCreativePackage(client: AssetJobClient, cr
   }
 }
 
+// The one place that decides which Asset Job a "Create asset job" UI action reuses instead of
+// duplicating -- asset_jobs.creative_package_id has no unique constraint (a Creative Package may
+// have many Asset Jobs over time; supabase-add-asset-jobs.sql's own guard raises an exception if
+// that index is ever made unique), so this is the only protection against a rapid double-tap
+// producing two equivalent queued jobs. Relies on the caller passing jobs already ordered newest
+// first -- exactly what listAssetJobsForCreativePackage returns -- and simply returns the first
+// match rather than independently re-sorting; a caller passing unsorted jobs would get an
+// arbitrary match, not the newest, so this is not a general-purpose query.
+export function findQueuedExternalAssetJob(jobs: AssetJobRecord[]): AssetJobRecord | null {
+  return jobs.find((job) => job.status === "queued" && job.workerType === "external") ?? null;
+}
+
 export async function claimQueuedAssetJobWithAttempt(client: AssetJobClient, id: string): Promise<AssetJobClaimWithAttemptResult> {
   const result = await client.rpc("claim_asset_job_with_attempt", { p_job_id: id }).maybeSingle();
   if (result.error) {
@@ -584,7 +676,11 @@ export async function completeRunningAssetJob(client: AssetJobClient, job: Asset
   }
 
   const result = await finishAssetJobViaRpc(client, job, "completed", validation.result, null);
-  return result.written ? { ok: true, outcome: "completed", job: result.job } : { ok: false, reason: result.reason, message: result.message, job: result.job };
+  // No candidateValidation step happens on this lower-level path (it completes an
+  // already-validated envelope directly, bypassing the executor pipeline) -- warnings is honestly
+  // empty here, not omitted, since runAssetJobWithExecutors' own success path is what actually runs
+  // the spec-dimension advisory check.
+  return result.written ? { ok: true, outcome: "completed", job: result.job, warnings: [] } : { ok: false, reason: result.reason, message: result.message, job: result.job };
 }
 
 export async function failRunningAssetJob(client: AssetJobClient, job: AssetJobRecord, message = "Asset Job execution failed."): Promise<AssetJobRunnerResult> {
@@ -597,6 +693,11 @@ export async function failRunningAssetJob(client: AssetJobClient, job: AssetJobR
 
 export type AssetJobRunnerOptions = {
   timeoutMs?: number;
+  // Operator-declared creative-origin provenance for an external job, threaded straight into the
+  // completion envelope's metadata. Never a stand-in for provider/model -- those stay reserved for
+  // a future real API executor and are never set by this option (see PROP-027 P4, retired P3).
+  sourceWorkspace?: string;
+  sourceKind?: AssetSourceKind;
 };
 
 export async function runAssetJobWithExecutors(
@@ -642,24 +743,18 @@ export async function runAssetJobWithExecutors(
     return failJobAndAttempt(`No executor is registered for worker type: ${workerType}.`);
   }
 
-  if (!isAssetKind(job.assetKind)) {
-    return failJobAndAttempt(`Unsupported asset kind: ${job.assetKind}.`);
+  // Preserves this function's own three original messages exactly -- "Unsupported asset kind: X.",
+  // a thrown buildAssetGenerationSpec error forwarded verbatim (e.g. malformed package content),
+  // and the generic "...could not load a ready Creative Package." only for the package-read/not-
+  // ready case -- even though the resolution itself now lives in one shared place. Selecting on
+  // reason, never on message text, so this can never silently drift from
+  // buildAssetGenerationSpecForJob's own, more specific messages.
+  const specResult = await buildAssetGenerationSpecForJob(client, job);
+  if (!specResult.ok) {
+    const usesGenericMessage = specResult.reason === "not-found" || specResult.reason === "missing-table" || specResult.reason === "not-ready";
+    return failJobAndAttempt(usesGenericMessage ? "Asset Job could not load a ready Creative Package." : specResult.message);
   }
-  const assetKind = job.assetKind;
-
-  const creativePackage = await readCreativePackage(client, job.creativePackageId);
-  if (!creativePackage.ok || creativePackage.creativePackage.status !== "ready") {
-    return failJobAndAttempt("Asset Job could not load a ready Creative Package.");
-  }
-  const readyCreativePackage = creativePackage.creativePackage;
-
-  let spec: AssetGenerationSpecV1;
-  try {
-    spec = buildAssetGenerationSpec(readyCreativePackage, { assetKind, brandBible: BRAND_BIBLE });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return failJobAndAttempt(message);
-  }
+  const spec = specResult.spec;
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT_MS;
   const controller = new AbortController();
@@ -700,7 +795,7 @@ export async function runAssetJobWithExecutors(
   const inspected: InspectedAssetCandidate[] = [];
   const { validateAssetCandidateBytes } = await import("./asset-binary.ts");
   for (const candidate of candidateValidation.candidates) {
-    const byteValidation = validateAssetCandidateBytes(candidate);
+    const byteValidation = await validateAssetCandidateBytes(candidate);
     if (!byteValidation.ok) {
       return failJobAndAttempt(byteValidation.message);
     }
@@ -708,7 +803,30 @@ export async function runAssetJobWithExecutors(
   }
 
   const { materializeAssetJobFiles } = await import("./asset-file-materialization.ts");
-  const materialization = await materializeAssetJobFiles(client, { job, inspected });
+  const { briefSha256 } = await import("./asset-generation-brief.ts");
+  // workerType here is the same already-narrowed value used above to select the executor
+  // (executors[workerType]) -- the envelope's worker field records the executor that actually ran,
+  // never re-derived from the job row after the fact. sourceWorkspace/sourceKind are whatever the
+  // caller declared (undefined for mock jobs, which never pass them); briefSchemaVersion is always
+  // available here at zero cost (spec is already built above). briefSha256 hashes the exact text
+  // renderAssetGenerationBrief produces for this same spec -- the identical function a future brief
+  // viewer/CLI export will call -- so it is a real fingerprint of what was actually shown, not an
+  // approximation. It is safe to (re-)compute here, at completion time, rather than only at
+  // brief-view time, because buildAssetGenerationSpec's own inputs (a Creative Package's content,
+  // this job's assetKind, the static BRAND_BIBLE) are all immutable once this job exists -- see
+  // tests/creative-packages.test.ts's "never updated in place" test. A materially different brief
+  // always means a different, new Asset Job, never a changed fingerprint on this one.
+  const materialization = await materializeAssetJobFiles(client, {
+    job,
+    inspected,
+    workerType,
+    metadata: {
+      sourceWorkspace: options.sourceWorkspace,
+      sourceKind: options.sourceKind,
+      briefSchemaVersion: spec.schemaVersion,
+      briefSha256: await briefSha256(spec),
+    },
+  });
   if (!materialization.ok) {
     const jobResult = await failRunningAssetJob(client, job, materialization.message);
     if (jobResult.ok) {
@@ -719,7 +837,7 @@ export async function runAssetJobWithExecutors(
   }
 
   const attempt = await finishAssetJobAttempt(client, attemptId, "completed");
-  return { ok: true, outcome: "completed", job: materialization.materialized.job, attempt, materialization };
+  return { ok: true, outcome: "completed", job: materialization.materialized.job, attempt, materialization, warnings: candidateValidation.warnings };
 }
 
 export async function runMockAssetJob(client: AssetJobExecutionClient, id: string, options: AssetJobRunnerOptions = {}): Promise<AssetJobRunnerResult> {

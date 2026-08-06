@@ -480,6 +480,49 @@ test("buildAssetContentFromCompletedJob creates deterministic, small content tha
   assert.doesNotMatch(JSON.stringify(first), /storageBucket|storagePath|mimeType/i);
 });
 
+test("buildAssetContentFromCompletedJob threads sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 through, and never provider/model (PROP-027 P4 contract)", () => {
+  const baseResult = buildMockAssetJobResult(fromCreativePackageRow(creativePackageRow()), "image");
+  const job = fromAssetJobRow(
+    completedAssetJobRow({
+      result: {
+        ...baseResult,
+        metadata: {
+          ...baseResult.metadata,
+          sourceWorkspace: "chatgpt",
+          sourceKind: "ai_generated",
+          briefSchemaVersion: "v1",
+          briefSha256: "a".repeat(64),
+        },
+      },
+    }),
+  );
+
+  const content = buildAssetContentFromCompletedJob(job);
+
+  assert.equal(content.metadata.sourceWorkspace, "chatgpt");
+  assert.equal(content.metadata.sourceKind, "ai_generated");
+  assert.equal(content.metadata.briefSchemaVersion, "v1");
+  assert.equal(content.metadata.briefSha256, "a".repeat(64));
+
+  // Lock the contract: this exhaustive key list is the real enforcement -- if a future API-provider
+  // milestone ever added provider/model to an Asset's own content instead of to asset_job_attempts
+  // (where they belong), this assertion fails immediately, no matter what the new keys are named.
+  assert.deepEqual(
+    Object.keys(content.metadata).sort(),
+    ["briefSchemaVersion", "briefSha256", "generatedFromCreativePackage", "generatorVersion", "sourceAssetJobId", "sourceKind", "sourceWorkspace"].sort(),
+  );
+});
+
+test("buildAssetContentFromCompletedJob leaves sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 unset when the completed job declared none, matching every job before PROP-027 P4", () => {
+  const job = fromAssetJobRow(completedAssetJobRow());
+  const content = buildAssetContentFromCompletedJob(job);
+
+  assert.equal(content.metadata.sourceWorkspace, undefined);
+  assert.equal(content.metadata.sourceKind, undefined);
+  assert.equal(content.metadata.briefSchemaVersion, undefined);
+  assert.equal(content.metadata.briefSha256, undefined);
+});
+
 test("buildAssetContentFromCompletedJob rejects a non-completed job or an unsupported result", () => {
   assert.throws(() => buildAssetContentFromCompletedJob(fromAssetJobRow(completedAssetJobRow({ status: "running" }))), /can only be materialized from completed Asset Jobs/);
   assert.throws(() => buildAssetContentFromCompletedJob(fromAssetJobRow(completedAssetJobRow({ result: { schemaVersion: "v2" } }))), /not a supported v1 asset source/);
@@ -491,6 +534,17 @@ test("isAssetContentV1 requires the supported content shape", () => {
   assert.equal(isAssetContentV1({ metadata: { generatedFromCreativePackage: "", sourceAssetJobId: "asset-job-1", generatorVersion: "1" } }), false);
   assert.equal(isAssetContentV1({ metadata: { generatedFromCreativePackage: "package-1" } }), false);
   assert.equal(isAssetContentV1({}), false);
+
+  // PROP-027 P4: sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 are optional and, when
+  // present, validated -- sourceKind especially must stay a closed vocabulary, never an arbitrary
+  // string a future API integration could repurpose as an informal provider label.
+  const base = { generatedFromCreativePackage: "package-1", sourceAssetJobId: "asset-job-1", generatorVersion: "1" as const };
+  assert.equal(isAssetContentV1({ metadata: { ...base, sourceWorkspace: "chatgpt", sourceKind: "ai_generated", briefSchemaVersion: "v1", briefSha256: "abc" } }), true);
+  assert.equal(isAssetContentV1({ metadata: { ...base, sourceKind: "photograph" } }), true);
+  assert.equal(isAssetContentV1({ metadata: { ...base, sourceKind: "human_designed" } }), true);
+  assert.equal(isAssetContentV1({ metadata: { ...base, sourceKind: "api_generated" } }), false);
+  assert.equal(isAssetContentV1({ metadata: { ...base, sourceWorkspace: 123 } }), false);
+  assert.equal(isAssetContentV1({ metadata: { ...base, briefSha256: 456 } }), false);
 });
 
 test("createAssetFromCompletedJob creates one generated asset and its ordered asset_files from a completed job", async () => {

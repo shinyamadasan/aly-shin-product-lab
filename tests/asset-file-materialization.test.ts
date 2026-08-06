@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { validateAssetCandidateBytes } from "../src/lib/asset-binary.ts";
 import { GENERATED_ASSETS_BUCKET } from "../src/lib/asset-binary.ts";
 import { materializeAssetJobFiles, type AssetJobFileMaterializationClient } from "../src/lib/asset-file-materialization.ts";
-import type { AssetJobRecord } from "../src/lib/asset-jobs.ts";
+import { isAssetJobResultEnvelope, type AssetJobRecord } from "../src/lib/asset-jobs.ts";
 import type { GeneratedAssetFileCandidate } from "../src/lib/asset-generation-validation.ts";
 import type { AssetRow } from "../src/lib/assets.ts";
 import type { AssetFileRow } from "../src/lib/asset-files.ts";
@@ -49,8 +49,8 @@ function candidate(bytes = png1080): GeneratedAssetFileCandidate {
   };
 }
 
-function inspected(bytes = png1080) {
-  const result = validateAssetCandidateBytes(candidate(bytes));
+async function inspected(bytes = png1080) {
+  const result = await validateAssetCandidateBytes(candidate(bytes));
   assert.equal(result.ok, true);
   if (!result.ok) throw new Error("Expected valid inspected candidate.");
   return result.inspected;
@@ -243,7 +243,7 @@ function makeClient(
 
 test("materializeAssetJobFiles uploads before the RPC and returns one Asset plus one Asset File", async () => {
   const store = makeClient();
-  const result = await materializeAssetJobFiles(store.client, { job, inspected: [inspected()] });
+  const result = await materializeAssetJobFiles(store.client, { job, inspected: [await inspected()], workerType: "mock" });
 
   assert.equal(result.ok, true);
   assert.equal(store.events[0]?.startsWith("upload:asset-jobs/asset-job-1/attempt-1/"), true);
@@ -262,7 +262,7 @@ test("materializeAssetJobFiles reports RPC Asset File conflicts before the fake 
     existingAssetOverride: {},
     existingFileOverride: { storage_path: "asset-jobs/asset-job-1/attempt-1/different.png", checksum_sha256: "different" },
   });
-  const result = await materializeAssetJobFiles(store.client, { job, inspected: [inspected()] });
+  const result = await materializeAssetJobFiles(store.client, { job, inspected: [await inspected()], workerType: "mock" });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "db-materialization-failed");
@@ -273,7 +273,7 @@ test("materializeAssetJobFiles reports RPC Asset File conflicts before the fake 
 
 test("materializeAssetJobFiles reports RPC Asset identity conflicts before the fake job completes", async () => {
   const store = makeClient({ existingAssetOverride: { content: { metadata: { generatedFromCreativePackage: "package-1", sourceAssetJobId: "other-job", generatorVersion: "1" } } } });
-  const result = await materializeAssetJobFiles(store.client, { job, inspected: [inspected()] });
+  const result = await materializeAssetJobFiles(store.client, { job, inspected: [await inspected()], workerType: "mock" });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "db-materialization-failed");
@@ -285,7 +285,7 @@ test("materializeAssetJobFiles reports RPC Asset identity conflicts before the f
 
 test("materializeAssetJobFiles lets identical RPC retries reuse existing rows without duplication", async () => {
   const first = makeClient();
-  const firstResult = await materializeAssetJobFiles(first.client, { job, inspected: [inspected()] });
+  const firstResult = await materializeAssetJobFiles(first.client, { job, inspected: [await inspected()], workerType: "mock" });
   assert.equal(firstResult.ok, true);
   if (!firstResult.ok) return;
   const file = firstResult.materialized.files[0];
@@ -297,7 +297,7 @@ test("materializeAssetJobFiles lets identical RPC retries reuse existing rows wi
       checksum_sha256: file.checksumSha256,
     },
   });
-  const retryResult = await materializeAssetJobFiles(retry.client, { job, inspected: [inspected()] });
+  const retryResult = await materializeAssetJobFiles(retry.client, { job, inspected: [await inspected()], workerType: "mock" });
 
   assert.equal(retryResult.ok, true);
   assert.equal(retry.jobStatus, "completed");
@@ -307,13 +307,13 @@ test("materializeAssetJobFiles lets identical RPC retries reuse existing rows wi
 
 test("materializeAssetJobFiles cleans up current-run uploads after RPC failure and reports cleanup failure honestly", async () => {
   const failed = makeClient({ rpcError: "db failed" });
-  const failedResult = await materializeAssetJobFiles(failed.client, { job, inspected: [inspected()] });
+  const failedResult = await materializeAssetJobFiles(failed.client, { job, inspected: [await inspected()], workerType: "mock" });
   assert.equal(failedResult.ok, false);
   assert.equal(failedResult.reason, "db-materialization-failed");
   assert.equal(failed.removed.length, 1);
 
   const cleanupFailed = makeClient({ rpcError: "db failed", removeError: true });
-  const cleanupResult = await materializeAssetJobFiles(cleanupFailed.client, { job, inspected: [inspected()] });
+  const cleanupResult = await materializeAssetJobFiles(cleanupFailed.client, { job, inspected: [await inspected()], workerType: "mock" });
   assert.equal(cleanupResult.ok, false);
   assert.equal(cleanupResult.reason, "cleanup-failed");
   assert.equal(cleanupResult.cleanup?.ok, false);
@@ -321,13 +321,13 @@ test("materializeAssetJobFiles cleans up current-run uploads after RPC failure a
 
 test("materializeAssetJobFiles verifies existing deterministic paths by authenticated download before reuse and never deletes them", async () => {
   const first = makeClient();
-  const firstResult = await materializeAssetJobFiles(first.client, { job, inspected: [inspected()] });
+  const firstResult = await materializeAssetJobFiles(first.client, { job, inspected: [await inspected()], workerType: "mock" });
   assert.equal(firstResult.ok, true);
   if (!firstResult.ok) return;
   const existingPath = firstResult.materialized.files[0].storagePath;
 
   const retry = makeClient({ existing: { [existingPath]: png1080 } });
-  const retryResult = await materializeAssetJobFiles(retry.client, { job, inspected: [inspected()] });
+  const retryResult = await materializeAssetJobFiles(retry.client, { job, inspected: [await inspected()], workerType: "mock" });
   assert.equal(retryResult.ok, true);
   assert.equal(retry.events[0], `upload:${existingPath}`);
   assert.equal(retry.events[1], `download:${existingPath}`);
@@ -341,13 +341,13 @@ test("materializeAssetJobFiles verifies existing deterministic paths by authenti
 
 test("materializeAssetJobFiles reports changed-byte conflict and does not delete a pre-existing object", async () => {
   const first = makeClient();
-  const firstResult = await materializeAssetJobFiles(first.client, { job, inspected: [inspected()] });
+  const firstResult = await materializeAssetJobFiles(first.client, { job, inspected: [await inspected()], workerType: "mock" });
   assert.equal(firstResult.ok, true);
   if (!firstResult.ok) return;
   const existingPath = firstResult.materialized.files[0].storagePath;
 
   const retry = makeClient({ existing: { [existingPath]: changedPng1080 } });
-  const retryResult = await materializeAssetJobFiles(retry.client, { job, inspected: [inspected()] });
+  const retryResult = await materializeAssetJobFiles(retry.client, { job, inspected: [await inspected()], workerType: "mock" });
   assert.equal(retryResult.ok, false);
   assert.equal(retryResult.reason, "existing-object-verification-failed");
   assert.equal(retry.removed.length, 0);
@@ -356,9 +356,69 @@ test("materializeAssetJobFiles reports changed-byte conflict and does not delete
 
 test("materializeAssetJobFiles treats mismatched RPC file rows as an idempotency conflict and cleans up only current-run uploads", async () => {
   const store = makeClient({ rpcFileOverride: { checksum_sha256: "wrong" } });
-  const result = await materializeAssetJobFiles(store.client, { job, inspected: [inspected()] });
+  const result = await materializeAssetJobFiles(store.client, { job, inspected: [await inspected()], workerType: "mock" });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "idempotency-conflict");
   assert.equal(store.removed.length, 1);
+});
+
+test("materializeAssetJobFiles records the workerType it is given in the result envelope, proving worker is not hardcoded (PROP-027 P2 regression)", async () => {
+  const store = makeClient();
+  // Deliberately still the shared `job` fixture (workerType: "mock" on the row) -- this proves the
+  // envelope's worker comes from the explicit workerType argument (the executor that actually ran),
+  // not from re-reading the job row, and is not simply always "mock".
+  const result = await materializeAssetJobFiles(store.client, { job, inspected: [await inspected()], workerType: "external" });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const envelope = result.materialized.job.result;
+    assert.equal(isAssetJobResultEnvelope(envelope), true);
+    if (isAssetJobResultEnvelope(envelope)) {
+      assert.equal(envelope.worker, "external");
+    }
+  }
+});
+
+test("materializeAssetJobFiles folds the given metadata into the envelope, and never introduces provider/model (PROP-027 P4 regression)", async () => {
+  const store = makeClient();
+  const result = await materializeAssetJobFiles(store.client, {
+    job,
+    inspected: [await inspected()],
+    workerType: "external",
+    metadata: { sourceWorkspace: "midjourney", sourceKind: "ai_generated", briefSchemaVersion: "v1" },
+  });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const envelope = result.materialized.job.result;
+    assert.equal(isAssetJobResultEnvelope(envelope), true);
+    if (isAssetJobResultEnvelope(envelope)) {
+      assert.equal(envelope.metadata.sourceWorkspace, "midjourney");
+      assert.equal(envelope.metadata.sourceKind, "ai_generated");
+      assert.equal(envelope.metadata.briefSchemaVersion, "v1");
+      // Lock the contract: no metadata passed through this path, however fully populated, ever
+      // introduces provider/model -- those are reserved exclusively for a future real API executor
+      // on asset_job_attempts (see PROP-027 P4, retired P3), never for the Job/Asset content itself.
+      assert.equal("provider" in envelope.metadata, false);
+      assert.equal("model" in envelope.metadata, false);
+    }
+  }
+});
+
+test("materializeAssetJobFiles omits metadata entirely without error, matching every existing call site before PROP-027 P4", async () => {
+  const store = makeClient();
+  const result = await materializeAssetJobFiles(store.client, { job, inspected: [await inspected()], workerType: "mock" });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const envelope = result.materialized.job.result;
+    assert.equal(isAssetJobResultEnvelope(envelope), true);
+    if (isAssetJobResultEnvelope(envelope)) {
+      assert.equal(envelope.metadata.sourceWorkspace, undefined);
+      assert.equal(envelope.metadata.sourceKind, undefined);
+      assert.equal(envelope.metadata.briefSchemaVersion, undefined);
+      assert.equal(envelope.metadata.briefSha256, undefined);
+    }
+  }
 });

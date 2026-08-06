@@ -4,10 +4,14 @@ import assert from "node:assert/strict";
 import {
   buildGeneratedAssetObjectPath,
   inspectAssetBytes,
-  sha256Hex,
   validateAssetCandidateBytes,
 } from "../src/lib/asset-binary.ts";
-import { validateGeneratedAssetCandidates, type GeneratedAssetFileCandidate } from "../src/lib/asset-generation-validation.ts";
+import { sha256Hex } from "../src/lib/asset-digest.ts";
+import {
+  SPEC_DIMENSION_ADVISORY_REASON,
+  validateGeneratedAssetCandidates,
+  type GeneratedAssetFileCandidate,
+} from "../src/lib/asset-generation-validation.ts";
 import { ASSET_GENERATION_IMAGE_DIMENSIONS, type AssetGenerationSpecV1 } from "../src/lib/asset-generation-spec.ts";
 
 const png1080 = new Uint8Array([
@@ -55,43 +59,44 @@ function candidate(bytes: Uint8Array, overrides: Partial<GeneratedAssetFileCandi
   };
 }
 
-test("inspectAssetBytes decodes PNG, JPEG, and WebP facts separately from validation", () => {
-  assert.deepEqual(inspectAssetBytes(png1080), {
+test("inspectAssetBytes decodes PNG, JPEG, and WebP facts separately from validation", async () => {
+  assert.deepEqual(await inspectAssetBytes(png1080), {
     ok: true,
-    facts: { actualMimeType: "image/png", actualWidth: 1080, actualHeight: 1080, extension: "png", byteSize: png1080.length, sha256: sha256Hex(png1080), bytes: png1080 },
+    facts: { actualMimeType: "image/png", actualWidth: 1080, actualHeight: 1080, extension: "png", byteSize: png1080.length, sha256: await sha256Hex(png1080), bytes: png1080 },
   });
-  assert.deepEqual(inspectAssetBytes(jpeg3x2), {
+  assert.deepEqual(await inspectAssetBytes(jpeg3x2), {
     ok: true,
-    facts: { actualMimeType: "image/jpeg", actualWidth: 3, actualHeight: 2, extension: "jpg", byteSize: jpeg3x2.length, sha256: sha256Hex(jpeg3x2), bytes: jpeg3x2 },
+    facts: { actualMimeType: "image/jpeg", actualWidth: 3, actualHeight: 2, extension: "jpg", byteSize: jpeg3x2.length, sha256: await sha256Hex(jpeg3x2), bytes: jpeg3x2 },
   });
-  assert.deepEqual(inspectAssetBytes(webp3x2), {
+  assert.deepEqual(await inspectAssetBytes(webp3x2), {
     ok: true,
-    facts: { actualMimeType: "image/webp", actualWidth: 3, actualHeight: 2, extension: "webp", byteSize: webp3x2.length, sha256: sha256Hex(webp3x2), bytes: webp3x2 },
+    facts: { actualMimeType: "image/webp", actualWidth: 3, actualHeight: 2, extension: "webp", byteSize: webp3x2.length, sha256: await sha256Hex(webp3x2), bytes: webp3x2 },
   });
 });
 
-test("validateAssetCandidateBytes accepts real matching PNG bytes and builds deterministic asset_job paths", () => {
-  const result = validateAssetCandidateBytes(candidate(png1080));
+test("validateAssetCandidateBytes accepts real matching PNG bytes and builds deterministic asset_job paths", async () => {
+  const result = await validateAssetCandidateBytes(candidate(png1080));
   assert.equal(result.ok, true);
   if (!result.ok) return;
 
-  assert.equal(result.inspected.sha256, sha256Hex(png1080));
+  assert.equal(result.inspected.sha256, await sha256Hex(png1080));
   assert.equal(
     buildGeneratedAssetObjectPath({ assetJobId: "asset-job-1", attemptNumber: 2, sha256: result.inspected.sha256, extension: result.inspected.extension }),
     `asset-jobs/asset-job-1/attempt-2/${result.inspected.sha256}.png`,
   );
 });
 
-test("validateAssetCandidateBytes rejects empty, oversized, invalid, unsupported, MIME-mismatched, dimension-mismatched, and size-mismatched bytes", () => {
-  for (const [result, reason] of [
+test("validateAssetCandidateBytes rejects empty, oversized, invalid, unsupported, MIME-mismatched, dimension-mismatched, and size-mismatched bytes", async () => {
+  for (const [resultPromise, reason] of [
     [validateAssetCandidateBytes(candidate(new Uint8Array())), "empty-bytes"],
     [validateAssetCandidateBytes(candidate(new Uint8Array(10 * 1024 * 1024 + 1))), "file-too-large"],
     [validateAssetCandidateBytes(candidate(new Uint8Array([1, 2, 3]))), "invalid-binary"],
     [validateAssetCandidateBytes(candidate(gif1x1)), "unsupported-mime"],
     [validateAssetCandidateBytes(candidate(png1080, { mimeType: "image/jpeg" })), "mime-mismatch"],
-    [validateAssetCandidateBytes(candidate(png1080, { width: 512, height: 512 })), "dimension-mismatch"],
+    [validateAssetCandidateBytes(candidate(png1080, { width: 512, height: 512 })), "declared-dimension-mismatch"],
     [validateAssetCandidateBytes(candidate(png1080, { fileSizeBytes: png1080.length + 1 })), "file-size-mismatch"],
   ] as const) {
+    const result = await resultPromise;
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.reason, reason);
@@ -99,9 +104,9 @@ test("validateAssetCandidateBytes rejects empty, oversized, invalid, unsupported
   }
 });
 
-test("inspectAssetBytes rejects truncated PNG, JPEG, and WebP without throwing", () => {
+test("inspectAssetBytes rejects truncated PNG, JPEG, and WebP without throwing", async () => {
   for (const bytes of [png1080.slice(0, 20), jpeg3x2.slice(0, 8), webp3x2.slice(0, 20)]) {
-    const result = inspectAssetBytes(bytes);
+    const result = await inspectAssetBytes(bytes);
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.reason, "invalid-binary");
@@ -124,5 +129,29 @@ test("metadata validation rejects array-like, base64/object-shaped, Blob-like, a
     if (!result.ok) {
       assert.equal(result.reason, "malformed-candidates");
     }
+  }
+});
+
+test("dimension policy: a provider's size differing from the requested spec only warns; a candidate's declared size differing from its own actual bytes still hard-rejects", async () => {
+  // Advisory half: this is exactly what a real ChatGPT/Midjourney image or a real phone photo looks
+  // like -- a real, valid image whose size the provider chose, not the size the spec asked for.
+  // validateGeneratedAssetCandidates is metadata-only (see the scope-guard test above) and never
+  // touches bytes, so overriding width/height alone is sufficient to exercise it.
+  const specLevelResult = validateGeneratedAssetCandidates([candidate(png1080, { width: 1024, height: 1024 })], spec);
+  assert.equal(specLevelResult.ok, true, "a provider-chosen size that differs from the spec must not reject");
+  if (specLevelResult.ok) {
+    assert.equal(specLevelResult.candidates[0].width, 1024);
+    assert.equal(specLevelResult.candidates[0].height, 1024);
+    assert.equal(specLevelResult.warnings.length, 1);
+    assert.match(specLevelResult.warnings[0], new RegExp(`^${SPEC_DIMENSION_ADVISORY_REASON}:`));
+  }
+
+  // Security half: this is a candidate lying about its own bytes -- the declared metadata doesn't
+  // match what the bytes actually decode to. This is the anti-tamper check and must never be
+  // weakened by the advisory relaxation above.
+  const byteLevelResult = await validateAssetCandidateBytes(candidate(png1080, { width: 512, height: 512 }));
+  assert.equal(byteLevelResult.ok, false, "a candidate's declared size disagreeing with its own actual bytes must still hard-reject");
+  if (!byteLevelResult.ok) {
+    assert.equal(byteLevelResult.reason, "declared-dimension-mismatch");
   }
 });

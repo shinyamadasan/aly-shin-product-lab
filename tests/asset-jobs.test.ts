@@ -11,11 +11,13 @@ import {
   type GeneratedAssetFileCandidate,
 } from "../src/lib/asset-generation-validation.ts";
 import {
+  buildAssetGenerationSpecForJob,
   buildMockAssetJobResult,
   claimQueuedAssetJobWithAttempt,
   completeRunningAssetJob,
   createAssetJobForReadyCreativePackage,
   failRunningAssetJob,
+  findQueuedExternalAssetJob,
   fromAssetJobRow,
   isAssetJobResultEnvelope,
   isAssetJobStatus,
@@ -31,6 +33,7 @@ import {
   type AssetJobRow,
 } from "../src/lib/asset-jobs.ts";
 import { finishAssetJobAttempt, type AssetJobAttemptRow } from "../src/lib/asset-job-attempts.ts";
+import { briefSha256 } from "../src/lib/asset-generation-brief.ts";
 import { fromCreativePackageRow, type CreativePackageRow } from "../src/lib/creative-packages.ts";
 import { BRAND_BIBLE } from "../src/lib/marketing-advisor-context.ts";
 import { GENERATED_ASSETS_BUCKET } from "../src/lib/asset-binary.ts";
@@ -50,6 +53,18 @@ const validBytes = new Uint8Array([
   0x49, 0x48, 0x44, 0x52,
   0x00, 0x00, 0x04, 0x38,
   0x00, 0x00, 0x04, 0x38,
+  0x08, 0x04, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+]);
+// Real, decodable 1024x1024 bytes (not merely declared) -- an actual OpenAI/DALL-E-shaped output
+// size, distinct from the 1080x1080 spec, so it exercises the P5 advisory path rather than the
+// byte-level anti-tamper rejection.
+const png1024 = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d,
+  0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x04, 0x00,
+  0x00, 0x00, 0x04, 0x00,
   0x08, 0x04, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00,
 ]);
@@ -513,6 +528,28 @@ test("createAssetJobForReadyCreativePackage allows a second Asset Job for the sa
   }
 });
 
+test("buildAssetGenerationSpecForJob resolves the same spec as buildAssetGenerationSpec, pre-claim, from only creativePackageId and assetKind", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const result = await buildAssetGenerationSpecForJob(store.client, { creativePackageId: "package-1", assetKind: "image" });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.spec, buildAssetGenerationSpec(fromCreativePackageRow(creativePackageRow()), { assetKind: "image", brandBible: BRAND_BIBLE }));
+  }
+  // Pre-claim: nothing about resolving the spec touches asset_jobs or claims anything.
+  assert.equal(store.jobs[0].status, "queued");
+});
+
+test("buildAssetGenerationSpecForJob reports unsupported-asset-kind, not-ready, and not-found distinctly", async () => {
+  const badKind = await buildAssetGenerationSpecForJob(makeClient().client, { creativePackageId: "package-1", assetKind: "video" });
+  assert.equal(badKind.ok, false);
+  if (!badKind.ok) assert.equal(badKind.reason, "unsupported-asset-kind");
+
+  const missing = await buildAssetGenerationSpecForJob(makeClient({ creativePackages: [] }).client, { creativePackageId: "package-1", assetKind: "image" });
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.equal(missing.reason, "not-found");
+});
+
 // No "refuses non-ready Creative Packages" test here: CreativePackageStatus (creative-packages.ts)
 // is currently the single-value union ["ready"], and its own row parser normalizes any other
 // string back to "ready" -- so the not-ready branch in createAssetJobForReadyCreativePackage
@@ -520,6 +557,41 @@ test("createAssetJobForReadyCreativePackage allows a second Asset Job for the sa
 // createCreativeJobForAcceptedOpportunity's identical gate-on-parent-status pattern) so that if
 // creative_packages ever gains a second status value, Asset Job creation is already guarded
 // against it without a follow-up change here.
+
+test("findQueuedExternalAssetJob returns null for an empty list", () => {
+  assert.equal(findQueuedExternalAssetJob([]), null);
+});
+
+test("findQueuedExternalAssetJob ignores mock jobs regardless of status", () => {
+  const jobs = [fromAssetJobRow(assetJobRow({ id: "job-1", status: "queued", worker_type: "mock" }))];
+  assert.equal(findQueuedExternalAssetJob(jobs), null);
+});
+
+test("findQueuedExternalAssetJob ignores external jobs that are not queued", () => {
+  const jobs = [
+    fromAssetJobRow(assetJobRow({ id: "job-1", status: "completed", worker_type: "external" })),
+    fromAssetJobRow(assetJobRow({ id: "job-2", status: "failed", worker_type: "external" })),
+    fromAssetJobRow(assetJobRow({ id: "job-3", status: "running", worker_type: "external" })),
+  ];
+  assert.equal(findQueuedExternalAssetJob(jobs), null);
+});
+
+test("findQueuedExternalAssetJob returns the one queued external job among other jobs", () => {
+  const target = fromAssetJobRow(assetJobRow({ id: "job-2", status: "queued", worker_type: "external" }));
+  const jobs = [
+    fromAssetJobRow(assetJobRow({ id: "job-1", status: "completed", worker_type: "external" })),
+    target,
+    fromAssetJobRow(assetJobRow({ id: "job-3", status: "queued", worker_type: "mock" })),
+  ];
+  assert.equal(findQueuedExternalAssetJob(jobs), target);
+});
+
+test("findQueuedExternalAssetJob returns the first match, trusting caller ordering rather than re-sorting", () => {
+  const newest = fromAssetJobRow(assetJobRow({ id: "job-newest", status: "queued", worker_type: "external", created_at: "2026-08-02T00:00:00.000Z" }));
+  const oldest = fromAssetJobRow(assetJobRow({ id: "job-oldest", status: "queued", worker_type: "external", created_at: "2026-08-01T00:00:00.000Z" }));
+  // Pre-sorted newest-first, exactly like listAssetJobsForCreativePackage's own ordering contract.
+  assert.equal(findQueuedExternalAssetJob([newest, oldest]), newest);
+});
 
 test("claimQueuedAssetJobWithAttempt claims a queued job and creates exactly one running attempt with attempt_number matching post-increment attempt_count", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
@@ -595,12 +667,49 @@ test("validateAssetJobResultEnvelope reports specific rejection reasons", () => 
     [{ ...envelope, output: { files: [] } }, "malformed-output"],
     [{ ...envelope, output: { files: [{ ...envelope.output.files[0], fileSizeBytes: 0 }] } }, "malformed-output"],
     [{ ...envelope, metadata: { generatedFromCreativePackage: "", generatorVersion: "1" } }, "malformed-metadata"],
+    // PROP-027 P4 contract: sourceKind is a closed vocabulary. An arbitrary string here -- notably
+    // including a tempting-but-wrong value like "api_generated" -- must be rejected, not silently
+    // accepted, so it can never become an informal stand-in for a real API provider identity.
+    [{ ...envelope, metadata: { ...envelope.metadata, sourceKind: "api_generated" } }, "malformed-metadata"],
+    [{ ...envelope, metadata: { ...envelope.metadata, sourceWorkspace: 12345 } }, "malformed-metadata"],
   ] as const) {
     const result = validateAssetJobResultEnvelope(candidate);
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.reason, reason);
     }
+  }
+});
+
+test("validateAssetJobResultEnvelope accepts sourceWorkspace/sourceKind/briefSchemaVersion/briefSha256 when valid, and never treats provider/model as part of this contract (PROP-027 P4)", () => {
+  const envelope = buildMockAssetJobResult(fromCreativePackageRow(creativePackageRow()), "image");
+  const withProvenance = {
+    ...envelope,
+    metadata: {
+      ...envelope.metadata,
+      sourceWorkspace: "chatgpt",
+      sourceKind: "ai_generated" as const,
+      briefSchemaVersion: "v1",
+      briefSha256: "a".repeat(64),
+    },
+  };
+
+  const result = validateAssetJobResultEnvelope(withProvenance);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.result.metadata.sourceWorkspace, "chatgpt");
+    assert.equal(result.result.metadata.sourceKind, "ai_generated");
+    // Lock the contract: this envelope's metadata type has no provider/model fields at all --
+    // TypeScript itself refuses to let this object carry them (see AssetJobResultEnvelope). This
+    // assertion is the runtime half of that guarantee: even a metadata object populated with every
+    // real provenance field this milestone defines never contains the two reserved-for-API keys.
+    assert.equal("provider" in result.result.metadata, false);
+    assert.equal("model" in result.result.metadata, false);
+  }
+
+  // Every value in ASSET_SOURCE_KINDS must independently be accepted -- not just the one used above.
+  for (const sourceKind of ["ai_generated", "photograph", "human_designed"] as const) {
+    assert.equal(validateAssetJobResultEnvelope({ ...envelope, metadata: { ...envelope.metadata, sourceKind } }).ok, true);
   }
 });
 
@@ -858,6 +967,74 @@ test("runAssetJobWithExecutors rejects malformed Creative Package content before
   assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-failed"]);
 });
 
+test("runAssetJobWithExecutors threads sourceWorkspace/sourceKind into the completed envelope for an external job, and never provider/model (PROP-027 P4)", async () => {
+  const store = makeClient({ jobs: [assetJobRow({ worker_type: "external" })] });
+  const result = await runAssetJobWithExecutors(
+    store.client,
+    "asset-job-1",
+    { external: () => [validGeneratedAssetFileCandidate()] },
+    { sourceWorkspace: "chatgpt", sourceKind: "ai_generated" },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(store.jobs[0].status, "completed");
+  const envelope = store.jobs[0].result;
+  assert.equal(isAssetJobResultEnvelope(envelope), true);
+  if (isAssetJobResultEnvelope(envelope)) {
+    assert.equal(envelope.worker, "external");
+    assert.equal(envelope.metadata.sourceWorkspace, "chatgpt");
+    assert.equal(envelope.metadata.sourceKind, "ai_generated");
+    // Available at zero cost -- spec is already built before materialization is ever reached.
+    assert.equal(envelope.metadata.briefSchemaVersion, "v1");
+    // Matches an independently-computed hash of the same spec's rendered brief -- proves this is a
+    // real fingerprint of the actual brief text, not merely "some string got set."
+    const expectedSpec = buildAssetGenerationSpec(fromCreativePackageRow(creativePackageRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+    assert.equal(envelope.metadata.briefSha256, await briefSha256(expectedSpec));
+    // Lock the contract: no code path threading real creative-source provenance end to end ever
+    // introduces provider/model -- those are reserved exclusively for a future real API executor.
+    assert.equal("provider" in envelope.metadata, false);
+    assert.equal("model" in envelope.metadata, false);
+  }
+});
+
+test("runAssetJobWithExecutors surfaces the spec-dimension advisory warning on its success result (AC-4) -- a 1024x1024 image, actually decodable as 1024x1024, succeeds against the 1080x1080 spec with a warning naming the real dimensions", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const candidate = validGeneratedAssetFileCandidate({ width: 1024, height: 1024, fileSizeBytes: png1024.length, bytes: png1024 });
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { mock: () => [candidate] });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /1024x1024/);
+    assert.match(result.warnings[0], /1080x1080/);
+  }
+  assert.equal(store.jobs[0].status, "completed");
+});
+
+test("runAssetJobWithExecutors reports no warnings when the candidate matches the spec exactly", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { mock: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.warnings, []);
+  }
+});
+
+test("runAssetJobWithExecutors leaves sourceWorkspace/sourceKind unset for a job whose caller declares neither, rather than inventing empty values", async () => {
+  const store = makeClient({ jobs: [assetJobRow()] });
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { mock: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, true);
+  const envelope = store.jobs[0].result;
+  assert.equal(isAssetJobResultEnvelope(envelope), true);
+  if (isAssetJobResultEnvelope(envelope)) {
+    assert.equal(envelope.metadata.sourceWorkspace, undefined);
+    assert.equal(envelope.metadata.sourceKind, undefined);
+    assert.equal(envelope.metadata.briefSchemaVersion, "v1");
+  }
+});
+
 test("runAssetJobWithExecutors passes a generated spec to the executor and never exposes raw Creative Package content", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
   const received: { spec: AssetGenerationSpecV1 | null } = { spec: null };
@@ -880,12 +1057,15 @@ test("runAssetJobWithExecutors passes a generated spec to the executor and never
 test("runAssetJobWithExecutors rejects invalid candidates before completing the job", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
   const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    // width/height differing from the spec is advisory (PROP-027 P5) and no longer rejects here --
+    // this candidate's declared 512x512 now disagrees with its own (unchanged, real 1080x1080)
+    // bytes instead, so it is caught by the byte-level anti-tamper check one step later.
     mock: () => [validGeneratedAssetFileCandidate({ width: 512, height: 512 })],
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.reason, "failed");
-  assert.equal(result.message, "Image asset generation candidate dimensions must be 1080x1080.");
+  assert.equal(result.message, "Generated asset declared dimensions 512x512 do not match decoded dimensions 1080x1080.");
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.jobs[0].completed_at, null);
   assert.equal(store.jobs[0].failed_at, finishedAt);
