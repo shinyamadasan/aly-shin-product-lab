@@ -156,3 +156,58 @@ above -- this environment has no running dev server or Supabase credentials. Sti
 run both `/brand` migrations, exercise the page in a browser (fill in each link, save, reload,
 click each handle and confirm it opens the right URL in a new tab, confirm an empty link shows
 "Not set" rather than a broken link).
+
+## 2026-08-06 — PROP-034: Daily Recommendation Readiness
+
+Code and tests complete and committed (`02e8138`, `7665fdb`, `88cc1d9`, `dd6de3e`); real-environment
+verification and Scheduled Task registration deliberately not yet done -- see below.
+
+Built across four reviewed slices, each landing only after the prior one was approved: (1a/1b) two
+independent selection contracts -- `selectPreparationCandidate` (newest eligible Opportunity across
+`new`/`accepted`, for the preparation script) and `selectTodaysReadyOpportunity` (newest `accepted`
+Opportunity with an already-materialized Creative Package, or `null`, for PROP-035's future Today
+view) -- deliberately separate so the overnight preparation script's timing can never leak into what
+Today shows; (2) `buildOpportunityBriefCreativeJobResult`, a new deterministic, non-AI Creative Job
+worker (`opportunity_brief`) that composes truthful Creative Package content from an Opportunity's
+own fields, chosen over the placeholder `mock` worker and over both of `product_text_worker`'s real
+paths (human-in-the-loop or a paid Anthropic API), neither compatible with "ready before the owner
+arrives, unattended, zero recurring cost"; (3) registered alongside `mock`/`product_text_worker` in
+`trustedCreativeJobExecutors()`, with a direct regression proving the new registration didn't shadow
+either existing one; (4) the orchestration script itself (`scripts/creative-prep/run.ts`,
+`npm run creative-prep`) plus its CLI shell (lock, credential preflight, structured JSONL/latest.json
+output, exit-code mapping) and a stale-`running`-job detector (`CREATIVE_PREP_RUNNING_STALE_AFTER_MS`,
+5 minutes) added after review found a real gap: this schema has no heartbeat/repair mechanism for a
+Creative Job at all (`tests/creative-job-attempts-schema.test.ts` asserts this directly), so an
+abandoned `running` job would otherwise be silently reported as a successful run, indefinitely.
+Detection is reporting-only (exit 1, "suspected stale") -- proven by test to never mutate the row.
+Separately, `renderAssetGenerationBrief` gained a no-text-overlay instruction line, with a new
+exact-output test.
+
+Full suite: 1257 (start of Slice 1) -> 1268 (after the brief-instruction addition), two independently
+confirmed pre-existing static-analysis failures unaffected throughout (`tests/asset-jobs.test.ts`,
+`tests/creative-package-asset-create.test.ts`), typecheck/lint/build clean at every slice. See
+`planning/PROPOSALS.md`'s PROP-034 entry for the full approved architecture, `docs/DECISIONS.md`
+D-005 for the two non-obvious calls, and `docs/ARCHITECTURE.md`'s "Daily Recommendation Readiness
+(PROP-034)" section for the shipped design.
+
+**2026-08-06 update -- real-environment verification and Scheduled Task registration completed.**
+`npm run creative-prep` was run against production Supabase (`b40c448`, `c62092f`). A fresh manual-
+test Opportunity (`new`, no Creative Job) was advanced end-to-end in one run -- `accepted-opportunity`,
+`created-creative-job` (`worker_type: "opportunity_brief"`), `executed-creative-job`,
+`materialized-creative-package` -- producing a `ready` Creative Package whose `headline`/`caption`
+were verbatim the Opportunity's own `title`/`summary`, confirming the Truthfulness Principle held
+in practice, not just in the worker's unit tests. A second run against the same Opportunity was a
+clean no-op with zero additional writes, confirming idempotency for real. Both the test Opportunity
+and an older, unrelated manual-test row from PROP-027 (about to expire) were removed afterward, along
+with their full dependent chain (Creative Job/Package, and 5 pre-existing Asset Jobs/Assets on the
+older row) -- database is now clean of test data. The Windows Scheduled Task (`Aly & Shin Product Lab
+Creative Prep`, 6:10 PM Arizona) is registered and confirmed via `schtasks /query`.
+
+Found and fixed in the same session, as its own separate commit (`c62092f`): the shared lock module
+(`scripts/daily-advisor/lock.ts`) never created its lock file's parent directory, so `creative-prep`'s
+very first run failed (`ENOENT`, misreported as a lock race) simply because `creative-prep/` had never
+existed on this machine. Fixed with an unconditional `mkdirSync(..., { recursive: true })` at the top
+of `acquireLock` -- also benefits Daily Advisor, which shares this module.
+
+PROP-035 (Today's UI) has not been started. Its dependency on this proposal having run successfully
+at least once is now satisfied, but per explicit instruction, PROP-035 work has not begun.

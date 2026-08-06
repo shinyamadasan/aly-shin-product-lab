@@ -1,5 +1,6 @@
 import {
   buildMockCreativeJobResult,
+  buildOpportunityBriefCreativeJobResult,
   runCreativeJobWithExecutors,
   type CreativeJobExecutorMap,
   type CreativeJobResultEnvelope,
@@ -31,6 +32,7 @@ export function trustedCreativeJobExecutors(): CreativeJobExecutorMap {
   return {
     mock: (_job, opportunity) => buildMockCreativeJobResult(opportunity),
     product_text_worker: (_job, opportunity) => buildProductTextWorkerReadinessResult(opportunity),
+    opportunity_brief: (_job, opportunity) => buildOpportunityBriefCreativeJobResult(opportunity),
   };
 }
 

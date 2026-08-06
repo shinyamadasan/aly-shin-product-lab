@@ -274,6 +274,42 @@ test("trusted runner completes a valid product_text_worker job and materializes 
   assert.equal(store.packages.length, 1);
 });
 
+test("trusted runner dispatches opportunity_brief to the new initializer and materializes a truthful package", async () => {
+  const store = makeClient({ jobs: [creativeJobRow({ worker_type: "opportunity_brief" })] });
+  const result = await runTrustedCreativeJobAndMaterializePackage(store.client, "job-1");
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(store.events, ["claim-job", "complete-job", "finish-attempt-completed", "insert-package"]);
+  assert.equal(store.jobs[0].status, "completed");
+  assert.equal(store.jobs[0].attempt_count, 1);
+  assert.equal(store.packages.length, 1);
+  assert.equal(store.opportunities[0].status, "accepted");
+  assert.equal(store.attempts[0].worker_type, "opportunity_brief");
+  assert.equal(store.attempts[0].status, "completed");
+
+  const resultEnvelope = store.jobs[0].result as { worker: string; output: { headline: string; caption: string } };
+  assert.equal(resultEnvelope.worker, "opportunity_brief");
+  assert.equal(resultEnvelope.output.headline, store.opportunities[0].title);
+  assert.doesNotMatch(JSON.stringify(resultEnvelope), /MOCK ONLY|NON-AI TEST/);
+
+  const packageContent = store.packages[0].content as { output: { headline: string; caption: string } };
+  assert.equal(packageContent.output.headline, store.opportunities[0].title);
+});
+
+test("trusted runner still dispatches mock jobs to the mock executor after opportunity_brief was registered", async () => {
+  const store = makeClient({ jobs: [creativeJobRow({ worker_type: "mock" })] });
+  const result = await runTrustedCreativeJobAndMaterializePackage(store.client, "job-1");
+
+  assert.equal(result.ok, true);
+  assert.equal(store.jobs[0].status, "completed");
+  assert.equal(store.packages.length, 1);
+  assert.equal(store.attempts[0].worker_type, "mock");
+
+  const resultEnvelope = store.jobs[0].result as { worker: string; output: { headline: string } };
+  assert.equal(resultEnvelope.worker, "mock");
+  assert.match(resultEnvelope.output.headline, /^MOCK ONLY/);
+});
+
 test("trusted runner fails invalid product_text_worker output without creating a package", async () => {
   const invalidExecutors: CreativeJobExecutorMap = {
     product_text_worker: () => ({

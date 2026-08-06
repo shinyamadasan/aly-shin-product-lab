@@ -563,3 +563,56 @@ there, (3) change the body of `generateAdvisorPrompt()` to call it instead of on
 prompt for Copy-Prompt. No other file in the app — not `AiAdvisorPanel`, not `prompts.ts`, not
 `routing.ts` — needs to change. Nothing here is Claude- or ChatGPT-specific; `AiProvider` is
 provider-agnostic by design.
+
+## Daily Recommendation Readiness (PROP-034)
+
+A scheduled, offline worker (`scripts/creative-prep/run.ts`, `npm run creative-prep`) that ensures
+the Opportunity Today (PROP-035) will select has already reached a ready Creative Package before
+the owner opens the app. Full design rationale: `planning/PROPOSALS.md`'s PROP-034 entry;
+day-to-day operator guide: `scripts/creative-prep/README.md`. This section documents only what
+PROP-034 itself added — the wider Opportunity → Creative Job → Creative Package → Asset Job →
+Asset chain that already existed predates this work and remains a separately tracked documentation
+gap (see `docs/DECISIONS.md` D-004).
+
+**Two selection contracts, not one, and why:** `selectPreparationCandidate`
+(`src/lib/opportunity-review.ts`) answers "what should be advanced next" (newest Opportunity across
+`new`/`accepted`). `selectTodaysReadyOpportunity` (`src/lib/todays-recommendation.ts`) answers a
+different question — "what is safe to show right now" (newest `accepted` Opportunity that already
+has a materialized Creative Package, or `null`). Collapsing these into one selector would couple
+the overnight preparation script's timing to whenever the owner happens to open the app; PROP-035's
+Today view is expected to use only the second, never the first.
+
+**Creative Package initialization, not content generation:** `buildOpportunityBriefCreativeJobResult`
+(`src/lib/creative-jobs.ts`) is a new, deterministic, non-AI worker (`worker_type: "opportunity_brief"`,
+registered in `scripts/creative-workers/runner.ts`'s `trustedCreativeJobExecutors()` alongside
+`mock` and `product_text_worker`, not in place of either) that composes a Creative Package's initial
+`headline`/`caption` verbatim from the selected Opportunity's own `title`/`summary`/`reason` — never
+an invented claim, never AI-generated, never the `mock` executor's placeholder text reaching a real
+Creative Package. `asset_job_attempts.provider`/`.model` stay `null` for this worker, consistent
+with every other non-real-AI executor.
+
+**Orchestration (`runCreativePreparation`, `scripts/creative-prep/run.ts`):** select → inspect the
+selected Opportunity's actual current state → advance it exactly one step if a step is needed
+(accept → create Creative Job with `workerType: "opportunity_brief"` → execute → materialize) →
+stop the instant a Creative Package exists. Every transition delegates to an existing, already-
+tested function; nothing is reimplemented.
+
+**Stale-`running`-job detection is reporting-only.** No heartbeat, retry-count, or repair mechanism
+exists anywhere in this schema for a Creative Job (`tests/creative-job-attempts-schema.test.ts` and
+`tests/asset-job-attempts-schema.test.ts` both assert the migration SQL contains none — a deliberate
+exclusion from an earlier milestone). `CREATIVE_PREP_RUNNING_STALE_AFTER_MS` (5 minutes) lets this
+script tell an operator the difference between "still plausibly executing" and "long enough that it
+almost certainly isn't," purely by reading `started_at` — it never claims, resets, or retries the
+row. A `running` job younger than the threshold is a benign exit-0 skip; at or past it, or with a
+missing/invalid `started_at`, it's an exit-1 failure, worded "suspected stale." Genuine recovery
+remains a separate, unscoped proposal.
+
+**CLI shell (`runCreativePrepCli`):** a single `try/finally` around lock acquisition, credential
+resolution, orchestration, and structured output — reusing `scripts/daily-advisor/lock.ts`'s
+`acquireLock` contract unchanged (same PID/staleness recovery, same file-lock shape). Output is
+appended per invocation to `creative-prep/output/YYYY-MM-DD.jsonl` (a failed scheduled run followed
+by a successful catch-up leaves both entries) plus an overwritten `latest.json` convenience pointer
+(never read as a source of truth, same convention as Daily Advisor's `latest.md`). Exit codes: `0`
+ready/no-op/benign-skip, `1` any condition meaning the selected Opportunity cannot become ready
+without an operator (failed job, suspected-stale job, unhealthy `started_at`, or a genuine operation
+error), `2` missing credentials, `3` lock held elsewhere.

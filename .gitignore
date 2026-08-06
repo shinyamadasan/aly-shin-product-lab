@@ -57,6 +57,11 @@ daily-advisor-session.log
 /daily-advisor/output/
 /daily-advisor/.run.lock
 
+# Creative Package Preparation (PROP-034) -- same reasoning as Daily Advisor above: generated
+# per-run output and the lock file are local operational artifacts, never committed.
+/creative-prep/output/
+/creative-prep/.run.lock
+
 # Marketing Advisor manual export/import sessions (PROP-021) -- local working artifacts (Brief
 # snapshots, prompts, manifests, AI replies, lifted drafts), never committed. Mirrors the Daily
 # Advisor output/ convention above.

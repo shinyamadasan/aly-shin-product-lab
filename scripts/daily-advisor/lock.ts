@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type LockInfo = { pid: number; startedAt: string };
 
@@ -47,6 +48,13 @@ function isStale(info: LockInfo | null): boolean {
 // the separate same-day idempotency check. Stale locks (dead PID, or older than STALE_AFTER_MS)
 // are recovered automatically rather than requiring manual cleanup after a crash.
 export function acquireLock(lockPath: string): AcquireLockResult {
+  // The lock file's directory may not exist yet on a fresh checkout or a brand-new scheduled
+  // script's first-ever run (found while verifying creative-prep against real Supabase: its
+  // parent directory had never been created, and the wx-flag ENOENT below was misreported as
+  // "lost a race acquiring the lock"). Safe to call unconditionally -- recursive mkdir on an
+  // already-existing directory is a no-op.
+  mkdirSync(dirname(lockPath), { recursive: true });
+
   if (existsSync(lockPath)) {
     const info = readLockInfo(lockPath);
     if (!isStale(info)) {

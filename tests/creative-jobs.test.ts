@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import {
   buildMockCreativeJobResult,
+  buildOpportunityBriefCreativeJobResult,
   claimQueuedCreativeJob,
   claimQueuedCreativeJobWithAttempt,
   completeRunningCreativeJob,
@@ -381,6 +382,7 @@ test("isCreativeJobStatus accepts only the approved statuses", () => {
 test("isCreativeJobWorkerType accepts only provider-neutral supported workers", () => {
   assert.equal(isCreativeJobWorkerType("mock"), true);
   assert.equal(isCreativeJobWorkerType("product_text_worker"), true);
+  assert.equal(isCreativeJobWorkerType("opportunity_brief"), true);
   for (const workerType of ["claude", "openai", "gemini", "remotion", "image", ""]) {
     assert.equal(isCreativeJobWorkerType(workerType), false);
   }
@@ -510,6 +512,130 @@ test("buildMockCreativeJobResult is deterministic for the same Opportunity", () 
   assert.deepEqual(buildMockCreativeJobResult(opportunity), buildMockCreativeJobResult(opportunity));
   assert.deepEqual(buildMockCreativeJobResult(opportunity).artifacts, []);
   assert.equal(buildMockCreativeJobResult(opportunity).schemaVersion, "v1");
+});
+
+test("buildOpportunityBriefCreativeJobResult maps headline verbatim from title and caption from a trimmed summary", () => {
+  const opportunity: OpportunityRecord = {
+    id: "opportunity-1",
+    opportunityType: "product_marketing_content",
+    producer: "daily_advisor",
+    sourceType: "daily_advisor",
+    sourceId: "source-1",
+    title: "Create launch-ready product content for Brownies",
+    summary: "  Brownies is ready.  ",
+    reason: "Rule Engine evidence supports it.",
+    recommendedAction: "create_content",
+    evidenceVersion: "v1",
+    evidence: {},
+    sourceRuleIds: ["RULE-001"],
+    sourceFindings: [],
+    detectedAt: "2026-07-29T09:00:00.000Z",
+    expiresAt: "2026-08-01T09:00:00.000Z",
+    deduplicationKey: "key",
+    status: "accepted",
+    createdAt: "2026-07-29T09:00:00.000Z",
+    updatedAt: "2026-07-29T09:00:00.000Z",
+  };
+
+  const result = buildOpportunityBriefCreativeJobResult(opportunity);
+  assert.equal(result.worker, "opportunity_brief");
+  assert.equal(result.schemaVersion, "v1");
+  assert.deepEqual(result.artifacts, []);
+  assert.equal(result.output.headline, opportunity.title);
+  assert.equal(result.output.caption, "Brownies is ready.");
+  assert.equal(result.metadata.generatedFromOpportunity, opportunity.id);
+  assert.equal(result.metadata.generatorVersion, "1");
+});
+
+test("buildOpportunityBriefCreativeJobResult falls back to reason when summary is empty or whitespace-only", () => {
+  const base: OpportunityRecord = {
+    id: "opportunity-2",
+    opportunityType: "product_marketing_content",
+    producer: "daily_advisor",
+    sourceType: "daily_advisor",
+    sourceId: "source-2",
+    title: "Create product content for Sourdough",
+    summary: "   ",
+    reason: "Weekend batch was the best-reviewed post last month.",
+    recommendedAction: "create_content",
+    evidenceVersion: "v1",
+    evidence: {},
+    sourceRuleIds: ["RULE-002"],
+    sourceFindings: [],
+    detectedAt: "2026-07-29T09:00:00.000Z",
+    expiresAt: "2026-08-01T09:00:00.000Z",
+    deduplicationKey: "key-2",
+    status: "accepted",
+    createdAt: "2026-07-29T09:00:00.000Z",
+    updatedAt: "2026-07-29T09:00:00.000Z",
+  };
+
+  assert.equal(buildOpportunityBriefCreativeJobResult(base).output.caption, base.reason);
+  assert.equal(buildOpportunityBriefCreativeJobResult({ ...base, summary: "" }).output.caption, base.reason);
+});
+
+test("buildOpportunityBriefCreativeJobResult is deterministic and never contains a placeholder marker", () => {
+  const opportunity: OpportunityRecord = {
+    id: "opportunity-3",
+    opportunityType: "product_marketing_content",
+    producer: "daily_advisor",
+    sourceType: "daily_advisor",
+    sourceId: "source-3",
+    title: "Create product content for Croissants",
+    summary: "Croissants have hit their proof window.",
+    reason: "Rule Engine evidence supports it.",
+    recommendedAction: "create_content",
+    evidenceVersion: "v1",
+    evidence: {},
+    sourceRuleIds: ["RULE-003"],
+    sourceFindings: [],
+    detectedAt: "2026-07-29T09:00:00.000Z",
+    expiresAt: "2026-08-01T09:00:00.000Z",
+    deduplicationKey: "key-3",
+    status: "accepted",
+    createdAt: "2026-07-29T09:00:00.000Z",
+    updatedAt: "2026-07-29T09:00:00.000Z",
+  };
+
+  const first = buildOpportunityBriefCreativeJobResult(opportunity);
+  const second = buildOpportunityBriefCreativeJobResult(opportunity);
+  assert.deepEqual(first, second);
+
+  const serialized = JSON.stringify(first);
+  for (const marker of ["MOCK ONLY", "NON-AI TEST", "PLACEHOLDER", "TODO", "LOREM"]) {
+    assert.doesNotMatch(serialized, new RegExp(marker, "i"));
+  }
+
+  // Traceability, not just absence of markers: every produced string is exactly a source field,
+  // never a superset/rewrite of it (e.g. no appended brand phrase, no adjective inserted).
+  assert.equal(first.output.headline, opportunity.title);
+  assert.ok(first.output.caption === opportunity.summary.trim() || first.output.caption === opportunity.reason);
+
+  // Provider/model belong to creative_job_attempts and are never this pure function's concern --
+  // it has no persistence responsibility at all, so the envelope carries neither field.
+  assert.ok(!("provider" in first));
+  assert.ok(!("model" in first));
+});
+
+test("buildOpportunityBriefCreativeJobResult produces an envelope that passes the existing v1 validator", () => {
+  const opportunity = fromOpportunityRow(opportunityRow());
+  const result = buildOpportunityBriefCreativeJobResult(opportunity);
+  assert.equal(isCreativeJobResultEnvelope(result), true);
+  assert.equal(validateCreativeJobResultEnvelope(result).ok, true);
+});
+
+test("buildOpportunityBriefCreativeJobResult does not mutate its input Opportunity", () => {
+  const opportunity = fromOpportunityRow(opportunityRow());
+  const snapshot = JSON.parse(JSON.stringify(opportunity));
+
+  buildOpportunityBriefCreativeJobResult(opportunity);
+
+  assert.deepEqual(opportunity, snapshot);
+});
+
+test("buildOpportunityBriefCreativeJobResult always returns an empty artifacts array by design", () => {
+  const opportunity = fromOpportunityRow(opportunityRow());
+  assert.deepEqual(buildOpportunityBriefCreativeJobResult(opportunity).artifacts, []);
 });
 
 test("isCreativeJobResultEnvelope validates both supported v1 result shapes", () => {
