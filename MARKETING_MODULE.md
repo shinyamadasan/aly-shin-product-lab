@@ -17,6 +17,13 @@
 > Studio screen, on branch `feat/journey-content-handoff-ui-m2c2`) implemented 2026-07-28 — see
 > "M2C2 implementation record" section below and `planning/PROPOSALS.md` PROP-017. Next: Duplicate
 > draft, AI generation, or Campaign linkage (once Campaigns exists) — none committed to yet.**
+> **M1-UI (Brand Foundation CRUD — the first UI built on M1's schema; General/Visual Identity/Brand
+> Guidelines only, deliberately no logo/photo upload, no Storage, no typography, no brand voice)
+> implemented 2026-08-05 — see "M1-UI implementation record" section at the end of this document
+> and `planning/PROPOSALS.md` PROP-032.** **M1-UI Brand Presence (a small enhancement to the same
+> page — Website/Email/Preferred Handle/Facebook/Instagram/TikTok/YouTube, each social handle
+> clickable to its URL, no Open/Copy buttons) implemented the same day — see "M1-UI Brand Presence
+> implementation record" at the end of this document and `planning/PROPOSALS.md` PROP-033.**
 > Written 2026-07-25 (M0). Updated 2026-07-27: the owner approved a narrowed M1 covering
 > **Brand Profile only** — no `campaigns`, `campaign_products`, or any later-milestone table.
 > See `planning/PROPOSALS.md` PROP-012 for the approval record and PROP-013 for the remaining,
@@ -2286,3 +2293,129 @@ Generation Foundation implementation record"). Building M3's `content_drafts`/`c
 schema or M7's image-gen adapter on top of it would create two competing, disagreeing
 asset-generation designs in this document. Track A's M3/M6/M7 rows are left in the table above as a
 historical record of the original plan, not as work still available to greenlight.
+
+---
+
+## M1-UI implementation record (2026-08-05) — Brand Foundation CRUD
+
+**Approved via a deliberately narrowed implementation plan (plan-mode review), scoped down twice
+before build.** The original request specified logo/profile-picture/cover-photo upload with a
+Storage bucket and five separate visual-direction fields. The owner cut that entirely before
+authorizing implementation: **General, Visual Identity, and one Brand Guidelines textarea only.**
+No Storage, no upload, no typography, no brand voice, no CTA config, no phrase lists, no version
+history, no multiple profiles, no approvals, no AI generation — every one of those stays exactly
+as unbuilt as it was before this milestone. See `planning/PROPOSALS.md` PROP-032 for the full
+decision record.
+
+**Schema — one additive migration, no new table, no Storage.** `supabase-add-brand-foundation-fields.sql`
+adds four nullable/defaulted columns to the already-shipped `brand_profiles` table (PROP-012):
+`brand_status` (text, default `'Exploring'`), `background_color`, `accent_color`,
+`brand_guidelines`. Reuses `business_name`, `short_description`, `target_audience`,
+`primary_color`, `secondary_color` as-is. `brand_status` deliberately does not seed a business
+"stage" — it names the maturity of the *branding decisions themselves*, distinct from any future
+business-lifecycle field; this was a rename from an initial "Brand Stage" draft during plan review
+for exactly that reason. No hex value is seeded for `background_color`/`accent_color`:
+`docs/BRAND_BIBLE_V1.md`'s Visual Direction section names colors ("Cream," "Cocoa Brown," etc.)
+but defines no hex codes anywhere in this repo, and no `brand_profiles` row was ever seeded — there
+was nothing approved to initialize from, so nothing was invented. `tests/brand-foundation-fields-schema.test.ts`
+(mirrors `tests/brand-profiles-schema.test.ts`'s static-regex convention) asserts the migration
+stays additive, seeds no hex literal, creates no table, touches no `storage.*` object, and adds no
+column belonging to a deferred concern (logo/photo, typography, brand voice).
+
+**`ColorSwatchField` (`src/components/ui.tsx`) — new primitive, the one genuinely reusable
+addition.** A labeled swatch + synced hex text input + disabled-while-empty Copy button. The
+correctness property the owner specifically asked for: an unset color must never silently become
+`#000000`. HTML's `<input type="color">` always needs *some* valid hex internally, so it's layered
+invisibly over a placeholder swatch (checkerboard pattern when unset); the value that actually gets
+submitted comes from a separate `<input type="hidden">` bound to component state that starts at
+`""` and only ever changes when the user picks or types a real value. `SecondaryButton` gained an
+optional `disabled` prop (previously always enabled) to support Copy's disabled-while-unset state
+— the only change to an existing shared primitive.
+
+**State wiring.** `LabState.brandProfile: BrandProfile | null` (`src/lib/lab-state.ts`) — a
+singleton, not an array, matching "one active brand record, no version history." `loadSupabaseData()`
+(`src/app/product-lab.tsx`) added `brand_profiles.select("*").eq("is_active", true).limit(1).maybeSingle()`
+to the existing big `Promise.all`, using the same `isMissingTableError` graceful-degradation
+pattern already used for `equipment`/`content_drafts`/etc. `saveBrandProfile(formData)` always
+upserts the single row (`is_active: true` on every save — there is never a second row to create),
+checking `isMissingColumnError` on failure to distinguish "the new columns aren't migrated yet"
+from a genuine error, mirroring `saveProduct`'s existing `missingDecisionColumn` handling exactly.
+No delete function — there is nothing to delete in a single-record settings surface.
+
+**UI — one page, one form, no list.** `src/components/brand-foundation-page.tsx`: three
+`FormPanel` sections (General, Visual Identity, Brand Guidelines) in a single column, following
+the `InventoryPage`/`BakePage` convention of extracting larger features out of the
+`product-lab.tsx` monolith into their own file. New route `/brand`
+(`src/app/brand/page.tsx`), nav entry in `src/lib/lab-state.ts`'s `navItems` placed immediately
+before "Content Studio", title wired in `src/components/app-shell.tsx`.
+
+**Verified:** `npm run typecheck` clean; `npx eslint` clean on every touched/new file; `npm run
+test` passing 1179/1180 (1 pre-existing unrelated skip, unrelated to this change), including the
+7 new schema tests; `npm run build` succeeds with one new route (`/brand`; 19 routes total, up
+from 18). No changes to any existing schema, migration, RLS policy, or already-shipped file beyond
+the additive columns, the `SecondaryButton` `disabled` prop, and the nav wiring described above.
+Logo/profile-picture/cover-photo upload, Supabase Storage, typography, brand voice, CTA
+configuration, preferred/prohibited phrases, AI generation, multiple brand profiles, and approvals
+remain fully unbuilt — each requires its own separate authorization before work begins.
+
+---
+
+## M1-UI Brand Presence implementation record (2026-08-05)
+
+**A small, owner-specified enhancement to the Brand Foundation page above, approved and built
+immediately after M1-UI shipped.** The owner specified the fields, the exact click/no-click
+behavior per field, an explicit data-model instruction (store display value and URL separately,
+never assume URL formats), and a suggestion to implement a reusable internal "Brand Link" model.
+See `planning/PROPOSALS.md` PROP-033 for the full decision record, including the one real
+ambiguity (Preferred Handle's non-clickable treatment) named there rather than silently assumed.
+
+**Schema — one more additive migration, still no new table, still no Storage.**
+`supabase-add-brand-presence-fields.sql` adds eleven nullable `text` columns to `brand_profiles`,
+no defaults on any of them: `website_url`, `email`, `preferred_handle`, and a `{platform}_handle`/
+`{platform}_url` pair each for `facebook`, `instagram`, `tiktok`, `youtube`. `website_url` and
+`email` have no separate handle column — a website's URL is its own display text, and an email's
+`mailto:` link is computed at render time, never persisted as a second stored value.
+`tests/brand-presence-fields-schema.test.ts` (mirrors the PROP-032 schema-test convention) proves
+the migration adds exactly these eleven columns, seeds no default, keeps handle/url separate per
+platform, and stays scoped away from follower counts, analytics, posting, or scheduling.
+
+**A real schema-design fork, decided and explained rather than silently picked either way.** The
+owner's own suggestion — avoid "hardcoding seven separate fields," implement a reusable model
+"internally," then "Brand Foundation simply renders a list of brand links" — could reasonably be
+read as either a database-shape instruction (one `jsonb` array column) or a code-layer instruction
+(flat columns, reusable rendering code). This implementation chose **flat columns** for the
+database (matching the 100% precedent of every other field on `brand_profiles`, and this schema's
+existing convention of reserving `jsonb` for genuinely variable-shaped/opaque payloads like
+`asset_jobs.result`, not small known sets) and satisfied the reusability ask entirely at the
+**app/UI layer**: `src/components/brand-foundation-page.tsx` defines `BRAND_LINK_FIELDS`, a
+`BrandLinkFieldConfig[]` — one entry per platform naming its title, an `hrefFor`/`displayTextFor`
+pair (each takes the current `BrandProfile | null` and returns the computed link/label), and its
+1-2 input definitions — and a single `BrandLinkField` component the page's JSX `.map()`s over.
+Adding a future platform (Threads, Pinterest, LinkedIn, a menu link) is one more config entry plus
+one small additive migration for its column(s) — not a redesign of this page, which is what the
+owner's underlying concern actually named.
+
+**UX — exactly the specified contract, no Open/Copy buttons anywhere in this section.** Each
+social platform (Facebook/Instagram/TikTok/YouTube) shows its saved handle as clickable text
+(`target="_blank" rel="noreferrer"` — new to this codebase; no prior `target="_blank"` usage
+existed anywhere in `src/`) that opens its saved URL, or "Not set" in muted text when empty, with
+the handle/URL input pair immediately below for editing — no separate edit/view mode, consistent
+with the rest of this always-editable page. Website renders as a plain clickable hyperlink to
+itself; Email renders as a `mailto:` link showing the address. Preferred Handle renders as an
+ordinary text field with no link, since the owner's UX section never described it as clickable.
+
+**URL safety net, deliberately narrow.** `ensureUrlProtocol` (`src/app/product-lab.tsx`, defined
+immediately above `saveBrandProfile`) prepends `https://` to a URL field only when it's saved with
+no scheme at all (e.g. `alyandpon.com` → `https://alyandpon.com`) — it never rewrites, validates,
+or reformats anything beyond that, honoring "do not assume URL formats" while preventing an
+obviously broken relative link. Applied to `websiteUrl`/`facebookUrl`/`instagramUrl`/`tiktokUrl`/
+`youtubeUrl`; not applied to `email` (stored as a raw address) or the four `*Handle` fields (plain
+display text).
+
+**Verified:** `npm run typecheck` clean; `npx eslint` clean on every touched/new file; `npm run
+test` passing 1186/1187 (1 pre-existing unrelated skip, unrelated to this change), including the 7
+new schema tests; `npm run build` succeeds (`/brand` unchanged as a route — this was a
+same-page enhancement, not a new route — 19 routes total). No changes to any existing schema,
+migration, RLS policy, or already-shipped file beyond the additive columns and the Brand Presence
+section described above. Follower counts, analytics, posting, scheduling, and any social-management
+capability remain fully unbuilt, per the owner's own explicit non-goals.

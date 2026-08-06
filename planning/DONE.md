@@ -110,3 +110,49 @@ transactions) removed from the live project after verification, confirmed via a 
 
 This was the fifth and last milestone in the approved Supply Inventory Loop plan. Still awaiting
 review of Milestone 5; no further milestones are scheduled unless requested.
+
+## 2026-08-05 — Marketing Module M1-UI: Brand Foundation CRUD (`/brand`)
+
+The first CRUD UI built on top of PROP-012's schema-only `brand_profiles` foundation --
+deliberately reduced twice during plan review from an initial logo/profile-photo/cover-photo
+upload spec down to General + Visual Identity + one Brand Guidelines textarea only. One additive
+migration (`supabase-add-brand-foundation-fields.sql`: `brand_status`, `background_color`,
+`accent_color`, `brand_guidelines`), no new table, no Storage bucket. New `ColorSwatchField`
+primitive (`src/components/ui.tsx`) supports a real unset color state -- posts `""`, never
+silently coerces to `#000000` -- since no approved hex palette exists anywhere in this repo to
+seed defaults from (`docs/BRAND_BIBLE_V1.md` names colors, not hex codes). `LabState.brandProfile`
+is a singleton, matching "one active brand record, no version history." New page component
+`src/components/brand-foundation-page.tsx`, new route `/brand`, nav entry before Content Studio.
+See `planning/PROPOSALS.md` PROP-032 and `MARKETING_MODULE.md`'s "M1-UI implementation record"
+for the full account.
+
+Lint/typecheck/tests/build all clean (`npm run test` 1179/1180, 1 pre-existing unrelated skip,
+including 7 new schema tests; `npm run build` succeeds, 19 routes, `/brand` new). **Not yet
+browser- or live-Supabase-verified** -- this environment has no running dev server or Supabase
+credentials to exercise `/brand` end to end (fill all fields, save, reload, confirm persistence;
+confirm an unset color truly stays unset after a round trip). That manual check from the plan's
+Verification section is still outstanding and should happen before this is treated as fully done.
+
+## 2026-08-05 — Marketing Module M1-UI: Brand Presence (small enhancement to `/brand`)
+
+Owner-specified enhancement to the Brand Foundation page above, approved and built the same day.
+New "🌐 Brand Presence" section: Website, Email, Preferred Handle, Facebook, Instagram, TikTok,
+YouTube. One more additive migration (`supabase-add-brand-presence-fields.sql`: eleven nullable
+`text` columns, no defaults), still no new table, still no Storage. Website/Email/social handles
+render as clickable text/hyperlinks/`mailto:` links -- no Open/Copy buttons, per the owner's exact
+UX spec. Handle and URL are stored separately per platform, per the owner's explicit "do not
+assume URL formats" instruction. Schema stays flat columns (matching every other field on
+`brand_profiles`); the owner's reusability suggestion ("a small reusable Brand Link model...
+Brand Foundation simply renders a list of brand links") was honored at the app/UI layer instead --
+a `BRAND_LINK_FIELDS` config array + one `BrandLinkField` component the page `.map()`s over
+(`src/components/brand-foundation-page.tsx`) -- this design fork and the reasoning behind it are
+recorded in `planning/PROPOSALS.md` PROP-033 and `MARKETING_MODULE.md`'s "M1-UI Brand Presence
+implementation record".
+
+Lint/typecheck/tests/build all clean (`npm run test` 1186/1187, 1 pre-existing unrelated skip,
+including 7 new schema tests; `npm run build` succeeds, still 19 routes -- same-page enhancement,
+no new route). **Not yet browser- or live-Supabase-verified**, same limitation as the M1-UI entry
+above -- this environment has no running dev server or Supabase credentials. Still outstanding:
+run both `/brand` migrations, exercise the page in a browser (fill in each link, save, reload,
+click each handle and confirm it opens the right URL in a new tab, confirm an empty link shows
+"Not set" rather than a broken link).
