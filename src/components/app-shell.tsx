@@ -3,6 +3,10 @@ import { HeaderBadge } from "@/components/ui";
 import { navItems, type LabView } from "@/lib/lab-state";
 
 const titles = {
+  // Empty by design -- the frozen Today wireframe spec calls for no page-title chrome beyond the
+  // app's own permanent header ("Product Lab" in the sidebar above), so this view's subtitle line
+  // renders nothing rather than a title competing with the recommendation itself.
+  today: "",
   dashboard: "Product proof command center",
   products: "Products and launch readiness",
   "product-detail": "Product detail",

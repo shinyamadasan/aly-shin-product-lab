@@ -171,21 +171,37 @@ test("[static] variant is additive: default is \"full\", and every existing call
   assert.doesNotMatch(page, /CreativePackageAssets[\s\S]{0,60}variant=/);
 });
 
-test("[static] exactly three elements are gated behind variant === \"full\": Workspace tag, Source tag, off-spec dimension advisory -- nothing else, and the Technical details disclosure is untouched", () => {
+// PROP-035 Slice 4: field-by-field gating turned out not to be enough once this component was
+// actually embedded into Today -- the always-visible per-Asset-Job accordion header, status/origin
+// tags, and refresh buttons are all banned job-lifecycle vocabulary that a handful of field-level
+// guards couldn't hide without touching almost every line. Replaced with a single, whole-branch
+// split at the top of the return: ritual mode is a separate, much smaller render path (image only),
+// entirely before the "full" tree below is reached. All fetching/signing logic above the return is
+// unchanged and shared by both branches.
+test("[static] variant=\"ritual\" is a separate, early-return render branch -- not a field-by-field gate -- so none of \"full\"'s job-lifecycle chrome can leak into it", () => {
   const component = readFileSync("src/components/creative-package-assets.tsx", "utf8");
 
-  const occurrences = component.match(/variant === "full"/g) ?? [];
-  assert.equal(occurrences.length, 3, "expected exactly 3 variant === \"full\" guards -- if this changes, an element was added or removed from the ritual-hidden set");
+  assert.match(component, /if \(variant === "ritual"\) \{/);
+  // Exactly one variant check left in the whole file: the branch split itself. Field-by-field
+  // "variant === \"full\"" guards were removed as redundant once the split made them unreachable
+  // dead code (the "full" tree below is only ever reached when variant !== "ritual").
+  const occurrences = component.match(/variant ===/g) ?? [];
+  assert.equal(occurrences.length, 1, "expected exactly one variant === check (the ritual/full branch split) -- if this changes, the whole-branch design was reverted to field-by-field gating");
 
-  // Each named element still exists (proves conditional hiding, not deletion).
+  // The ritual branch itself contains none of "full"'s banned vocabulary. CRLF-aware boundary
+  // match (this file uses \r\n line endings) from the ritual check to the outer, 2-space-indented
+  // "full" mode return that follows it.
+  const ritualBranchMatch = component.match(/if \(variant === "ritual"\)[\s\S]*?\r?\n {2}return \(\r?\n/);
+  assert.ok(ritualBranchMatch, "test fixture is stale -- could not locate the ritual branch's end boundary");
+  const ritualBranch = ritualBranchMatch[0];
+  assert.doesNotMatch(ritualBranch, /Asset Job|Job status|Fixture\/mock|Workspace:|Source:|Technical details|Worker type|Storage path/);
+
+  // Every "full"-mode element still exists further down, unmodified -- proves this is additive
+  // (a new earlier return), not a rewrite of the existing default behavior.
   assert.match(component, /Workspace: \{assetState\.asset\.content\.metadata\.sourceWorkspace\}/);
   assert.match(component, /Source: \{assetState\.asset\.content\.metadata\.sourceKind\}/);
   assert.match(component, /this is advisory only and does not affect Asset validity/);
-
-  // The already-collapsed Technical details disclosure is untouched by this slice -- the review
-  // characterized it as already appropriately quiet, so it stays out of the ritual-hidden set.
-  const technicalDetailsBlock = component.slice(component.indexOf("Technical details"), component.indexOf("</details>", component.indexOf("Technical details")));
-  assert.doesNotMatch(technicalDetailsBlock, /variant ===/);
+  assert.match(component, /Technical details/);
 });
 
 test("PROP-026 metadata request versions ignore a slower first refresh after a newer refresh starts", () => {

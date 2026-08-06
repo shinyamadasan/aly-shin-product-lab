@@ -55,9 +55,6 @@ test("[static] variant is additive: default is \"full\", and every existing call
 });
 
 test("[static] exactly four elements are gated behind variant === \"full\": origin/status tags, Asset Job ID, Workspace input, Source kind dropdown -- nothing else", () => {
-  const occurrences = source.match(/variant === "full"/g) ?? [];
-  assert.equal(occurrences.length, 4, "expected exactly 4 variant === \"full\" guards -- if this changes, an element was added or removed from the ritual-hidden set");
-
   // Each named element still exists in the file (proves the guard hides it conditionally rather
   // than the element having been deleted outright).
   assert.match(source, /Resuming existing Asset Job/);
@@ -73,4 +70,24 @@ test("[static] the actual upload mechanism -- Image file input and Upload image 
   assert.ok(uploadSectionStart > -1 && uploadSectionEnd > uploadSectionStart, "test fixture is stale -- could not locate the Image file / Upload image block");
   const uploadSection = source.slice(uploadSectionStart, uploadSectionEnd);
   assert.doesNotMatch(uploadSection, /variant ===/);
+});
+
+// PROP-035 Slice 4: three more banned-vocabulary leaks found while embedding this component into
+// Today -- the section header, the initial prompt/button copy, and the queued/claim explanatory
+// paragraph all said "Asset Job" or "queued"/"claim" unconditionally, which Today (ritual) can't
+// show per today-product-spec.md's User Language section. Extends the same variant mechanism
+// Slice 3 established; still zero change to createJob/uploadImage/resolveBrief/copyBrief themselves.
+test("[static] variant=\"ritual\" also hides the section header and relabels the initial prompt/button, with no \"Asset Job\"/\"queued\"/\"claim\" wording reaching ritual mode", () => {
+  assert.match(source, /variant === "full" \? \(\s*<div className="flex items-center gap-2">/);
+  assert.match(source, /Get today's brief to paste into ChatGPT/);
+  assert.match(source, /"Start today's post"/);
+  assert.match(source, /canUpload && variant === "full" \?/);
+
+  const occurrences = source.match(/variant === "full"/g) ?? [];
+  assert.equal(occurrences.length, 10, "expected exactly 10 variant === \"full\" guards after Slice 4's extension -- if this changes, an element was added or removed from the ritual-hidden set");
+});
+
+test("[static] the completion message drops \"in Assets\" under ritual, without changing the completed-upload condition it's gated behind", () => {
+  assert.match(source, /variant === "full" \? "Upload complete\. See it below in Assets\." : "Upload complete\."/);
+  assert.match(source, /job\.status === "completed" \?/);
 });

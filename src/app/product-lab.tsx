@@ -44,6 +44,7 @@ import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
 import { OpportunitiesPage } from "@/components/opportunities-page";
+import { TodayPage } from "@/components/today-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -118,7 +119,7 @@ function isMissingColumnError(error: PostgrestError | null): boolean {
 }
 
 export default function ProductLab({
-  view = "dashboard",
+  view = "today",
   initialInventoryTab,
   initialOpportunityStatusFilter = "new",
 }: {
@@ -2459,7 +2460,8 @@ export default function ProductLab({
 
   return (
     <AppShell view={view}>
-          {message && view !== "dashboard" && view !== "costing" ? <MessageBox message={message} tone={messageTone} /> : null}
+          {message && view !== "dashboard" && view !== "costing" && view !== "today" ? <MessageBox message={message} tone={messageTone} /> : null}
+          {view === "today" ? <TodayPage /> : null}
           {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
 
           {view === "products" ? (

@@ -238,24 +238,30 @@ export function CreativePackageAssetCreate({
 
   return (
     <section className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
-      <div className="flex items-center gap-2">
-        <ImagePlus className="text-[#9a5b2f]" size={17} />
-        <h4 className="font-semibold text-[#211713]">External Creative Workspace</h4>
-      </div>
+      {variant === "full" ? (
+        <div className="flex items-center gap-2">
+          <ImagePlus className="text-[#9a5b2f]" size={17} />
+          <h4 className="font-semibold text-[#211713]">External Creative Workspace</h4>
+        </div>
+      ) : null}
 
-      {isLoadingInitial ? <p className="mt-3 text-sm text-[#6f5a4c]">Checking for an existing Asset Job...</p> : null}
+      {isLoadingInitial ? <p className="mt-3 text-sm text-[#6f5a4c]">{variant === "full" ? "Checking for an existing Asset Job..." : "Checking for a brief already in progress..."}</p> : null}
       {loadError ? <MessageBox message={loadError} tone="bad" /> : null}
 
       {!isLoadingInitial && !canUpload ? (
         <div className="mt-3 space-y-3">
           <p className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm">
-            {job
-              ? "Create a new Asset Job (reusing the image you already picked, if any) to try again."
-              : "Create an Asset Job to get a brief you can paste into ChatGPT, Midjourney, Canva, or any other creative workspace -- or use as a shot list for a real product photo."}
+            {variant === "full"
+              ? job
+                ? "Create a new Asset Job (reusing the image you already picked, if any) to try again."
+                : "Create an Asset Job to get a brief you can paste into ChatGPT, Midjourney, Canva, or any other creative workspace -- or use as a shot list for a real product photo."
+              : job
+                ? "Get a fresh brief (reusing the image you already picked, if any) to try again."
+                : "Get today's brief to paste into ChatGPT, Midjourney, Canva, or any other creative tool -- or use as a shot list for a real product photo."}
           </p>
           <PrimaryButton disabled={isCreating || !client} onClick={createJob}>
             <ImagePlus size={15} />
-            {isCreating ? "Creating asset job..." : "Create asset job"}
+            {variant === "full" ? (isCreating ? "Creating asset job..." : "Create asset job") : isCreating ? "Starting today's post..." : "Start today's post"}
           </PrimaryButton>
           {createError ? <MessageBox message={createError} tone="bad" /> : null}
         </div>
@@ -331,14 +337,14 @@ export function CreativePackageAssetCreate({
 
           {job.status === "completed" ? (
             <>
-              <MessageBox message="Upload complete. See it below in Assets." tone="good" />
+              <MessageBox message={variant === "full" ? "Upload complete. See it below in Assets." : "Upload complete."} tone="good" />
               {uploadWarnings.map((warning) => (
                 <MessageBox key={warning} message={warning} tone="info" />
               ))}
             </>
           ) : null}
 
-          {canUpload ? (
+          {canUpload && variant === "full" ? (
             <p className="text-xs text-[#6f5a4c]">Creating this job and viewing or copying its brief never claimed it -- it only stays queued until you upload an image above, which does claim it.</p>
           ) : null}
         </div>

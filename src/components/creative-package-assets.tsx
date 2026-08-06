@@ -263,6 +263,38 @@ export function CreativePackageAssets({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [creativePackageId, refreshSignal]);
 
+  // Ritual mode renders only the image itself -- no per-job accordion, no status/provenance tags, no
+  // refresh controls, no technical details. All fetching/signing above is identical to "full"; this
+  // branch only changes what's returned. Every one of the "full" branch's job-lifecycle/provenance
+  // words below never reaches this tree at all, rather than being hidden field-by-field.
+  if (variant === "ritual") {
+    if (metadataError) {
+      return <MessageBox message={metadataError} tone="bad" />;
+    }
+    const readyFiles = allFiles;
+    if (readyFiles.length === 0) {
+      return null;
+    }
+    return (
+      <div className="mt-3 grid gap-3">
+        {readyFiles.map((file) => {
+          const signed = signedFiles[signedStateKey(file)];
+          return (
+            <div className="grid gap-2" key={file.id}>
+              {signed?.url && !signed.imageFailed ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img alt="Today's result" className="max-h-96 w-full rounded-md border border-[#ead9c8] object-contain" onError={() => void retryAfterImageFailure(file)} src={signed.url} />
+              ) : (
+                <div className="grid min-h-32 place-items-center rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm text-[#6f5a4c]">{signed?.isLoading ? "Loading..." : "Image preview is not available."}</div>
+              )}
+              {signed?.error || signed?.imageFailed ? <MessageBox message={signed.error || "The image couldn't be loaded after one automatic retry."} tone="bad" /> : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <section className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -299,10 +331,10 @@ export function CreativePackageAssets({
                   <Tag tone={statusTone(job.status)}>Job status: {assetJobStatusLabel(job.status)}</Tag>
                   {job.workerType === "mock" ? <Tag tone="warm">Fixture/mock output</Tag> : null}
                   {assetState.asset ? <Tag tone="green">Asset status: {assetState.asset.status}</Tag> : null}
-                  {variant === "full" && assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceWorkspace ? (
+                  {assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceWorkspace ? (
                     <Tag tone="warm">Workspace: {assetState.asset.content.metadata.sourceWorkspace}</Tag>
                   ) : null}
-                  {variant === "full" && assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceKind ? (
+                  {assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceKind ? (
                     <Tag tone="warm">Source: {assetState.asset.content.metadata.sourceKind}</Tag>
                   ) : null}
                 </div>
@@ -339,7 +371,7 @@ export function CreativePackageAssets({
                         <div className="grid gap-3">
                           {metadataBlock("MIME", file.mimeType)}
                           {metadataBlock("Dimensions", file.width && file.height ? `${file.width} x ${file.height}` : "Not recorded")}
-                          {variant === "full" && isOffSpec(file.width, file.height) ? (
+                          {isOffSpec(file.width, file.height) ? (
                             <MessageBox message={`Actual dimensions differ from the ${ASSET_GENERATION_IMAGE_DIMENSIONS.width}x${ASSET_GENERATION_IMAGE_DIMENSIONS.height} spec -- this is advisory only and does not affect Asset validity.`} tone="info" />
                           ) : null}
                           {metadataBlock("File size", formatBytes(file.fileSizeBytes))}
