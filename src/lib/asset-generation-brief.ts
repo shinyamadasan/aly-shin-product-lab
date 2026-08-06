@@ -16,6 +16,8 @@ export function renderAssetGenerationBrief(spec: AssetGenerationSpecV1): string 
     "",
     `Headline: ${spec.copy.headline}`,
     `Caption: ${spec.copy.caption}`,
+    "",
+    "Do not add text overlays to the image unless explicitly requested.",
   ];
 
   if (spec.brandStyle) {

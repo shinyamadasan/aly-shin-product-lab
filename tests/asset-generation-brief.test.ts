@@ -72,6 +72,26 @@ test("renderAssetGenerationBrief includes brand tone, writing principles, and pr
   assert.match(text, /Buy now/);
 });
 
+test("renderAssetGenerationBrief always instructs against unrequested text overlays", () => {
+  const text = renderAssetGenerationBrief(spec());
+  assert.match(text, /Do not add text overlays to the image unless explicitly requested\./);
+});
+
+test("renderAssetGenerationBrief without brand style produces the exact expected text, including the no-overlay instruction", () => {
+  const text = renderAssetGenerationBrief(specWithoutBrand());
+  assert.equal(
+    text,
+    [
+      "Create one marketing image, exactly 1080x1080 pixels (1:1).",
+      "",
+      "Headline: Launch-ready Brownies content",
+      "Caption: Brownies are ready.",
+      "",
+      "Do not add text overlays to the image unless explicitly requested.",
+    ].join("\n"),
+  );
+});
+
 test("renderAssetGenerationBrief omits brand-style sections entirely when brandStyle is null", () => {
   const text = renderAssetGenerationBrief(specWithoutBrand());
   assert.doesNotMatch(text, /Brand tone/);

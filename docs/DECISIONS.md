@@ -98,3 +98,38 @@ work and the separate, more complete but unmerged `feat/asset-generation-foundat
 documenting it properly has to wait for that to be resolved first.
 
 Verify: AGENTS.md does not contain "Every implementation must undergo an independent review"
+
+## D-005 — Creative Package content comes from a new deterministic worker, not `mock` or a paid AI API; stale-`running`-job detection is reporting-only
+
+**Decision:** PROP-034 (Daily Recommendation Readiness) adds a new Creative Job worker type,
+`opportunity_brief` (`buildOpportunityBriefCreativeJobResult`, `src/lib/creative-jobs.ts`), that
+composes a Creative Package's `headline`/`caption` verbatim from the selected Opportunity's own
+`title`/`summary`/`reason` — no AI call, no invented copy, no placeholder text. This was chosen
+over the two workers that already existed: `mock` produces literal "MOCK ONLY -" placeholder text
+never meant to reach a real user, and `product_text_worker`'s only real-content paths require
+either a human manually relaying text through Claude or a paid Anthropic API call — neither of
+which can run unattended, overnight, at zero recurring cost. Separately, the same proposal detects
+(but never recovers) a Creative Job stuck in `running` longer than `CREATIVE_PREP_RUNNING_STALE_AFTER_MS`
+(5 minutes) as a reporting-only, exit-1 failure — it never claims, resets, or retries the row.
+
+**Why:** An architectural comparison (recorded in `planning/PROPOSALS.md`'s PROP-034 entry)
+considered making the brief derivable directly from Opportunity/brand data outside the Creative Job
+pipeline entirely, and rejected it: that would have bypassed Creative Package's existing role as the
+chain's "content is ready" checkpoint, forced changes onto PROP-035 and PROP-027's already-shipped
+`creative-package-asset-create.tsx`, and duplicated "how do we get this Opportunity's marketing
+copy" across two divergent code paths. Adding one more named entry to the executor map
+`trustedCreativeJobExecutors()` already exists to support required no schema change, no shared-type
+change, and no regression risk to either existing worker (verified by a direct regression test
+proving `opportunity_brief`'s registration didn't shadow `mock`'s own dispatch).
+
+On the stale-`running` question: `tests/creative-job-attempts-schema.test.ts` and
+`tests/asset-job-attempts-schema.test.ts` both assert the migration SQL contains no
+`repair_stale`/`stale_running`/`heartbeat`/`max_attempts`/`retry_count` construct — a deliberate
+exclusion from an earlier milestone, not an oversight. Building genuine recovery now would have
+been exactly the architecture change those tests document as out of scope. Reporting-only detection
+closes the real operational risk (a crashed trusted-runner process leaving a job "running" forever,
+silently reported as a successful nightly preparation with exit 0 indefinitely) without crossing
+that boundary; genuine recovery stays a separate, unscoped proposal.
+
+Verify: src/lib/creative-jobs.ts contains "opportunity_brief"
+Verify: scripts/creative-prep/run.ts contains "CREATIVE_PREP_RUNNING_STALE_AFTER_MS"
