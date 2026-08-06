@@ -84,7 +84,19 @@ function isOffSpec(width: number | null, height: number | null): boolean {
   return width !== null && height !== null && (width !== ASSET_GENERATION_IMAGE_DIMENSIONS.width || height !== ASSET_GENERATION_IMAGE_DIMENSIONS.height);
 }
 
-export function CreativePackageAssets({ creativePackageId, refreshSignal }: { creativePackageId: string; refreshSignal: number }) {
+// variant "ritual" hides provenance/advisory presentation only (the Workspace/Source tags and the
+// off-spec dimension advisory message) for a caller composing this component into a screen that
+// doesn't want that vocabulary on it (e.g. Today, PROP-035) -- it changes no state, no network call,
+// and no read logic. Every existing caller keeps the default "full" behavior unchanged.
+export function CreativePackageAssets({
+  creativePackageId,
+  refreshSignal,
+  variant = "full",
+}: {
+  creativePackageId: string;
+  refreshSignal: number;
+  variant?: "full" | "ritual";
+}) {
   const [jobs, setJobs] = useState<AssetJobRecord[]>([]);
   const [jobAssets, setJobAssets] = useState<Record<string, JobAssetState>>({});
   const [signedFiles, setSignedFiles] = useState<Record<string, SignedFileState>>({});
@@ -287,10 +299,10 @@ export function CreativePackageAssets({ creativePackageId, refreshSignal }: { cr
                   <Tag tone={statusTone(job.status)}>Job status: {assetJobStatusLabel(job.status)}</Tag>
                   {job.workerType === "mock" ? <Tag tone="warm">Fixture/mock output</Tag> : null}
                   {assetState.asset ? <Tag tone="green">Asset status: {assetState.asset.status}</Tag> : null}
-                  {assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceWorkspace ? (
+                  {variant === "full" && assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceWorkspace ? (
                     <Tag tone="warm">Workspace: {assetState.asset.content.metadata.sourceWorkspace}</Tag>
                   ) : null}
-                  {assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceKind ? (
+                  {variant === "full" && assetState.asset && isAssetContentV1(assetState.asset.content) && assetState.asset.content.metadata.sourceKind ? (
                     <Tag tone="warm">Source: {assetState.asset.content.metadata.sourceKind}</Tag>
                   ) : null}
                 </div>
@@ -327,7 +339,7 @@ export function CreativePackageAssets({ creativePackageId, refreshSignal }: { cr
                         <div className="grid gap-3">
                           {metadataBlock("MIME", file.mimeType)}
                           {metadataBlock("Dimensions", file.width && file.height ? `${file.width} x ${file.height}` : "Not recorded")}
-                          {isOffSpec(file.width, file.height) ? (
+                          {variant === "full" && isOffSpec(file.width, file.height) ? (
                             <MessageBox message={`Actual dimensions differ from the ${ASSET_GENERATION_IMAGE_DIMENSIONS.width}x${ASSET_GENERATION_IMAGE_DIMENSIONS.height} spec -- this is advisory only and does not affect Asset validity.`} tone="info" />
                           ) : null}
                           {metadataBlock("File size", formatBytes(file.fileSizeBytes))}

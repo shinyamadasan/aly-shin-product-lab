@@ -40,3 +40,37 @@ test("[static] the External Creative Workspace create/brief/upload UI is actuall
   assert.match(opportunitiesPage, /import \{ CreativePackageAssetCreate \} from "@\/components\/creative-package-asset-create";/);
   assert.match(opportunitiesPage, /<CreativePackageAssetCreate creativePackageId=\{selectedPackage\.id\} onUploaded=\{\(\) => setAssetRefreshToken\(\(current\) => current \+ 1\)\} \/>/);
 });
+
+// PROP-035 Slice 3: variant="ritual" hides four provenance/job-lifecycle presentation elements
+// (origin+status tags, Asset Job ID, Workspace input, Source kind dropdown) for a caller composing
+// this component into a screen that shouldn't show that vocabulary. It must change no logic --
+// resolveBrief/createJob/copyBrief/uploadImage stay exactly as asserted read-only/claim-boundary
+// above, regardless of variant.
+test("[static] variant is additive: default is \"full\", and every existing caller omits it (default rendering unchanged)", () => {
+  assert.match(source, /variant\?: "full" \| "ritual";/);
+  assert.match(source, /variant = "full"/);
+  // Opportunities page (the only existing caller) never passes variant -- it always gets the
+  // unchanged, pre-Slice-3 default render.
+  assert.doesNotMatch(opportunitiesPage, /CreativePackageAssetCreate[\s\S]{0,40}variant=/);
+});
+
+test("[static] exactly four elements are gated behind variant === \"full\": origin/status tags, Asset Job ID, Workspace input, Source kind dropdown -- nothing else", () => {
+  const occurrences = source.match(/variant === "full"/g) ?? [];
+  assert.equal(occurrences.length, 4, "expected exactly 4 variant === \"full\" guards -- if this changes, an element was added or removed from the ritual-hidden set");
+
+  // Each named element still exists in the file (proves the guard hides it conditionally rather
+  // than the element having been deleted outright).
+  assert.match(source, /Resuming existing Asset Job/);
+  assert.match(source, /Asset Job created/);
+  assert.match(source, /Asset Job ID/);
+  assert.match(source, /Workspace \(optional\)/);
+  assert.match(source, /Source kind \(optional\)/);
+});
+
+test("[static] the actual upload mechanism -- Image file input and Upload image button -- is never gated by variant", () => {
+  const uploadSectionStart = source.indexOf("Image file");
+  const uploadSectionEnd = source.indexOf("Upload image") + "Upload image".length;
+  assert.ok(uploadSectionStart > -1 && uploadSectionEnd > uploadSectionStart, "test fixture is stale -- could not locate the Image file / Upload image block");
+  const uploadSection = source.slice(uploadSectionStart, uploadSectionEnd);
+  assert.doesNotMatch(uploadSection, /variant ===/);
+});

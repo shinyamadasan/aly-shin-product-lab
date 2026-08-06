@@ -63,7 +63,19 @@ function PrimaryButton({ children, disabled, onClick }: { children: ReactNode; d
 // data model already assumes one trusted operator at a time (see PROP-027-SPEC.md's browser
 // authorization trust assumption), not a DB-level guarantee waiting to be added. Do not add a
 // migration or RPC for this unless real usage proves concurrent creation is an actual problem.
-export function CreativePackageAssetCreate({ creativePackageId, onUploaded }: { creativePackageId: string; onUploaded: () => void }) {
+// variant "ritual" hides provenance/job-lifecycle presentation only (Workspace, Source kind, the
+// Asset Job ID, and the origin/status tags) for a caller composing this component into a screen
+// that doesn't want that vocabulary on it (e.g. Today, PROP-035) -- it changes no state, no network
+// call, and no validation path. Every existing caller keeps the default "full" behavior unchanged.
+export function CreativePackageAssetCreate({
+  creativePackageId,
+  onUploaded,
+  variant = "full",
+}: {
+  creativePackageId: string;
+  onUploaded: () => void;
+  variant?: "full" | "ritual";
+}) {
   const [job, setJob] = useState<AssetJobRecord | null>(null);
   // Distinguishes "found already queued on load" from "just created this session" -- the only
   // difference is which message renders; both mean the same thing to every other code path below.
@@ -251,14 +263,18 @@ export function CreativePackageAssetCreate({ creativePackageId, onUploaded }: { 
 
       {job ? (
         <div className="mt-3 space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <Tag tone={jobOrigin === "resumed" ? "warm" : "green"}>{jobOrigin === "resumed" ? "Resuming existing Asset Job" : "Asset Job created"}</Tag>
-            <Tag tone={job.status === "completed" ? "green" : job.status === "queued" ? "warm" : "danger"}>Status: {job.status}</Tag>
-          </div>
-          <div className="text-sm">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Asset Job ID</p>
-            <p className="mt-1 break-words font-semibold">{job.id}</p>
-          </div>
+          {variant === "full" ? (
+            <div className="flex flex-wrap gap-2">
+              <Tag tone={jobOrigin === "resumed" ? "warm" : "green"}>{jobOrigin === "resumed" ? "Resuming existing Asset Job" : "Asset Job created"}</Tag>
+              <Tag tone={job.status === "completed" ? "green" : job.status === "queued" ? "warm" : "danger"}>Status: {job.status}</Tag>
+            </div>
+          ) : null}
+          {variant === "full" ? (
+            <div className="text-sm">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Asset Job ID</p>
+              <p className="mt-1 break-words font-semibold">{job.id}</p>
+            </div>
+          ) : null}
 
           {uploadError ? <MessageBox message={uploadError} tone="bad" /> : null}
 
@@ -281,17 +297,21 @@ export function CreativePackageAssetCreate({ creativePackageId, onUploaded }: { 
 
           {canUpload ? (
             <div className="space-y-3 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
-              <label className="grid gap-1 text-sm font-medium">
-                Workspace (optional)
-                <input
-                  className="h-11 rounded-md border border-[#d8c7b7] bg-white px-3"
-                  onChange={(event) => setWorkspace(event.target.value)}
-                  placeholder="ChatGPT, Midjourney, Canva, camera..."
-                  type="text"
-                  value={workspace}
-                />
-              </label>
-              <Select label="Source kind (optional)" onChange={(event) => setSourceKindLabel(event.target.value)} options={SOURCE_KIND_SELECT_OPTIONS} value={sourceKindLabel} />
+              {variant === "full" ? (
+                <label className="grid gap-1 text-sm font-medium">
+                  Workspace (optional)
+                  <input
+                    className="h-11 rounded-md border border-[#d8c7b7] bg-white px-3"
+                    onChange={(event) => setWorkspace(event.target.value)}
+                    placeholder="ChatGPT, Midjourney, Canva, camera..."
+                    type="text"
+                    value={workspace}
+                  />
+                </label>
+              ) : null}
+              {variant === "full" ? (
+                <Select label="Source kind (optional)" onChange={(event) => setSourceKindLabel(event.target.value)} options={SOURCE_KIND_SELECT_OPTIONS} value={sourceKindLabel} />
+              ) : null}
               <label className="grid gap-1 text-sm font-medium">
                 Image file
                 <input

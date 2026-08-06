@@ -155,6 +155,39 @@ test("PROP-026 component keeps Asset UI focused, read-only, and driven by Asset 
   assert.doesNotMatch(component, /provider[A-Z]|\bprovider:|\bmodel[A-Z]|\bmodel:/);
 });
 
+// PROP-035 Slice 3: variant="ritual" hides three provenance/advisory presentation elements
+// (Workspace tag, Source tag, off-spec dimension advisory) for a caller composing this component
+// into a screen that shouldn't show that vocabulary. Must change no read logic -- every assertion
+// above (listAssetJobsForCreativePackageReadOnly, readAssetForAssetJobReadOnly, etc.) still holds
+// regardless of variant.
+test("[static] variant is additive: default is \"full\", and every existing caller omits it (default rendering unchanged)", () => {
+  const component = readFileSync("src/components/creative-package-assets.tsx", "utf8");
+  const page = readFileSync("src/components/opportunities-page.tsx", "utf8");
+
+  assert.match(component, /variant\?: "full" \| "ritual";/);
+  assert.match(component, /variant = "full"/);
+  // Opportunities page (the only existing caller) never passes variant -- it always gets the
+  // unchanged, pre-Slice-3 default render.
+  assert.doesNotMatch(page, /CreativePackageAssets[\s\S]{0,60}variant=/);
+});
+
+test("[static] exactly three elements are gated behind variant === \"full\": Workspace tag, Source tag, off-spec dimension advisory -- nothing else, and the Technical details disclosure is untouched", () => {
+  const component = readFileSync("src/components/creative-package-assets.tsx", "utf8");
+
+  const occurrences = component.match(/variant === "full"/g) ?? [];
+  assert.equal(occurrences.length, 3, "expected exactly 3 variant === \"full\" guards -- if this changes, an element was added or removed from the ritual-hidden set");
+
+  // Each named element still exists (proves conditional hiding, not deletion).
+  assert.match(component, /Workspace: \{assetState\.asset\.content\.metadata\.sourceWorkspace\}/);
+  assert.match(component, /Source: \{assetState\.asset\.content\.metadata\.sourceKind\}/);
+  assert.match(component, /this is advisory only and does not affect Asset validity/);
+
+  // The already-collapsed Technical details disclosure is untouched by this slice -- the review
+  // characterized it as already appropriately quiet, so it stays out of the ritual-hidden set.
+  const technicalDetailsBlock = component.slice(component.indexOf("Technical details"), component.indexOf("</details>", component.indexOf("Technical details")));
+  assert.doesNotMatch(technicalDetailsBlock, /variant ===/);
+});
+
 test("PROP-026 metadata request versions ignore a slower first refresh after a newer refresh starts", () => {
   const coordinator = createAssetUiRequestCoordinator();
   const slowFirst = coordinator.beginMetadata();
