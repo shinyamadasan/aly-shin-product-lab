@@ -8,7 +8,7 @@ import {
 export const CREATIVE_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type CreativeJobStatus = (typeof CREATIVE_JOB_STATUSES)[number];
 
-export const CREATIVE_JOB_WORKER_TYPES = ["mock", "product_text_worker"] as const;
+export const CREATIVE_JOB_WORKER_TYPES = ["mock", "product_text_worker", "opportunity_brief"] as const;
 export type CreativeJobWorkerType = (typeof CREATIVE_JOB_WORKER_TYPES)[number];
 
 export type CreativeJobResultEnvelope = {
@@ -273,6 +273,29 @@ export function buildMockCreativeJobResult(opportunity: OpportunityRecord): Crea
     output: {
       headline: `MOCK ONLY - ${opportunity.title}`,
       caption: `MOCK ONLY - ${opportunity.summary || opportunity.reason}`,
+    },
+    metadata: {
+      generatedFromOpportunity: opportunity.id,
+      generatorVersion: "1",
+    },
+    artifacts: [],
+  };
+}
+
+// Creative Package initialization (PROP-034): composes the Creative Package's initial content
+// from fields the selected Opportunity already carries -- nothing invented, nothing reworded,
+// nothing fetched. Not a copywriter and not an AI replacement; every produced string is either a
+// verbatim field or a deterministic choice between two verbatim fields. Deliberately the opposite
+// of buildMockCreativeJobResult above: no placeholder prefix, because this result is meant to
+// actually reach the owner, not just prove the pipeline executes.
+export function buildOpportunityBriefCreativeJobResult(opportunity: OpportunityRecord): CreativeJobResultEnvelope {
+  const trimmedSummary = opportunity.summary.trim();
+  return {
+    schemaVersion: "v1",
+    worker: "opportunity_brief",
+    output: {
+      headline: opportunity.title,
+      caption: trimmedSummary.length > 0 ? trimmedSummary : opportunity.reason,
     },
     metadata: {
       generatedFromOpportunity: opportunity.id,
