@@ -13,6 +13,7 @@ import {
   OPPORTUNITY_LIST_COLUMNS,
   OPPORTUNITY_LIST_ORDER,
   resolveOpportunityStatusFilter,
+  selectPreparationCandidate,
   updateOpportunityStatus,
   type OpportunityReviewClient,
 } from "../src/lib/opportunity-review.ts";
@@ -335,4 +336,64 @@ test("updateOpportunityStatus reports not-found Opportunities", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.reason, "not-found");
   assert.equal(store.updateCalls, 0);
+});
+
+test("selectPreparationCandidate: newest new beats an older accepted Opportunity", async () => {
+  const olderAccepted = row({ id: "older-accepted", status: "accepted", detected_at: "2026-07-23T01:00:00.000Z", created_at: "2026-07-23T01:05:00.000Z" });
+  const newerNew = row({ id: "newer-new", status: "new", detected_at: "2026-07-24T01:00:00.000Z", created_at: "2026-07-24T01:05:00.000Z" });
+  const { client } = makeClient({ rows: [olderAccepted, newerNew] });
+
+  const result = await selectPreparationCandidate(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.opportunity?.id, "newer-new");
+  }
+});
+
+test("selectPreparationCandidate: newer accepted beats an older new Opportunity", async () => {
+  const newerAccepted = row({ id: "newer-accepted", status: "accepted", detected_at: "2026-07-24T01:00:00.000Z", created_at: "2026-07-24T01:05:00.000Z" });
+  const olderNew = row({ id: "older-new", status: "new", detected_at: "2026-07-23T01:00:00.000Z", created_at: "2026-07-23T01:05:00.000Z" });
+  const { client } = makeClient({ rows: [newerAccepted, olderNew] });
+
+  const result = await selectPreparationCandidate(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.opportunity?.id, "newer-accepted");
+  }
+});
+
+test("selectPreparationCandidate: dismissed, expired, and converted Opportunities are never eligible, regardless of recency", async () => {
+  const veryRecentDismissed = row({ id: "recent-dismissed", status: "dismissed", detected_at: "2026-07-25T01:00:00.000Z", created_at: "2026-07-25T01:05:00.000Z" });
+  const veryRecentExpired = row({ id: "recent-expired", status: "expired", detected_at: "2026-07-25T02:00:00.000Z", created_at: "2026-07-25T02:05:00.000Z" });
+  const veryRecentConverted = row({ id: "recent-converted", status: "converted", detected_at: "2026-07-25T03:00:00.000Z", created_at: "2026-07-25T03:05:00.000Z" });
+  const olderEligible = row({ id: "older-eligible", status: "new", detected_at: "2026-07-23T01:00:00.000Z", created_at: "2026-07-23T01:05:00.000Z" });
+  const { client } = makeClient({ rows: [veryRecentDismissed, veryRecentExpired, veryRecentConverted, olderEligible] });
+
+  const result = await selectPreparationCandidate(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.opportunity?.id, "older-eligible");
+  }
+});
+
+test("selectPreparationCandidate: an Opportunity remains selected after new -> accepted when nothing newer is eligible", async () => {
+  const alreadyAdvanced = row({ id: "already-advanced", status: "accepted", detected_at: "2026-07-24T01:00:00.000Z", created_at: "2026-07-24T01:05:00.000Z" });
+  const { client } = makeClient({ rows: [alreadyAdvanced] });
+
+  const result = await selectPreparationCandidate(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.opportunity?.id, "already-advanced");
+  }
+});
+
+test("selectPreparationCandidate: returns null when no new or accepted Opportunity exists", async () => {
+  const onlyDismissed = row({ id: "only-dismissed", status: "dismissed" });
+  const { client } = makeClient({ rows: [onlyDismissed] });
+
+  const result = await selectPreparationCandidate(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.opportunity, null);
+  }
 });

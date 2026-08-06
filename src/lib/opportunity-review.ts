@@ -321,6 +321,48 @@ export async function listOpportunities(client: OpportunityReviewClient, filter:
   return { ok: true, opportunities: (result.data ?? []).map(fromOpportunityListRow) };
 }
 
+export type OpportunitySelectionResult =
+  | { ok: true; opportunity: OpportunityListRecord | null }
+  | { ok: false; reason: "missing-table" | "failed"; message: string };
+
+function moreRecentOpportunityCandidate(a: OpportunityListRecord | null, b: OpportunityListRecord | null): OpportunityListRecord | null {
+  if (!a) return b;
+  if (!b) return a;
+  const aDetected = Date.parse(a.detectedAt);
+  const bDetected = Date.parse(b.detectedAt);
+  if (aDetected !== bDetected) {
+    return aDetected > bDetected ? a : b;
+  }
+  const aCreated = Date.parse(a.createdAt);
+  const bCreated = Date.parse(b.createdAt);
+  return aCreated >= bCreated ? a : b;
+}
+
+// The preparation script's selection contract: the newest Opportunity that still needs advancing
+// toward a ready Creative Package. Eligible statuses are "new" and "accepted" only -- an
+// Opportunity remains the selected candidate across its own new -> accepted transition, because
+// neither underlying call is affected by that transition, only by which list the row currently
+// sorts into. Terminal statuses (dismissed/expired/converted) are never eligible.
+//
+// Deliberately a *different* question from "what is safe to show right now" -- see
+// selectTodaysReadyOpportunity in todays-recommendation.ts for that one. Collapsing the two into
+// a single selector is what creates a timing race between the overnight preparation run and
+// whenever the owner happens to open the app.
+export async function selectPreparationCandidate(client: OpportunityReviewClient): Promise<OpportunitySelectionResult> {
+  const [newResult, acceptedResult] = await Promise.all([listOpportunities(client, "new"), listOpportunities(client, "accepted")]);
+
+  if (!newResult.ok) {
+    return { ok: false, reason: newResult.reason, message: newResult.message };
+  }
+  if (!acceptedResult.ok) {
+    return { ok: false, reason: acceptedResult.reason, message: acceptedResult.message };
+  }
+
+  const newestNew = newResult.opportunities[0] ?? null;
+  const newestAccepted = acceptedResult.opportunities[0] ?? null;
+  return { ok: true, opportunity: moreRecentOpportunityCandidate(newestNew, newestAccepted) };
+}
+
 export async function hasAnyOpportunities(client: OpportunityReviewClient): Promise<OpportunityPresenceResult> {
   const result = await client.from("opportunities").select<{ id: string }>("id").limit(1);
   if (result.error) {
