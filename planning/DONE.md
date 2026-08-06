@@ -144,9 +144,24 @@ confirmed pre-existing static-analysis failures unaffected throughout (`tests/as
 D-005 for the two non-obvious calls, and `docs/ARCHITECTURE.md`'s "Daily Recommendation Readiness
 (PROP-034)" section for the shipped design.
 
-**Deliberately not done as part of this entry** (per the approved plan's own sequencing -- code
-first, then verify against the real environment, then schedule): a real `npm run creative-prep` run
-against production Supabase, confirming one real Opportunity actually reaches a `completed` Creative
-Job and a `ready` Creative Package; and registering the Windows Scheduled Task
-(`scripts/creative-prep/README.md` has the exact command, not yet run). PROP-035 (Today's UI) has
-not been started and depends on this proposal having run successfully at least once first.
+**2026-08-06 update -- real-environment verification and Scheduled Task registration completed.**
+`npm run creative-prep` was run against production Supabase (`b40c448`, `c62092f`). A fresh manual-
+test Opportunity (`new`, no Creative Job) was advanced end-to-end in one run -- `accepted-opportunity`,
+`created-creative-job` (`worker_type: "opportunity_brief"`), `executed-creative-job`,
+`materialized-creative-package` -- producing a `ready` Creative Package whose `headline`/`caption`
+were verbatim the Opportunity's own `title`/`summary`, confirming the Truthfulness Principle held
+in practice, not just in the worker's unit tests. A second run against the same Opportunity was a
+clean no-op with zero additional writes, confirming idempotency for real. Both the test Opportunity
+and an older, unrelated manual-test row from PROP-027 (about to expire) were removed afterward, along
+with their full dependent chain (Creative Job/Package, and 5 pre-existing Asset Jobs/Assets on the
+older row) -- database is now clean of test data. The Windows Scheduled Task (`Aly & Shin Product Lab
+Creative Prep`, 6:10 PM Arizona) is registered and confirmed via `schtasks /query`.
+
+Found and fixed in the same session, as its own separate commit (`c62092f`): the shared lock module
+(`scripts/daily-advisor/lock.ts`) never created its lock file's parent directory, so `creative-prep`'s
+very first run failed (`ENOENT`, misreported as a lock race) simply because `creative-prep/` had never
+existed on this machine. Fixed with an unconditional `mkdirSync(..., { recursive: true })` at the top
+of `acquireLock` -- also benefits Daily Advisor, which shares this module.
+
+PROP-035 (Today's UI) has not been started. Its dependency on this proposal having run successfully
+at least once is now satisfied, but per explicit instruction, PROP-035 work has not begun.

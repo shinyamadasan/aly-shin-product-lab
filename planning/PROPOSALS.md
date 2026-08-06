@@ -636,7 +636,14 @@ full suite 752/752 (1 pre-existing unrelated skip, up from 747 — the 5 new tes
 - acceptance criteria: (1) the preparation script and Today's selection logic both call the same exported `selectTodaysOpportunity` function — one definition, two importers; (2) a `new` Opportunity with no Creative Job reaches `accepted` + `completed` Creative Job + existing Creative Package in one run; (3) an already-`accepted` Opportunity with no Creative Job creates and executes it without re-issuing the accept call; (4) an Opportunity whose Creative Package already exists produces zero writes and a no-op success; (5) running twice in immediate succession produces identical output both times, no duplicate rows, no duplicate execution/initialization attempts; (6) a non-actionable Opportunity or a `failed` Creative Job produces a visible, structured failure/skip — never silent, never infinitely retried; (7) the initial Creative Package content never contains "MOCK ONLY," "NON-AI TEST," or any other placeholder marker; (8) every field in the initial Creative Package content is traceable to the selected Opportunity's own fields or existing Brand data — a test asserts no fabricated string appears; (9) `asset_job_attempts.provider`/`.model` remain `null` for this executor; (10) the rendered brief includes the no-text-overlay instruction; (11) `git diff` shows zero new API routes, zero new client-callable functions invoking the trusted-runner functions, zero Vercel/Supabase config changes, and no Anthropic/OpenAI API key anywhere in the new code path; (12) no generic framework, configurable readiness-state abstraction, or cross-domain orchestration surface exists anywhere in the diff.
 - why now vs later: PROP-035's one-week trial cannot start without it — this is the dependency PROP-035's own review surfaced, not speculative infrastructure being built ahead of need.
 - AI-recommended priority: P1
-- status: approved (2026-08-06) — implementation starting. Not yet built.
+- status: implemented (2026-08-06) — built across four reviewed slices (`02e8138`, `7665fdb`,
+  `88cc1d9`, `dd6de3e`) plus release work (`b40c448`, `c62092f`); verified against real Supabase
+  (a fresh Opportunity advanced `new` → `accepted` → `opportunity_brief` Creative Job → `completed`
+  → `ready` Creative Package in one run, with truthful, non-fabricated content, and a repeat run
+  confirmed idempotency); Windows Scheduled Task registered and confirmed
+  (`Aly & Shin Product Lab Creative Prep`, 6:10 PM Arizona). See `planning/DONE.md`'s PROP-034 entry
+  for the full account, including a shared-lock-module directory-creation bug found and fixed during
+  verification (`c62092f`). PROP-035 has not been started.
 
 ### PROP-035 — Today as the Default Landing View: A One-Week Habit Trial
 - ▶ Decision: Approve — owner reviewed across four rounds (initial composition-only draft → rejected as validating the wrong hypothesis → default-view mechanism verified against actual code → success/exit criteria and hypothesis wording added), approved 2026-08-05. This entry is the plan's required approval record, per `AGENTS.md`'s Architecture Protection rule.

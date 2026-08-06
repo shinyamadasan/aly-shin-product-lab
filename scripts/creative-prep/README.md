@@ -75,8 +75,9 @@ nothing to accidentally duplicate.
 
 ## Scheduling
 
-**Not yet registered.** Run manually (above) and verify real output before registering this as a
-Scheduled Task -- see "Deployment checklist" below.
+**Registered** as the Windows Scheduled Task `Aly & Shin Product Lab Creative Prep`, confirmed via
+both `Get-ScheduledTask`/`Get-ScheduledTaskInfo` and `schtasks /query`. See "Deployment checklist"
+below for the verification steps this satisfied.
 
 Chained a few minutes after Daily Advisor's own trigger, so Daily Advisor's Opportunity-detection
 and persistence step has already finished when this runs. Daily Advisor's task fires at 6:00 PM
