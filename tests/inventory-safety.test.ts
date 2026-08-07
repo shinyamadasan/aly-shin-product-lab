@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { archiveItem, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "../src/lib/inventory-safety.ts";
-import type { CostingEntry, Ingredient, InventoryTransaction, ProductBatch, SupplyEntry } from "../src/lib/product-lab-types.ts";
+import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "../src/lib/inventory-safety.ts";
+import type { CostingEntry, Ingredient, InventoryTransaction, ProductBatch, SellingFormatPackagingLine, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
   return {
@@ -21,6 +21,22 @@ function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
   };
 }
 
+function sellingFormatPackagingLine(overrides: Partial<SellingFormatPackagingLine> = {}): SellingFormatPackagingLine {
+  return {
+    id: "line-1",
+    sellingFormatId: "format-1",
+    ingredientId: "flour-id",
+    name: "All Purpose Flour",
+    quantity: 1,
+    unit: "g",
+    unitCostSnapshot: 0.1,
+    isManualCost: false,
+    note: "",
+    sortOrder: 0,
+    ...overrides,
+  };
+}
+
 function summaryFor(item: Ingredient, overrides: Partial<Parameters<typeof getItemReferenceSummary>[0]> = {}) {
   return getItemReferenceSummary({
     ingredient: item,
@@ -30,6 +46,7 @@ function summaryFor(item: Ingredient, overrides: Partial<Parameters<typeof getIt
     purchaseImportRows: [],
     batches: [],
     costingEntries: [],
+    sellingFormatPackagingLines: [],
     ...overrides,
   });
 }
@@ -126,4 +143,86 @@ test("Item reference summary distinguishes durable IDs from legacy text matches"
 
 test("unreferenced Item can be hard deleted by policy", () => {
   assert.equal(canHardDeleteItem(summaryFor(ingredient())), true);
+});
+
+test("a catalog-linked Selling Format packaging line blocks deletion", () => {
+  const item = ingredient();
+  const line = sellingFormatPackagingLine({ ingredientId: item.id });
+  const summary = summaryFor(item, { sellingFormatPackagingLines: [line] });
+
+  assert.equal(summary.durable.sellingFormatPackagingLines, 1);
+  assert.equal(canHardDeleteItem(summary), false);
+});
+
+test("two referenced Selling Format packaging lines produce a reference count of 2", () => {
+  const item = ingredient();
+  const lines = [
+    sellingFormatPackagingLine({ id: "line-1", sellingFormatId: "format-1", ingredientId: item.id }),
+    sellingFormatPackagingLine({ id: "line-2", sellingFormatId: "format-2", ingredientId: item.id }),
+  ];
+  const summary = summaryFor(item, { sellingFormatPackagingLines: lines });
+
+  assert.equal(summary.durable.sellingFormatPackagingLines, 2);
+});
+
+test("a packaging line belonging to an archived Selling Format still blocks deletion", () => {
+  // getItemReferenceSummary never receives or inspects SellingFormat.isActive -- archiving a
+  // format leaves its packaging_lines rows exactly as they were, so this line counts identically
+  // whether its parent format is active or archived. No archived-format fixture is needed to
+  // prove that: the absence of any isActive input to this function is the proof.
+  const item = ingredient();
+  const lineUnderArchivedFormat = sellingFormatPackagingLine({ sellingFormatId: "archived-format", ingredientId: item.id });
+  const summary = summaryFor(item, { sellingFormatPackagingLines: [lineUnderArchivedFormat] });
+
+  assert.equal(summary.durable.sellingFormatPackagingLines, 1);
+  assert.equal(canHardDeleteItem(summary), false);
+});
+
+test("a manual packaging line (ingredientId \"\") does not block deletion", () => {
+  const item = ingredient();
+  const manualLine = sellingFormatPackagingLine({ ingredientId: "", name: "Custom ribbon" });
+  const summary = summaryFor(item, { sellingFormatPackagingLines: [manualLine] });
+
+  assert.equal(summary.durable.sellingFormatPackagingLines, 0);
+  assert.equal(canHardDeleteItem(summary), true);
+});
+
+test("a packaging line referencing a different Ingredient does not block this one", () => {
+  const item = ingredient({ id: "flour-id" });
+  const lineForAnotherIngredient = sellingFormatPackagingLine({ ingredientId: "sugar-id" });
+  const summary = summaryFor(item, { sellingFormatPackagingLines: [lineForAnotherIngredient] });
+
+  assert.equal(summary.durable.sellingFormatPackagingLines, 0);
+  assert.equal(canHardDeleteItem(summary), true);
+});
+
+test("existing reference-blocked deletion behavior is unchanged when there is no Selling Format reference", () => {
+  const item = ingredient();
+  const transaction: InventoryTransaction = {
+    id: "tx-1",
+    ingredientId: item.id,
+    transactionType: "purchase",
+    quantityChange: 100,
+    quantityBefore: 0,
+    quantityAfter: 100,
+    sourceType: "manual",
+    sourceId: "manual-1",
+    note: "",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const summary = summaryFor(item, { inventoryTransactions: [transaction] });
+
+  assert.equal(canHardDeleteItem(summary), false);
+  assert.equal(buildHardDeleteBlockedMessage(item, summary), "Permanent delete blocked. All Purpose Flour has 1 reference. Archive keeps history intact.");
+});
+
+test("buildHardDeleteBlockedMessage names Selling Format packaging usage, with correct pluralization", () => {
+  const item = ingredient();
+  const twoLines = summaryFor(item, {
+    sellingFormatPackagingLines: [sellingFormatPackagingLine({ id: "line-1" }), sellingFormatPackagingLine({ id: "line-2", sellingFormatId: "format-2" })],
+  });
+  const oneLine = summaryFor(item, { sellingFormatPackagingLines: [sellingFormatPackagingLine()] });
+
+  assert.equal(buildHardDeleteBlockedMessage(item, twoLines), "All Purpose Flour cannot be permanently deleted because it is used by 2 Selling Format packaging lines. Archive keeps history intact.");
+  assert.equal(buildHardDeleteBlockedMessage(item, oneLine), "All Purpose Flour cannot be permanently deleted because it is used by 1 Selling Format packaging line. Archive keeps history intact.");
 });

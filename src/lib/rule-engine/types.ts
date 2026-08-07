@@ -1,4 +1,4 @@
-import type { CostingSummary, Ingredient, Product, ProductBatch, SupplyEntry, TastingFeedback } from "../product-lab-types.ts";
+import type { CostingSummary, Ingredient, Product, ProductBatch, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "../product-lab-types.ts";
 
 export type RuleSeverity = "info" | "warning" | "blocker";
 
@@ -22,6 +22,11 @@ export type RuleEngineContext = {
   batches: ProductBatch[];
   costings: CostingSummary[];
   ingredients?: Ingredient[];
+  // Optional, like ingredients above -- callers that don't load Selling Format data (most of the
+  // engine's existing call sites) get [] via getContextSellingFormats/getContextSellingFormatPackagingLines
+  // below, not a crash. QUAL-002 is the one rule that reads these today.
+  sellingFormats?: SellingFormat[];
+  sellingFormatPackagingLines?: SellingFormatPackagingLine[];
   tastings: TastingFeedback[];
   supplies: SupplyEntry[];
   // Current time, read by the caller and passed in -- never Date.now() inside a rule -- so
@@ -69,6 +74,17 @@ export function getLinkedCosting(context: RuleEngineContext, product: Product, b
 
 export function getProductTastings(context: RuleEngineContext, product: Product): TastingFeedback[] {
   return context.tastings.filter((tasting) => tasting.productId === product.id);
+}
+
+// sellingFormats/sellingFormatPackagingLines are optional on RuleEngineContext (mirroring
+// ingredients above) -- centralizing the ?? [] fallback here once means a rule can never forget
+// it and crash on a context that predates Selling Formats.
+export function getContextSellingFormats(context: RuleEngineContext): SellingFormat[] {
+  return context.sellingFormats ?? [];
+}
+
+export function getContextSellingFormatPackagingLines(context: RuleEngineContext): SellingFormatPackagingLine[] {
+  return context.sellingFormatPackagingLines ?? [];
 }
 
 export function averageRating(tastings: TastingFeedback[]): number | null {

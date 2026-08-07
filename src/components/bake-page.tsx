@@ -165,6 +165,7 @@ export function BakePage({
                   <div>
                     {canPick ? (
                       <IngredientPicker
+                        excludeCategories={["packaging"]}
                         ingredients={labState.ingredients}
                         onSelect={(ingredientId) => handleAssign(row, ingredientId)}
                         placeholder="Assign ingredient..."

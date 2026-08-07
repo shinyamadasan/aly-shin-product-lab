@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch } from "../src/lib/costing.ts";
+import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "../src/lib/costing.ts";
 import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
 import type { CostingSummary, ProductBatch } from "../src/lib/product-lab-types.ts";
 
@@ -218,4 +218,63 @@ test("isBatchProductMismatch: a batch id that doesn't exist is a mismatch", () =
 
 test("isBatchProductMismatch: an empty batchId (unlinked legacy costing) is never a mismatch", () => {
   assert.equal(isBatchProductMismatch([], { productId: "product-1", batchId: "" }), false);
+});
+
+test("resolveCostingId: editing an existing costing always returns that exact id, never a fresh one", () => {
+  assert.equal(resolveCostingId("costing-1"), "costing-1");
+  assert.equal(resolveCostingId("costing-1"), resolveCostingId("costing-1"));
+});
+
+test("resolveCostingId: a new costing (empty costingId) gets a real, non-empty generated id", () => {
+  const id = resolveCostingId("");
+  assert.notEqual(id, "");
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+});
+
+test("resolveCostingId: two separate new costings never collide on the same generated id", () => {
+  assert.notEqual(resolveCostingId(""), resolveCostingId(""));
+});
+
+test("buildCostingSummaryPayload: the costing's id is included in the Supabase payload -- the bug this fixes", () => {
+  const costing = baseCosting({ id: "costing-abc" });
+  const payload = buildCostingSummaryPayload(costing);
+  assert.equal(payload.id, "costing-abc");
+  assert.equal(payload.id, costing.id);
+});
+
+test("buildCostingSummaryPayload: a freshly resolved id for a new costing round-trips into the payload unchanged", () => {
+  const newId = resolveCostingId("");
+  const costing = baseCosting({ id: newId });
+  const payload = buildCostingSummaryPayload(costing);
+  assert.equal(payload.id, newId);
+});
+
+test("buildCostingSummaryPayload: maps every other field to its snake_case column", () => {
+  const costing = baseCosting({
+    batchId: "batch-1",
+    coffeeEquipmentCost: 1,
+    gasCost: 2,
+    ovenElectricCost: 3,
+    refrigerationCost: 4,
+    waterCost: 5,
+  });
+  const payload = buildCostingSummaryPayload(costing);
+
+  assert.equal(payload.product_id, costing.productId);
+  assert.equal(payload.batch_id, "batch-1");
+  assert.equal(payload.ingredient_cost, costing.ingredientCost);
+  assert.equal(payload.packaging_cost, costing.packagingCost);
+  assert.equal(payload.labor_estimate, costing.laborEstimate);
+  assert.equal(payload.utilities_estimate, 5 + 2 + 3 + 4 + 1);
+  assert.equal(payload.waste_allowance, costing.wasteAllowance);
+  assert.equal(payload.overhead_cost, costing.overheadCost);
+  assert.equal(payload.equipment_cost, costing.equipmentCost);
+  assert.equal(payload.suggested_price, costing.suggestedPrice);
+  assert.equal(payload.notes, costing.notes);
+});
+
+test("buildCostingSummaryPayload: an unlinked (legacy) costing's empty batchId becomes null, not an empty string", () => {
+  const costing = baseCosting({ batchId: "" });
+  const payload = buildCostingSummaryPayload(costing);
+  assert.equal(payload.batch_id, null);
 });
