@@ -2465,7 +2465,11 @@ export default function ProductLab({
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
-              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+              {/* Keyed here, not just on the inner <form> -- BatchForm's own hooks (formulaRows,
+                  processStepRows, selectedProductId, formBatchId, stagedPhotos) are lazy-
+                  initialized from `batch` once per component instance. Remounting only the
+                  <form> left those stale when switching records without also switching pages. */}
+              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={editingBatch?.id ?? "new-batch"} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
                 <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} products={labState.products} saveJournal={saveJournal} />
@@ -3096,7 +3100,9 @@ function BatchHistoryPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
-            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+            {/* Keyed here, not just on the inner <form> -- see the matching comment at the
+                Proof Day call site for why the component boundary, not the form, must remount. */}
+            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={batch?.id ?? "new-batch"} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -3928,7 +3934,7 @@ function BatchForm({
           Editing: {batchDisplayName(batch.productId, batch.batchVersion, products)}
         </p>
       ) : null}
-      <form action={submitBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
+      <form action={submitBatch} className="grid gap-3">
         <input name="id" type="hidden" value={formBatchId} />
         <input name="existingId" type="hidden" value={batch?.id ?? ""} />
         <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
