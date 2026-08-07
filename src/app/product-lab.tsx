@@ -39,7 +39,7 @@ import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, In
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
-import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
+import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/components/purchase-import-wizard";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
 import { OpportunitiesPage } from "@/components/opportunities-page";
@@ -2587,6 +2587,7 @@ export default function ProductLab({
               isSuppliesTableMissing={isSuppliesTableMissing}
               labState={labState}
               reportIngredientDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_INGREDIENT_MESSAGE } : null)}
+              reportImportDraftDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_PURCHASE_IMPORT_MESSAGE } : null)}
               reportSupplyDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_SUPPLY_MESSAGE } : null)}
               repairSupplyInventoryEffects={repairSupplyInventoryEffects}
               reverseInventoryAdjustment={reverseInventoryAdjustment}
@@ -4966,6 +4967,7 @@ function InventoryWorkspace({
   discardPurchaseImport,
   isPurchaseImportPackagesMissing,
   reportIngredientDirty,
+  reportImportDraftDirty,
   reportSupplyDirty,
   restoreIngredient,
   saveIngredientAlias,
@@ -4984,8 +4986,10 @@ function InventoryWorkspace({
   saveIngredient: (formData: FormData) => Promise<string | null>;
   // Reports each editor's own dirty state upward to ProductLab's shared activeUnsavedForm slot --
   // each is forwarded from this workspace's own local onXDirtyChange wrapper (see isIngredientDirty
-  // / isSupplyDirty below), which also tracks it locally for the tab-switch guards.
+  // / isSupplyDirty / isImportDraftDirty below), which also tracks it locally for the tab-switch
+  // guards.
   reportIngredientDirty?: (isDirty: boolean) => void;
+  reportImportDraftDirty?: (isDirty: boolean) => void;
   reportSupplyDirty?: (isDirty: boolean) => void;
   cancelEditSupply: () => void;
   deleteSupply: (supplyId: string) => void;
@@ -5009,6 +5013,7 @@ function InventoryWorkspace({
   const [purchasesTab, setPurchasesTab] = useState<"manual" | "csv">("manual");
   const [isIngredientDirty, setIsIngredientDirty] = useState(false);
   const [isSupplyDirty, setIsSupplyDirty] = useState(false);
+  const [isImportDraftDirty, setIsImportDraftDirty] = useState(false);
 
   function onIngredientDirtyChange(isDirty: boolean) {
     setIsIngredientDirty(isDirty);
@@ -5018,6 +5023,28 @@ function InventoryWorkspace({
   function onSupplyDirtyChange(isDirty: boolean) {
     setIsSupplyDirty(isDirty);
     reportSupplyDirty?.(isDirty);
+  }
+
+  function onImportDraftDirtyChange(isDirty: boolean) {
+    setIsImportDraftDirty(isDirty);
+    reportImportDraftDirty?.(isDirty);
+  }
+
+  // Which editor (if any) the Purchases tab's own manual/CSV sub-tab is currently protecting --
+  // shared by changeTab and changePurchasesTab below so the two guards can't drift apart.
+  function purchasesTabDirtyState() {
+    if (purchasesTab === "manual") {
+      return { isDirty: isSupplyDirty, message: UNSAVED_SUPPLY_MESSAGE };
+    }
+    return { isDirty: isImportDraftDirty, message: UNSAVED_PURCHASE_IMPORT_MESSAGE };
+  }
+
+  function clearPurchasesTabDirty() {
+    if (purchasesTab === "manual") {
+      onSupplyDirtyChange(false);
+    } else {
+      onImportDraftDirtyChange(false);
+    }
   }
 
   // Switching Inventory's internal tabs, or the Purchases tab's own manual/CSV sub-tabs, is a pure
@@ -5031,12 +5058,7 @@ function InventoryWorkspace({
   // leaving it). Only guards leaving the tab whose own editor is dirty; switching between any other
   // pair of tabs, or re-clicking the already-active tab, never prompts.
   function changeTab(nextTab: InventoryTab) {
-    const leavingTabDirtyState =
-      tab === "ingredients"
-        ? { isDirty: isIngredientDirty, message: UNSAVED_INGREDIENT_MESSAGE }
-        : tab === "purchases" && purchasesTab === "manual"
-          ? { isDirty: isSupplyDirty, message: UNSAVED_SUPPLY_MESSAGE }
-          : null;
+    const leavingTabDirtyState = tab === "ingredients" ? { isDirty: isIngredientDirty, message: UNSAVED_INGREDIENT_MESSAGE } : tab === "purchases" ? purchasesTabDirtyState() : null;
     const decision = resolveTabChange(tab, nextTab, leavingTabDirtyState, (message) => window.confirm(message));
     if (!decision.proceed) {
       return;
@@ -5045,23 +5067,25 @@ function InventoryWorkspace({
       if (tab === "ingredients") {
         onIngredientDirtyChange(false);
       } else if (tab === "purchases") {
-        onSupplyDirtyChange(false);
+        clearPurchasesTabDirty();
       }
     }
     setTab(nextTab);
   }
 
-  // Same guard, scoped to the Purchases tab's own manual/CSV sub-tabs -- switching to Import CSV
-  // while a manual purchase draft is dirty unmounts PurchaseLogPage exactly like the outer tab
-  // switch does.
+  // Same guard, scoped to the Purchases tab's own manual/CSV sub-tabs -- switching sub-tabs while
+  // either PurchaseLogPage's own draft or the CSV wizard's pre-draft upload is dirty unmounts that
+  // editor exactly like the outer tab switch does (PurchaseImportWizard's entire state, not just an
+  // inner form, is destroyed the moment purchasesTab stops being "csv" -- there is no separate
+  // "reset" step needed beyond what this unmount already does).
   function changePurchasesTab(nextPurchasesTab: "manual" | "csv") {
-    const leavingTabDirtyState = purchasesTab === "manual" ? { isDirty: isSupplyDirty, message: UNSAVED_SUPPLY_MESSAGE } : null;
+    const leavingTabDirtyState = purchasesTabDirtyState();
     const decision = resolveTabChange(purchasesTab, nextPurchasesTab, leavingTabDirtyState, (message) => window.confirm(message));
     if (!decision.proceed) {
       return;
     }
     if (decision.shouldClearDirty) {
-      onSupplyDirtyChange(false);
+      clearPurchasesTabDirty();
     }
     setPurchasesTab(nextPurchasesTab);
   }
@@ -5130,6 +5154,7 @@ function InventoryWorkspace({
               isInventoryTableMissing={isInventoryTableMissing}
               isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               labState={labState}
+              onDirtyChange={onImportDraftDirtyChange}
               saveIngredient={saveIngredient}
               saveIngredientAlias={saveIngredientAlias}
               updatePurchaseImportHeader={updatePurchaseImportHeader}

@@ -14,6 +14,13 @@ import { suggestBrandFromKnownBrands, traceFindPartialMatch } from "@/lib/ingred
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions } from "@/components/inventory-page";
 import { FormPanel, Input, SecondaryButton, Tag } from "@/components/ui";
 import { IngredientPicker } from "@/components/ingredient-picker";
+import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
+import { buildPurchaseImportDraftSnapshot, CLEAN_PURCHASE_IMPORT_DRAFT_SNAPSHOT, isPurchaseImportDraftDirty } from "@/lib/purchase-import-draft-snapshot";
+
+// Exported so InventoryWorkspace's own tab-switch guard (product-lab.tsx) can show the identical
+// wording when leaving the Purchases/CSV tab discards this same pre-draft state -- one string, not
+// two copies that could drift.
+export const UNSAVED_PURCHASE_IMPORT_MESSAGE = "You have unsaved changes in this purchase import (uploaded CSV and column mapping). Leaving now will discard them and you'll need to re-upload. Continue?";
 
 const REQUIRED_FIELDS: ColumnField[] = ["itemName"];
 const ALL_FIELDS: ColumnField[] = ["itemName", "brand", "quantity", "unit", "totalPrice", "packageCount", "packageSize", "packageUnit", "unitPrice", "expirationDate", "category", "supplier", "receiptNumber", "purchaseDate"];
@@ -82,6 +89,7 @@ export function PurchaseImportWizard({
   isInventoryTableMissing,
   isPurchaseImportPackagesMissing,
   labState,
+  onDirtyChange,
   saveIngredient,
   saveIngredientAlias,
   updatePurchaseImportHeader,
@@ -93,6 +101,10 @@ export function PurchaseImportWizard({
   isInventoryTableMissing: boolean;
   isPurchaseImportPackagesMissing: boolean;
   labState: LabState;
+  // Reports the pre-draft phase's own dirty state upward -- see useUnsavedChangesGuard below. Only
+  // covers uploading + column mapping, before createPurchaseImportDraft persists anything; the
+  // post-draft review phase (activeImportId set) autosaves every edit, so it never reports dirty.
+  onDirtyChange?: (isDirty: boolean) => void;
   saveIngredient: (formData: FormData) => Promise<string | null>;
   saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
   updatePurchaseImportHeader: (importId: string, changes: { supplierName?: string; receiptNumber?: string; purchaseDate?: string }) => void;
@@ -114,6 +126,15 @@ export function PurchaseImportWizard({
   const [creatingItemForRowId, setCreatingItemForRowId] = useState<string | null>(null);
   const [isBulkCreatingItems, setIsBulkCreatingItems] = useState(false);
   const [rememberAliasByRowId, setRememberAliasByRowId] = useState<Record<string, boolean>>({});
+
+  // Direct state comparison, not FormData -- there's no <form> wrapping the upload input and
+  // mapping <select>s (see purchase-import-draft-snapshot.ts's own comment). Gated on
+  // `!activeImportId` rather than clearing parsedCsv/fileName/mapping on success: once a draft
+  // exists, this phase is done for good (resetWizard, the only thing that ever clears those three,
+  // is only reachable from the confirmed/discarded status view, never from here), and every
+  // post-draft row/header edit already autosaves -- there's nothing left for this guard to protect.
+  const isPreDraftDirty = !activeImportId && isPurchaseImportDraftDirty(buildPurchaseImportDraftSnapshot(parsedCsv, fileName, mapping), CLEAN_PURCHASE_IMPORT_DRAFT_SNAPSHOT);
+  useUnsavedChangesGuard(isPreDraftDirty, onDirtyChange);
 
   const activeImport = labState.purchaseImports.find((item) => item.id === activeImportId) ?? null;
   const activeRows = labState.purchaseImportRows
@@ -141,6 +162,14 @@ export function PurchaseImportWizard({
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) {
+      return;
+    }
+    // Selecting a file through this same input always overwrites whatever CSV/mapping is already
+    // loaded (setParsedCsv/setFileName/setMapping below run unconditionally) -- guard that the same
+    // way every other same-surface discard action in this app does, only when there's real loaded
+    // work to lose.
+    if (isPreDraftDirty && !window.confirm(UNSAVED_PURCHASE_IMPORT_MESSAGE)) {
+      event.target.value = "";
       return;
     }
     setUploadError("");
