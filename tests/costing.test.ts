@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "../src/lib/costing.ts";
 import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
 import type { CostingSummary, ProductBatch } from "../src/lib/product-lab-types.ts";
@@ -277,4 +278,140 @@ test("buildCostingSummaryPayload: an unlinked (legacy) costing's empty batchId b
   const costing = baseCosting({ batchId: "" });
   const payload = buildCostingSummaryPayload(costing);
   assert.equal(payload.batch_id, null);
+});
+
+// --- updated_at maintenance (SP1) -------------------------------------------------------------
+//
+// costing_summaries.updated_at existed since the table was created but nothing wrote it after the
+// insert default, and no trigger maintains it -- so it could not answer "has this costing been
+// reviewed since?". These tests pin the fix: the shared payload builder writes it on every save,
+// and an injected timestamp stays exact so callers (and later Business Context Builder slices) can
+// reason about it deterministically.
+//
+// The static tests below deliberately scan line-by-line rather than with multi-line regexes.
+// tests/creative-package-asset-create.test.ts uses a regex ending in `\n\1\}\n`, which silently
+// fails against a CRLF checkout (core.autocrlf=true on Windows) even though the code it looks for
+// is present. Splitting on /\r?\n/ and matching single-line substrings is CRLF-agnostic.
+
+function readRepoFile(relativePath: string): string {
+  return readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+}
+
+function toLines(source: string): string[] {
+  return source.split(/\r?\n/);
+}
+
+test("buildCostingSummaryPayload: the payload includes updated_at", () => {
+  const payload = buildCostingSummaryPayload(baseCosting());
+  assert.ok("updated_at" in payload, "payload must carry updated_at so the column stops being a second created_at");
+  assert.equal(typeof payload.updated_at, "string");
+});
+
+test("buildCostingSummaryPayload: an explicitly injected timestamp is preserved exactly", () => {
+  const injected = "2026-08-06T01:23:45.678Z";
+  const payload = buildCostingSummaryPayload(baseCosting(), injected);
+  assert.equal(payload.updated_at, injected);
+});
+
+test("buildCostingSummaryPayload: two different injected timestamps produce two different updated_at values", () => {
+  // The behaviour a costing-freshness comparison depends on: editing a costing must move the
+  // timestamp, not leave it pinned at creation time.
+  const first = buildCostingSummaryPayload(baseCosting(), "2026-08-01T00:00:00.000Z");
+  const second = buildCostingSummaryPayload(baseCosting(), "2026-08-06T00:00:00.000Z");
+  assert.notEqual(first.updated_at, second.updated_at);
+  assert.ok(Date.parse(second.updated_at) > Date.parse(first.updated_at));
+});
+
+test("buildCostingSummaryPayload: the default is a current absolute UTC ISO instant, not a localized date", () => {
+  const before = Date.now();
+  const payload = buildCostingSummaryPayload(baseCosting());
+  const after = Date.now();
+
+  const parsed = Date.parse(payload.updated_at);
+  assert.ok(Number.isFinite(parsed), "default must parse as a real timestamp");
+  assert.ok(parsed >= before && parsed <= after, "default must be read at call time, not module load");
+  // Absolute UTC instant -- this is a database audit column, never a business-day value.
+  assert.match(payload.updated_at, /Z$/);
+  assert.equal(payload.updated_at, new Date(parsed).toISOString());
+});
+
+test("buildCostingSummaryPayload: every pre-existing payload field is unchanged by the updated_at addition", () => {
+  const costing = baseCosting({ batchId: "batch-1", coffeeEquipmentCost: 1, gasCost: 2, ovenElectricCost: 3, refrigerationCost: 4, waterCost: 5 });
+  const payload = buildCostingSummaryPayload(costing, "2026-08-06T00:00:00.000Z");
+
+  assert.equal(payload.id, costing.id);
+  assert.equal(payload.product_id, costing.productId);
+  assert.equal(payload.batch_id, "batch-1");
+  assert.equal(payload.ingredient_cost, costing.ingredientCost);
+  assert.equal(payload.packaging_cost, costing.packagingCost);
+  assert.equal(payload.labor_estimate, costing.laborEstimate);
+  assert.equal(payload.utilities_estimate, 5 + 2 + 3 + 4 + 1);
+  assert.equal(payload.waste_allowance, costing.wasteAllowance);
+  assert.equal(payload.overhead_cost, costing.overheadCost);
+  assert.equal(payload.equipment_cost, costing.equipmentCost);
+  assert.equal(payload.suggested_price, costing.suggestedPrice);
+  assert.equal(payload.notes, costing.notes);
+
+  // updated_at is the only new key -- nothing was dropped, renamed, or silently added alongside it.
+  const expectedKeys = [
+    "id", "product_id", "batch_id", "ingredient_cost", "packaging_cost", "labor_estimate",
+    "utilities_estimate", "waste_allowance", "overhead_cost", "equipment_cost", "suggested_price",
+    "notes", "updated_at",
+  ];
+  assert.deepEqual(Object.keys(payload).sort(), expectedKeys.sort());
+});
+
+test("[static] CostingSummary does not gain an updatedAt field", () => {
+  // The in-memory type stays untouched on purpose: adding updatedAt would ripple into the
+  // localStorage fallback mode, the Costing form, and every row mapper, for no read-side benefit.
+  const lines = toLines(readRepoFile("src/lib/product-lab-types.ts"));
+  const start = lines.findIndex((line) => line.trim() === "export type CostingSummary = {");
+  assert.notEqual(start, -1, "CostingSummary type declaration not found -- test fixture is stale.");
+
+  const end = lines.findIndex((line, index) => index > start && line.trim() === "};");
+  assert.notEqual(end, -1, "CostingSummary type has no closing brace -- test fixture is stale.");
+
+  const body = lines.slice(start + 1, end).join("\n");
+  assert.doesNotMatch(body, /updatedAt/, "CostingSummary must not gain updatedAt (SP1 keeps the change database-side only)");
+});
+
+test("[static] both costing_summaries write paths go through the shared payload builder", () => {
+  const lines = toLines(readRepoFile("src/app/product-lab.tsx"));
+
+  const builderCall = lines.filter((line) => line.includes("buildCostingSummaryPayload(") && !line.trim().startsWith("//") && !line.includes("import "));
+  assert.equal(builderCall.length, 1, "expected exactly one buildCostingSummaryPayload call site");
+
+  const writes = lines.filter((line) => line.includes('from("costing_summaries")') && (line.includes(".insert(") || line.includes(".update(") || line.includes(".upsert(")));
+  assert.equal(writes.length, 2, "expected exactly two costing_summaries write call sites (one insert, one update)");
+  assert.ok(writes.some((line) => line.includes(".update(")), "the update path must exist");
+  assert.ok(writes.some((line) => line.includes(".insert(")), "the insert path must exist");
+  for (const line of writes) {
+    assert.match(line, /payload/, "every costing_summaries write must pass the shared payload, never an inline literal");
+  }
+});
+
+test("[static] no module other than product-lab.tsx writes costing_summaries", () => {
+  // If a second writer ever appears -- an import path, a repair utility, a worker, an RPC wrapper --
+  // it would bypass the payload builder and silently reintroduce the unmaintained-timestamp bug.
+  const offenders: string[] = [];
+
+  for (const root of ["src", "scripts"]) {
+    const entries = readdirSync(new URL(`../${root}`, import.meta.url), { recursive: true, encoding: "utf8" });
+    for (const entry of entries) {
+      const relative = `${root}/${entry.split("\\").join("/")}`;
+      if (!relative.endsWith(".ts") && !relative.endsWith(".tsx")) {
+        continue;
+      }
+      if (relative === "src/app/product-lab.tsx") {
+        continue;
+      }
+      for (const line of toLines(readRepoFile(relative))) {
+        if (line.includes('from("costing_summaries")') && (line.includes(".insert(") || line.includes(".update(") || line.includes(".upsert("))) {
+          offenders.push(`${relative}: ${line.trim()}`);
+        }
+      }
+    }
+  }
+
+  assert.deepEqual(offenders, [], "costing_summaries must have exactly one writing module");
 });
