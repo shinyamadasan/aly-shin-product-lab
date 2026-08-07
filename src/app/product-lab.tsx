@@ -6386,15 +6386,20 @@ function SellingFormatCard({
       <input name={`sellingFormatNotes-${format.id}`} type="hidden" value={format.notes} />
       <div className="grid gap-2 lg:grid-cols-[1.5fr_110px_130px_auto_70px]">
         <Input label="Format name" name={`sellingFormatName-${format.id}`} placeholder="Single Brownie / Box of 6" value={format.name} onChange={(event) => onUpdate({ name: event.target.value })} />
-        <Input
-          helper={overYield ? `Batch yields ${costingYield} -- this uses more than that.` : undefined}
-          label="Pieces per unit"
-          name={`sellingFormatPiecesPerUnit-${format.id}`}
-          step="0.01"
-          type="number"
-          value={format.piecesPerUnit || ""}
-          onChange={(event) => onUpdate({ piecesPerUnit: Number(event.target.value || 0) })}
-        />
+        {/* min-w-0: without it, this column's default grid min-width refuses to shrink below the
+            over-yield helper text's content width and it overflows into the next column instead
+            of wrapping -- the only helper= usage in the app narrow enough to hit this. */}
+        <div className="min-w-0">
+          <Input
+            helper={overYield ? `Batch yields ${costingYield} -- this uses more than that.` : undefined}
+            label="Pieces per unit"
+            name={`sellingFormatPiecesPerUnit-${format.id}`}
+            step="0.01"
+            type="number"
+            value={format.piecesPerUnit || ""}
+            onChange={(event) => onUpdate({ piecesPerUnit: Number(event.target.value || 0) })}
+          />
+        </div>
         <Input label="Selling price PHP" name={`sellingFormatSellingPrice-${format.id}`} step="0.01" type="number" value={format.sellingPrice || ""} onChange={(event) => onUpdate({ sellingPrice: Number(event.target.value || 0) })} />
         <label className="mt-6 flex items-center gap-2 text-sm">
           <input checked={format.isActive} onChange={(event) => onUpdate({ isActive: event.target.checked })} type="checkbox" />
