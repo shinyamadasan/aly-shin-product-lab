@@ -78,7 +78,7 @@ import {
 } from "@/lib/selling-formats";
 import { isDuplicateKeyError } from "@/lib/database-errors";
 import { useEditNavigation } from "@/hooks/use-edit-navigation";
-import { useUnsavedCostingChanges } from "@/hooks/use-unsaved-costing-changes";
+import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import { areCostingFormSnapshotsEqual, buildCostingFormSnapshot } from "@/lib/costing-form-snapshot";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
@@ -185,10 +185,13 @@ export default function ProductLab({
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
-  // Fed by CostingForm's onDirtyChange, consumed by AppShell's generic navigation guard and by
-  // the same-page discard actions below (Recent Entries' Edit, Cancel edit) -- one source of truth
-  // so all three can never disagree about whether there's something to lose.
-  const [isCostingDirty, setIsCostingDirty] = useState(false);
+  // Whichever protected form currently has unsaved changes, if any -- fed by that form's own
+  // onDirtyChange, consumed by AppShell's generic navigation guard and by same-page discard actions
+  // (Recent Entries' Edit, Cancel edit, and their equivalents for other forms as they adopt this).
+  // Only one view is ever mounted at a time, so only one form can genuinely be dirty at once -- a
+  // single shared slot is enough, no per-form boolean or aggregation logic needed. Costing is the
+  // first and, for now, only form driving this; the shape is generic so others can too.
+  const [activeUnsavedForm, setActiveUnsavedForm] = useState<{ message: string } | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
   const [editingEquipment, setEditingEquipment] = useState<EquipmentEntry | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
@@ -2424,7 +2427,7 @@ export default function ProductLab({
   // a navigation or an unload -- both just call setEditingCosting directly, remounting
   // CostingForm via its key -- so neither the nav guard nor beforeunload would ever see them.
   function cancelCostingEdit() {
-    if (!isCostingDirty || window.confirm(UNSAVED_COSTING_MESSAGE)) {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(null);
     }
   }
@@ -2433,7 +2436,7 @@ export default function ProductLab({
     if (costingToEdit.id === editingCosting?.id) {
       return;
     }
-    if (!isCostingDirty || window.confirm(UNSAVED_COSTING_MESSAGE)) {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(costingToEdit);
     }
   }
@@ -2447,7 +2450,7 @@ export default function ProductLab({
   }
 
   return (
-    <AppShell navigationConfirmationMessage={UNSAVED_COSTING_MESSAGE} shouldConfirmNavigation={isCostingDirty} view={view}>
+    <AppShell navigationConfirmationMessage={activeUnsavedForm?.message} shouldConfirmNavigation={Boolean(activeUnsavedForm)} view={view}>
           {message && view !== "dashboard" && view !== "costing" ? <MessageBox message={message} tone={messageTone} /> : null}
           {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
 
@@ -2476,7 +2479,7 @@ export default function ProductLab({
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={setIsCostingDirty} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
                 <RecentEntries deleteCosting={deleteCosting} editCosting={editCostingWithGuard} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
@@ -5482,7 +5485,7 @@ function CostingForm({
   message: string;
   messageTone: "good" | "bad" | "info";
   // Reported after every render so ProductLab can gate app navigation while this costing has
-  // unsaved changes -- see useUnsavedCostingChanges. Optional so this form still works standalone
+  // unsaved changes -- see useUnsavedChangesGuard. Optional so this form still works standalone
   // (e.g. in a future test) without a parent that cares.
   onDirtyChange?: (isDirty: boolean) => void;
   products: Product[];
@@ -5712,7 +5715,7 @@ function CostingForm({
     ],
   );
   const isDirty = !areCostingFormSnapshotsEqual(liveSnapshot, baselineSnapshot);
-  useUnsavedCostingChanges(isDirty, onDirtyChange);
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
   const packagingCost = packagingRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const overheadCost = overheadRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const equipmentAllocations = equipmentUsage.map((row) => {
