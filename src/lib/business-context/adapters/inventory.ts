@@ -242,41 +242,48 @@ export function buildInventoryDomainContext(rows: InventoryRows, env: BuildEnv):
           source: source("calculated", { computedBy: "getTotalInventoryValue", inputs: ["inventory.facts.byIngredient[].averageUnitCost"] }),
         };
 
+  // Both of the timestamps below are root projections of the ledger rows themselves: no published
+  // fact precedes either, so their provenance is kind "entered" carrying the table, column, and the
+  // exact rows each one considered -- never "derived" with an invented dependency.
+  //
+  // They also get separate Provenance objects rather than a shared one, because they read different
+  // row sets: latestPurchaseAt looks at purchase rows only, sourceAsOf at the whole ledger. Sharing
+  // one object would attribute each fact to rows it never examined.
+  const timestamped = (row: InventoryTransactionRow) => Number.isFinite(Date.parse(row.created_at));
+  const latest = (values: string[]) => values.reduce((newest, value) => (Date.parse(value) > Date.parse(newest) ? value : newest));
+
+  function ledgerRowSource(consideredRows: InventoryTransactionRow[]): Provenance {
+    return {
+      kind: "entered",
+      table: "inventory_transactions",
+      column: "created_at",
+      rowIds: consideredRows.map((row) => row.id),
+    };
+  }
+
   // The composer's other input. Purchases only -- consume/adjustment/waste rows say nothing about
   // when purchasing information last changed. Zero purchases is `empty`: a real business fact
   // ("nothing has ever been bought"), never a fabricated date.
-  const purchaseTimes = rows.transactions
-    .filter((row) => row.transaction_type === "purchase")
-    .map((row) => row.created_at)
-    .filter((value) => Number.isFinite(Date.parse(value)));
-
-  const ledgerSource: Provenance = {
-    kind: "derived",
-    table: "inventory_transactions",
-    column: "created_at",
-    computedBy: "buildInventoryDomainContext",
-    inputs: ["inventory.facts.latestPurchaseAt"],
-  };
-
+  const purchaseRows = rows.transactions.filter((row) => row.transaction_type === "purchase" && timestamped(row));
   const latestPurchaseAt: Fact<string> =
-    purchaseTimes.length === 0
-      ? { state: "empty", source: ledgerSource }
+    purchaseRows.length === 0
+      ? { state: "empty", source: ledgerRowSource(purchaseRows) }
       : {
           state: "known",
-          value: purchaseTimes.reduce((latest, value) => (Date.parse(value) > Date.parse(latest) ? value : latest)),
-          source: ledgerSource,
+          value: latest(purchaseRows.map((row) => row.created_at)),
+          source: ledgerRowSource(purchaseRows),
         };
 
   // The ledger is append-only with created_at and no updated_at, so this timestamp needs no
   // reliability caveat -- unlike costing_summaries.updated_at.
-  const allLedgerTimes = rows.transactions.map((row) => row.created_at).filter((value) => Number.isFinite(Date.parse(value)));
+  const ledgerRows = rows.transactions.filter(timestamped);
   const sourceAsOf: Fact<string> =
-    allLedgerTimes.length === 0
-      ? { state: "empty", source: ledgerSource }
+    ledgerRows.length === 0
+      ? { state: "empty", source: ledgerRowSource(ledgerRows) }
       : {
           state: "known",
-          value: allLedgerTimes.reduce((latest, value) => (Date.parse(value) > Date.parse(latest) ? value : latest)),
-          source: ledgerSource,
+          value: latest(ledgerRows.map((row) => row.created_at)),
+          source: ledgerRowSource(ledgerRows),
         };
 
   return {

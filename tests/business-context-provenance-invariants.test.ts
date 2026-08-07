@@ -285,6 +285,120 @@ test("[invariant] readiness.sourceAsOf stays unknown without meaningless inputs"
   assert.ok((fact as { because: string }).because.length > 0, "it must still say why it is unknown");
 });
 
+// Generic dependency-graph checks. Deliberately not written against any particular fact name, so
+// they catch the defect class in domains that do not exist yet.
+//
+// F5 is why these exist: inventory.facts.latestPurchaseAt shipped declaring *itself* as its own
+// input, and inventory.sourceAsOf claimed to be computed from it. Both passed the original
+// non-empty-inputs check, because that rule never asked whether a path pointed anywhere real.
+
+// A declared input may address a collection member ("costing.facts.byCosting[].reviewedAt").
+// Resolution is against the collection fact that owns it.
+function resolveInputPath(input: string): { domain: string; factKey: string } | null {
+  const match = input.match(/^([A-Za-z]+)\.facts\.([A-Za-z0-9_]+)/);
+  return match ? { domain: match[1], factKey: match[2] } : null;
+}
+
+test("[invariant] every declared input resolves to a real fact, and never to the declaring fact itself", () => {
+  const violations: string[] = [];
+
+  for (const context of builtContexts()) {
+    const factKeys = new Set(Object.keys(context.facts));
+
+    eachFact(context, (path, fact) => {
+      for (const input of fact.source?.inputs ?? []) {
+        const resolved = resolveInputPath(input);
+
+        if (!resolved) {
+          violations.push(`${path}: input "${input}" is not a fact path`);
+          continue;
+        }
+        // Cross-domain inputs are legitimate and cannot be resolved from one DomainContext; they are
+        // checked by the composer's own ">= 2 domains" invariant. Only same-domain paths resolve here.
+        if (resolved.domain !== context.domain) {
+          continue;
+        }
+        if (!factKeys.has(resolved.factKey)) {
+          violations.push(`${path}: input "${input}" names no fact published by ${context.domain}`);
+        }
+        if (`${context.domain}.facts.${resolved.factKey}` === path) {
+          violations.push(`${path}: input "${input}" is the declaring fact itself`);
+        }
+      }
+    });
+  }
+
+  assert.deepEqual(violations, []);
+});
+
+test("[invariant] a fact never lists itself, even indirectly through a shared provenance object", () => {
+  // The exact F5 shape: two facts sharing one Provenance object, so whichever fact the inputs named
+  // ended up self-referencing. Sharing is fine; sharing a *dependency claim* across facts that read
+  // different data is not.
+  const violations: string[] = [];
+
+  for (const context of builtContexts()) {
+    eachFact(context, (path, fact) => {
+      if ((fact.source?.inputs ?? []).some((input) => input.startsWith(path))) {
+        violations.push(`${path}: declares a dependency on itself`);
+      }
+    });
+  }
+
+  assert.deepEqual(violations, []);
+});
+
+test("[invariant] root entered facts never fabricate inputs or computedBy", () => {
+  // Generic form of the F4/F5 rule: anything sourced directly from database rows describes those
+  // rows, and must not borrow the vocabulary of a computed fact.
+  const violations: string[] = [];
+
+  for (const context of builtContexts()) {
+    eachFact(context, (path, fact) => {
+      if (fact.source?.kind !== "entered") {
+        return;
+      }
+      if (fact.source.inputs && fact.source.inputs.length > 0) {
+        violations.push(`${path}: entered fact claims inputs`);
+      }
+      if (fact.source.computedBy) {
+        violations.push(`${path}: entered fact claims computedBy`);
+      }
+      if (!fact.source.table) {
+        violations.push(`${path}: entered fact does not name its table`);
+      }
+    });
+  }
+
+  assert.deepEqual(violations, []);
+});
+
+test("[invariant] ledger-derived timestamps name only the rows they actually considered", () => {
+  // latestPurchaseAt reads purchase rows; sourceAsOf reads the whole ledger. They must not share a
+  // row set, or each would be attributed to rows it never examined.
+  const context = buildInventoryDomainContext(
+    {
+      ingredients: [ingredientRow()],
+      transactions: [
+        { ...transactionRow(), id: "purchase-1", transaction_type: "purchase", created_at: "2026-08-05T00:00:00.000Z" },
+        { ...transactionRow(), id: "consume-1", transaction_type: "consume", created_at: "2026-08-06T00:00:00.000Z" },
+      ],
+    },
+    env,
+  );
+
+  const purchase = context.facts.latestPurchaseAt as AnyFact;
+  const asOf = context.sourceAsOf as AnyFact;
+
+  assert.deepEqual(purchase.source?.rowIds, ["purchase-1"], "latestPurchaseAt considered only the purchase row");
+  assert.deepEqual(asOf.source?.rowIds, ["purchase-1", "consume-1"], "sourceAsOf considered the whole ledger");
+  assert.notDeepEqual(purchase.source, asOf.source, "two facts reading different rows must not share one provenance object");
+
+  // Values still reflect their own row sets.
+  assert.equal((purchase as { value: string }).value, "2026-08-05T00:00:00.000Z");
+  assert.equal((asOf as { value: string }).value, "2026-08-06T00:00:00.000Z");
+});
+
 test("[invariant] every emitted signal id is declared, and adapters emit only domain scope", () => {
   for (const context of builtContexts()) {
     for (const signal of context.signals) {
