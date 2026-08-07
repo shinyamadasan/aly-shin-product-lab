@@ -260,7 +260,20 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost"
+                  ]
                 }
               },
               "costPerPiece": {
@@ -269,7 +282,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].totalBatchCost",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
                 }
               },
               "grossProfit": {
@@ -278,7 +295,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
                 }
               },
               "margin": {
@@ -287,7 +308,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].grossProfit",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
                 }
               },
               "foodCostPercent": {
@@ -296,7 +321,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
                 }
               },
               "markup": {
@@ -305,7 +334,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
                 }
               },
               "targetPrice": {
@@ -314,7 +347,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].targetFoodCost"
+                  ]
                 }
               },
               "variableCostPerPiece": {
@@ -323,7 +360,19 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
                 }
               },
               "contributionMarginPerPiece": {
@@ -332,7 +381,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].variableCostPerPiece"
+                  ]
                 }
               },
               "breakEvenUnits": {
@@ -341,7 +394,12 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost",
+                    "costing.facts.byCosting[].contributionMarginPerPiece"
+                  ]
                 }
               },
               "ingredientLineCount": {
@@ -516,7 +574,20 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost"
+                  ]
                 }
               },
               "costPerPiece": {
@@ -527,6 +598,7 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
+                    "costing.facts.byCosting[].totalBatchCost",
                     "costing.facts.byCosting[].costingYield"
                   ]
                 }
@@ -539,7 +611,8 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
-                    "costing.facts.byCosting[].costingYield"
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
                   ]
                 }
               },
@@ -551,7 +624,8 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
-                    "costing.facts.byCosting[].costingYield"
+                    "costing.facts.byCosting[].grossProfit",
+                    "costing.facts.byCosting[].suggestedPrice"
                   ]
                 }
               },
@@ -563,7 +637,8 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
-                    "costing.facts.byCosting[].costingYield"
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].suggestedPrice"
                   ]
                 }
               },
@@ -575,7 +650,8 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
-                    "costing.facts.byCosting[].costingYield"
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
                   ]
                 }
               },
@@ -587,7 +663,8 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
-                    "costing.facts.byCosting[].costingYield"
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].targetFoodCost"
                   ]
                 }
               },
@@ -599,6 +676,15 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
                     "costing.facts.byCosting[].costingYield"
                   ]
                 }
@@ -611,7 +697,8 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
-                    "costing.facts.byCosting[].costingYield"
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].variableCostPerPiece"
                   ]
                 }
               },
@@ -623,7 +710,9 @@
                   "table": "costing_summaries",
                   "computedBy": "getCostingTotals",
                   "inputs": [
-                    "costing.facts.byCosting[].costingYield"
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost",
+                    "costing.facts.byCosting[].contributionMarginPerPiece"
                   ]
                 }
               },
@@ -800,7 +889,20 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost"
+                  ]
                 }
               },
               "costPerPiece": {
@@ -809,7 +911,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].totalBatchCost",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
                 }
               },
               "grossProfit": {
@@ -818,7 +924,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
                 }
               },
               "margin": {
@@ -827,7 +937,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].grossProfit",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
                 }
               },
               "foodCostPercent": {
@@ -836,7 +950,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
                 }
               },
               "markup": {
@@ -845,7 +963,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
                 }
               },
               "targetPrice": {
@@ -854,7 +976,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].targetFoodCost"
+                  ]
                 }
               },
               "variableCostPerPiece": {
@@ -863,7 +989,19 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
                 }
               },
               "contributionMarginPerPiece": {
@@ -872,7 +1010,11 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].variableCostPerPiece"
+                  ]
                 }
               },
               "breakEvenUnits": {
@@ -881,7 +1023,12 @@
                 "source": {
                   "kind": "calculated",
                   "table": "costing_summaries",
-                  "computedBy": "getCostingTotals"
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost",
+                    "costing.facts.byCosting[].contributionMarginPerPiece"
+                  ]
                 }
               },
               "ingredientLineCount": {
@@ -3347,6 +3494,6 @@
       }
     }
   ],
-  "factsDigest": "0a92ce0e0f68d47551426d82fbe3ab1e74380cb60986730314b6fdbc9e25ba67",
+  "factsDigest": "c11b1059b3455262a253c0026d4376d12b5da7f71cdededd8600d122b68a3598",
   "signalsDigest": "d184e3cbbd6582e2e9f1a54f56b7d1dcf6f839cea9b1c5ffc6aa6acf5feef2b4"
 }
