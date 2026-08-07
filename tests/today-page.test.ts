@@ -130,7 +130,7 @@ test("[static] all six approved states have distinct, present copy in the switch
 });
 
 test("[static] completed-today never renders the creation flow -- only the ritual display component, not the ritual create component", () => {
-  const match = source.match(/case "completed-today": \{[\s\S]*?\n {4}\}\n/);
+  const match = source.match(/case "completed-today": \{[\s\S]*?\n {4}\}\r?\n/);
   assert.ok(match, "test fixture is stale -- could not locate the completed-today case block");
   const block = match[0];
   assert.doesNotMatch(block, /CreativePackageAssetCreate/);
@@ -138,8 +138,8 @@ test("[static] completed-today never renders the creation flow -- only the ritua
 });
 
 test("[static] continue and fresh both render the create component, and continue's copy never reuses fresh's eyebrow text verbatim", () => {
-  const freshMatch = source.match(/case "fresh": \{[\s\S]*?\n {4}\}\n/);
-  const continueMatch = source.match(/case "continue": \{[\s\S]*?\n {4}\}\n/);
+  const freshMatch = source.match(/case "fresh": \{[\s\S]*?\n {4}\}\r?\n/);
+  const continueMatch = source.match(/case "continue": \{[\s\S]*?\n {4}\}\r?\n/);
   assert.ok(freshMatch && continueMatch, "test fixture is stale -- could not locate fresh/continue case blocks");
   assert.match(freshMatch[0], /CreativePackageAssetCreate creativePackageId/);
   assert.match(continueMatch[0], /CreativePackageAssetCreate creativePackageId/);
