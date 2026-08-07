@@ -141,6 +141,7 @@ function isMissingColumnError(error: PostgrestError | null): boolean {
 // question regardless of which discard path they hit.
 const UNSAVED_COSTING_MESSAGE = "You have unsaved changes in this costing. Leaving now will discard them. Continue?";
 const UNSAVED_BATCH_MESSAGE = "You have unsaved changes in this batch record. Leaving now will discard them. Continue?";
+const UNSAVED_INGREDIENT_MESSAGE = "You have unsaved changes in this ingredient. Leaving now will discard them. Continue?";
 
 export default function ProductLab({
   view = "dashboard",
@@ -2462,6 +2463,25 @@ export default function ProductLab({
     }
   }
 
+  // Same shape as cancelCostingEdit/editCostingWithGuard above, for the Ingredient editor --
+  // neither Cancel edit nor switching ingredients is a navigation or an unload, so neither the nav
+  // guard nor beforeunload would ever see them; both just call setEditingIngredient directly,
+  // remounting InventoryPage via its key.
+  function cancelIngredientEdit() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingIngredient(null);
+    }
+  }
+
+  function editIngredientWithGuard(ingredientToEdit: Ingredient) {
+    if (ingredientToEdit.id === editingIngredient?.id) {
+      return;
+    }
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingIngredient(ingredientToEdit);
+    }
+  }
+
   if (isSupabaseConfigured && isAuthLoading) {
     return <LoadingScreen />;
   }
@@ -2516,14 +2536,14 @@ export default function ProductLab({
           {view === "inventory" ? (
             <InventoryWorkspace
               adjustStock={adjustStock}
-              cancelEditIngredient={() => setEditingIngredient(null)}
+              cancelEditIngredient={cancelIngredientEdit}
               cancelEditSupply={() => setEditingSupply(null)}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
               deleteIngredient={deleteIngredient}
               deleteSupply={deleteSupply}
               discardPurchaseImport={discardPurchaseImport}
-              editIngredient={setEditingIngredient}
+              editIngredient={editIngredientWithGuard}
               editSupply={setEditingSupply}
               hardDeleteIngredient={hardDeleteIngredient}
               ingredient={editingIngredient}
@@ -2532,6 +2552,7 @@ export default function ProductLab({
               isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               isSuppliesTableMissing={isSuppliesTableMissing}
               labState={labState}
+              onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_INGREDIENT_MESSAGE } : null)}
               repairSupplyInventoryEffects={repairSupplyInventoryEffects}
               reverseInventoryAdjustment={reverseInventoryAdjustment}
               saveIngredient={saveIngredient}
@@ -4847,6 +4868,7 @@ function InventoryWorkspace({
   createPurchaseImportDraft,
   discardPurchaseImport,
   isPurchaseImportPackagesMissing,
+  onDirtyChange,
   restoreIngredient,
   saveIngredientAlias,
   updatePurchaseImportHeader,
@@ -4862,6 +4884,10 @@ function InventoryWorkspace({
   ingredient: Ingredient | null;
   isInventoryTableMissing: boolean;
   saveIngredient: (formData: FormData) => Promise<string | null>;
+  // Reports the Ingredient editor's own dirty state upward to ProductLab's shared
+  // activeUnsavedForm slot -- forwarded from the same onDirtyChange InventoryPage reports to
+  // locally (see isIngredientDirty below), not a second, independent signal.
+  onDirtyChange?: (isDirty: boolean) => void;
   cancelEditSupply: () => void;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
@@ -4882,6 +4908,28 @@ function InventoryWorkspace({
 }) {
   const [tab, setTab] = useState<InventoryTab>(initialTab ?? "stock");
   const [purchasesTab, setPurchasesTab] = useState<"manual" | "csv">("manual");
+  const [isIngredientDirty, setIsIngredientDirty] = useState(false);
+
+  function onIngredientDirtyChange(isDirty: boolean) {
+    setIsIngredientDirty(isDirty);
+    onDirtyChange?.(isDirty);
+  }
+
+  // Switching Inventory's internal tabs is a pure useState change, not a navigation -- neither
+  // AppShell's nav guard nor beforeunload would ever see it -- but leaving the Items tab while its
+  // editor is dirty unmounts InventoryPage exactly like a navigation would. Only guards leaving
+  // Items while its own editor is dirty; switching between any other pair of tabs, or re-clicking
+  // the already-active tab, never prompts.
+  function changeTab(nextTab: InventoryTab) {
+    if (nextTab === tab) {
+      return;
+    }
+    if (tab === "ingredients" && isIngredientDirty && !window.confirm(UNSAVED_INGREDIENT_MESSAGE)) {
+      return;
+    }
+    setTab(nextTab);
+  }
+
   function logPurchaseForIngredient(item: Ingredient) {
     editSupply({
       id: "",
@@ -4898,7 +4946,7 @@ function InventoryWorkspace({
       notes: "",
     });
     setPurchasesTab("manual");
-    setTab("purchases");
+    changeTab("purchases");
   }
 
   return (
@@ -4908,7 +4956,7 @@ function InventoryWorkspace({
           <button
             className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
             key={item.key}
-            onClick={() => setTab(item.key)}
+            onClick={() => changeTab(item.key)}
             type="button"
           >
             {item.label}
@@ -4960,7 +5008,7 @@ function InventoryWorkspace({
       {tab === "history" ? <InventoryTimeline labState={labState} reverseInventoryAdjustment={reverseInventoryAdjustment} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
+        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
       ) : null}
     </div>
   );
