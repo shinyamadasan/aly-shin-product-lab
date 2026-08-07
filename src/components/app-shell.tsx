@@ -21,7 +21,30 @@ const titles = {
   guide: "How to use Product Lab",
 };
 
-export function AppShell({ children, view }: { children: React.ReactNode; view: LabView }) {
+// shouldConfirmNavigation/navigationConfirmationMessage are deliberately generic, not named after
+// any one form: today only Costing feeds them (via ProductLab), but any future form with the same
+// "unsaved changes" risk can reuse this exact contract without AppShell needing to know which form
+// it is. Plain anchors, not next/link -- this app's internal nav is real browser navigation (see
+// costing-form-snapshot.ts's callers), so onClick + preventDefault is what actually intercepts a
+// click here, and letting a confirmed click fall through to the anchor's own default behavior
+// preserves that real navigation exactly as it already works, unchanged.
+export function AppShell({
+  children,
+  navigationConfirmationMessage,
+  shouldConfirmNavigation,
+  view,
+}: {
+  children: React.ReactNode;
+  navigationConfirmationMessage?: string;
+  shouldConfirmNavigation?: boolean;
+  view: LabView;
+}) {
+  function handleNavClick(event: React.MouseEvent<HTMLAnchorElement>) {
+    if (shouldConfirmNavigation && !window.confirm(navigationConfirmationMessage ?? "You have unsaved changes. Leaving now will discard them. Continue?")) {
+      event.preventDefault();
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#f7f2ea] text-[#211713]">
       <aside className="fixed inset-y-0 left-0 hidden w-72 border-r border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef] lg:block">
@@ -38,6 +61,7 @@ export function AppShell({ children, view }: { children: React.ReactNode; view: 
               }`}
               href={item.href}
               key={item.href}
+              onClick={handleNavClick}
             >
               {item.label}
               <ArrowRight size={14} />
@@ -60,6 +84,7 @@ export function AppShell({ children, view }: { children: React.ReactNode; view: 
               }`}
               href={item.href}
               key={item.href}
+              onClick={handleNavClick}
             >
               {item.label}
             </a>

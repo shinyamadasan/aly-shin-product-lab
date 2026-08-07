@@ -1,6 +1,7 @@
 import { parseBatchIngredients } from "../batches.ts";
+import { hasActiveSellingFormatWithValidPackaging } from "../selling-formats.ts";
 import type { Product, ProductBatch, TastingFeedback } from "../product-lab-types.ts";
-import { getLatestBatch, getLinkedCosting, getProductTastings, insufficientDataResult, type RuleEngineContext, type RuleResult } from "./types.ts";
+import { getContextSellingFormatPackagingLines, getContextSellingFormats, getLatestBatch, getLinkedCosting, getProductTastings, insufficientDataResult, type RuleEngineContext, type RuleResult } from "./types.ts";
 
 const CATEGORY = "quality" as const;
 
@@ -35,21 +36,34 @@ function evaluateShelfLifeTest(tastings: TastingFeedback[]): RuleResult {
 // QUAL-002: packaging validation. The exact gap this framework exists to catch -- a nonzero
 // packaging cost is not evidence packaging was tested. Keyword search across costing.notes
 // (which includes the packaging row notes embedded in its structured JSON) for a test mention.
+//
+// Broadened for Selling Formats (Slice 5): packaging also counts as present when at least one
+// active Selling Format has valid packaging (hasActiveSellingFormatWithValidPackaging), not just
+// the legacy costing.packagingCost field -- an operator who correctly moves per-sale packaging
+// into a Selling Format must not see this rule regress to "insufficient data." A costing with no
+// Selling Formats at all (sellingFormats defaults to [] via getContextSellingFormats) behaves
+// exactly as before this change.
 function evaluatePackagingValidation(context: RuleEngineContext, product: Product, latestBatch: ProductBatch | undefined): RuleResult {
   const costing = getLinkedCosting(context, product, latestBatch);
-  if (!costing || !(costing.packagingCost > 0)) {
+  if (!costing) {
+    return insufficientDataResult("QUAL-002", CATEGORY, "warning", "No packaging cost recorded yet.", "Add packaging cost on the Costing page.");
+  }
+
+  const hasSellingFormatPackaging = hasActiveSellingFormatWithValidPackaging(costing.id, getContextSellingFormats(context), getContextSellingFormatPackagingLines(context));
+  if (!(costing.packagingCost > 0) && !hasSellingFormatPackaging) {
     return insufficientDataResult("QUAL-002", CATEGORY, "warning", "No packaging cost recorded yet.", "Add packaging cost on the Costing page.");
   }
 
   const passed = containsKeyword(costing.notes, TEST_KEYWORDS);
+  const packagingDescription = costing.packagingCost > 0 ? `Packaging cost is PHP ${costing.packagingCost.toFixed(2)}` : "Packaging is defined through an active Selling Format";
   return {
     id: "QUAL-002",
     category: CATEGORY,
     severity: "warning",
     passed,
     message: passed
-      ? `Packaging cost is PHP ${costing.packagingCost.toFixed(2)} with a test note on file.`
-      : `Packaging cost is PHP ${costing.packagingCost.toFixed(2)} but no test note confirms it holds up under real delivery/storage conditions.`,
+      ? `${packagingDescription} with a test note on file.`
+      : `${packagingDescription}, but no test note confirms it holds up under real delivery/storage conditions.`,
     recommendation: passed ? "No action needed." : "Run a packaging stress test (see ai-review/knowledge/packaging.md) and log the result in a packaging note.",
   };
 }

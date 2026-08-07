@@ -1,5 +1,5 @@
 import { Boxes } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Ingredient, IngredientCategory, StockAdjustmentReason, SupplyEntry } from "@/lib/product-lab-types";
 import { CANONICAL_UNITS } from "@/lib/product-lab-types";
 import { getToday, type LabState } from "@/lib/lab-state";
@@ -9,6 +9,8 @@ import { buildInventoryItemViews } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { Button, FormPanel, Input, Select, SecondaryButton, Tag, Textarea } from "@/components/ui";
 import { useEditNavigation } from "@/hooks/use-edit-navigation";
+import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
+import { areIngredientFormSnapshotsEqual, buildIngredientFormSnapshot, type IngredientFormSnapshot } from "@/lib/ingredient-form-snapshot";
 
 // Every ingredient's own base unit is canonical -- kg/L stay valid purchase/recipe input units,
 // converted before ever reaching this list. Derived from CANONICAL_UNITS so there's exactly one
@@ -61,6 +63,10 @@ function LowStockThresholdField({ ingredient }: { ingredient: Ingredient | null 
       return;
     }
     lowThresholdRef.current.value = String(Math.round(targetValue * (percentValue / 100) * 100) / 100);
+    // Setting .value directly through a ref doesn't fire a native "input" event, so InventoryPage's
+    // dirty-tracking (its <form>'s onChange) would never notice this change -- dispatch one
+    // explicitly so "Fill in" behaves like the operator typed the same value by hand.
+    lowThresholdRef.current.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
   return (
@@ -179,6 +185,7 @@ export function InventoryPage({
   isInventoryTableMissing,
   labState,
   logPurchaseForIngredient,
+  onDirtyChange,
   restoreIngredient,
   saveIngredient,
 }: {
@@ -191,6 +198,9 @@ export function InventoryPage({
   isInventoryTableMissing: boolean;
   labState: LabState;
   logPurchaseForIngredient: (ingredient: Ingredient) => void;
+  // Reports live dirty state upward for AppShell's nav guard and same-page discard actions -- see
+  // useUnsavedChangesGuard. Optional so this page still works standalone (e.g. tests).
+  onDirtyChange?: (isDirty: boolean) => void;
   restoreIngredient: (ingredientId: string) => void;
   saveIngredient: (formData: FormData) => void;
 }) {
@@ -199,6 +209,32 @@ export function InventoryPage({
   const archivedIngredients = labState.ingredients.filter((item) => !item.isActive);
   const itemViews = buildInventoryItemViews(ingredients, labState.supplies);
   const flaggedIngredients = getFlaggedIngredients(labState.ingredients);
+
+  const formRef = useRef<HTMLFormElement>(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState<IngredientFormSnapshot | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Most of this form's fields are uncontrolled (see ingredient-form-snapshot.ts), so the baseline
+  // can only be read from the real DOM <form> -- which doesn't exist yet during the first render.
+  // InventoryPage itself isn't keyed by ingredient?.id below this component's own call site (see
+  // its call site's key in product-lab.tsx's InventoryWorkspace), so switching to a different
+  // ingredient remounts this whole component -- this effect re-runs and re-captures the new
+  // ingredient's own values as the fresh baseline, exactly as it did on first mount.
+  useEffect(() => {
+    if (formRef.current) {
+      setBaselineSnapshot(buildIngredientFormSnapshot(new FormData(formRef.current)));
+    }
+  }, []);
+
+  function recomputeIsDirty() {
+    if (!formRef.current || !baselineSnapshot) {
+      return;
+    }
+    const liveSnapshot = buildIngredientFormSnapshot(new FormData(formRef.current));
+    setIsDirty(!areIngredientFormSnapshotsEqual(liveSnapshot, baselineSnapshot));
+  }
+
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
@@ -211,7 +247,7 @@ export function InventoryPage({
             Inventory database fields are not ready yet. Run <strong>supabase-add-inventory.sql</strong> once, then save again.
           </div>
         ) : null}
-        <form action={saveIngredient} className="grid gap-3" key={ingredient?.id ?? "new-ingredient"}>
+        <form action={saveIngredient} className="grid gap-3" key={ingredient?.id ?? "new-ingredient"} onChange={recomputeIsDirty} ref={formRef}>
           <input name="id" type="hidden" value={ingredient?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-2">
             <Input name="name" label="Ingredient name" placeholder="Fresh Milk" defaultValue={ingredient?.name} ref={fieldRef} />

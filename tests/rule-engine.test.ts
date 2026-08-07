@@ -9,7 +9,7 @@ import { evaluateLaunch } from "../src/lib/rule-engine/launch.ts";
 import { getPriorityScore, getProductHealth, getReadinessPercentage, selectNextBestAction } from "../src/lib/rule-engine/priority.ts";
 import { evaluateProduct } from "../src/lib/rule-engine/index.ts";
 import type { RuleEngineContext, RuleResult } from "../src/lib/rule-engine/types.ts";
-import type { CostingSummary, Ingredient, Product, ProductBatch, SupplyEntry, TastingFeedback } from "../src/lib/product-lab-types.ts";
+import type { CostingSummary, Ingredient, Product, ProductBatch, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "../src/lib/product-lab-types.ts";
 
 function product(overrides: Partial<Product> = {}): Product {
   return {
@@ -118,6 +118,36 @@ function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
     averageUnitCost: 0,
     notes: "",
     isActive: true,
+    ...overrides,
+  };
+}
+
+function sellingFormat(overrides: Partial<SellingFormat> = {}): SellingFormat {
+  return {
+    id: crypto.randomUUID(),
+    costingId: "",
+    name: "Box of 6",
+    piecesPerUnit: 6,
+    sellingPrice: 250,
+    isActive: true,
+    sortOrder: 0,
+    notes: "",
+    ...overrides,
+  };
+}
+
+function sellingFormatPackagingLine(overrides: Partial<SellingFormatPackagingLine> = {}): SellingFormatPackagingLine {
+  return {
+    id: crypto.randomUUID(),
+    sellingFormatId: "",
+    ingredientId: "",
+    name: "Kraft box",
+    quantity: 1,
+    unit: "pcs",
+    unitCostSnapshot: 15,
+    isManualCost: true,
+    note: "",
+    sortOrder: 0,
     ...overrides,
   };
 }
@@ -362,6 +392,58 @@ test("QUAL-002 passes when the costing notes mention a real test", () => {
   const c = costing({ batchId: b.id, packagingCost: 10, notes: "Costing yield: 8\nPackaging stress test held up at 24h." });
   const results = evaluateQuality(product(), context({ batches: [b], costings: [c] }));
   assert.equal(find(results, "QUAL-002").passed, true);
+});
+
+test("QUAL-002 (Slice 5): existing pass/warning behavior is unchanged for a costing with no Selling Formats at all", () => {
+  const b = batch();
+  const c = costing({ batchId: b.id, packagingCost: 10, notes: "Costing yield: 8" });
+  const results = evaluateQuality(product(), context({ batches: [b], costings: [c] }));
+  const qual002 = find(results, "QUAL-002");
+  assert.equal(qual002.passed, false);
+  assert.equal(qual002.severity, "warning");
+});
+
+test("QUAL-002 (Slice 5): an active Selling Format with a valid packaging line counts as packaging present, even with legacy packagingCost at 0", () => {
+  const b = batch();
+  const c = costing({ id: "costing-1", batchId: b.id, packagingCost: 0, notes: "Costing yield: 8" });
+  const activeFormat = sellingFormat({ id: "format-1", costingId: "costing-1", isActive: true });
+  const validLine = sellingFormatPackagingLine({ sellingFormatId: "format-1" });
+  const results = evaluateQuality(product(), context({ batches: [b], costings: [c], sellingFormats: [activeFormat], sellingFormatPackagingLines: [validLine] }));
+  assert.notEqual(find(results, "QUAL-002").passed, null);
+});
+
+test("QUAL-002 (Slice 5): Selling-Format-only packaging still requires a test note to actually pass", () => {
+  const b = batch();
+  const c = costing({ id: "costing-1", batchId: b.id, packagingCost: 0, notes: "Costing yield: 8" });
+  const activeFormat = sellingFormat({ id: "format-1", costingId: "costing-1", isActive: true });
+  const validLine = sellingFormatPackagingLine({ sellingFormatId: "format-1" });
+  const results = evaluateQuality(product(), context({ batches: [b], costings: [c], sellingFormats: [activeFormat], sellingFormatPackagingLines: [validLine] }));
+  assert.equal(find(results, "QUAL-002").passed, false);
+});
+
+test("QUAL-002 (Slice 5): an archived Selling Format's packaging does not count", () => {
+  const b = batch();
+  const c = costing({ id: "costing-1", batchId: b.id, packagingCost: 0, notes: "Costing yield: 8" });
+  const archivedFormat = sellingFormat({ id: "format-1", costingId: "costing-1", isActive: false });
+  const validLine = sellingFormatPackagingLine({ sellingFormatId: "format-1" });
+  const results = evaluateQuality(product(), context({ batches: [b], costings: [c], sellingFormats: [archivedFormat], sellingFormatPackagingLines: [validLine] }));
+  assert.equal(find(results, "QUAL-002").passed, null);
+});
+
+test("QUAL-002 (Slice 5): an active Selling Format whose only line is invalid (blank name/zero cost) does not count", () => {
+  const b = batch();
+  const c = costing({ id: "costing-1", batchId: b.id, packagingCost: 0, notes: "Costing yield: 8" });
+  const activeFormat = sellingFormat({ id: "format-1", costingId: "costing-1", isActive: true });
+  const invalidLine = sellingFormatPackagingLine({ sellingFormatId: "format-1", unitCostSnapshot: 0 });
+  const results = evaluateQuality(product(), context({ batches: [b], costings: [c], sellingFormats: [activeFormat], sellingFormatPackagingLines: [invalidLine] }));
+  assert.equal(find(results, "QUAL-002").passed, null);
+});
+
+test("QUAL-002 (Slice 5): no packaging anywhere (no legacy cost, no Selling Formats) is still insufficient data", () => {
+  const b = batch();
+  const c = costing({ id: "costing-1", batchId: b.id, packagingCost: 0, notes: "Costing yield: 8" });
+  const results = evaluateQuality(product(), context({ batches: [b], costings: [c] }));
+  assert.equal(find(results, "QUAL-002").passed, null);
 });
 
 test("QUAL-003 does not apply to a non-Coffee category", () => {

@@ -33,14 +33,14 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
-import { PurchaseImportWizard } from "@/components/purchase-import-wizard";
+import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/components/purchase-import-wizard";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
 import { OpportunitiesPage } from "@/components/opportunities-page";
@@ -59,9 +59,32 @@ import {
   createDraftFromJourney,
   mapContentDraftRow,
 } from "@/lib/content-drafts";
-import { findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch } from "@/lib/costing";
+import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "@/lib/costing";
+import {
+  buildMovedManualPackagingLine,
+  buildSellingFormatPackagingLinePayload,
+  buildSellingFormatPayload,
+  calculateMoveToSellingFormatAmount,
+  getRemovedSellingFormatIds,
+  getRemovedSellingFormatPackagingLineIds,
+  getSellingFormatPackagingCost,
+  getSellingFormatMetrics,
+  mapSellingFormatPackagingLineRow,
+  mapSellingFormatRow,
+  parseSellingFormatsFromFormData,
+  replaceSellingFormatPackagingLinesForCosting,
+  replaceSellingFormatsForCosting,
+  validateSellingFormatsForSave,
+  type SellingFormatMoveInterpretation,
+} from "@/lib/selling-formats";
 import { isDuplicateKeyError } from "@/lib/database-errors";
 import { useEditNavigation } from "@/hooks/use-edit-navigation";
+import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
+import { areCostingFormSnapshotsEqual, buildCostingFormSnapshot } from "@/lib/costing-form-snapshot";
+import { areBatchFormSnapshotsEqual, buildBatchFormSnapshot, type BatchFormSnapshot } from "@/lib/batch-form-snapshot";
+import { areSupplyFormSnapshotsEqual, buildSupplyFormSnapshot, type SupplyFormSnapshot } from "@/lib/supply-form-snapshot";
+import { resolveTabChange } from "@/lib/inventory-tab-guard";
+import { areTastingFormSnapshotsEqual, buildTastingFormSnapshot, type TastingFormSnapshot } from "@/lib/tasting-form-snapshot";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
@@ -91,7 +114,7 @@ import {
   parseBatchRecord,
   type BatchFormulaRow,
 } from "@/lib/batches";
-import { archiveItem, canHardDeleteItem, getItemReferenceSummary, itemReferenceCount, restoreItem } from "@/lib/inventory-safety";
+import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "@/lib/inventory-safety";
 import { canDeleteDraftBatch, canVoidBatch, getBatchReferenceSummary, getEffectiveBatchStatus, markBatchCompleted, voidBatch } from "@/lib/batch-safety";
 import { canDeleteProduct, getProductReferenceCount, totalProductReferenceCount } from "@/lib/product-safety";
 
@@ -116,6 +139,14 @@ function isMissingTableError(error: PostgrestError | null): boolean {
 function isMissingColumnError(error: PostgrestError | null): boolean {
   return error?.code === "PGRST204" || error?.code === "42703";
 }
+
+// The one warning shown before every way unsaved Costing changes could be discarded -- app nav,
+// Recent Entries' Edit, and Cancel edit all use this exact string so the operator sees the same
+// question regardless of which discard path they hit.
+const UNSAVED_COSTING_MESSAGE = "You have unsaved changes in this costing. Leaving now will discard them. Continue?";
+const UNSAVED_BATCH_MESSAGE = "You have unsaved changes in this batch record. Leaving now will discard them. Continue?";
+const UNSAVED_INGREDIENT_MESSAGE = "You have unsaved changes in this ingredient. Leaving now will discard them. Continue?";
+const UNSAVED_SUPPLY_MESSAGE = "You have unsaved changes in this purchase. Leaving now will discard them. Continue?";
 
 export default function ProductLab({
   view = "dashboard",
@@ -157,11 +188,19 @@ export default function ProductLab({
   const [isInventoryTableMissing, setIsInventoryTableMissing] = useState(false);
   const [isPurchaseImportPackagesMissing, setIsPurchaseImportPackagesMissing] = useState(false);
   const [isContentDraftsTableMissing, setIsContentDraftsTableMissing] = useState(false);
+  const [isSellingFormatsTableMissing, setIsSellingFormatsTableMissing] = useState(false);
   const [isProductDecisionColumnMissing, setIsProductDecisionColumnMissing] = useState(false);
   const [isBrandFoundationColumnsMissing, setIsBrandFoundationColumnsMissing] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
+  // Whichever protected form currently has unsaved changes, if any -- fed by that form's own
+  // onDirtyChange, consumed by AppShell's generic navigation guard and by same-page discard actions
+  // (Recent Entries' Edit, Cancel edit, and their equivalents for other forms as they adopt this).
+  // Only one view is ever mounted at a time, so only one form can genuinely be dirty at once -- a
+  // single shared slot is enough, no per-form boolean or aggregation logic needed. Costing is the
+  // first and, for now, only form driving this; the shape is generic so others can too.
+  const [activeUnsavedForm, setActiveUnsavedForm] = useState<{ message: string } | null>(null);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
   const [editingEquipment, setEditingEquipment] = useState<EquipmentEntry | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
@@ -210,12 +249,14 @@ export default function ProductLab({
       return;
     }
 
-    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult] = await Promise.all([
+    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult] = await Promise.all([
       supabase.from("products").select("*").order("name", { ascending: true }),
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_summaries").select("*").order("created_at", { ascending: false }),
+      supabase.from("selling_formats").select("*").order("sort_order", { ascending: true }),
+      supabase.from("selling_format_packaging_lines").select("*").order("sort_order", { ascending: true }),
       supabase.from("supply_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("equipment").select("*").order("created_at", { ascending: false }),
       supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
@@ -234,6 +275,10 @@ export default function ProductLab({
     const equipmentMissing = isMissingTableError(equipmentResult.error);
     const aiReviewsMissing = isMissingTableError(aiReviewResult.error);
     const contentDraftsMissing = isMissingTableError(contentDraftResult.error);
+    // Both selling_formats tables ship together in supabase-add-selling-formats.sql, so one shared
+    // flag -- mirrors the ingredientsMissing bundle below (same rationale: no scenario where only
+    // one of a co-shipped pair exists).
+    const sellingFormatsMissing = isMissingTableError(sellingFormatResult.error) || isMissingTableError(sellingFormatPackagingLineResult.error);
     const brandProfileMissing = isMissingTableError(brandProfileResult.error);
     // All 6 inventory tables ship together in supabase-add-inventory.sql, so one shared flag
     // (not one per table) -- there's no real scenario where only some of them exist. Uses the same
@@ -249,13 +294,16 @@ export default function ProductLab({
     setIsAiReviewsTableMissing(Boolean(aiReviewsMissing));
     setIsInventoryTableMissing(ingredientsMissing);
     setIsContentDraftsTableMissing(Boolean(contentDraftsMissing));
-    if (productResult.error || batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!contentDraftsMissing && contentDraftResult.error) || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error)) || (!brandProfileMissing && brandProfileResult.error)) {
+    setIsSellingFormatsTableMissing(Boolean(sellingFormatsMissing));
+    if (productResult.error || batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!sellingFormatsMissing && (sellingFormatResult.error || sellingFormatPackagingLineResult.error)) || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!contentDraftsMissing && contentDraftResult.error) || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error)) || (!brandProfileMissing && brandProfileResult.error)) {
       const error =
         productResult.error?.message ||
         batchResult.error?.message ||
         batchPhotoResult.error?.message ||
         costingEntryResult.error?.message ||
         costingResult.error?.message ||
+        sellingFormatResult.error?.message ||
+        sellingFormatPackagingLineResult.error?.message ||
         supplyResult.error?.message ||
         equipmentResult.error?.message ||
         tastingResult.error?.message ||
@@ -378,6 +426,8 @@ export default function ProductLab({
         suggestedPrice: Number(row.suggested_price ?? 0),
         notes: row.notes ?? "",
       })),
+      sellingFormats: sellingFormatsMissing ? [] : (sellingFormatResult.data ?? []).map(mapSellingFormatRow),
+      sellingFormatPackagingLines: sellingFormatsMissing ? [] : (sellingFormatPackagingLineResult.data ?? []).map(mapSellingFormatPackagingLineRow),
       supplies: supplyMissing ? [] : (supplyResult.data ?? []).map((row) => ({
         id: row.id,
         ingredientId: row.ingredient_id ?? "",
@@ -577,14 +627,14 @@ export default function ProductLab({
 
   const metrics = useMemo(() => {
     const launchCandidates = labState.products.filter((product) => {
-      const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
+      const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
       return readiness.percent >= 100;
     }).length;
 
     return {
       productCount: labState.products.length,
       launchCandidates,
-      needsProof: labState.products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings).proofBatches === 0).length,
+      needsProof: labState.products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines).proofBatches === 0).length,
       tastingEntries: labState.tastings.length,
     };
   }, [labState]);
@@ -921,6 +971,20 @@ export default function ProductLab({
       return;
     }
 
+    // Resolved once, here, before anything else -- threaded through the in-memory costing object
+    // below, the Supabase payload (buildCostingSummaryPayload), and every Selling Format saved
+    // alongside it, so all three always agree on this costing's id. See resolveCostingId's own
+    // comment (src/lib/costing.ts) for why this replaced the inline `costingId || crypto.randomUUID()`
+    // that used to live only in the costing object literal and never reached the Supabase payload.
+    const costingSummaryId = resolveCostingId(costingId);
+    const { sellingFormats, sellingFormatPackagingLines } = parseSellingFormatsFromFormData(formData, costingSummaryId);
+    const sellingFormatValidationError = validateSellingFormatsForSave(sellingFormats, sellingFormatPackagingLines);
+    if (sellingFormatValidationError) {
+      setMessage(sellingFormatValidationError);
+      setMessageTone("bad");
+      return;
+    }
+
     const ingredientRowIds = String(formData.get("ingredientRowIds") || "")
       .split(",")
       .filter(Boolean);
@@ -1063,7 +1127,7 @@ export default function ProductLab({
       : "";
     const structuredNotes = buildCostingStructuredDetail({ electricityDetail, equipmentUsage, gasDetail, laborDetail, overheadRows, packagingRows, targetFoodCost, utilityRows, wasteRows, waterDetail });
     const costing: CostingSummary = {
-      id: costingId || crypto.randomUUID(),
+      id: costingSummaryId,
       productId,
       batchId,
       ingredientCost,
@@ -1114,43 +1178,89 @@ export default function ProductLab({
         }
       }
 
-      const payload = {
-        product_id: costing.productId,
-        batch_id: costing.batchId || null,
-        ingredient_cost: costing.ingredientCost,
-        packaging_cost: costing.packagingCost,
-        labor_estimate: costing.laborEstimate,
-        utilities_estimate:
-          costing.waterCost +
-          costing.gasCost +
-          costing.ovenElectricCost +
-          costing.refrigerationCost +
-          costing.coffeeEquipmentCost,
-        waste_allowance: costing.wasteAllowance,
-        overhead_cost: costing.overheadCost,
-        equipment_cost: costing.equipmentCost,
-        suggested_price: costing.suggestedPrice,
-        notes: costing.notes,
-      };
+      const payload = buildCostingSummaryPayload(costing);
       const query = costingId
         ? supabase.from("costing_summaries").update(payload).eq("id", costingId)
         : supabase.from("costing_summaries").insert(payload);
       const { error } = await query;
       const duplicateMessage = "A costing for this batch already exists. Refresh and edit that record instead.";
-      setMessage(error ? (isDuplicateKeyError(error) ? duplicateMessage : `Costing save failed: ${error.message}`) : costingId ? "Costing updated." : "Costing saved.");
-      setMessageTone(error ? "bad" : "good");
-      if (!error) {
-        setEditingCosting(null);
+      if (error) {
+        setMessage(isDuplicateKeyError(error) ? duplicateMessage : `Costing save failed: ${error.message}`);
+        setMessageTone("bad");
+        await loadSupabaseData();
+        return;
       }
+
+      // Steps 4-7 (Selling Formats + their packaging lines) only run once the costing itself is
+      // confirmed saved -- persisting a format against a costing that failed to save would attach
+      // it to nothing. A failure from here on still leaves the costing itself saved, so every
+      // message below says so explicitly rather than reusing the generic failure text above.
+      const partialSaveSuffix = "Reopen and check before trusting these formats' cost.";
+      const existingSellingFormats = labState.sellingFormats.filter((format) => format.costingId === costingSummaryId);
+      const submittedFormatIds = sellingFormats.map((format) => format.id);
+      const removedFormatIds = getRemovedSellingFormatIds(existingSellingFormats, submittedFormatIds);
+
+      if (sellingFormats.length > 0) {
+        const { error: formatsError } = await supabase.from("selling_formats").upsert(sellingFormats.map(buildSellingFormatPayload));
+        if (formatsError) {
+          setMessage(`Costing saved, but selling formats failed to save (${formatsError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      if (removedFormatIds.length > 0) {
+        const { error: removeFormatsError } = await supabase.from("selling_formats").delete().in("id", removedFormatIds);
+        if (removeFormatsError) {
+          setMessage(`Costing saved, but a removed selling format could not be deleted (${removeFormatsError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      const existingLinesForKeptFormats = labState.sellingFormatPackagingLines.filter((line) => submittedFormatIds.includes(line.sellingFormatId));
+      const submittedLineIds = sellingFormatPackagingLines.map((line) => line.id);
+      const removedLineIds = getRemovedSellingFormatPackagingLineIds(existingLinesForKeptFormats, submittedLineIds);
+
+      if (sellingFormatPackagingLines.length > 0) {
+        const { error: linesError } = await supabase.from("selling_format_packaging_lines").upsert(sellingFormatPackagingLines.map(buildSellingFormatPackagingLinePayload));
+        if (linesError) {
+          setMessage(`Selling formats saved, but their packaging lines failed to save (${linesError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      if (removedLineIds.length > 0) {
+        const { error: removeLinesError } = await supabase.from("selling_format_packaging_lines").delete().in("id", removedLineIds);
+        if (removeLinesError) {
+          setMessage(`Selling formats saved, but a removed packaging line could not be deleted (${removeLinesError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      setMessage(costingId ? "Costing updated." : "Costing saved.");
+      setMessageTone("good");
+      setEditingCosting(null);
       await loadSupabaseData();
       return;
     }
     const matchesThisCosting = (entry: { productId: string; batchId: string }) =>
       batchId ? entry.batchId === batchId : entry.productId === productId && !entry.batchId;
+    const existingSellingFormatIdsForThisCostingLocal = labState.sellingFormats
+      .filter((format) => format.costingId === costingSummaryId)
+      .map((format) => format.id);
     setLabState((current) => ({
       ...current,
       costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => !matchesThisCosting(entry))],
       costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => !matchesThisCosting(entry))],
+      sellingFormats: replaceSellingFormatsForCosting(current.sellingFormats, costingSummaryId, sellingFormats),
+      sellingFormatPackagingLines: replaceSellingFormatPackagingLinesForCosting(current.sellingFormatPackagingLines, existingSellingFormatIdsForThisCostingLocal, sellingFormatPackagingLines),
     }));
     setEditingCosting(null);
     setMessage(costingId ? "Costing updated locally." : "Costing saved locally.");
@@ -1178,12 +1288,21 @@ export default function ProductLab({
       await loadSupabaseData();
       return;
     }
-    setLabState((current) => ({
-      ...current,
-      costingEntries: current.costingEntries.filter((entry) =>
-        costing.batchId ? entry.batchId !== costing.batchId : !(entry.productId === costing.productId && !entry.batchId)),
-      costings: current.costings.filter((entry) => entry.id !== costing.id),
-    }));
+    setLabState((current) => {
+      // Supabase relies on selling_formats.costing_id's own "on delete cascade" to remove formats
+      // and (transitively) their packaging lines when the costing itself is deleted -- no separate
+      // delete call needed there. Local mode has no database to cascade for it, so it's done by
+      // hand here, scoped the same way -- deleting is "replace with nothing."
+      const removedFormatIds = current.sellingFormats.filter((format) => format.costingId === costing.id).map((format) => format.id);
+      return {
+        ...current,
+        costingEntries: current.costingEntries.filter((entry) =>
+          costing.batchId ? entry.batchId !== costing.batchId : !(entry.productId === costing.productId && !entry.batchId)),
+        costings: current.costings.filter((entry) => entry.id !== costing.id),
+        sellingFormats: replaceSellingFormatsForCosting(current.sellingFormats, costing.id, []),
+        sellingFormatPackagingLines: replaceSellingFormatPackagingLinesForCosting(current.sellingFormatPackagingLines, removedFormatIds, []),
+      };
+    });
     if (editingCosting?.id === costing.id) {
       setEditingCosting(null);
     }
@@ -1657,9 +1776,10 @@ export default function ProductLab({
       purchaseImportRows: labState.purchaseImportRows,
       batches: labState.batches,
       costingEntries: labState.costingEntries,
+      sellingFormatPackagingLines: labState.sellingFormatPackagingLines,
     });
     if (!canHardDeleteItem(summary)) {
-      setMessage(`Permanent delete blocked. ${ingredient.name} has ${itemReferenceCount(summary)} reference${itemReferenceCount(summary) === 1 ? "" : "s"}. Archive keeps history intact.`);
+      setMessage(buildHardDeleteBlockedMessage(ingredient, summary));
       setMessageTone("bad");
       return;
     }
@@ -2239,7 +2359,10 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  async function saveTasting(formData: FormData) {
+  // Returns whether the save actually succeeded -- BatchTastingSection's submitCheckpoint awaits
+  // this and only closes its form on true, so a database failure leaves the operator's typed
+  // feedback in place instead of discarding it (see that function's own comment).
+  async function saveTasting(formData: FormData): Promise<boolean> {
     const tastingId = String(formData.get("id") || "");
     const tasting: TastingFeedback = {
       id: tastingId || crypto.randomUUID(),
@@ -2276,7 +2399,7 @@ export default function ProductLab({
       setMessage(error ? `Feedback save failed: ${error.message}` : tastingId ? "Feedback updated." : "Feedback saved.");
       setMessageTone(error ? "bad" : "good");
       await loadSupabaseData();
-      return;
+      return !error;
     }
     setLabState((current) => ({
       ...current,
@@ -2284,6 +2407,7 @@ export default function ProductLab({
     }));
     setMessage(tastingId ? "Feedback updated locally." : "Feedback saved locally.");
     setMessageTone("good");
+    return true;
   }
 
   async function deleteTasting(tastingId: string) {
@@ -2449,6 +2573,88 @@ export default function ProductLab({
     }
   }
 
+  // Same discard risk as app navigation (product-lab.tsx's AppShell usage below), but neither is
+  // a navigation or an unload -- both just call setEditingCosting directly, remounting
+  // CostingForm via its key -- so neither the nav guard nor beforeunload would ever see them.
+  function cancelCostingEdit() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingCosting(null);
+    }
+  }
+
+  function editCostingWithGuard(costingToEdit: CostingSummary) {
+    if (costingToEdit.id === editingCosting?.id) {
+      return;
+    }
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingCosting(costingToEdit);
+    }
+  }
+
+  // Same shape as cancelCostingEdit/editCostingWithGuard above, for BatchForm -- neither Cancel
+  // edit nor switching batches is a navigation or an unload, so neither the nav guard nor
+  // beforeunload would ever see them; both just call setEditingBatch directly, remounting
+  // BatchForm via its key (now correct after the Slice 3 remount fix).
+  function cancelBatchEdit() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingBatch(null);
+    }
+  }
+
+  function editBatchWithGuard(batchToEdit: ProductBatch) {
+    if (batchToEdit.id === editingBatch?.id) {
+      return;
+    }
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingBatch(batchToEdit);
+    }
+  }
+
+  // Same shape as cancelCostingEdit/editCostingWithGuard above, for the Ingredient editor --
+  // neither Cancel edit nor switching ingredients is a navigation or an unload, so neither the nav
+  // guard nor beforeunload would ever see them; both just call setEditingIngredient directly,
+  // remounting InventoryPage via its key.
+  function cancelIngredientEdit() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingIngredient(null);
+    }
+  }
+
+  function editIngredientWithGuard(ingredientToEdit: Ingredient) {
+    if (ingredientToEdit.id === editingIngredient?.id) {
+      return;
+    }
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingIngredient(ingredientToEdit);
+    }
+  }
+
+  // Same shape as cancelIngredientEdit/editIngredientWithGuard above, for the Supply purchase
+  // editor -- neither Cancel edit nor switching purchases is a navigation or an unload, so neither
+  // the nav guard nor beforeunload would ever see them; both just call setEditingSupply directly,
+  // remounting PurchaseLogPage via its key.
+  function cancelSupplyEdit() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingSupply(null);
+    }
+  }
+
+  // Blank purchase drafts (id "") don't have a stable id to compare the way an existing record
+  // does -- "Log a purchase" for the same ingredient while already editing that exact blank draft
+  // should be a no-op too (same-record/same-action rule), so this compares ingredientId instead
+  // when both sides are blank drafts.
+  function editSupplyWithGuard(supplyToEdit: SupplyEntry) {
+    const isSameRecord = supplyToEdit.id
+      ? supplyToEdit.id === editingSupply?.id
+      : Boolean(editingSupply) && !editingSupply?.id && supplyToEdit.ingredientId === editingSupply?.ingredientId;
+    if (isSameRecord) {
+      return;
+    }
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingSupply(supplyToEdit);
+    }
+  }
+
   if (isSupabaseConfigured && isAuthLoading) {
     return <LoadingScreen />;
   }
@@ -2458,7 +2664,7 @@ export default function ProductLab({
   }
 
   return (
-    <AppShell view={view}>
+    <AppShell navigationConfirmationMessage={activeUnsavedForm?.message} shouldConfirmNavigation={Boolean(activeUnsavedForm)} view={view}>
           {message && view !== "dashboard" && view !== "costing" ? <MessageBox message={message} tone={messageTone} /> : null}
           {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
 
@@ -2473,7 +2679,11 @@ export default function ProductLab({
 
           {view === "proof-day" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="proof-day-mode">
-              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+              {/* Keyed here, not just on the inner <form> -- BatchForm's own hooks (formulaRows,
+                  processStepRows, selectedProductId, formBatchId, stagedPhotos) are lazy-
+                  initialized from `batch` once per component instance. Remounting only the
+                  <form> left those stale when switching records without also switching pages. */}
+              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelBatchEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={editingBatch?.id ?? "new-batch"} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_BATCH_MESSAGE } : null)} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
                 <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} products={labState.products} saveJournal={saveJournal} />
@@ -2482,15 +2692,15 @@ export default function ProductLab({
           ) : null}
 
           {view === "batches" ? (
-            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} voidBatch={voidProductBatch} />
+            <BatchHistoryPage batch={editingBatch} cancelEdit={cancelBatchEdit} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={editBatchWithGuard} labState={labState} onDirtyStateChange={setActiveUnsavedForm} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} voidBatch={voidProductBatch} />
           ) : null}
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} products={labState.products} saveCosting={saveCosting} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
-                <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
+                <RecentEntries deleteCosting={deleteCosting} editCosting={editCostingWithGuard} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
               </div>
             </section>
           ) : null}
@@ -2499,15 +2709,15 @@ export default function ProductLab({
           {view === "inventory" ? (
             <InventoryWorkspace
               adjustStock={adjustStock}
-              cancelEditIngredient={() => setEditingIngredient(null)}
-              cancelEditSupply={() => setEditingSupply(null)}
+              cancelEditIngredient={cancelIngredientEdit}
+              cancelEditSupply={cancelSupplyEdit}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
               deleteIngredient={deleteIngredient}
               deleteSupply={deleteSupply}
               discardPurchaseImport={discardPurchaseImport}
-              editIngredient={setEditingIngredient}
-              editSupply={setEditingSupply}
+              editIngredient={editIngredientWithGuard}
+              editSupply={editSupplyWithGuard}
               hardDeleteIngredient={hardDeleteIngredient}
               ingredient={editingIngredient}
               initialTab={initialInventoryTab}
@@ -2515,6 +2725,9 @@ export default function ProductLab({
               isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               isSuppliesTableMissing={isSuppliesTableMissing}
               labState={labState}
+              reportIngredientDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_INGREDIENT_MESSAGE } : null)}
+              reportImportDraftDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_PURCHASE_IMPORT_MESSAGE } : null)}
+              reportSupplyDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_SUPPLY_MESSAGE } : null)}
               repairSupplyInventoryEffects={repairSupplyInventoryEffects}
               reverseInventoryAdjustment={reverseInventoryAdjustment}
               saveIngredient={saveIngredient}
@@ -2782,8 +2995,8 @@ function ProductDetailPage({
   const tastings = labState.tastings.filter((entry) => entry.productId === product.id);
   const journal = labState.journal.filter((entry) => entry.productId === product.id);
   const aiReviews = labState.aiReviews.filter((review) => review.productId === product.id);
-  const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
-  const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
+  const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
+  const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
   const averageRating = stats.averageRating ? stats.averageRating.toFixed(1) : "None";
   const costingTotals = costing ? getCostingTotals(costing) : null;
 
@@ -2890,7 +3103,7 @@ function getProductGap(stats: ReturnType<typeof getProductStats>) {
 }
 
 function ReadinessPanels({ labState }: { labState: LabState }) {
-  const closestToLaunch = getClosestToLaunch(labState.products, labState.batches, labState.costings, labState.tastings);
+  const closestToLaunch = getClosestToLaunch(labState.products, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
   const pauseCandidates = getPauseCandidates(labState.products, labState.batches, labState.costings, labState.tastings);
   const reviewItems = getShinReviewItems(labState.products, labState.batches, labState.costings, labState.tastings);
 
@@ -2944,7 +3157,7 @@ function ContextBrain({ labState }: { labState: LabState }) {
           <h4 className="font-semibold">What&apos;s missing, per product</h4>
           <div className="mt-3 divide-y divide-[#f0e4d8]">
             {labState.products.map((product) => {
-              const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+              const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
               return (
                 <div className="flex items-center justify-between gap-3 py-3 text-sm" key={product.id}>
                   <span className="font-medium">{product.name}</span>
@@ -3046,6 +3259,7 @@ function BatchHistoryPage({
   deleteTasting,
   editBatch,
   labState,
+  onDirtyStateChange,
   saveBatch,
   saveTasting,
   uploadBatchPhotos,
@@ -3058,14 +3272,67 @@ function BatchHistoryPage({
   deleteTasting: (tastingId: string) => void;
   editBatch: (batch: ProductBatch) => void;
   labState: LabState;
+  // Carries the resolved { message } | null directly (not a plain boolean like every other
+  // top-level form's onDirtyChange) -- BatchForm and potentially several BatchTastingSection
+  // instances can be dirty on this page at once (no tab separation forces mutual exclusion the way
+  // Inventory's editors have), so this page must aggregate all of them into one authoritative
+  // report itself rather than let each writer independently clobber ProductLab's shared
+  // activeUnsavedForm slot -- see handleBatchFormDirtyChange/handleTastingDirtyChange below for why
+  // that would otherwise let one source's "clean" report incorrectly clear another's still-dirty
+  // state.
+  onDirtyStateChange?: (dirtyState: { message: string } | null) => void;
   saveBatch: (formData: FormData) => void;
-  saveTasting: (formData: FormData) => void;
+  saveTasting: (formData: FormData) => Promise<boolean>;
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
   voidBatch: (batchId: string, reason: string) => void;
 }) {
   const [copiedBatchId, setCopiedBatchId] = useState("");
   // Captured before the batches.map() below, which shadows `batch` with its own loop variable.
   const editingBatchId = batch?.id ?? null;
+
+  const [isBatchFormDirty, setIsBatchFormDirty] = useState(false);
+  // Every batch row mounts its own permanent BatchTastingSection instance (keyed by the outer
+  // <article key={batch.id}> in the list below, not swapped in/out of one shared slot the way
+  // editingBatch/editingSupply are) -- meaning more than one can be dirty at once. A Set tracks
+  // exactly which ones currently are, so this page only ever reports "clean" once none remain.
+  const [dirtyTastingBatchIds, setDirtyTastingBatchIds] = useState<ReadonlySet<string>>(new Set());
+
+  function handleBatchFormDirtyChange(isDirty: boolean) {
+    setIsBatchFormDirty(isDirty);
+  }
+
+  function handleTastingDirtyChange(tastingBatchId: string, isDirty: boolean) {
+    setDirtyTastingBatchIds((current) => {
+      if (current.has(tastingBatchId) === isDirty) {
+        return current;
+      }
+      const next = new Set(current);
+      if (isDirty) {
+        next.add(tastingBatchId);
+      } else {
+        next.delete(tastingBatchId);
+      }
+      return next;
+    });
+  }
+
+  // The single point that ever writes to ProductLab's shared activeUnsavedForm on this page's
+  // behalf. Combining here, rather than having BatchForm and every BatchTastingSection instance
+  // each call a boolean onDirtyChange straight through to ProductLab, is what avoids one of them
+  // reporting "clean" and wiping out another that's still genuinely dirty -- there is no tab
+  // boundary here the way Inventory has, so both kinds of editor can be dirty simultaneously.
+  useEffect(() => {
+    if (isBatchFormDirty) {
+      onDirtyStateChange?.({ message: UNSAVED_BATCH_MESSAGE });
+    } else if (dirtyTastingBatchIds.size > 0) {
+      onDirtyStateChange?.({ message: UNSAVED_TASTING_MESSAGE });
+    } else {
+      onDirtyStateChange?.(null);
+    }
+    // isBatchFormDirty/dirtyTastingBatchIds are the actual re-run triggers; onDirtyStateChange is
+    // an inline arrow redefined every ProductLab render, not a meaningful dependency change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBatchFormDirty, dirtyTastingBatchIds]);
 
   async function copyFormula(batchId: string, formula: BatchFormulaRow[]) {
     const text = formatBatchFormula(formula);
@@ -3106,7 +3373,9 @@ function BatchHistoryPage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white">
         {batch ? (
           <div className="border-b border-[#eaded2] p-5">
-            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+            {/* Keyed here, not just on the inner <form> -- see the matching comment at the
+                Proof Day call site for why the component boundary, not the form, must remount. */}
+            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={batch?.id ?? "new-batch"} onDirtyChange={handleBatchFormDirtyChange} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -3164,7 +3433,7 @@ function BatchHistoryPage({
                 </div>
                 <BatchComparisonSection currentBatch={batch} previousBatch={getPreviousBatch(labState.batches, batch)} />
                 <BatchPhotosSection batchId={batch.id} deleteBatchPhoto={deleteBatchPhoto} photos={labState.batchPhotos.filter((photo) => photo.batchId === batch.id)} uploadBatchPhotos={uploadBatchPhotos} />
-                <BatchTastingSection batchId={batch.id} deleteTasting={deleteTasting} productId={batch.productId} saveTasting={saveTasting} tastings={labState.tastings.filter((tasting) => tasting.batchId === batch.id)} />
+                <BatchTastingSection batchId={batch.id} deleteTasting={deleteTasting} onDirtyChange={(isDirty) => handleTastingDirtyChange(batch.id, isDirty)} productId={batch.productId} saveTasting={saveTasting} tastings={labState.tastings.filter((tasting) => tasting.batchId === batch.id)} />
               </article>
             );
           })}
@@ -3369,7 +3638,7 @@ function ProductAdminPage({
         <div className="divide-y divide-[#f0e4d8]">
           {labState.products.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No products yet. Add the first one on the right.</p> : null}
           {labState.products.map((item) => {
-            const stats = getProductStats(item, labState.batches, labState.costings, labState.tastings);
+            const stats = getProductStats(item, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
             const referenceCount = getProductReferenceCount(item.id, labState);
             const referenceTotal = totalProductReferenceCount(referenceCount);
             const deletable = canDeleteProduct(referenceCount);
@@ -3436,7 +3705,7 @@ function ProductAdminPage({
 
 function LaunchOfferBuilder({ labState }: { labState: LabState }) {
   const candidates = labState.products.filter((product) => {
-    const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+    const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
     return stats.proofBatches > 0 && stats.costingDone;
   });
 
@@ -3660,8 +3929,8 @@ function ProductReadiness({ labState }: { labState: LabState }) {
       <div className="divide-y divide-[#f0e4d8]">
         {labState.products.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No products yet. Add one from the Product Admin page.</p> : null}
         {labState.products.map((product) => {
-          const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
-          const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+          const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
+          const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
           return (
             <article className="grid gap-4 p-4 md:grid-cols-[92px_1fr_170px]" key={product.id}>
               <div className="relative h-24 overflow-hidden rounded-md border border-[#eaded2] bg-[#fbf2e8]">
@@ -3723,6 +3992,7 @@ function BatchForm({
   cancelEdit,
   deleteBatchPhoto,
   ingredients,
+  onDirtyChange,
   products,
   saveBatch,
   supplies,
@@ -3734,6 +4004,10 @@ function BatchForm({
   cancelEdit: () => void;
   deleteBatchPhoto: (photo: BatchPhoto) => void;
   ingredients: Ingredient[];
+  // Reported after every render so ProductLab can gate app navigation while this batch has
+  // unsaved changes -- see useUnsavedChangesGuard. Optional so this form still works standalone
+  // without a parent that cares, matching CostingForm's identical contract.
+  onDirtyChange?: (isDirty: boolean) => void;
   products: Product[];
   saveBatch: (formData: FormData) => void;
   supplies: SupplyEntry[];
@@ -3771,6 +4045,44 @@ function BatchForm({
   // so a suggestion inserts *that word* -- not the whole field -- letting a step reference
   // several ingredients ("25g Cocoa Powder and 100g Brown Sugar") one at a time.
   const [ingredientSuggestion, setIngredientSuggestion] = useState<{ rowId: string; wordStart: number; wordEnd: number; query: string } | null>(null);
+
+  const formRef = useRef<HTMLFormElement>(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState<BatchFormSnapshot | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Unlike CostingForm's fully-controlled useState(() => ...) baseline, most of this form's fields
+  // are uncontrolled (see batch-form-snapshot.ts), so the baseline can only be read from the real
+  // DOM <form> -- which doesn't exist yet during the first render. Captured once, right after
+  // mount, from the same defaultValue-seeded fields the operator sees. stagedPhotoCount is always 0
+  // here: staging can only begin after mount.
+  useEffect(() => {
+    if (formRef.current) {
+      setBaselineSnapshot(buildBatchFormSnapshot(new FormData(formRef.current), 0));
+    }
+  }, []);
+
+  function recomputeIsDirty() {
+    if (!formRef.current || !baselineSnapshot) {
+      return;
+    }
+    const liveSnapshot = buildBatchFormSnapshot(new FormData(formRef.current), stagedPhotos.length);
+    setIsDirty(!areBatchFormSnapshotsEqual(liveSnapshot, baselineSnapshot));
+  }
+
+  // Typing into an uncontrolled field never re-renders BatchForm, so there's no render to hang a
+  // useMemo comparison off of -- the <form>'s own onChange (React's onChange fires per keystroke
+  // for text-like fields, matching the native `input` event, not `change`) catches those directly.
+  // This effect catches the fields that *are* controlled state instead: adding/removing a formula
+  // or process-step row, and staging/removing a photo, all update state without firing any native
+  // form event at all.
+  useEffect(() => {
+    recomputeIsDirty();
+    // recomputeIsDirty itself reads formRef/baselineSnapshot/stagedPhotos via closure; those --
+    // not the function identity, which is redefined every render -- are the actual re-run triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formulaRows, processStepRows, stagedPhotos, baselineSnapshot]);
+
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
 
   const stepNameSuggestions = Array.from(
     new Set([
@@ -3938,7 +4250,7 @@ function BatchForm({
           Editing: {batchDisplayName(batch.productId, batch.batchVersion, products)}
         </p>
       ) : null}
-      <form action={submitBatch} className="grid gap-3" key={batch?.id ?? "new-batch"}>
+      <form action={submitBatch} className="grid gap-3" onChange={recomputeIsDirty} ref={formRef}>
         <input name="id" type="hidden" value={formBatchId} />
         <input name="existingId" type="hidden" value={batch?.id ?? ""} />
         <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
@@ -4359,16 +4671,36 @@ function buildNamedCostRows(names: string[], savedRows?: CostingNamedCostRow[], 
   }));
 }
 
+// A Selling Format packaging line's "current cost" for a catalog-linked item, resolved the exact
+// same way -- most recent valid purchase wins, never a weighted average -- as ingredient rows
+// already are (getAutoCostedIngredientRowForItems). Falls back to the ingredient's own maintained
+// average only when no matching purchase history exists at all.
+function resolvePackagingItemUnitCost(ingredientId: string, ingredients: Ingredient[], supplies: SupplyEntry[]): number {
+  const ingredient = ingredients.find((item) => item.id === ingredientId);
+  if (!ingredient) {
+    return 0;
+  }
+
+  const bestMatch = getMatchingPurchaseHistoryForIngredient(supplies, ingredients, { ingredientId: ingredient.id, ingredientName: ingredient.name }, "", ingredient.baseUnit)[0];
+  if (bestMatch && bestMatch.packQuantity > 0) {
+    return bestMatch.totalCost / bestMatch.packQuantity;
+  }
+
+  return ingredient.averageUnitCost;
+}
+
 // Manual purchases must attach to an existing Item, not arbitrary free text -- an ingredient and
 // its purchase history are one business item now (see inventory-items.ts), so a purchase logged
 // under a name that doesn't match any Item silently orphans itself the same way the "Vanhouten
 // Dark chocolate" bug did. "Create New Item" is the escape hatch for a genuinely new item, using
 // the same saveIngredient the Items tab itself uses -- not a second, divergent creation path.
 //
-// Lives inside PurchaseLogPage's own <form key={supply?.id ?? "new-supply"}> (see call site), so
-// switching which supply is being edited remounts this component and correctly resets its local
-// state -- the same key-remount convention this file already uses for the outer form itself,
-// rather than a useEffect syncing local state to a changed prop.
+// Lives inside PurchaseLogPage's own <form key={supplyEditorKey(supply)}> (see call site and that
+// function's own comment), so switching which supply is being edited -- including starting a new
+// blank draft for a *different* ingredient, which supplyEditorKey() also gives a distinct key --
+// remounts this component and correctly resets its local state, the same key-remount convention
+// this file already uses for the outer form itself, rather than a useEffect syncing local state to
+// a changed prop.
 //
 // The "Create New Item" panel below is deliberately NOT a nested <form> -- forms cannot nest in
 // HTML, and this field already lives inside PurchaseLogPage's outer <form>. It reads its inputs via
@@ -4378,12 +4710,17 @@ function SupplyIngredientField({
   initialIngredientId,
   initialIngredientName,
   isLocked = false,
+  onSelectionChange,
   saveIngredient,
 }: {
   ingredients: Ingredient[];
   initialIngredientId?: string;
   initialIngredientName: string;
   isLocked?: boolean;
+  // Called whenever the selected ingredient changes via a picker click, the "Change" button, or a
+  // newly created Item -- none of those fire a native form event the way typing does, so
+  // PurchaseLogPage's onChange-based dirty-tracking would never see them without this.
+  onSelectionChange?: () => void;
   saveIngredient: (formData: FormData) => Promise<string | null>;
 }) {
   const matched = ingredients.find((item) => item.id === initialIngredientId) ?? ingredients.find((item) => item.name === initialIngredientName);
@@ -4410,6 +4747,7 @@ function SupplyIngredientField({
     setSelectedIngredientId(newIngredientId);
     setIngredientName(String(formData.get("name") || ""));
     setIsCreatingItem(false);
+    onSelectionChange?.();
   }
 
   return (
@@ -4426,6 +4764,7 @@ function SupplyIngredientField({
               onClick={() => {
                 setSelectedIngredientId("");
                 setIngredientName("");
+                onSelectionChange?.();
               }}
               type="button"
             >
@@ -4441,6 +4780,7 @@ function SupplyIngredientField({
               const item = ingredients.find((entry) => entry.id === ingredientId);
               setSelectedIngredientId(ingredientId);
               setIngredientName(item?.name ?? "");
+              onSelectionChange?.();
             }}
             placeholder="Cocoa powder"
           />
@@ -4767,6 +5107,9 @@ function InventoryWorkspace({
   createPurchaseImportDraft,
   discardPurchaseImport,
   isPurchaseImportPackagesMissing,
+  reportIngredientDirty,
+  reportImportDraftDirty,
+  reportSupplyDirty,
   restoreIngredient,
   saveIngredientAlias,
   updatePurchaseImportHeader,
@@ -4782,6 +5125,13 @@ function InventoryWorkspace({
   ingredient: Ingredient | null;
   isInventoryTableMissing: boolean;
   saveIngredient: (formData: FormData) => Promise<string | null>;
+  // Reports each editor's own dirty state upward to ProductLab's shared activeUnsavedForm slot --
+  // each is forwarded from this workspace's own local onXDirtyChange wrapper (see isIngredientDirty
+  // / isSupplyDirty / isImportDraftDirty below), which also tracks it locally for the tab-switch
+  // guards.
+  reportIngredientDirty?: (isDirty: boolean) => void;
+  reportImportDraftDirty?: (isDirty: boolean) => void;
+  reportSupplyDirty?: (isDirty: boolean) => void;
   cancelEditSupply: () => void;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
@@ -4802,7 +5152,102 @@ function InventoryWorkspace({
 }) {
   const [tab, setTab] = useState<InventoryTab>(initialTab ?? "stock");
   const [purchasesTab, setPurchasesTab] = useState<"manual" | "csv">("manual");
+  const [isIngredientDirty, setIsIngredientDirty] = useState(false);
+  const [isSupplyDirty, setIsSupplyDirty] = useState(false);
+  const [isImportDraftDirty, setIsImportDraftDirty] = useState(false);
+
+  function onIngredientDirtyChange(isDirty: boolean) {
+    setIsIngredientDirty(isDirty);
+    reportIngredientDirty?.(isDirty);
+  }
+
+  function onSupplyDirtyChange(isDirty: boolean) {
+    setIsSupplyDirty(isDirty);
+    reportSupplyDirty?.(isDirty);
+  }
+
+  function onImportDraftDirtyChange(isDirty: boolean) {
+    setIsImportDraftDirty(isDirty);
+    reportImportDraftDirty?.(isDirty);
+  }
+
+  // Which editor (if any) the Purchases tab's own manual/CSV sub-tab is currently protecting --
+  // shared by changeTab and changePurchasesTab below so the two guards can't drift apart.
+  function purchasesTabDirtyState() {
+    if (purchasesTab === "manual") {
+      return { isDirty: isSupplyDirty, message: UNSAVED_SUPPLY_MESSAGE };
+    }
+    return { isDirty: isImportDraftDirty, message: UNSAVED_PURCHASE_IMPORT_MESSAGE };
+  }
+
+  function clearPurchasesTabDirty() {
+    if (purchasesTab === "manual") {
+      onSupplyDirtyChange(false);
+    } else {
+      onImportDraftDirtyChange(false);
+    }
+  }
+
+  // Switching Inventory's internal tabs, or the Purchases tab's own manual/CSV sub-tabs, is a pure
+  // useState change, not a navigation -- neither AppShell's nav guard nor beforeunload would ever
+  // see it -- but leaving a tab whose editor is dirty unmounts that editor exactly like a
+  // navigation would, with no replacement of the same type ever mounting again to report clean.
+  // resolveTabChange (inventory-tab-guard.ts) makes that explicit: a confirmed leave must also
+  // clear the leaving tab's own dirty owner here, not just proceed -- see that module's comment for
+  // why (this is the fix for a real stale-owner bug: without it, activeUnsavedForm could keep
+  // prompting with the discarded editor's message even after the operator already confirmed
+  // leaving it). Only guards leaving the tab whose own editor is dirty; switching between any other
+  // pair of tabs, or re-clicking the already-active tab, never prompts.
+  function changeTab(nextTab: InventoryTab) {
+    const leavingTabDirtyState = tab === "ingredients" ? { isDirty: isIngredientDirty, message: UNSAVED_INGREDIENT_MESSAGE } : tab === "purchases" ? purchasesTabDirtyState() : null;
+    const decision = resolveTabChange(tab, nextTab, leavingTabDirtyState, (message) => window.confirm(message));
+    if (!decision.proceed) {
+      return;
+    }
+    if (decision.shouldClearDirty) {
+      if (tab === "ingredients") {
+        onIngredientDirtyChange(false);
+      } else if (tab === "purchases") {
+        clearPurchasesTabDirty();
+      }
+    }
+    setTab(nextTab);
+  }
+
+  // Same guard, scoped to the Purchases tab's own manual/CSV sub-tabs -- switching sub-tabs while
+  // either PurchaseLogPage's own draft or the CSV wizard's pre-draft upload is dirty unmounts that
+  // editor exactly like the outer tab switch does (PurchaseImportWizard's entire state, not just an
+  // inner form, is destroyed the moment purchasesTab stops being "csv" -- there is no separate
+  // "reset" step needed beyond what this unmount already does).
+  function changePurchasesTab(nextPurchasesTab: "manual" | "csv") {
+    const leavingTabDirtyState = purchasesTabDirtyState();
+    const decision = resolveTabChange(purchasesTab, nextPurchasesTab, leavingTabDirtyState, (message) => window.confirm(message));
+    if (!decision.proceed) {
+      return;
+    }
+    if (decision.shouldClearDirty) {
+      clearPurchasesTabDirty();
+    }
+    setPurchasesTab(nextPurchasesTab);
+  }
+
+  // "Buy" is only reachable from the Ingredients tab's own row list (InventoryPage), so leaving
+  // that tab is the one real discard risk here -- resolved with the same resolveTabChange decision
+  // changeTab itself uses, but settled BEFORE editSupply (= editSupplyWithGuard in ProductLab) ever
+  // runs. Calling editSupply first would let it see whatever activeUnsavedForm currently holds --
+  // the Ingredient editor's own message, if that's what's dirty -- and confirm a Supply draft the
+  // operator never asked about, ahead of (and independent of) the real "leave Ingredients" prompt.
+  // Resolving the tab-leave decision first, and only then creating the draft, guarantees exactly
+  // one prompt (for the Ingredient editor, the thing actually being discarded) and means a Cancel
+  // leaves no partial Supply state behind.
   function logPurchaseForIngredient(item: Ingredient) {
+    const decision = resolveTabChange("ingredients", "purchases", { isDirty: isIngredientDirty, message: UNSAVED_INGREDIENT_MESSAGE }, (message) => window.confirm(message));
+    if (!decision.proceed) {
+      return;
+    }
+    if (decision.shouldClearDirty) {
+      onIngredientDirtyChange(false);
+    }
     editSupply({
       id: "",
       ingredientId: item.id,
@@ -4828,7 +5273,7 @@ function InventoryWorkspace({
           <button
             className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
             key={item.key}
-            onClick={() => setTab(item.key)}
+            onClick={() => changeTab(item.key)}
             type="button"
           >
             {item.label}
@@ -4843,21 +5288,21 @@ function InventoryWorkspace({
           <div className="inline-flex w-fit rounded-md border border-[#d8c7b7] bg-white p-1">
             <button
               className={`rounded px-4 py-1.5 text-sm font-semibold ${purchasesTab === "manual" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-              onClick={() => setPurchasesTab("manual")}
+              onClick={() => changePurchasesTab("manual")}
               type="button"
             >
               Log a purchase
             </button>
             <button
               className={`rounded px-4 py-1.5 text-sm font-semibold ${purchasesTab === "csv" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-              onClick={() => setPurchasesTab("csv")}
+              onClick={() => changePurchasesTab("csv")}
               type="button"
             >
               Import CSV
             </button>
           </div>
           {purchasesTab === "manual" ? (
-            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
+            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
           ) : (
             <PurchaseImportWizard
               confirmPurchaseImport={confirmPurchaseImport}
@@ -4866,6 +5311,7 @@ function InventoryWorkspace({
               isInventoryTableMissing={isInventoryTableMissing}
               isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               labState={labState}
+              onDirtyChange={onImportDraftDirtyChange}
               saveIngredient={saveIngredient}
               saveIngredientAlias={saveIngredientAlias}
               updatePurchaseImportHeader={updatePurchaseImportHeader}
@@ -4880,10 +5326,25 @@ function InventoryWorkspace({
       {tab === "history" ? <InventoryTimeline labState={labState} reverseInventoryAdjustment={reverseInventoryAdjustment} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
+        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
       ) : null}
     </div>
   );
+}
+
+// A blank purchase draft (id "") always carries the ingredient it was started for
+// (logPurchaseForIngredient, both call sites), but two blank drafts for two *different*
+// ingredients otherwise look identical by id alone -- "" both times. Without the ingredientId
+// suffix, PurchaseLogPage's <form key=...> (and its own outer key in InventoryWorkspace) wouldn't
+// change when the operator starts a new blank draft for a different ingredient mid-edit, so the
+// form would never remount: SupplyIngredientField and SupplyValuePicker are useState-initialized
+// with no resync effect, so they'd keep showing/submitting the *previous* draft's ingredient,
+// brand, supplier, and unit -- a silent misattribution, not just a UI staleness issue.
+function supplyEditorKey(supply: SupplyEntry | null): string {
+  if (!supply) {
+    return "new-supply";
+  }
+  return supply.id || `new-supply-${supply.ingredientId}`;
 }
 
 function PurchaseLogPage({
@@ -4892,6 +5353,7 @@ function PurchaseLogPage({
   editSupply,
   isSuppliesTableMissing,
   labState,
+  onDirtyChange,
   repairSupplyInventoryEffects,
   saveIngredient,
   saveSupply,
@@ -4902,6 +5364,9 @@ function PurchaseLogPage({
   editSupply: (supply: SupplyEntry) => void;
   isSuppliesTableMissing: boolean;
   labState: LabState;
+  // Reports live dirty state upward for AppShell's nav guard and same-page discard actions -- see
+  // useUnsavedChangesGuard. Optional so this page still works standalone (e.g. tests).
+  onDirtyChange?: (isDirty: boolean) => void;
   repairSupplyInventoryEffects: () => void;
   saveIngredient: (formData: FormData) => Promise<string | null>;
   saveSupply: (formData: FormData) => void;
@@ -4918,6 +5383,48 @@ function PurchaseLogPage({
   const purchaseGroups = groupPurchasesByItem(labState.ingredients, labState.supplies);
   const unlinkedPurchases = getUnlinkedPurchases(labState.ingredients, labState.supplies);
   const chronologicalPurchases = getChronologicalPurchases(labState.supplies);
+
+  const formRef = useRef<HTMLFormElement>(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState<SupplyFormSnapshot | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
+  // Bumped by SupplyIngredientField's onSelectionChange and SupplyValuePicker's onValueChange --
+  // both change real, submitted FormData values via setState (a picker click, "Change", or a
+  // newly created Item), never via a native input/change event the form's own onChange would see.
+  const [pickerNonce, setPickerNonce] = useState(0);
+  function bumpPickerNonce() {
+    setPickerNonce((current) => current + 1);
+  }
+
+  // Most of this form's fields are uncontrolled (see supply-form-snapshot.ts), so the baseline can
+  // only be read from the real DOM <form> -- which doesn't exist yet during the first render.
+  // PurchaseLogPage is keyed by supplyEditorKey() at its own call site in InventoryWorkspace (in
+  // addition to the inner <form>'s own key below), so switching to a different supply -- or a
+  // blank draft for a different ingredient -- remounts this whole component and this effect
+  // re-runs, capturing a fresh baseline instead of leaving a stale one behind.
+  useEffect(() => {
+    if (formRef.current) {
+      setBaselineSnapshot(buildSupplyFormSnapshot(new FormData(formRef.current)));
+    }
+  }, []);
+
+  function recomputeIsDirty() {
+    if (!formRef.current || !baselineSnapshot) {
+      return;
+    }
+    const liveSnapshot = buildSupplyFormSnapshot(new FormData(formRef.current));
+    setIsDirty(!areSupplyFormSnapshotsEqual(liveSnapshot, baselineSnapshot));
+  }
+
+  // Catches the picker-driven changes recomputeIsDirty's onChange trigger (below) can't: see
+  // pickerNonce's own comment.
+  useEffect(() => {
+    recomputeIsDirty();
+    // recomputeIsDirty itself reads formRef/baselineSnapshot via closure; those -- not the
+    // function identity, redefined every render -- are the actual re-run triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerNonce, baselineSnapshot]);
+
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
 
   function logPurchaseForIngredient(item: Ingredient) {
     editSupply({
@@ -4968,17 +5475,17 @@ function PurchaseLogPage({
             Purchase database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
           </div>
         ) : null}
-        <form action={saveSupply} className="grid gap-3" key={supply?.id ?? "new-supply"}>
+        <form action={saveSupply} className="grid gap-3" key={supplyEditorKey(supply)} onChange={recomputeIsDirty} ref={formRef}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-3">
-            <SupplyValuePicker name="brandName" label="Brand" options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
-            <SupplyIngredientField ingredients={labState.ingredients} initialIngredientId={supply?.ingredientId} initialIngredientName={supply?.ingredientName ?? ""} isLocked={Boolean(supply?.ingredientId && !supply.id)} saveIngredient={saveIngredient} />
-            <SupplyValuePicker name="supplierName" label="Supplier" options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
+            <SupplyValuePicker label="Brand" name="brandName" onValueChange={bumpPickerNonce} options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
+            <SupplyIngredientField ingredients={labState.ingredients} initialIngredientId={supply?.ingredientId} initialIngredientName={supply?.ingredientName ?? ""} isLocked={Boolean(supply?.ingredientId && !supply.id)} onSelectionChange={bumpPickerNonce} saveIngredient={saveIngredient} />
+            <SupplyValuePicker label="Supplier" name="supplierName" onValueChange={bumpPickerNonce} options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
             <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? getToday()} ref={fieldRef} />
             <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
-            <SupplyValuePicker name="unit" label="Unit" options={unitOptions} placeholder="g" value={supply?.unit} />
+            <SupplyValuePicker label="Unit" name="unit" onValueChange={bumpPickerNonce} options={unitOptions} placeholder="g" value={supply?.unit} />
             <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
           </div>
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
@@ -5457,10 +5964,14 @@ function CostingForm({
   equipment,
   ingredientEntries,
   ingredients,
+  isSellingFormatsTableMissing,
   message,
   messageTone,
+  onDirtyChange,
   products,
   saveCosting,
+  sellingFormatPackagingLines,
+  sellingFormats,
   supplies,
 }: {
   batches: ProductBatch[];
@@ -5469,10 +5980,17 @@ function CostingForm({
   equipment: EquipmentEntry[];
   ingredientEntries: CostingEntry[];
   ingredients: Ingredient[];
+  isSellingFormatsTableMissing: boolean;
   message: string;
   messageTone: "good" | "bad" | "info";
+  // Reported after every render so ProductLab can gate app navigation while this costing has
+  // unsaved changes -- see useUnsavedChangesGuard. Optional so this form still works standalone
+  // (e.g. in a future test) without a parent that cares.
+  onDirtyChange?: (isDirty: boolean) => void;
   products: Product[];
   saveCosting: (formData: FormData) => void;
+  sellingFormatPackagingLines: SellingFormatPackagingLine[];
+  sellingFormats: SellingFormat[];
   supplies: SupplyEntry[];
 }) {
   const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLSelectElement>(costing?.id ?? null);
@@ -5493,6 +6011,9 @@ function CostingForm({
   const savedIngredients = costing
     ? ingredientEntries.filter((entry) => (costing.batchId ? entry.batchId === costing.batchId : entry.productId === costing.productId && !entry.batchId))
     : [];
+  const existingSellingFormats = costing ? sellingFormats.filter((format) => format.costingId === costing.id) : [];
+  const existingSellingFormatIds = new Set(existingSellingFormats.map((format) => format.id));
+  const existingSellingFormatPackagingLines = sellingFormatPackagingLines.filter((line) => existingSellingFormatIds.has(line.sellingFormatId));
   const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   // A brand-new costing has nothing saved yet to protect, so it starts pre-filled from the
   // selected batch's formula (auto-costed against purchase history) instead of a blank row -- the "Use
@@ -5588,6 +6109,16 @@ function CostingForm({
   const [targetFoodCost, setTargetFoodCost] = useState(structuredDetail?.targetFoodCost ?? 0.35);
   const [localMessage, setLocalMessage] = useState("");
   const [localMessageTone, setLocalMessageTone] = useState<"good" | "bad" | "info">("info");
+  const [formatRows, setFormatRows] = useState<SellingFormat[]>(() => existingSellingFormats);
+  const [packagingLineRows, setPackagingLineRows] = useState<SellingFormatPackagingLine[]>(() => existingSellingFormatPackagingLines);
+  // Frozen once, at load -- never updated after -- so a catalog-linked line's current display can
+  // compare "what was saved" against "what the catalog says now" without losing the saved number
+  // the moment the operator starts editing something else on the same line.
+  const [savedPackagingLineUnitCosts] = useState<Map<string, number>>(() => new Map(existingSellingFormatPackagingLines.map((line) => [line.id, line.unitCostSnapshot])));
+  // "Move to Selling Format" in progress for at most one batch-wide row at a time -- null means
+  // nothing pending, so packagingRows/packagingLineRows are provably untouched until Confirm is
+  // clicked (see confirmMoveToSellingFormat below).
+  const [pendingMove, setPendingMove] = useState<{ row: CostingNamedCostRow; formatId: string; interpretation: SellingFormatMoveInterpretation; manualAmount: number } | null>(null);
 
   const utilityRowsTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const gasCostDetail = getGasCostDetail(gasDetail, laborDetail.cookingMinutes);
@@ -5602,6 +6133,88 @@ function CostingForm({
   const selectedBatchFormula = parseBatchIngredients(selectedBatch?.ingredientsNotes ?? "");
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || selectedBatch?.usablePieces || 0);
+  // Controlled specifically so its live value can participate in dirty-change detection below --
+  // every other field in this form already is; notes was the one holdout. getCostingBaseNotes
+  // already strips the structured-detail marker lines and trims, matching exactly what saveCosting
+  // re-derives from the submitted FormData (product-lab.tsx's saveCosting, `getCostingBaseNotes(...
+  // formData.get("notes")...)`), so this changes neither what's submitted nor what's displayed.
+  const [notesValue, setNotesValue] = useState(() => getCostingBaseNotes(costing?.notes ?? ""));
+  // The snapshot this form started from -- captured once, at mount, from the same state variables
+  // declared above (their own useState lazy initializers have already run earlier in this same
+  // render, so this reads their real initial values, not a separately re-derived copy that could
+  // drift). A costing switch or a return to "new costing" remounts CostingForm entirely (its
+  // `key` includes the costing id), which re-runs this initializer fresh -- so baseline reset on
+  // record switch and on post-save remount both happen for free, with no extra code here.
+  const [baselineSnapshot] = useState(() =>
+    buildCostingFormSnapshot({
+      selectedBatchId,
+      costingYield,
+      ingredientRows,
+      packagingRows,
+      laborDetail,
+      utilityRows,
+      gasDetail,
+      electricityDetail,
+      waterDetail,
+      customGasEquipmentNames,
+      customElectricEquipmentNames,
+      wasteRows,
+      overheadRows,
+      equipmentUsage,
+      notes: notesValue,
+      suggestedPrice,
+      targetFoodCost,
+      formatRows,
+      packagingLineRows,
+    }),
+  );
+  const liveSnapshot = useMemo(
+    () =>
+      buildCostingFormSnapshot({
+        selectedBatchId,
+        costingYield,
+        ingredientRows,
+        packagingRows,
+        laborDetail,
+        utilityRows,
+        gasDetail,
+        electricityDetail,
+        waterDetail,
+        customGasEquipmentNames,
+        customElectricEquipmentNames,
+        wasteRows,
+        overheadRows,
+        equipmentUsage,
+        notes: notesValue,
+        suggestedPrice,
+        targetFoodCost,
+        formatRows,
+        packagingLineRows,
+      }),
+    [
+      selectedBatchId,
+      costingYield,
+      ingredientRows,
+      packagingRows,
+      laborDetail,
+      utilityRows,
+      gasDetail,
+      electricityDetail,
+      waterDetail,
+      customGasEquipmentNames,
+      customElectricEquipmentNames,
+      wasteRows,
+      overheadRows,
+      equipmentUsage,
+      notesValue,
+      suggestedPrice,
+      targetFoodCost,
+      formatRows,
+      packagingLineRows,
+    ],
+  );
+  const isDirty = !areCostingFormSnapshotsEqual(liveSnapshot, baselineSnapshot);
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
   const packagingCost = packagingRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const overheadCost = overheadRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const equipmentAllocations = equipmentUsage.map((row) => {
@@ -5642,6 +6255,21 @@ function CostingForm({
     contributionMarginPerPiece,
     breakEvenUnits,
   } = getCostingMetrics({ costingYield, directCost, indirectCost, suggestedPrice, targetFoodCost, totalBatchCost });
+  // The live equivalent of getCostingTotals(costing).costPerPiece -- same value, recomputed on
+  // every keystroke instead of read from a saved row. No second base-cost formula: Selling Format
+  // math is built entirely on this one number, which already includes batch-wide packaging &
+  // consumables (see the relabeled section below) since that field was never excluded from it.
+  const baseProductionCostPerPiece = costPerPiece;
+  const formatsWithMetrics = formatRows.map((format) => {
+    const lines = packagingLineRows.filter((line) => line.sellingFormatId === format.id);
+    const formatPackagingCost = getSellingFormatPackagingCost(lines);
+    return {
+      format,
+      lines,
+      packagingCost: formatPackagingCost,
+      ...getSellingFormatMetrics({ baseProductionCostPerPiece, piecesPerUnit: format.piecesPerUnit, packagingCost: formatPackagingCost, sellingPrice: format.sellingPrice }),
+    };
+  });
   const appliedMessage = message || localMessage;
   const appliedMessageTone = message ? messageTone : localMessageTone;
   const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...customGasEquipmentNames, ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
@@ -5651,6 +6279,138 @@ function CostingForm({
     setSelectedBatchId(batchId);
     const newlySelectedBatch = batches.find((item) => item.id === batchId);
     setCostingYield(newlySelectedBatch?.usablePieces || 0);
+  }
+
+  function addSellingFormat() {
+    setFormatRows((current) => [
+      ...current,
+      { id: crypto.randomUUID(), costingId: costing?.id ?? "", name: "", piecesPerUnit: 1, sellingPrice: 0, isActive: true, sortOrder: current.length, notes: "" },
+    ]);
+    setLocalMessage("Selling format added.");
+    setLocalMessageTone("good");
+  }
+
+  function updateSellingFormat(formatId: string, changes: Partial<SellingFormat>) {
+    setFormatRows((current) => current.map((format) => (format.id === formatId ? { ...format, ...changes } : format)));
+  }
+
+  function removeSellingFormat(formatId: string) {
+    setFormatRows((current) => current.filter((format) => format.id !== formatId));
+    setPackagingLineRows((current) => current.filter((line) => line.sellingFormatId !== formatId));
+    setLocalMessage("Selling format removed.");
+    setLocalMessageTone("good");
+  }
+
+  function addPackagingLine(formatId: string) {
+    const lineCount = packagingLineRows.filter((line) => line.sellingFormatId === formatId).length;
+    setPackagingLineRows((current) => [
+      ...current,
+      { id: crypto.randomUUID(), sellingFormatId: formatId, ingredientId: "", name: "", quantity: 1, unit: "", unitCostSnapshot: 0, isManualCost: false, note: "", sortOrder: lineCount },
+    ]);
+  }
+
+  function updatePackagingLine(lineId: string, changes: Partial<SellingFormatPackagingLine>) {
+    setPackagingLineRows((current) => current.map((line) => (line.id === lineId ? { ...line, ...changes } : line)));
+  }
+
+  function removePackagingLine(lineId: string) {
+    setPackagingLineRows((current) => current.filter((line) => line.id !== lineId));
+  }
+
+  // Re-picking a catalog item already used elsewhere in the same format merges into that
+  // existing line (quantity + 1) instead of creating a second line for the same ingredient --
+  // matches the database's own partial unique index (selling_format_packaging_lines_catalog_
+  // unique_idx), enforced here too so the operator sees the merge happen, not a save-time error.
+  function selectPackagingLineIngredient(formatId: string, lineId: string, ingredientId: string) {
+    const ingredient = ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      return;
+    }
+
+    const duplicateLine = packagingLineRows.find((line) => line.sellingFormatId === formatId && line.ingredientId === ingredientId && line.id !== lineId);
+    if (duplicateLine) {
+      setPackagingLineRows((current) =>
+        current
+          .map((line) => (line.id === duplicateLine.id ? { ...line, quantity: line.quantity + 1 } : line))
+          .filter((line) => line.id !== lineId),
+      );
+      setLocalMessage(`"${ingredient.name}" is already used in this format -- increased its quantity instead of adding a duplicate line.`);
+      setLocalMessageTone("good");
+      return;
+    }
+
+    const currentUnitCost = resolvePackagingItemUnitCost(ingredientId, ingredients, supplies);
+    setPackagingLineRows((current) =>
+      current.map((line) =>
+        line.id === lineId
+          ? { ...line, ingredientId, name: ingredient.name, unit: ingredient.baseUnit, unitCostSnapshot: currentUnitCost, isManualCost: false }
+          : line,
+      ),
+    );
+  }
+
+  function switchPackagingLineToManual(lineId: string) {
+    setPackagingLineRows((current) => current.map((line) => (line.id === lineId ? { ...line, ingredientId: "", isManualCost: true } : line)));
+  }
+
+  function updatePackagingLineToCurrentCost(lineId: string) {
+    const line = packagingLineRows.find((item) => item.id === lineId);
+    if (!line?.ingredientId) {
+      return;
+    }
+    const currentUnitCost = resolvePackagingItemUnitCost(line.ingredientId, ingredients, supplies);
+    setPackagingLineRows((current) => current.map((item) => (item.id === lineId ? { ...item, unitCostSnapshot: currentUnitCost } : item)));
+  }
+
+  // Batch-wide packaging rows store a whole-batch total, never a per-unit cost (confirmed by this
+  // section's own "Use per-batch costs" helper text) -- so starting a move never mutates
+  // packagingRows/packagingLineRows itself. It only opens the inline confirmation panel; picking
+  // an interpretation there is still just local pendingMove state until confirmMoveToSellingFormat
+  // actually runs.
+  function startMoveToSellingFormat(row: CostingNamedCostRow, formatId: string) {
+    setPendingMove({ row, formatId, interpretation: costingYield > 0 ? "divide-across-yield" : "use-whole-amount", manualAmount: row.cost });
+  }
+
+  function cancelMoveToSellingFormat() {
+    setPendingMove(null);
+  }
+
+  // The one place the move actually happens -- only ever called from the confirmation panel's
+  // "Confirm move" button, never from selecting a target format or an interpretation.
+  function confirmMoveToSellingFormat() {
+    if (!pendingMove) {
+      return;
+    }
+
+    const targetFormat = formatRows.find((format) => format.id === pendingMove.formatId);
+    if (!targetFormat) {
+      setPendingMove(null);
+      return;
+    }
+
+    const confirmedAmount = calculateMoveToSellingFormatAmount(pendingMove.interpretation, {
+      wholeBatchAmount: pendingMove.row.cost,
+      costingYield,
+      piecesPerUnit: targetFormat.piecesPerUnit,
+      manualAmount: pendingMove.manualAmount,
+    });
+    if (confirmedAmount === null) {
+      return;
+    }
+
+    const lineCount = packagingLineRows.filter((line) => line.sellingFormatId === pendingMove.formatId).length;
+    setPackagingRows((current) => current.filter((item) => item.rowId !== pendingMove.row.rowId));
+    setPackagingLineRows((current) => [...current, buildMovedManualPackagingLine(pendingMove.row, pendingMove.formatId, confirmedAmount, lineCount)]);
+
+    const interpretationLabel =
+      pendingMove.interpretation === "divide-across-yield"
+        ? `divided across the batch yield (${costingYield}) and scaled to this format's ${targetFormat.piecesPerUnit} piece${targetFormat.piecesPerUnit === 1 ? "" : "s"}`
+        : pendingMove.interpretation === "use-whole-amount"
+          ? "used as-is for each selling unit"
+          : "entered manually";
+    setLocalMessage(`Moved "${pendingMove.row.name || "packaging item"}" into "${targetFormat.name || "this format"}" as PHP ${confirmedAmount.toFixed(2)} per unit (${interpretationLabel}). Double-check this reflects what you meant.`);
+    setLocalMessageTone("good");
+    setPendingMove(null);
   }
 
   function addIngredientRow() {
@@ -5748,6 +6508,11 @@ function CostingForm({
         ["Summary", "Selling price", "", "", suggestedPrice, ""],
         ["Summary", "Operating profit per unit", "", "", formatCostingMetric(grossProfit, (value) => value.toFixed(2)), ""],
         ["Summary", "Operating margin %", "", "", formatCostingMetric(margin, (value) => value.toFixed(1)), ""],
+        ...formatsWithMetrics.flatMap(({ format, lines, packagingCost: formatPackagingCost, totalCost, profit, margin: formatMargin }) => [
+          ["Selling Format", format.name, format.piecesPerUnit, format.isActive ? "active" : "archived", format.sellingPrice, `Cost ${formatCostingMetric(totalCost, (value) => value.toFixed(2))} / Profit ${formatCostingMetric(profit, (value) => value.toFixed(2))} / Margin ${formatCostingMetric(formatMargin, (value) => `${value.toFixed(1)}%`)}`],
+          ...lines.map((line) => ["Selling Format Packaging", line.name, line.quantity, line.unit, line.quantity * line.unitCostSnapshot, `${format.name} / ${line.isManualCost ? "manual" : "catalog-linked"}`]),
+          ["Selling Format Packaging Total", `${format.name} packaging`, "", "", formatPackagingCost, ""],
+        ]),
       ],
     );
   }
@@ -5768,6 +6533,7 @@ function CostingForm({
         <input name="overheadRowIds" type="hidden" value={overheadRows.map((row) => row.rowId).join(",")} />
         <input name="equipmentUsageRowIds" type="hidden" value={equipmentUsage.map((row) => row.rowId).join(",")} />
         <input name="wasteRowIds" type="hidden" value={wasteRows.map((row) => row.rowId).join(",")} />
+        <input name="sellingFormatRowIds" type="hidden" value={formatRows.map((format) => format.id).join(",")} />
         <input name="productId" type="hidden" value={selectedProductId} />
         <input name="batchId" type="hidden" value={selectedBatchId} />
         <label className="grid gap-1 text-sm font-medium">
@@ -5845,7 +6611,50 @@ function CostingForm({
           </div>
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient total: PHP {ingredientTotal.toFixed(2)}</p>
         </div>
-        <NamedCostSection addLabel="Add packaging" namePrefix="packaging" onAdd={() => addNamedCostRow(setPackagingRows, "Packaging")} rows={packagingRows} setRows={setPackagingRows} title="Packaging components" total={packagingCost} updateNamedCostRow={updateNamedCostRow} />
+        <NamedCostSection
+          addLabel="Add batch-wide item"
+          helperNote={
+            <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">
+              Parchment, tray liners, and anything used once for the whole batch stay here. Wrappers, stickers, boxes, and other packaging used for a specific sale belong under Selling Formats below.
+            </p>
+          }
+          namePrefix="packaging"
+          onAdd={() => addNamedCostRow(setPackagingRows, "Packaging")}
+          renderRowExtra={(row) =>
+            formatRows.length > 0 ? (
+              <div className="mt-1">
+                <select
+                  className="h-8 rounded-md border border-[#d8c7b7] bg-white px-2 text-xs"
+                  onChange={(event) => {
+                    if (event.target.value) {
+                      startMoveToSellingFormat(row, event.target.value);
+                    }
+                  }}
+                  value=""
+                >
+                  <option value="">Move to a selling format...</option>
+                  {formatRows.map((format) => <option key={format.id} value={format.id}>{format.name || "Untitled format"}</option>)}
+                </select>
+                {pendingMove && pendingMove.row.rowId === row.rowId ? (
+                  <MoveToSellingFormatConfirm
+                    costingYield={costingYield}
+                    formatRows={formatRows}
+                    onCancel={cancelMoveToSellingFormat}
+                    onChangeInterpretation={(interpretation) => setPendingMove((current) => (current ? { ...current, interpretation } : current))}
+                    onChangeManualAmount={(manualAmount) => setPendingMove((current) => (current ? { ...current, manualAmount } : current))}
+                    onConfirm={confirmMoveToSellingFormat}
+                    pendingMove={pendingMove}
+                  />
+                ) : null}
+              </div>
+            ) : null
+          }
+          rows={packagingRows}
+          setRows={setPackagingRows}
+          title="Batch-wide packaging & consumables"
+          total={packagingCost}
+          updateNamedCostRow={updateNamedCostRow}
+        />
         <Input
           name="costingYield"
           label="Batch yield used for costing"
@@ -6013,7 +6822,84 @@ function CostingForm({
           <CostingBreakdown label="Indirect cost" value={indirectCost} />
           <CostingBreakdown label="Total batch cost" value={totalBatchCost} />
         </div>
-        <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={getCostingBaseNotes(costing?.notes ?? "")} />
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold">Selling Formats</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">
+                How this batch is actually sold -- a single piece, a box of 3, a box of 6 -- each with its own packaging and true margin, built on the base production cost above (PHP {formatCostingMetric(baseProductionCostPerPiece, (value) => value.toFixed(2))} per piece).
+              </p>
+            </div>
+            {!isSellingFormatsTableMissing ? (
+              <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addSellingFormat} type="button">Add selling format</button>
+            ) : null}
+          </div>
+          {isSellingFormatsTableMissing ? (
+            <div className="mt-3 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
+              Selling Formats database tables are not set up yet. Run <strong>supabase-add-selling-formats.sql</strong> once, then reload this page. The rest of Costing still works normally in the meantime, and this costing can still be saved.
+            </div>
+          ) : (
+            <>
+              {formatRows.length === 0 ? (
+                <p className="mt-3 text-sm text-[#6f5a4c]">No selling formats yet. Add one to see the true cost, profit, and margin for how this batch is actually sold.</p>
+              ) : null}
+              {formatsWithMetrics.some(({ format }) => format.isActive) ? (
+                <div className="mt-3 overflow-x-auto rounded-md border border-[#ead9c8] bg-white">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#ead9c8] text-left text-xs uppercase tracking-wide text-[#9a5b2f]">
+                        <th className="px-3 py-2">Format</th>
+                        <th className="px-3 py-2">Pieces</th>
+                        <th className="px-3 py-2">Price</th>
+                        <th className="px-3 py-2">Cost</th>
+                        <th className="px-3 py-2">Profit</th>
+                        <th className="px-3 py-2">Margin</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {formatsWithMetrics.filter(({ format }) => format.isActive).map(({ format, totalCost, profit, margin: formatMargin }) => (
+                        <tr className="border-b border-[#ead9c8] last:border-0" key={format.id}>
+                          <td className="px-3 py-2 font-semibold text-[#5f4a3d]">{format.name || "Untitled format"}</td>
+                          <td className="px-3 py-2">{format.piecesPerUnit}</td>
+                          <td className="px-3 py-2">PHP {format.sellingPrice.toFixed(2)}</td>
+                          <td className="px-3 py-2">{formatCostingMetric(totalCost, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                          <td className="px-3 py-2">{formatCostingMetric(profit, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                          <td className="px-3 py-2">{formatCostingMetric(formatMargin, (value) => `${value.toFixed(1)}%`)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+              <div className="mt-3 grid gap-3">
+                {formatsWithMetrics.map(({ format, lines, packagingCost: formatPackagingCost, totalCost, profit, margin: formatMargin }) => (
+                  <SellingFormatCard
+                    costingYield={costingYield}
+                    format={format}
+                    formatPackagingCost={formatPackagingCost}
+                    ingredients={ingredients}
+                    key={format.id}
+                    lines={lines}
+                    margin={formatMargin}
+                    onAddLine={() => addPackagingLine(format.id)}
+                    onRemove={() => removeSellingFormat(format.id)}
+                    onRemoveLine={removePackagingLine}
+                    onSelectLineIngredient={(lineId, ingredientId) => selectPackagingLineIngredient(format.id, lineId, ingredientId)}
+                    onSwitchLineToManual={switchPackagingLineToManual}
+                    onUpdate={(changes) => updateSellingFormat(format.id, changes)}
+                    onUpdateLine={updatePackagingLine}
+                    onUpdateLineToCurrentCost={updatePackagingLineToCurrentCost}
+                    profit={profit}
+                    savedPackagingLineUnitCosts={savedPackagingLineUnitCosts}
+                    supplies={supplies}
+                    totalCost={totalCost}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" onChange={(event) => setNotesValue(event.target.value)} value={notesValue} />
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button>{costing ? "Update costing" : "Save costing"}</Button>
           {costing ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
@@ -6063,8 +6949,247 @@ function CostingForm({
         waterCost={waterCost}
         waterCostDetail={waterCostDetail}
         waterDetail={waterDetail}
+        formatsWithMetrics={formatsWithMetrics}
       />
     </FormPanel>
+  );
+}
+
+function SellingFormatCard({
+  costingYield,
+  format,
+  formatPackagingCost,
+  ingredients,
+  lines,
+  margin,
+  onAddLine,
+  onRemove,
+  onRemoveLine,
+  onSelectLineIngredient,
+  onSwitchLineToManual,
+  onUpdate,
+  onUpdateLine,
+  onUpdateLineToCurrentCost,
+  profit,
+  savedPackagingLineUnitCosts,
+  supplies,
+  totalCost,
+}: {
+  costingYield: number;
+  format: SellingFormat;
+  formatPackagingCost: number;
+  ingredients: Ingredient[];
+  lines: SellingFormatPackagingLine[];
+  margin: number | null;
+  onAddLine: () => void;
+  onRemove: () => void;
+  onRemoveLine: (lineId: string) => void;
+  onSelectLineIngredient: (lineId: string, ingredientId: string) => void;
+  onSwitchLineToManual: (lineId: string) => void;
+  onUpdate: (changes: Partial<SellingFormat>) => void;
+  onUpdateLine: (lineId: string, changes: Partial<SellingFormatPackagingLine>) => void;
+  onUpdateLineToCurrentCost: (lineId: string) => void;
+  profit: number | null;
+  savedPackagingLineUnitCosts: Map<string, number>;
+  supplies: SupplyEntry[];
+  totalCost: number | null;
+}) {
+  const overYield = costingYield > 0 && format.piecesPerUnit > costingYield;
+
+  return (
+    <div className={`rounded-md border p-3 ${format.isActive ? "border-[#ead9c8] bg-white" : "border-[#ead9c8] bg-[#f5efe6] opacity-80"}`}>
+      <input name={`sellingFormatPackagingLineRowIds-${format.id}`} type="hidden" value={lines.map((line) => line.id).join(",")} />
+      <input name={`sellingFormatIsActive-${format.id}`} type="hidden" value={format.isActive ? "true" : "false"} />
+      <input name={`sellingFormatSortOrder-${format.id}`} type="hidden" value={format.sortOrder} />
+      <input name={`sellingFormatNotes-${format.id}`} type="hidden" value={format.notes} />
+      <div className="grid gap-2 lg:grid-cols-[1.5fr_110px_130px_auto_70px]">
+        <Input label="Format name" name={`sellingFormatName-${format.id}`} placeholder="Single Brownie / Box of 6" value={format.name} onChange={(event) => onUpdate({ name: event.target.value })} />
+        {/* min-w-0: without it, this column's default grid min-width refuses to shrink below the
+            over-yield helper text's content width and it overflows into the next column instead
+            of wrapping -- the only helper= usage in the app narrow enough to hit this. */}
+        <div className="min-w-0">
+          <Input
+            helper={overYield ? `Batch yields ${costingYield} -- this uses more than that.` : undefined}
+            label="Pieces per unit"
+            name={`sellingFormatPiecesPerUnit-${format.id}`}
+            step="0.01"
+            type="number"
+            value={format.piecesPerUnit || ""}
+            onChange={(event) => onUpdate({ piecesPerUnit: Number(event.target.value || 0) })}
+          />
+        </div>
+        <Input label="Selling price PHP" name={`sellingFormatSellingPrice-${format.id}`} step="0.01" type="number" value={format.sellingPrice || ""} onChange={(event) => onUpdate({ sellingPrice: Number(event.target.value || 0) })} />
+        <label className="mt-6 flex items-center gap-2 text-sm">
+          <input checked={format.isActive} onChange={(event) => onUpdate({ isActive: event.target.checked })} type="checkbox" />
+          Active
+        </label>
+        <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={onRemove} type="button">Remove</button>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Packaging for this format</p>
+        <button className="h-8 rounded-md border border-[#d8c7b7] bg-white px-2 text-xs font-semibold text-[#5f4a3d]" onClick={onAddLine} type="button">Add packaging line</button>
+      </div>
+      <div className="mt-2 grid gap-2">
+        {lines.length === 0 ? <p className="text-sm text-[#6f5a4c]">No packaging lines yet. Some products legitimately sell with none.</p> : null}
+        {lines.map((line) => {
+          const isCatalogLinked = Boolean(line.ingredientId);
+          const savedUnitCost = savedPackagingLineUnitCosts.get(line.id);
+          const currentUnitCost = isCatalogLinked ? resolvePackagingItemUnitCost(line.ingredientId, ingredients, supplies) : 0;
+          const costsDiffer = isCatalogLinked && savedUnitCost !== undefined && Math.abs(currentUnitCost - savedUnitCost) > 0.001;
+
+          return (
+            <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-2" key={line.id}>
+              <input name={`sellingFormatPackagingLineIngredientId-${line.id}`} type="hidden" value={line.ingredientId} />
+              <input name={`sellingFormatPackagingLineIsManualCost-${line.id}`} type="hidden" value={line.isManualCost ? "true" : "false"} />
+              <input name={`sellingFormatPackagingLineSortOrder-${line.id}`} type="hidden" value={line.sortOrder} />
+              <input name={`sellingFormatPackagingLineNote-${line.id}`} type="hidden" value={line.note} />
+              {line.isManualCost || !isCatalogLinked ? (
+                <div className="grid gap-2 lg:grid-cols-[1fr_90px_110px_100px_70px]">
+                  <Input label="Name" name={`sellingFormatPackagingLineName-${line.id}`} placeholder="Kraft box" value={line.name} onChange={(event) => onUpdateLine(line.id, { name: event.target.value })} />
+                  <Input label="Qty" name={`sellingFormatPackagingLineQuantity-${line.id}`} step="0.01" type="number" value={line.quantity || ""} onChange={(event) => onUpdateLine(line.id, { quantity: Number(event.target.value || 0) })} />
+                  <Input label="Unit" name={`sellingFormatPackagingLineUnit-${line.id}`} placeholder="pcs" value={line.unit} onChange={(event) => onUpdateLine(line.id, { unit: event.target.value })} />
+                  <Input label="Cost PHP" name={`sellingFormatPackagingLineUnitCostSnapshot-${line.id}`} step="0.0001" type="number" value={line.unitCostSnapshot || ""} onChange={(event) => onUpdateLine(line.id, { unitCostSnapshot: Number(event.target.value || 0) })} />
+                  <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => onRemoveLine(line.id)} type="button">Remove</button>
+                </div>
+              ) : (
+                <>
+                  <input name={`sellingFormatPackagingLineName-${line.id}`} type="hidden" value={line.name} />
+                  <input name={`sellingFormatPackagingLineUnit-${line.id}`} type="hidden" value={line.unit} />
+                  <input name={`sellingFormatPackagingLineUnitCostSnapshot-${line.id}`} type="hidden" value={line.unitCostSnapshot} />
+                  <div className="grid gap-2 lg:grid-cols-[1fr_90px_70px]">
+                    <div>
+                      <p className="text-xs font-semibold text-[#5f4a3d]">Catalog item</p>
+                      <p className="text-sm">{line.name} <span className="text-[#9a5b2f]">({line.unit || "unit"})</span></p>
+                    </div>
+                    <Input label="Qty" name={`sellingFormatPackagingLineQuantity-${line.id}`} step="0.01" type="number" value={line.quantity || ""} onChange={(event) => onUpdateLine(line.id, { quantity: Number(event.target.value || 0) })} />
+                    <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => onRemoveLine(line.id)} type="button">Remove</button>
+                  </div>
+                </>
+              )}
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[#6f5a4c]">
+                {isCatalogLinked && !line.isManualCost ? (
+                  <>
+                    <span>Saved PHP {line.unitCostSnapshot.toFixed(2)}/{line.unit || "unit"}{costsDiffer ? ` (current PHP ${currentUnitCost.toFixed(2)})` : ""}</span>
+                    {costsDiffer ? (
+                      <button className="rounded border border-[#d8c7b7] bg-white px-2 py-0.5 font-semibold text-[#5f4a3d]" onClick={() => onUpdateLineToCurrentCost(line.id)} type="button">Update to current cost</button>
+                    ) : null}
+                    <button className="rounded border border-[#d8c7b7] bg-white px-2 py-0.5 font-semibold text-[#5f4a3d]" onClick={() => onSwitchLineToManual(line.id)} type="button">Enter manually instead</button>
+                  </>
+                ) : (
+                  <div className="w-full">
+                    <IngredientPicker
+                      defaultCategory="packaging"
+                      ingredients={ingredients}
+                      onSelect={(ingredientId) => onSelectLineIngredient(line.id, ingredientId)}
+                      placeholder="Search packaging supplies..."
+                      selectedIngredientId={line.ingredientId}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-white p-2 text-sm text-[#5f4a3d] sm:grid-cols-4">
+        <CostingBreakdown label="Packaging" value={formatPackagingCost} />
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Total cost/unit</p>
+          <p className="mt-1 font-semibold">{formatCostingMetric(totalCost, (value) => `PHP ${value.toFixed(2)}`)}</p>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Profit/unit</p>
+          <p className="mt-1 font-semibold">{formatCostingMetric(profit, (value) => `PHP ${value.toFixed(2)}`)}</p>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Margin</p>
+          <p className="mt-1 font-semibold">{formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MoveToSellingFormatConfirm({
+  costingYield,
+  formatRows,
+  onCancel,
+  onChangeInterpretation,
+  onChangeManualAmount,
+  onConfirm,
+  pendingMove,
+}: {
+  costingYield: number;
+  formatRows: SellingFormat[];
+  onCancel: () => void;
+  onChangeInterpretation: (interpretation: SellingFormatMoveInterpretation) => void;
+  onChangeManualAmount: (amount: number) => void;
+  onConfirm: () => void;
+  pendingMove: { row: CostingNamedCostRow; formatId: string; interpretation: SellingFormatMoveInterpretation; manualAmount: number };
+}) {
+  const targetFormat = formatRows.find((format) => format.id === pendingMove.formatId);
+  if (!targetFormat) {
+    return null;
+  }
+
+  const canDivideAcrossYield = costingYield > 0;
+  const previewAmount = calculateMoveToSellingFormatAmount(pendingMove.interpretation, {
+    wholeBatchAmount: pendingMove.row.cost,
+    costingYield,
+    piecesPerUnit: targetFormat.piecesPerUnit,
+    manualAmount: pendingMove.manualAmount,
+  });
+
+  return (
+    <div className="mt-2 rounded-md border border-[#d8c7b7] bg-white p-2 text-xs text-[#5f4a3d]">
+      <p className="font-semibold">
+        &quot;{pendingMove.row.name || "This item"}&quot; is PHP {pendingMove.row.cost.toFixed(2)} for the whole batch. How should that become a per-unit cost in &quot;{targetFormat.name || "this format"}&quot;?
+      </p>
+      <div className="mt-2 grid gap-2">
+        <label className="flex flex-wrap items-center gap-2">
+          <input
+            checked={pendingMove.interpretation === "divide-across-yield"}
+            disabled={!canDivideAcrossYield}
+            onChange={() => onChangeInterpretation("divide-across-yield")}
+            type="radio"
+          />
+          <span>
+            Divide across the batch yield ({canDivideAcrossYield ? costingYield : "not set"}), scaled to {targetFormat.piecesPerUnit} piece{targetFormat.piecesPerUnit === 1 ? "" : "s"}
+            {canDivideAcrossYield ? ` -- PHP ${((pendingMove.row.cost / costingYield) * targetFormat.piecesPerUnit).toFixed(2)}` : " (needs a real batch yield first)"}
+          </span>
+        </label>
+        <label className="flex flex-wrap items-center gap-2">
+          <input checked={pendingMove.interpretation === "use-whole-amount"} onChange={() => onChangeInterpretation("use-whole-amount")} type="radio" />
+          <span>Use the whole PHP {pendingMove.row.cost.toFixed(2)} for each selling unit</span>
+        </label>
+        <label className="flex flex-wrap items-center gap-2">
+          <input checked={pendingMove.interpretation === "manual"} onChange={() => onChangeInterpretation("manual")} type="radio" />
+          <span>Enter the correct amount manually:</span>
+          <input
+            className="h-7 w-24 rounded border border-[#d8c7b7] px-1"
+            onChange={(event) => onChangeManualAmount(Number(event.target.value || 0))}
+            step="0.01"
+            type="number"
+            value={pendingMove.manualAmount || ""}
+          />
+        </label>
+      </div>
+      <p className="mt-2 font-semibold">{previewAmount === null ? "Choose a valid option before confirming." : `Result: PHP ${previewAmount.toFixed(2)} per unit`}</p>
+      <div className="mt-2 flex gap-2">
+        <button
+          className="h-7 rounded-md border border-[#d8c7b7] bg-[#231813] px-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={previewAmount === null}
+          onClick={onConfirm}
+          type="button"
+        >
+          Confirm move
+        </button>
+        <button className="h-7 rounded-md border border-[#d8c7b7] bg-white px-2 font-semibold text-[#5f4a3d]" onClick={onCancel} type="button">
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -6107,6 +7232,7 @@ function CostingPrintReport({
   equipmentDepreciationCost,
   equipmentMaintenanceCost,
   foodCostPercent,
+  formatsWithMetrics,
   gasCost,
   gasCostDetail,
   gasDetail,
@@ -6151,6 +7277,7 @@ function CostingPrintReport({
   equipmentDepreciationCost: number;
   equipmentMaintenanceCost: number;
   foodCostPercent: number | null;
+  formatsWithMetrics: SellingFormatWithMetrics[];
   gasCost: number;
   gasCostDetail: { cost: number; costPerMinute: number; pricePerKg: number };
   gasDetail: CostingGasDetail;
@@ -6287,6 +7414,39 @@ function CostingPrintReport({
         </tbody>
       </table>
 
+      {formatsWithMetrics.length > 0 ? (
+        <>
+          <h2>Selling Formats</h2>
+          <table>
+            <thead>
+              <tr><th>Format</th><th>Status</th><th>Pieces</th><th>Price</th><th>Cost</th><th>Profit</th><th>Margin</th></tr>
+            </thead>
+            <tbody>
+              {formatsWithMetrics.map(({ format, totalCost, profit, margin: formatMargin }) => (
+                <tr key={format.id}>
+                  <td>{format.name}</td>
+                  <td>{format.isActive ? "Active" : "Archived"}</td>
+                  <td>{format.piecesPerUnit}</td>
+                  <td>PHP {format.sellingPrice.toFixed(2)}</td>
+                  <td>{formatCostingMetric(totalCost, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                  <td>{formatCostingMetric(profit, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                  <td>{formatCostingMetric(formatMargin, (value) => `${value.toFixed(1)}%`)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {formatsWithMetrics.map(({ format, lines, packagingCost: formatPackagingCost }) => (
+            <NamedCostTable
+              emptyLabel={`No packaging lines for ${format.name || "this format"}`}
+              key={format.id}
+              rows={lines.map((line) => ({ cost: line.quantity * line.unitCostSnapshot, name: line.name, note: line.isManualCost ? "manual" : "catalog-linked", rowId: line.id }))}
+              title={`${format.name || "Untitled format"} packaging`}
+              total={formatPackagingCost}
+            />
+          ))}
+        </>
+      ) : null}
+
       {notes ? (
         <>
           <h2>Notes</h2>
@@ -6312,6 +7472,15 @@ type EquipmentAllocation = {
   allocatedTotal: number;
   equipmentItem: EquipmentEntry | undefined;
   row: EquipmentUsageRow;
+};
+
+type SellingFormatWithMetrics = {
+  format: SellingFormat;
+  lines: SellingFormatPackagingLine[];
+  packagingCost: number;
+  totalCost: number | null;
+  profit: number | null;
+  margin: number | null;
 };
 
 function EquipmentUsageSection({
@@ -6385,8 +7554,10 @@ function EquipmentUsageSection({
 function NamedCostSection({
   addLabel,
   extra,
+  helperNote,
   namePrefix,
   onAdd,
+  renderRowExtra,
   rows,
   setRows,
   title,
@@ -6395,8 +7566,10 @@ function NamedCostSection({
 }: {
   addLabel: string;
   extra?: ReactNode;
+  helperNote?: ReactNode;
   namePrefix: string;
   onAdd: () => void;
+  renderRowExtra?: (row: CostingNamedCostRow) => ReactNode;
   rows: CostingNamedCostRow[];
   setRows: Dispatch<SetStateAction<CostingNamedCostRow[]>>;
   title: string;
@@ -6409,17 +7582,21 @@ function NamedCostSection({
         <div>
           <p className="text-sm font-semibold">{title}</p>
           <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Use per-batch costs so the dashboard stays comparable across products.</p>
+          {helperNote}
         </div>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onAdd} type="button">{addLabel}</button>
       </div>
       {extra}
       <div className="mt-3 grid gap-2">
         {rows.map((row) => (
-          <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_70px]" key={row.rowId}>
-            <Input name={`${namePrefix}Name-${row.rowId}`} label="Name" value={row.name} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { name: event.target.value })} />
-            <Input name={`${namePrefix}Cost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" value={row.cost || ""} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { cost: Number(event.target.value || 0) })} />
-            <Input name={`${namePrefix}Note-${row.rowId}`} label="Note" value={row.note} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { note: event.target.value })} />
-            <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+          <div key={row.rowId}>
+            <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_70px]">
+              <Input name={`${namePrefix}Name-${row.rowId}`} label="Name" value={row.name} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { name: event.target.value })} />
+              <Input name={`${namePrefix}Cost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" value={row.cost || ""} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { cost: Number(event.target.value || 0) })} />
+              <Input name={`${namePrefix}Note-${row.rowId}`} label="Note" value={row.note} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { note: event.target.value })} />
+              <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+            </div>
+            {renderRowExtra?.(row)}
           </div>
         ))}
       </div>
@@ -6454,31 +7631,91 @@ function CostingGuide() {
   );
 }
 
+// This form only ever creates a new tasting checkpoint -- there is no "edit an existing tasting"
+// mode (existing checkpoints below render as read-only summaries plus a Delete button, already
+// window.confirm-protected, out of this scope). Each batch row's own instance is permanently keyed
+// by the enclosing <article key={batch.id}> in BatchHistoryPage's batches.map() -- unlike
+// editingBatch/editingSupply, which reuse one shared slot swapped between records, every batch here
+// gets its own, separate, always-mounted BatchTastingSection instance. That means there is no
+// "switch batches" remount concern the way BatchForm/PurchaseLogPage had (verified, not assumed --
+// a stale-state bug there is architecturally impossible: this component's own isAdding/dirty state
+// can never be reused across two different batchIds), but it does mean more than one batch's
+// tasting form can be dirty at once -- see BatchHistoryPage's handleTastingDirtyChange for how that
+// gets aggregated correctly instead of colliding in ProductLab's shared activeUnsavedForm.
+const UNSAVED_TASTING_MESSAGE = "You have unsaved changes in this tasting checkpoint. Leaving now will discard them. Continue?";
+
 function BatchTastingSection({
   batchId,
   deleteTasting,
+  onDirtyChange,
   productId,
   saveTasting,
   tastings,
 }: {
   batchId: string;
   deleteTasting: (tastingId: string) => void;
+  // Reports this instance's own dirty state upward -- BatchHistoryPage aggregates across every
+  // batch row's own instance before forwarding one combined report to ProductLab.
+  onDirtyChange?: (isDirty: boolean) => void;
   productId: string;
-  saveTasting: (formData: FormData) => void;
+  saveTasting: (formData: FormData) => Promise<boolean>;
   tastings: TastingFeedback[];
 }) {
   const [isAdding, setIsAdding] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState<TastingFormSnapshot | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
 
-  function submitCheckpoint(formData: FormData) {
-    saveTasting(formData);
-    setIsAdding(false);
+  // The <form> only exists in the DOM while isAdding is true (conditional render below, not a
+  // key-based remount) -- this component itself never unmounts, so a mount-only ([]) effect
+  // wouldn't re-run each time the form (re)opens. Keying on isAdding instead captures a fresh
+  // baseline every time it opens, and clears both the baseline and isDirty the moment it closes
+  // (Cancel or a successful save), so a later reopen never starts from a stale prior baseline.
+  useEffect(() => {
+    if (isAdding && formRef.current) {
+      setBaselineSnapshot(buildTastingFormSnapshot(new FormData(formRef.current)));
+    } else {
+      setBaselineSnapshot(null);
+      setIsDirty(false);
+    }
+  }, [isAdding]);
+
+  function recomputeIsDirty() {
+    if (!formRef.current || !baselineSnapshot) {
+      return;
+    }
+    const liveSnapshot = buildTastingFormSnapshot(new FormData(formRef.current));
+    setIsDirty(!areTastingFormSnapshotsEqual(liveSnapshot, baselineSnapshot));
+  }
+
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
+
+  // async + awaited, unlike the version this replaces: saveTasting does real network I/O when
+  // Supabase is configured, and the previous fire-and-forget call closed this form immediately on
+  // click regardless of whether the save actually succeeded -- meaning a failed save looked
+  // identical to a successful one and the typed feedback was gone either way. Now the form (and the
+  // operator's typed values) only ever close after a confirmed success.
+  async function submitCheckpoint(formData: FormData) {
+    const succeeded = await saveTasting(formData);
+    if (succeeded) {
+      setIsAdding(false);
+    }
+  }
+
+  // Same button opens and closes the form (label toggles below) -- only the closing half needs a
+  // guard; opening a blank form is never destructive.
+  function toggleAdding() {
+    if (isAdding && isDirty && !window.confirm(UNSAVED_TASTING_MESSAGE)) {
+      return;
+    }
+    setIsAdding((current) => !current);
   }
 
   return (
     <div className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm font-semibold">Tasting checkpoints</p>
-        <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsAdding((current) => !current)} type="button">
+        <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={toggleAdding} type="button">
           {isAdding ? "Cancel" : "Add tasting checkpoint"}
         </button>
       </div>
@@ -6502,7 +7739,7 @@ function BatchTastingSection({
         </div>
       ) : null}
       {isAdding ? (
-        <form action={submitCheckpoint} className="mt-3 grid gap-3 rounded-md border border-[#ead9c8] bg-white p-3">
+        <form action={submitCheckpoint} className="mt-3 grid gap-3 rounded-md border border-[#ead9c8] bg-white p-3" onChange={recomputeIsDirty} ref={formRef}>
           <input name="productId" type="hidden" value={productId} />
           <input name="batchId" type="hidden" value={batchId} />
           <div className="grid gap-3 sm:grid-cols-2">
