@@ -84,7 +84,19 @@ function isOffSpec(width: number | null, height: number | null): boolean {
   return width !== null && height !== null && (width !== ASSET_GENERATION_IMAGE_DIMENSIONS.width || height !== ASSET_GENERATION_IMAGE_DIMENSIONS.height);
 }
 
-export function CreativePackageAssets({ creativePackageId, refreshSignal }: { creativePackageId: string; refreshSignal: number }) {
+// variant "ritual" hides provenance/advisory presentation only (the Workspace/Source tags and the
+// off-spec dimension advisory message) for a caller composing this component into a screen that
+// doesn't want that vocabulary on it (e.g. Today, PROP-035) -- it changes no state, no network call,
+// and no read logic. Every existing caller keeps the default "full" behavior unchanged.
+export function CreativePackageAssets({
+  creativePackageId,
+  refreshSignal,
+  variant = "full",
+}: {
+  creativePackageId: string;
+  refreshSignal: number;
+  variant?: "full" | "ritual";
+}) {
   const [jobs, setJobs] = useState<AssetJobRecord[]>([]);
   const [jobAssets, setJobAssets] = useState<Record<string, JobAssetState>>({});
   const [signedFiles, setSignedFiles] = useState<Record<string, SignedFileState>>({});
@@ -250,6 +262,38 @@ export function CreativePackageAssets({ creativePackageId, refreshSignal }: { cr
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [creativePackageId, refreshSignal]);
+
+  // Ritual mode renders only the image itself -- no per-job accordion, no status/provenance tags, no
+  // refresh controls, no technical details. All fetching/signing above is identical to "full"; this
+  // branch only changes what's returned. Every one of the "full" branch's job-lifecycle/provenance
+  // words below never reaches this tree at all, rather than being hidden field-by-field.
+  if (variant === "ritual") {
+    if (metadataError) {
+      return <MessageBox message={metadataError} tone="bad" />;
+    }
+    const readyFiles = allFiles;
+    if (readyFiles.length === 0) {
+      return null;
+    }
+    return (
+      <div className="mt-3 grid gap-3">
+        {readyFiles.map((file) => {
+          const signed = signedFiles[signedStateKey(file)];
+          return (
+            <div className="grid gap-2" key={file.id}>
+              {signed?.url && !signed.imageFailed ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img alt="Today's result" className="max-h-96 w-full rounded-md border border-[#ead9c8] object-contain" onError={() => void retryAfterImageFailure(file)} src={signed.url} />
+              ) : (
+                <div className="grid min-h-32 place-items-center rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm text-[#6f5a4c]">{signed?.isLoading ? "Loading..." : "Image preview is not available."}</div>
+              )}
+              {signed?.error || signed?.imageFailed ? <MessageBox message={signed.error || "The image couldn't be loaded after one automatic retry."} tone="bad" /> : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <section className="mt-3 rounded-md border border-[#ead9c8] bg-white p-3">

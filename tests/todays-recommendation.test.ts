@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { selectTodaysReadyOpportunity, type TodaysRecommendationClient } from "../src/lib/todays-recommendation.ts";
+import { listReadyOpportunities, selectTodaysReadyOpportunity, type TodaysRecommendationClient } from "../src/lib/todays-recommendation.ts";
 import { selectPreparationCandidate } from "../src/lib/opportunity-review.ts";
 import { toOpportunityRow, type OpportunityDraft, type OpportunityRow } from "../src/lib/opportunities.ts";
 import type { CreativeJobRow } from "../src/lib/creative-jobs.ts";
@@ -249,5 +249,77 @@ test("decoupling contract: once B is prepared, Today switches from A to B", asyn
   assert.equal(todaysPick.ok, true);
   if (todaysPick.ok) {
     assert.equal(todaysPick.ready?.opportunity.id, "opp-b");
+  }
+});
+
+test("listReadyOpportunities: returns every ready candidate, newest-detected first", async () => {
+  const older = opportunityRow({ id: "opp-older", status: "accepted", detected_at: "2026-07-23T01:00:00.000Z" });
+  const newer = opportunityRow({ id: "opp-newer", status: "accepted", detected_at: "2026-07-24T01:00:00.000Z" });
+  const olderJob = creativeJobRow({ id: "job-older", opportunity_id: "opp-older", status: "completed" });
+  const newerJob = creativeJobRow({ id: "job-newer", opportunity_id: "opp-newer", status: "completed" });
+  const olderPackage = creativePackageRow({ id: "pkg-older", creative_job_id: "job-older" });
+  const newerPackage = creativePackageRow({ id: "pkg-newer", creative_job_id: "job-newer" });
+  const client = makeClient({ opportunities: [older, newer], jobs: [olderJob, newerJob], packages: [olderPackage, newerPackage] });
+
+  const result = await listReadyOpportunities(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(
+      result.ready.map((entry) => entry.opportunity.id),
+      ["opp-newer", "opp-older"],
+    );
+  }
+});
+
+test("listReadyOpportunities: returns an empty array, not null, when nothing is ready", async () => {
+  const client = makeClient({ opportunities: [], jobs: [], packages: [] });
+  const result = await listReadyOpportunities(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.ready, []);
+  }
+});
+
+test("listReadyOpportunities: skips queued/failed jobs and package-less completed jobs, keeps only truly ready candidates", async () => {
+  const readyOpp = opportunityRow({ id: "opp-ready", status: "accepted", detected_at: "2026-07-24T01:00:00.000Z" });
+  const queuedOpp = opportunityRow({ id: "opp-queued", status: "accepted", detected_at: "2026-07-23T01:00:00.000Z" });
+  const noPackageOpp = opportunityRow({ id: "opp-no-package", status: "accepted", detected_at: "2026-07-22T01:00:00.000Z" });
+
+  const readyJob = creativeJobRow({ id: "job-ready", opportunity_id: "opp-ready", status: "completed" });
+  const queuedJob = creativeJobRow({ id: "job-queued", opportunity_id: "opp-queued", status: "queued" });
+  const noPackageJob = creativeJobRow({ id: "job-no-package", opportunity_id: "opp-no-package", status: "completed" });
+
+  const readyPackage = creativePackageRow({ id: "pkg-ready", creative_job_id: "job-ready" });
+
+  const client = makeClient({
+    opportunities: [readyOpp, queuedOpp, noPackageOpp],
+    jobs: [readyJob, queuedJob, noPackageJob],
+    packages: [readyPackage],
+  });
+
+  const result = await listReadyOpportunities(client);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(
+      result.ready.map((entry) => entry.opportunity.id),
+      ["opp-ready"],
+    );
+  }
+});
+
+test("selectTodaysReadyOpportunity stays a behavior-preserving wrapper over listReadyOpportunities", async () => {
+  const older = opportunityRow({ id: "opp-older", status: "accepted", detected_at: "2026-07-23T01:00:00.000Z" });
+  const newer = opportunityRow({ id: "opp-newer", status: "accepted", detected_at: "2026-07-24T01:00:00.000Z" });
+  const olderJob = creativeJobRow({ id: "job-older", opportunity_id: "opp-older", status: "completed" });
+  const newerJob = creativeJobRow({ id: "job-newer", opportunity_id: "opp-newer", status: "completed" });
+  const olderPackage = creativePackageRow({ id: "pkg-older", creative_job_id: "job-older" });
+  const newerPackage = creativePackageRow({ id: "pkg-newer", creative_job_id: "job-newer" });
+  const client = makeClient({ opportunities: [older, newer], jobs: [olderJob, newerJob], packages: [olderPackage, newerPackage] });
+
+  const [listResult, wrapperResult] = await Promise.all([listReadyOpportunities(client), selectTodaysReadyOpportunity(client)]);
+  assert.equal(listResult.ok, true);
+  assert.equal(wrapperResult.ok, true);
+  if (listResult.ok && wrapperResult.ok) {
+    assert.equal(wrapperResult.ready?.opportunity.id, listResult.ready[0]?.opportunity.id);
   }
 });

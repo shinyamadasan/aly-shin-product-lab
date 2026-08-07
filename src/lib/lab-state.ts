@@ -1,6 +1,7 @@
 import type { AiReviewRecord, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
+  | "today"
   | "dashboard"
   | "products"
   | "product-detail"
@@ -19,7 +20,8 @@ export type LabView =
   | "brand";
 
 export const navItems: Array<{ label: string; href: string; view: LabView }> = [
-  { label: "Dashboard", href: "/", view: "dashboard" },
+  { label: "Today", href: "/", view: "today" },
+  { label: "Dashboard", href: "/dashboard", view: "dashboard" },
   { label: "Products", href: "/products", view: "products" },
   { label: "Product Detail", href: "/product-detail", view: "product-detail" },
   { label: "Proof Day", href: "/proof-day", view: "proof-day" },
