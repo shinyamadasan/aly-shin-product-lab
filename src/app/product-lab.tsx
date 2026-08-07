@@ -80,6 +80,7 @@ import { isDuplicateKeyError } from "@/lib/database-errors";
 import { useEditNavigation } from "@/hooks/use-edit-navigation";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import { areCostingFormSnapshotsEqual, buildCostingFormSnapshot } from "@/lib/costing-form-snapshot";
+import { areBatchFormSnapshotsEqual, buildBatchFormSnapshot, type BatchFormSnapshot } from "@/lib/batch-form-snapshot";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
@@ -139,6 +140,7 @@ function isMissingColumnError(error: PostgrestError | null): boolean {
 // Recent Entries' Edit, and Cancel edit all use this exact string so the operator sees the same
 // question regardless of which discard path they hit.
 const UNSAVED_COSTING_MESSAGE = "You have unsaved changes in this costing. Leaving now will discard them. Continue?";
+const UNSAVED_BATCH_MESSAGE = "You have unsaved changes in this batch record. Leaving now will discard them. Continue?";
 
 export default function ProductLab({
   view = "dashboard",
@@ -2441,6 +2443,25 @@ export default function ProductLab({
     }
   }
 
+  // Same shape as cancelCostingEdit/editCostingWithGuard above, for BatchForm -- neither Cancel
+  // edit nor switching batches is a navigation or an unload, so neither the nav guard nor
+  // beforeunload would ever see them; both just call setEditingBatch directly, remounting
+  // BatchForm via its key (now correct after the Slice 3 remount fix).
+  function cancelBatchEdit() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingBatch(null);
+    }
+  }
+
+  function editBatchWithGuard(batchToEdit: ProductBatch) {
+    if (batchToEdit.id === editingBatch?.id) {
+      return;
+    }
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingBatch(batchToEdit);
+    }
+  }
+
   if (isSupabaseConfigured && isAuthLoading) {
     return <LoadingScreen />;
   }
@@ -2469,7 +2490,7 @@ export default function ProductLab({
                   processStepRows, selectedProductId, formBatchId, stagedPhotos) are lazy-
                   initialized from `batch` once per component instance. Remounting only the
                   <form> left those stale when switching records without also switching pages. */}
-              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={() => setEditingBatch(null)} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={editingBatch?.id ?? "new-batch"} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+              <BatchForm batch={editingBatch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelBatchEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={editingBatch?.id ?? "new-batch"} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_BATCH_MESSAGE } : null)} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
               <div className="space-y-5">
                 <ProofDayModeGuide />
                 <JournalForm cancelEdit={() => setEditingJournal(null)} entry={editingJournal} products={labState.products} saveJournal={saveJournal} />
@@ -2478,7 +2499,7 @@ export default function ProductLab({
           ) : null}
 
           {view === "batches" ? (
-            <BatchHistoryPage batch={editingBatch} cancelEdit={() => setEditingBatch(null)} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={setEditingBatch} labState={labState} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} voidBatch={voidProductBatch} />
+            <BatchHistoryPage batch={editingBatch} cancelEdit={cancelBatchEdit} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={editBatchWithGuard} labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_BATCH_MESSAGE } : null)} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} voidBatch={voidProductBatch} />
           ) : null}
 
           {view === "costing" ? (
@@ -3040,6 +3061,7 @@ function BatchHistoryPage({
   deleteTasting,
   editBatch,
   labState,
+  onDirtyChange,
   saveBatch,
   saveTasting,
   uploadBatchPhotos,
@@ -3052,6 +3074,7 @@ function BatchHistoryPage({
   deleteTasting: (tastingId: string) => void;
   editBatch: (batch: ProductBatch) => void;
   labState: LabState;
+  onDirtyChange?: (isDirty: boolean) => void;
   saveBatch: (formData: FormData) => void;
   saveTasting: (formData: FormData) => void;
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
@@ -3102,7 +3125,7 @@ function BatchHistoryPage({
           <div className="border-b border-[#eaded2] p-5">
             {/* Keyed here, not just on the inner <form> -- see the matching comment at the
                 Proof Day call site for why the component boundary, not the form, must remount. */}
-            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={batch?.id ?? "new-batch"} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={batch?.id ?? "new-batch"} onDirtyChange={onDirtyChange} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -3719,6 +3742,7 @@ function BatchForm({
   cancelEdit,
   deleteBatchPhoto,
   ingredients,
+  onDirtyChange,
   products,
   saveBatch,
   supplies,
@@ -3730,6 +3754,10 @@ function BatchForm({
   cancelEdit: () => void;
   deleteBatchPhoto: (photo: BatchPhoto) => void;
   ingredients: Ingredient[];
+  // Reported after every render so ProductLab can gate app navigation while this batch has
+  // unsaved changes -- see useUnsavedChangesGuard. Optional so this form still works standalone
+  // without a parent that cares, matching CostingForm's identical contract.
+  onDirtyChange?: (isDirty: boolean) => void;
   products: Product[];
   saveBatch: (formData: FormData) => void;
   supplies: SupplyEntry[];
@@ -3767,6 +3795,44 @@ function BatchForm({
   // so a suggestion inserts *that word* -- not the whole field -- letting a step reference
   // several ingredients ("25g Cocoa Powder and 100g Brown Sugar") one at a time.
   const [ingredientSuggestion, setIngredientSuggestion] = useState<{ rowId: string; wordStart: number; wordEnd: number; query: string } | null>(null);
+
+  const formRef = useRef<HTMLFormElement>(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState<BatchFormSnapshot | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
+
+  // Unlike CostingForm's fully-controlled useState(() => ...) baseline, most of this form's fields
+  // are uncontrolled (see batch-form-snapshot.ts), so the baseline can only be read from the real
+  // DOM <form> -- which doesn't exist yet during the first render. Captured once, right after
+  // mount, from the same defaultValue-seeded fields the operator sees. stagedPhotoCount is always 0
+  // here: staging can only begin after mount.
+  useEffect(() => {
+    if (formRef.current) {
+      setBaselineSnapshot(buildBatchFormSnapshot(new FormData(formRef.current), 0));
+    }
+  }, []);
+
+  function recomputeIsDirty() {
+    if (!formRef.current || !baselineSnapshot) {
+      return;
+    }
+    const liveSnapshot = buildBatchFormSnapshot(new FormData(formRef.current), stagedPhotos.length);
+    setIsDirty(!areBatchFormSnapshotsEqual(liveSnapshot, baselineSnapshot));
+  }
+
+  // Typing into an uncontrolled field never re-renders BatchForm, so there's no render to hang a
+  // useMemo comparison off of -- the <form>'s own onChange (React's onChange fires per keystroke
+  // for text-like fields, matching the native `input` event, not `change`) catches those directly.
+  // This effect catches the fields that *are* controlled state instead: adding/removing a formula
+  // or process-step row, and staging/removing a photo, all update state without firing any native
+  // form event at all.
+  useEffect(() => {
+    recomputeIsDirty();
+    // recomputeIsDirty itself reads formRef/baselineSnapshot/stagedPhotos via closure; those --
+    // not the function identity, which is redefined every render -- are the actual re-run triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formulaRows, processStepRows, stagedPhotos, baselineSnapshot]);
+
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
 
   const stepNameSuggestions = Array.from(
     new Set([
@@ -3934,7 +4000,7 @@ function BatchForm({
           Editing: {batchDisplayName(batch.productId, batch.batchVersion, products)}
         </p>
       ) : null}
-      <form action={submitBatch} className="grid gap-3">
+      <form action={submitBatch} className="grid gap-3" onChange={recomputeIsDirty} ref={formRef}>
         <input name="id" type="hidden" value={formBatchId} />
         <input name="existingId" type="hidden" value={batch?.id ?? ""} />
         <input name="batchIngredientRowIds" type="hidden" value={formulaRows.map((row) => row.rowId).join(",")} />
