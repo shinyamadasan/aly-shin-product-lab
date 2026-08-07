@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   mapCostingSummaryRow,
   mapIngredientRow,
@@ -58,11 +59,38 @@ test("mapProductRow: a fully populated row maps every field", () => {
   });
 });
 
-test("mapProductRow: nullable text columns flatten to \"\", and a missing decision defaults", () => {
-  const product = mapProductRow(productRow({ description: null, main_photo_url: null, decision: null }));
+test("mapProductRow: nullable text columns flatten to \"\"", () => {
+  const product = mapProductRow(productRow({ description: null, main_photo_url: null }));
   assert.equal(product.description, "");
   assert.equal(product.image, "");
-  assert.equal(product.decision, "Needs proof");
+});
+
+test("[static] ProductRow.decision is typed non-nullable, matching its NOT NULL column", () => {
+  // supabase-add-product-decision.sql declares `decision text not null default 'Needs proof'`, so
+  // the database cannot produce a null here. Typing it `| null` would tell every downstream reader
+  // that null is a state to handle, and a fact adapter could emit "unset" for a value that cannot
+  // occur. Line-scanned rather than regex-matched across lines, so a CRLF checkout cannot skew it.
+  const source = readFileSync(new URL("../src/lib/supabase-mappers.ts", import.meta.url), "utf8");
+  const lines = source.split(/\r?\n/);
+
+  const start = lines.findIndex((line) => line.trim() === "export type ProductRow = {");
+  assert.notEqual(start, -1, "ProductRow declaration not found -- test fixture is stale.");
+  const end = lines.findIndex((line, index) => index > start && line.trim() === "};");
+  assert.notEqual(end, -1, "ProductRow has no closing brace -- test fixture is stale.");
+
+  const decision = lines.slice(start + 1, end).find((line) => line.trim().startsWith("decision"));
+  assert.ok(decision, "ProductRow must declare a decision column");
+  assert.equal(decision.trim(), "decision: string;");
+});
+
+test("mapProductRow: a pre-migration row with no decision column still defaults, without the type claiming null", () => {
+  // The absent-column case is schema availability, not value nullability. The runtime guard stays
+  // (matching product-lab.tsx's own `?? \"Needs proof\"`); the cast here is what makes it explicit
+  // that this shape is outside the declared contract rather than part of it.
+  const preMigration = { ...productRow() } as Partial<ProductRow>;
+  delete preMigration.decision;
+
+  assert.equal(mapProductRow(preMigration as ProductRow).decision, "Needs proof");
 });
 
 test("mapProductRow: an empty-string description is preserved, and is indistinguishable from null once mapped", () => {

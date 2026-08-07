@@ -125,6 +125,72 @@ test("buildFactsDigest: changes when a read outcome changes", async () => {
   assert.notEqual(await buildFactsDigest(healthy), await buildFactsDigest(failed));
 });
 
+test("buildFactsDigest: does NOT change when only adapterVersion changes", async () => {
+  // A code version bump with every value identical is not the business changing. If it moved this
+  // digest it would invalidate grounded prior AI answers for no reason.
+  const before = { domains: { costing: domain({ adapterVersion: 1 }) }, coverage: coverage() };
+  const after = { domains: { costing: domain({ adapterVersion: 2 }) }, coverage: coverage() };
+  assert.equal(await buildFactsDigest(before), await buildFactsDigest(after));
+});
+
+test("buildFactsDigest: does NOT change when only notes change", async () => {
+  // Notes are explanatory prose about how a value was obtained -- not the value.
+  const before = { domains: { costing: domain({ notes: [] }) }, coverage: coverage() };
+  const after = {
+    domains: { costing: domain({ notes: ["Yield parsed from free-text costing.notes."] }) },
+    coverage: coverage(),
+  };
+  assert.equal(await buildFactsDigest(before), await buildFactsDigest(after));
+});
+
+test("buildFactsDigest: does NOT change when adapterVersion and notes both change together", async () => {
+  const before = { domains: { costing: domain({ adapterVersion: 1, notes: [] }) }, coverage: coverage() };
+  const after = { domains: { costing: domain({ adapterVersion: 7, notes: ["a", "b"] }) }, coverage: coverage() };
+  assert.equal(await buildFactsDigest(before), await buildFactsDigest(after));
+});
+
+test("buildFactsDigest: still changes when rowCounts or sourceAsOf change", async () => {
+  // The exclusions above must not be over-broad: these two are statements about the data itself.
+  const base = { domains: { costing: domain() }, coverage: coverage() };
+
+  const movedRowCounts = {
+    domains: { costing: domain({ rowCounts: { read: 4, included: 4, omitted: 0 } }) },
+    coverage: coverage(),
+  };
+  assert.notEqual(await buildFactsDigest(base), await buildFactsDigest(movedRowCounts));
+
+  const movedSourceAsOf = {
+    domains: { costing: domain({ sourceAsOf: { state: "known", value: "2026-08-07T00:00:00.000Z", source: entered } }) },
+    coverage: coverage(),
+  };
+  assert.notEqual(await buildFactsDigest(base), await buildFactsDigest(movedSourceAsOf));
+});
+
+test("buildFactsDigest: coverage.absent ordering is stable regardless of input order", async () => {
+  // Guards the antisymmetric 3-way comparator: the same set listed in either order must digest
+  // identically, or the digest's whole purpose is undermined.
+  const forward = {
+    domains: { costing: domain() },
+    coverage: coverage({
+      absent: [
+        { domain: "brand" as DomainId, reason: "adapter not built yet" },
+        { domain: "inventory" as DomainId, reason: "adapter not built yet" },
+      ],
+    }),
+  };
+  const reversed = {
+    domains: { costing: domain() },
+    coverage: coverage({
+      absent: [
+        { domain: "inventory" as DomainId, reason: "adapter not built yet" },
+        { domain: "brand" as DomainId, reason: "adapter not built yet" },
+      ],
+    }),
+  };
+
+  assert.equal(await buildFactsDigest(forward), await buildFactsDigest(reversed));
+});
+
 test("buildFactsDigest: changes when coverage changes", async () => {
   const before = { domains: { costing: domain() }, coverage: coverage() };
   const after = { domains: { costing: domain() }, coverage: coverage({ present: ["costing", "inventory"] as DomainId[] }) };

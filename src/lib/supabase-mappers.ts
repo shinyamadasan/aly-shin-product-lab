@@ -51,14 +51,23 @@ export type ProductRow = {
   description: string | null;
   notes: string | null;
   main_photo_url: string | null;
-  decision: string | null;
+  // `not null default 'Needs proof'` (supabase-add-product-decision.sql) -- so a value read from a
+  // project that has run that migration is never null. Typed accordingly.
+  //
+  // A project that has NOT run the migration has no such column at all, and the key comes back
+  // absent. That is a schema-availability concern, not SQL value nullability, and the two are
+  // deliberately not conflated here: widening this to `| null` would tell every downstream reader
+  // that a null `decision` is a state the database can produce, which it cannot. The mapper below
+  // still guards the absent-column case at runtime.
+  decision: string;
   created_at: string;
   updated_at: string;
 };
 
-// `decision` is `not null default` at the database layer, but is typed nullable here and defaulted
-// in the mapper: the column was added by a later migration, so a project that has not run it yet
-// returns undefined for this key. Matching product-lab.tsx's own `?? "Needs proof"`.
+// The `?? "Needs proof"` is a runtime guard for the pre-migration case described on
+// ProductRow.decision above -- where the column is absent entirely and the property arrives
+// undefined -- not a nullability fallback. It also keeps this mapper byte-identical to
+// product-lab.tsx's inline literal, which applies the same default.
 export function mapProductRow(row: ProductRow): Product {
   return {
     id: row.id,

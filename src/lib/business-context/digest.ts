@@ -54,10 +54,24 @@ async function hash(payload: unknown): Promise<string> {
   return sha256Hex(new TextEncoder().encode(stableStringify(payload)));
 }
 
-// Everything on the facts side of the snapshot: each domain's published facts, how its read went,
-// how many rows it saw, how current its source data is, and which domains are present or absent.
+// Answers exactly one question: has the underlying business data materially changed?
 //
-// Signals are deliberately excluded -- a rule firing differently is not the business changing.
+// Included, because each is a statement about the data itself:
+//   facts       -- the values, and their states (known(0) and unset are different facts)
+//   readOutcome -- whether the data could be read at all
+//   rowCounts   -- how many rows were seen, included, and omitted
+//   sourceAsOf  -- how current the source data is
+//   coverage    -- which domains are present, and which are declared absent
+//
+// Deliberately excluded, because none of them is the business changing:
+//   signals        -- a rule firing differently is interpretation, and belongs to signalsDigest
+//   adapterVersion -- a code version. Bumping it while every value stays identical must not read
+//                     as "the business changed" and discard grounded prior answers.
+//   notes          -- explanatory prose about how a value was obtained, not the value
+//   generatedAt    -- excluded by construction: this function is never given it
+//
+// The exclusions matter because factsDigest is the one used for invalidation. Anything that moves
+// it invalidates a prior AI answer, so it must move only when the answer could actually be wrong.
 export async function buildFactsDigest(input: {
   domains: Partial<Record<DomainId, DomainContext>>;
   coverage: BusinessContextCoverage;
@@ -66,12 +80,10 @@ export async function buildFactsDigest(input: {
     const domain = input.domains[domainId] as DomainContext;
     return {
       domain: domainId,
-      adapterVersion: domain.adapterVersion,
       readOutcome: domain.readOutcome,
       sourceAsOf: domain.sourceAsOf,
       rowCounts: domain.rowCounts,
       facts: domain.facts,
-      notes: domain.notes,
     };
   });
 
@@ -79,7 +91,13 @@ export async function buildFactsDigest(input: {
     coverage: {
       knownDomains: [...input.coverage.knownDomains].sort(),
       present: [...input.coverage.present].sort(),
-      absent: [...input.coverage.absent].sort((left, right) => (left.domain < right.domain ? -1 : 1)),
+      // Three-way and antisymmetric, matching stableStringify's own comparator above. A comparator
+      // that returns 1 for equal elements leaves ordering implementation-defined, and this repo has
+      // already been bitten by exactly that (see portfolio-ranking.ts's dateMade comparator) -- an
+      // unstable sort inside a digest would undermine the one property the digest exists to have.
+      absent: [...input.coverage.absent].sort((left, right) =>
+        left.domain < right.domain ? -1 : left.domain > right.domain ? 1 : 0,
+      ),
     },
     domains,
   });
