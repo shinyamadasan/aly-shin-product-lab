@@ -487,7 +487,7 @@ export function PurchaseImportWizard({
             </div>
             {activeImport.status === "draft" ? (
               <div className="flex gap-2">
-                <SecondaryButton onClick={() => discardPurchaseImport(activeImportId)}>Discard</SecondaryButton>
+                <SecondaryButton onClick={() => (window.confirm("Discard this import? Every row assignment and quantity fix made during review will be lost.") ? discardPurchaseImport(activeImportId) : undefined)}>Discard</SecondaryButton>
                 <button
                   className="h-10 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                   disabled={!readyToConfirm || isConfirming}
