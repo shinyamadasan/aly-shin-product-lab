@@ -7,7 +7,7 @@ import { COSTING_UPDATED_AT_RELIABLE_FROM, DOMAIN_IDS, SIGNAL_IDS } from "../src
 import type { BusinessContext, DomainContext, DomainId, Fact, Provenance, Signal } from "../src/lib/business-context/types.ts";
 import { resolveBusinessDay } from "../src/lib/business-day.ts";
 import { FIXTURE_ENV, FIXTURE_FACTS, fixtureReads } from "./fixtures/business-context-m1.ts";
-import { walkFacts, type AnyFact, type VisitedFact } from "./helpers/business-context-fact-walker.ts";
+import { declaredPath, walkFacts, type AnyFact, type VisitedFact } from "./helpers/business-context-fact-walker.ts";
 
 // The Milestone 1 proof layer: structural invariants asserted over a *fully built* BusinessContext,
 // not over individual adapter outputs.
@@ -150,36 +150,110 @@ test("[M1] every fact has a valid state and no undefined leaks", async () => {
   });
 });
 
-test("[M1] every provenance input resolves to a real fact path", async () => {
-  const context = await buildFixtureContext();
+// Resolution and self-reference are written as predicates returning violation lists, so the real
+// assertions and the mutation probes below run the *same* code. A probe that re-implemented the rule
+// would only prove the probe works.
+
+// The member names each collection fact actually publishes, read off a real member rather than a
+// hardcoded list, so a renamed snapshot field cannot silently keep passing.
+function collectionMembers(context: BusinessContext): Map<string, Set<string>> {
+  const members = new Map<string, Set<string>>();
+  eachDomain(context, (domain) => {
+    for (const [key, fact] of Object.entries(domain.facts)) {
+      const value = (fact as AnyFact).value;
+      if (Array.isArray(value) && value.length > 0 && typeof value[0] === "object" && value[0] !== null) {
+        members.set(`${domain.domain}.facts.${key}`, new Set(Object.keys(value[0] as Record<string, unknown>)));
+      }
+    }
+  });
+  return members;
+}
+
+function inputResolutionViolations(context: BusinessContext): string[] {
+  const violations: string[] = [];
   const factNamesByDomain = new Map<string, Set<string>>();
   eachDomain(context, (domain) => factNamesByDomain.set(domain.domain, new Set(Object.keys(domain.facts))));
+  const members = collectionMembers(context);
 
   const check = (path: string, provenance: Provenance | undefined) => {
     for (const input of provenance?.inputs ?? []) {
       const match = input.match(/^([A-Za-z]+)\.facts\.([A-Za-z0-9_]+)/);
-      assert.ok(match, `${path}: input "${input}" is not a fact path`);
-
+      if (!match) {
+        violations.push(`${path}: input "${input}" is not a fact path`);
+        continue;
+      }
       const names = factNamesByDomain.get(match[1]);
-      assert.ok(names, `${path}: input "${input}" names a domain not present in this snapshot`);
-      assert.ok(names.has(match[2]), `${path}: input "${input}" names no fact published by ${match[1]}`);
+      if (!names) {
+        violations.push(`${path}: input "${input}" names a domain not present in this snapshot`);
+        continue;
+      }
+      if (!names.has(match[2])) {
+        violations.push(`${path}: input "${input}" names no fact published by ${match[1]}`);
+        continue;
+      }
+
+      // Resolve the member segment too. Without this, "byCosting[].costPerPeice" resolves to the
+      // byCosting fact and passes -- a typo in a dependency list would never be caught.
+      const member = input.match(/^([A-Za-z]+\.facts\.[A-Za-z0-9_]+)\[\]\.([A-Za-z0-9_]+)$/);
+      if (member) {
+        const published = members.get(member[1]);
+        if (published && !published.has(member[2])) {
+          violations.push(`${path}: input "${input}" names no member published on ${member[1]}`);
+        }
+      }
     }
   };
 
-  eachFact(context, (path, fact) => check(path, fact.source));
+  for (const { path, fact } of visitedFacts(context)) {
+    check(path, fact.source);
+  }
   for (const signal of allSignals(context)) {
     check(`signal:${signal.id}`, signal.provenance);
   }
+  return violations;
+}
+
+function selfReferenceViolations(context: BusinessContext): string[] {
+  const violations: string[] = [];
+
+  for (const { path, fact } of visitedFacts(context)) {
+    // Compared in the declared form. The raw walked path is member-indexed
+    // ("...byCosting.value.0.margin") while a declared input is member-agnostic
+    // ("...byCosting[].margin"), so a direct comparison answers "never equal" for every nested fact
+    // -- which is what made the original check vacuous for 129 of 141 facts.
+    const self = declaredPath(path);
+    for (const input of fact.source?.inputs ?? []) {
+      if (input === self) {
+        violations.push(`${path}: declares a dependency on itself`);
+      }
+    }
+  }
+
+  for (const signal of allSignals(context)) {
+    // A Signal has no fact path of its own -- it is addressed by id, and Provenance.inputs is
+    // documented as *fact* paths. So a signal cannot name itself the way a fact can. The
+    // self-reference it can structurally express is naming the signal collection it lives in, which
+    // is not a fact path at all and resolves to nothing. That is not hypothetical: it shipped as
+    // inputs: ["readiness.signals"] and was removed as F6. Both degenerate forms are checked.
+    for (const input of signal.provenance.inputs ?? []) {
+      if (/^[A-Za-z-]+\.signals\b/.test(input)) {
+        violations.push(`signal:${signal.id}: input "${input}" names a signal collection, not a fact`);
+      }
+      if (input.includes(signal.id)) {
+        violations.push(`signal:${signal.id}: input "${input}" names the signal itself`);
+      }
+    }
+  }
+
+  return violations;
+}
+
+test("[M1] every provenance input resolves to a real fact path, down to the collection member", async () => {
+  assert.deepEqual(inputResolutionViolations(await buildFixtureContext()), []);
 });
 
 test("[M1] no fact or signal depends on itself", async () => {
-  const context = await buildFixtureContext();
-
-  eachFact(context, (path, fact) => {
-    for (const input of fact.source?.inputs ?? []) {
-      assert.ok(!input.startsWith(path), `${path} declares a dependency on itself`);
-    }
-  });
+  assert.deepEqual(selfReferenceViolations(await buildFixtureContext()), []);
 });
 
 test("[M1] the fact walker reaches nested facts, not just the domain's published top level", async () => {
@@ -285,40 +359,137 @@ test("[M1] value-carrying calculated/derived facts name computedBy and non-empty
   assert.ok(checked > 0, "the fixture must exercise calculated/derived facts");
 });
 
-test("[M1] the provenance invariants actually catch a corrupted NESTED fact", async () => {
-  // Anti-vacuity. An invariant that never fails proves nothing, and the F7 walker gap is precisely
-  // how these two passed for weeks while ignoring 129 of 141 facts. Each probe corrupts one fact
-  // *inside* a collection -- never a top-level one -- so a walker that stopped at the published
-  // level would report a clean pass here and fail the test.
+// --- anti-vacuity -------------------------------------------------------------------------------
+//
+// An invariant that never fails proves nothing, and this suite has already shipped two that could
+// not fail: the F7 walker gap left every rule checking 12 of 141 facts, and the self-reference
+// comparison could not match a nested path at all (F9). Every probe below therefore corrupts a fact
+// *inside* a collection -- never a top-level one -- so a regression to top-level-only traversal, or
+// to a member-blind comparison, fails this test rather than passing quietly.
+//
+// Each probe runs the same predicate the real invariant runs, asserts the violation is reported,
+// restores the original value, and asserts the violation clears. The expected result is a fixed
+// string, never recomputed from the mutated state.
+
+/** Applies `mutate`, returns what `detect` reports, then puts the original value back. */
+function probe<T>(target: Record<string, T>, key: string, mutated: T, detect: () => string[]): { during: string[]; after: string[] } {
+  const original = target[key];
+  target[key] = mutated;
+  const during = detect();
+  target[key] = original;
+  return { during, after: detect() };
+}
+
+test("[M1] mutation proof: all four provenance defect classes are caught on NESTED facts", async () => {
   const context = await buildFixtureContext();
   const snapshot = (context.domains.costing?.facts.byCosting as { value: Record<string, AnyFact>[] }).value[0];
 
-  // Probe 1: a calculated fact loses its dependency list -- the exact F8 defect shape.
-  const calculated = snapshot.costPerPiece;
-  assert.equal(calculated.source?.kind, "calculated", "the probe must target a genuinely calculated fact");
-  const realInputs = calculated.source?.inputs;
-  calculated.source = { ...calculated.source!, inputs: [] };
+  const provenance = () => provenanceViolations(visitedFacts(context)).violations;
+  const inferred = () => inferredViolations(visitedFacts(context)).violations;
+  const resolution = () => inputResolutionViolations(context);
+  const selfRef = () => selfReferenceViolations(context);
 
-  const emptied = provenanceViolations(visitedFacts(context));
+  // Baseline: every predicate is clean before anything is touched, so a violation seen below is
+  // caused by the mutation and nothing else.
+  for (const [label, detect] of [["provenance", provenance], ["inferred", inferred], ["resolution", resolution], ["self-reference", selfRef]] as const) {
+    assert.deepEqual(detect(), [], `${label} must be clean before mutating`);
+  }
+
+  // (1) A nested calculated fact loses its dependency list -- the exact F8 defect shape.
+  assert.equal(snapshot.costPerPiece.source?.kind, "calculated", "probe 1 must target a genuinely calculated fact");
+  const one = probe(snapshot.costPerPiece as unknown as Record<string, unknown>, "source", { ...snapshot.costPerPiece.source!, inputs: [] }, provenance);
   assert.ok(
-    emptied.violations.some((entry) => entry.includes("costPerPiece") && entry.includes("empty inputs")),
-    `emptying a nested calculated fact's inputs must be caught, got: ${JSON.stringify(emptied.violations)}`,
+    one.during.some((entry) => entry.endsWith("value.0.costPerPiece: calculated with empty inputs")),
+    `(1) emptying a nested calculated fact's inputs must be caught, got: ${JSON.stringify(one.during)}`,
+  );
+  assert.deepEqual(one.after, [], "(1) must clear on restoration");
+
+  // (2) A nested inferred fact claims certainty a value parsed out of prose cannot have.
+  assert.equal(snapshot.costingYield.source?.kind, "inferred", "probe 2 must target a genuinely inferred fact");
+  const two = probe(snapshot.costingYield as unknown as Record<string, unknown>, "confidence", "high", inferred);
+  assert.ok(
+    two.during.some((entry) => entry.endsWith("value.0.costingYield: inferred with high confidence")),
+    `(2) a nested inferred fact claiming high confidence must be caught, got: ${JSON.stringify(two.during)}`,
+  );
+  assert.deepEqual(two.after, [], "(2) must clear on restoration");
+
+  // (3) A nested input misspells a collection member. It still resolves to the byCosting fact, so
+  // only member-level resolution can catch it.
+  const three = probe(
+    snapshot.costPerPiece as unknown as Record<string, unknown>,
+    "source",
+    { ...snapshot.costPerPiece.source!, inputs: ["costing.facts.byCosting[].costPerPeice", "costing.facts.byCosting[].costingYield"] },
+    resolution,
+  );
+  assert.ok(
+    three.during.some((entry) => entry.includes('input "costing.facts.byCosting[].costPerPeice" names no member published on costing.facts.byCosting')),
+    `(3) a misspelled collection member must be caught, got: ${JSON.stringify(three.during)}`,
+  );
+  assert.deepEqual(three.after, [], "(3) must clear on restoration");
+
+  // (4) A nested fact declares itself as its own input -- the F5 shape, one level down.
+  const four = probe(
+    snapshot.margin as unknown as Record<string, unknown>,
+    "source",
+    { ...snapshot.margin.source!, inputs: ["costing.facts.byCosting[].margin"] },
+    selfRef,
+  );
+  assert.ok(
+    four.during.some((entry) => entry.endsWith("value.0.margin: declares a dependency on itself")),
+    `(4) a nested self-reference must be caught, got: ${JSON.stringify(four.during)}`,
+  );
+  assert.deepEqual(four.after, [], "(4) must clear on restoration");
+});
+
+test("[M1] mutation proof: a signal naming its own signal collection is caught", async () => {
+  // The signal half of the self-reference rule. A Signal has no fact path of its own -- it is
+  // addressed by id, and Provenance.inputs holds *fact* paths -- so it cannot name itself the way a
+  // fact can. Manufacturing an impossible state would prove nothing; the degenerate form the
+  // contract genuinely permits is a signal naming the signal collection it lives in, which resolves
+  // to no fact at all. That is not hypothetical: it shipped as inputs: ["readiness.signals"] and was
+  // removed as F6. Both that shape and a signal naming its own id are asserted here.
+  const context = await buildFixtureContext();
+  const signal = context.domains.readiness?.signals[0];
+  assert.ok(signal, "the fixture must publish a Readiness signal for this probe to mean anything");
+  assert.ok(!signal.provenance.inputs, "F6 removed the fabricated input; the probe reintroduces it deliberately");
+
+  const collection = probe(
+    signal.provenance as unknown as Record<string, unknown>,
+    "inputs",
+    ["readiness.signals"],
+    () => selfReferenceViolations(context),
+  );
+  assert.ok(
+    collection.during.some((entry) => entry.includes(`signal:${signal.id}`) && entry.includes("names a signal collection, not a fact")),
+    `the F6 shape must be caught, got: ${JSON.stringify(collection.during)}`,
+  );
+  assert.deepEqual(collection.after, [], "must clear on restoration");
+
+  // The same input is also not a resolvable fact path, so the resolution invariant independently
+  // rejects it. Two rules, two reasons -- neither relies on the other.
+  const unresolvable = probe(
+    signal.provenance as unknown as Record<string, unknown>,
+    "inputs",
+    ["readiness.signals"],
+    () => inputResolutionViolations(context),
+  );
+  assert.ok(
+    unresolvable.during.some((entry) => entry.includes(`signal:${signal.id}`)),
+    `the F6 shape must also fail input resolution, got: ${JSON.stringify(unresolvable.during)}`,
   );
 
-  calculated.source = { ...calculated.source, inputs: realInputs };
-  assert.deepEqual(provenanceViolations(visitedFacts(context)).violations, [], "the probe must be reversible");
-
-  // Probe 2: an inferred fact claims certainty it cannot have -- a parsed-from-prose value asserting
-  // high confidence.
-  const inferred = snapshot.costingYield;
-  assert.equal(inferred.source?.kind, "inferred", "the probe must target a genuinely inferred fact");
-  inferred.confidence = "high";
-
-  const overconfident = inferredViolations(visitedFacts(context));
-  assert.ok(
-    overconfident.violations.some((entry) => entry.includes("costingYield") && entry.includes("high confidence")),
-    `a nested inferred fact claiming high confidence must be caught, got: ${JSON.stringify(overconfident.violations)}`,
+  // A signal naming its own id is the other degenerate form, and is caught too.
+  const byId = probe(
+    signal.provenance as unknown as Record<string, unknown>,
+    "inputs",
+    [`readiness.facts.${signal.id}`],
+    () => selfReferenceViolations(context),
   );
+  assert.ok(
+    byId.during.some((entry) => entry.includes("names the signal itself")),
+    `a signal naming its own id must be caught, got: ${JSON.stringify(byId.during)}`,
+  );
+  assert.deepEqual(byId.after, [], "must clear on restoration");
 });
 
 test("[M1] root entered facts carry a table and never fabricate inputs or computedBy", async () => {

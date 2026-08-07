@@ -39,6 +39,19 @@ export type VisitedFact = {
   depth: number;
 };
 
+// Folds a visited path into the vocabulary a Provenance uses to name the same fact.
+//
+// A walked path addresses a concrete collection member -- "costing.facts.byCosting.value.0.margin".
+// A declared input is member-agnostic -- "costing.facts.byCosting[].margin". Any comparison between
+// the two must happen in one form, or it silently answers "never equal" for every nested fact.
+//
+// Shared for exactly that reason: both invariant suites need this comparison, and the first attempt
+// fixed it in one suite only. The walker stopped traversal from drifting; this stops the comparison
+// from drifting. A top-level path has no member segment and is returned unchanged.
+export function declaredPath(path: string): string {
+  return path.replace(/^([A-Za-z]+\.facts\.[A-Za-z0-9_]+)\.value\.\d+\./, "$1[].");
+}
+
 // Walks every canonical Fact reachable from `root`, exactly once, deterministically.
 //
 //   - recurses through arrays and plain objects, in insertion order, so paths are stable;

@@ -5,7 +5,7 @@ import { buildInventoryDomainContext } from "../src/lib/business-context/adapter
 import { buildReadinessDomainContext } from "../src/lib/business-context/adapters/readiness.ts";
 import { SIGNAL_IDS } from "../src/lib/business-context/types.ts";
 import type { BuildEnv, DomainContext } from "../src/lib/business-context/types.ts";
-import { walkFacts } from "./helpers/business-context-fact-walker.ts";
+import { declaredPath, walkFacts } from "./helpers/business-context-fact-walker.ts";
 import type { AnyFact, VisitedFact } from "./helpers/business-context-fact-walker.ts";
 
 // Structural invariants walked over real built contexts, rather than example-by-example assertions.
@@ -187,14 +187,6 @@ function eachFact(context: DomainContext, visit: (path: string, fact: AnyFact) =
   }
 }
 
-// A visited path addresses a concrete collection member ("...byCosting.value.0.costPerPiece"). The
-// vocabulary a Provenance uses to name that same fact is member-agnostic
-// ("costing.facts.byCosting[].costPerPiece"). Self-reference can only be detected by comparing the
-// two in one form, so paths are folded into the declared form before comparison.
-function declaredForm(path: string): string {
-  return path.replace(/^([A-Za-z]+\.facts\.[A-Za-z0-9_]+)\.value\.\d+\./, "$1[].");
-}
-
 test("[invariant] the walker descends into collection members rather than stopping at the published top level", () => {
   // Regression guard for F7. Without it, every invariant below can pass while checking almost
   // nothing, which is exactly what happened.
@@ -373,7 +365,7 @@ test("[invariant] every declared input resolves to a real fact, and never to the
         if (!factKeys.has(resolved.factKey)) {
           violations.push(`${path}: input "${input}" names no fact published by ${context.domain}`);
         }
-        if (input === declaredForm(path)) {
+        if (input === declaredPath(path)) {
           violations.push(`${path}: input "${input}" is the declaring fact itself`);
         }
       }
@@ -394,7 +386,7 @@ test("[invariant] a fact never lists itself, even indirectly through a shared pr
       // Compared in the declared form, so a nested metric that named itself would be caught. The
       // raw visited path never matches a member-agnostic input string, so comparing those directly
       // would make this check silently vacuous for every nested fact.
-      const self = declaredForm(path);
+      const self = declaredPath(path);
       if ((fact.source?.inputs ?? []).some((input) => input === self)) {
         violations.push(`${path}: declares a dependency on itself`);
       }
