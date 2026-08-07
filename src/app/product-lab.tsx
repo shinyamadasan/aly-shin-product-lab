@@ -83,6 +83,7 @@ import { areCostingFormSnapshotsEqual, buildCostingFormSnapshot } from "@/lib/co
 import { areBatchFormSnapshotsEqual, buildBatchFormSnapshot, type BatchFormSnapshot } from "@/lib/batch-form-snapshot";
 import { areSupplyFormSnapshotsEqual, buildSupplyFormSnapshot, type SupplyFormSnapshot } from "@/lib/supply-form-snapshot";
 import { resolveTabChange } from "@/lib/inventory-tab-guard";
+import { areTastingFormSnapshotsEqual, buildTastingFormSnapshot, type TastingFormSnapshot } from "@/lib/tasting-form-snapshot";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
@@ -2219,7 +2220,10 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  async function saveTasting(formData: FormData) {
+  // Returns whether the save actually succeeded -- BatchTastingSection's submitCheckpoint awaits
+  // this and only closes its form on true, so a database failure leaves the operator's typed
+  // feedback in place instead of discarding it (see that function's own comment).
+  async function saveTasting(formData: FormData): Promise<boolean> {
     const tastingId = String(formData.get("id") || "");
     const tasting: TastingFeedback = {
       id: tastingId || crypto.randomUUID(),
@@ -2256,7 +2260,7 @@ export default function ProductLab({
       setMessage(error ? `Feedback save failed: ${error.message}` : tastingId ? "Feedback updated." : "Feedback saved.");
       setMessageTone(error ? "bad" : "good");
       await loadSupabaseData();
-      return;
+      return !error;
     }
     setLabState((current) => ({
       ...current,
@@ -2264,6 +2268,7 @@ export default function ProductLab({
     }));
     setMessage(tastingId ? "Feedback updated locally." : "Feedback saved locally.");
     setMessageTone("good");
+    return true;
   }
 
   async function deleteTasting(tastingId: string) {
@@ -2548,7 +2553,7 @@ export default function ProductLab({
           ) : null}
 
           {view === "batches" ? (
-            <BatchHistoryPage batch={editingBatch} cancelEdit={cancelBatchEdit} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={editBatchWithGuard} labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_BATCH_MESSAGE } : null)} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} voidBatch={voidProductBatch} />
+            <BatchHistoryPage batch={editingBatch} cancelEdit={cancelBatchEdit} deleteBatch={deleteBatch} deleteBatchPhoto={deleteBatchPhoto} deleteTasting={deleteTasting} editBatch={editBatchWithGuard} labState={labState} onDirtyStateChange={setActiveUnsavedForm} saveBatch={saveBatch} saveTasting={saveTasting} uploadBatchPhotos={uploadBatchPhotos} voidBatch={voidProductBatch} />
           ) : null}
 
           {view === "costing" ? (
@@ -3112,7 +3117,7 @@ function BatchHistoryPage({
   deleteTasting,
   editBatch,
   labState,
-  onDirtyChange,
+  onDirtyStateChange,
   saveBatch,
   saveTasting,
   uploadBatchPhotos,
@@ -3125,15 +3130,67 @@ function BatchHistoryPage({
   deleteTasting: (tastingId: string) => void;
   editBatch: (batch: ProductBatch) => void;
   labState: LabState;
-  onDirtyChange?: (isDirty: boolean) => void;
+  // Carries the resolved { message } | null directly (not a plain boolean like every other
+  // top-level form's onDirtyChange) -- BatchForm and potentially several BatchTastingSection
+  // instances can be dirty on this page at once (no tab separation forces mutual exclusion the way
+  // Inventory's editors have), so this page must aggregate all of them into one authoritative
+  // report itself rather than let each writer independently clobber ProductLab's shared
+  // activeUnsavedForm slot -- see handleBatchFormDirtyChange/handleTastingDirtyChange below for why
+  // that would otherwise let one source's "clean" report incorrectly clear another's still-dirty
+  // state.
+  onDirtyStateChange?: (dirtyState: { message: string } | null) => void;
   saveBatch: (formData: FormData) => void;
-  saveTasting: (formData: FormData) => void;
+  saveTasting: (formData: FormData) => Promise<boolean>;
   uploadBatchPhotos: (batchId: string, files: FileList | File[]) => void;
   voidBatch: (batchId: string, reason: string) => void;
 }) {
   const [copiedBatchId, setCopiedBatchId] = useState("");
   // Captured before the batches.map() below, which shadows `batch` with its own loop variable.
   const editingBatchId = batch?.id ?? null;
+
+  const [isBatchFormDirty, setIsBatchFormDirty] = useState(false);
+  // Every batch row mounts its own permanent BatchTastingSection instance (keyed by the outer
+  // <article key={batch.id}> in the list below, not swapped in/out of one shared slot the way
+  // editingBatch/editingSupply are) -- meaning more than one can be dirty at once. A Set tracks
+  // exactly which ones currently are, so this page only ever reports "clean" once none remain.
+  const [dirtyTastingBatchIds, setDirtyTastingBatchIds] = useState<ReadonlySet<string>>(new Set());
+
+  function handleBatchFormDirtyChange(isDirty: boolean) {
+    setIsBatchFormDirty(isDirty);
+  }
+
+  function handleTastingDirtyChange(tastingBatchId: string, isDirty: boolean) {
+    setDirtyTastingBatchIds((current) => {
+      if (current.has(tastingBatchId) === isDirty) {
+        return current;
+      }
+      const next = new Set(current);
+      if (isDirty) {
+        next.add(tastingBatchId);
+      } else {
+        next.delete(tastingBatchId);
+      }
+      return next;
+    });
+  }
+
+  // The single point that ever writes to ProductLab's shared activeUnsavedForm on this page's
+  // behalf. Combining here, rather than having BatchForm and every BatchTastingSection instance
+  // each call a boolean onDirtyChange straight through to ProductLab, is what avoids one of them
+  // reporting "clean" and wiping out another that's still genuinely dirty -- there is no tab
+  // boundary here the way Inventory has, so both kinds of editor can be dirty simultaneously.
+  useEffect(() => {
+    if (isBatchFormDirty) {
+      onDirtyStateChange?.({ message: UNSAVED_BATCH_MESSAGE });
+    } else if (dirtyTastingBatchIds.size > 0) {
+      onDirtyStateChange?.({ message: UNSAVED_TASTING_MESSAGE });
+    } else {
+      onDirtyStateChange?.(null);
+    }
+    // isBatchFormDirty/dirtyTastingBatchIds are the actual re-run triggers; onDirtyStateChange is
+    // an inline arrow redefined every ProductLab render, not a meaningful dependency change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBatchFormDirty, dirtyTastingBatchIds]);
 
   async function copyFormula(batchId: string, formula: BatchFormulaRow[]) {
     const text = formatBatchFormula(formula);
@@ -3176,7 +3233,7 @@ function BatchHistoryPage({
           <div className="border-b border-[#eaded2] p-5">
             {/* Keyed here, not just on the inner <form> -- see the matching comment at the
                 Proof Day call site for why the component boundary, not the form, must remount. */}
-            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={batch?.id ?? "new-batch"} onDirtyChange={onDirtyChange} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
+            <BatchForm batch={batch} batches={labState.batches} batchPhotos={labState.batchPhotos} cancelEdit={cancelEdit} deleteBatchPhoto={deleteBatchPhoto} ingredients={labState.ingredients} key={batch?.id ?? "new-batch"} onDirtyChange={handleBatchFormDirtyChange} products={labState.products} saveBatch={saveBatch} supplies={labState.supplies} uploadBatchPhotos={uploadBatchPhotos} />
           </div>
         ) : null}
         <div className="border-b border-[#eaded2] p-5">
@@ -3234,7 +3291,7 @@ function BatchHistoryPage({
                 </div>
                 <BatchComparisonSection currentBatch={batch} previousBatch={getPreviousBatch(labState.batches, batch)} />
                 <BatchPhotosSection batchId={batch.id} deleteBatchPhoto={deleteBatchPhoto} photos={labState.batchPhotos.filter((photo) => photo.batchId === batch.id)} uploadBatchPhotos={uploadBatchPhotos} />
-                <BatchTastingSection batchId={batch.id} deleteTasting={deleteTasting} productId={batch.productId} saveTasting={saveTasting} tastings={labState.tastings.filter((tasting) => tasting.batchId === batch.id)} />
+                <BatchTastingSection batchId={batch.id} deleteTasting={deleteTasting} onDirtyChange={(isDirty) => handleTastingDirtyChange(batch.id, isDirty)} productId={batch.productId} saveTasting={saveTasting} tastings={labState.tastings.filter((tasting) => tasting.batchId === batch.id)} />
               </article>
             );
           })}
@@ -7392,31 +7449,91 @@ function CostingGuide() {
   );
 }
 
+// This form only ever creates a new tasting checkpoint -- there is no "edit an existing tasting"
+// mode (existing checkpoints below render as read-only summaries plus a Delete button, already
+// window.confirm-protected, out of this scope). Each batch row's own instance is permanently keyed
+// by the enclosing <article key={batch.id}> in BatchHistoryPage's batches.map() -- unlike
+// editingBatch/editingSupply, which reuse one shared slot swapped between records, every batch here
+// gets its own, separate, always-mounted BatchTastingSection instance. That means there is no
+// "switch batches" remount concern the way BatchForm/PurchaseLogPage had (verified, not assumed --
+// a stale-state bug there is architecturally impossible: this component's own isAdding/dirty state
+// can never be reused across two different batchIds), but it does mean more than one batch's
+// tasting form can be dirty at once -- see BatchHistoryPage's handleTastingDirtyChange for how that
+// gets aggregated correctly instead of colliding in ProductLab's shared activeUnsavedForm.
+const UNSAVED_TASTING_MESSAGE = "You have unsaved changes in this tasting checkpoint. Leaving now will discard them. Continue?";
+
 function BatchTastingSection({
   batchId,
   deleteTasting,
+  onDirtyChange,
   productId,
   saveTasting,
   tastings,
 }: {
   batchId: string;
   deleteTasting: (tastingId: string) => void;
+  // Reports this instance's own dirty state upward -- BatchHistoryPage aggregates across every
+  // batch row's own instance before forwarding one combined report to ProductLab.
+  onDirtyChange?: (isDirty: boolean) => void;
   productId: string;
-  saveTasting: (formData: FormData) => void;
+  saveTasting: (formData: FormData) => Promise<boolean>;
   tastings: TastingFeedback[];
 }) {
   const [isAdding, setIsAdding] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState<TastingFormSnapshot | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
 
-  function submitCheckpoint(formData: FormData) {
-    saveTasting(formData);
-    setIsAdding(false);
+  // The <form> only exists in the DOM while isAdding is true (conditional render below, not a
+  // key-based remount) -- this component itself never unmounts, so a mount-only ([]) effect
+  // wouldn't re-run each time the form (re)opens. Keying on isAdding instead captures a fresh
+  // baseline every time it opens, and clears both the baseline and isDirty the moment it closes
+  // (Cancel or a successful save), so a later reopen never starts from a stale prior baseline.
+  useEffect(() => {
+    if (isAdding && formRef.current) {
+      setBaselineSnapshot(buildTastingFormSnapshot(new FormData(formRef.current)));
+    } else {
+      setBaselineSnapshot(null);
+      setIsDirty(false);
+    }
+  }, [isAdding]);
+
+  function recomputeIsDirty() {
+    if (!formRef.current || !baselineSnapshot) {
+      return;
+    }
+    const liveSnapshot = buildTastingFormSnapshot(new FormData(formRef.current));
+    setIsDirty(!areTastingFormSnapshotsEqual(liveSnapshot, baselineSnapshot));
+  }
+
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
+
+  // async + awaited, unlike the version this replaces: saveTasting does real network I/O when
+  // Supabase is configured, and the previous fire-and-forget call closed this form immediately on
+  // click regardless of whether the save actually succeeded -- meaning a failed save looked
+  // identical to a successful one and the typed feedback was gone either way. Now the form (and the
+  // operator's typed values) only ever close after a confirmed success.
+  async function submitCheckpoint(formData: FormData) {
+    const succeeded = await saveTasting(formData);
+    if (succeeded) {
+      setIsAdding(false);
+    }
+  }
+
+  // Same button opens and closes the form (label toggles below) -- only the closing half needs a
+  // guard; opening a blank form is never destructive.
+  function toggleAdding() {
+    if (isAdding && isDirty && !window.confirm(UNSAVED_TASTING_MESSAGE)) {
+      return;
+    }
+    setIsAdding((current) => !current);
   }
 
   return (
     <div className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm font-semibold">Tasting checkpoints</p>
-        <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsAdding((current) => !current)} type="button">
+        <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={toggleAdding} type="button">
           {isAdding ? "Cancel" : "Add tasting checkpoint"}
         </button>
       </div>
@@ -7440,7 +7557,7 @@ function BatchTastingSection({
         </div>
       ) : null}
       {isAdding ? (
-        <form action={submitCheckpoint} className="mt-3 grid gap-3 rounded-md border border-[#ead9c8] bg-white p-3">
+        <form action={submitCheckpoint} className="mt-3 grid gap-3 rounded-md border border-[#ead9c8] bg-white p-3" onChange={recomputeIsDirty} ref={formRef}>
           <input name="productId" type="hidden" value={productId} />
           <input name="batchId" type="hidden" value={batchId} />
           <div className="grid gap-3 sm:grid-cols-2">
