@@ -213,7 +213,18 @@ export function buildInventoryDomainContext(rows: InventoryRows, env: BuildEnv):
   const snapshots = rows.ingredients.map((row) => buildIngredientSnapshot(row, env.businessDay));
   const flagged = getFlaggedIngredients(ingredients);
 
-  const derived: Provenance = source("derived", { computedBy: "buildInventoryDomainContext" });
+  // Root projection of the ingredient rows themselves -- kind "entered", carrying the table and the
+  // row ids. Not "derived": no published fact precedes it, and inventing a dependency path to
+  // satisfy an invariant would be a fabricated claim. Values inside each snapshot carry their own
+  // provenance, which is where "derived" genuinely applies.
+  const rootSource: Provenance = source("entered", { rowIds: rows.ingredients.map((row) => row.id) });
+
+  // Genuinely derived from the collection fact above, so it names it.
+  const countSource: Provenance = source("derived", {
+    computedBy: "buildInventoryDomainContext",
+    inputs: ["inventory.facts.byIngredient"],
+  });
+
   const empty = rows.ingredients.length === 0;
 
   // Any valuation that includes a flagged ingredient is arithmetic over an unknown unit, so the
@@ -275,7 +286,7 @@ export function buildInventoryDomainContext(rows: InventoryRows, env: BuildEnv):
     sourceAsOf,
     rowCounts: { read: rows.ingredients.length, included: snapshots.length, omitted: 0 },
     facts: {
-      byIngredient: empty ? { state: "empty", source: derived } : { state: "known", value: snapshots, source: derived },
+      byIngredient: empty ? { state: "empty", source: rootSource } : { state: "known", value: snapshots, source: rootSource },
       summaryCounts: {
         state: "known",
         value: getInventorySummaryCounts(ingredients, env.businessDay, DEFAULT_EXPIRES_SOON_DAYS),
@@ -293,7 +304,7 @@ export function buildInventoryDomainContext(rows: InventoryRows, env: BuildEnv):
         source: source("derived", { computedBy: "getNeedToBuyList", inputs: ["inventory.facts.byIngredient"] }),
       },
       totalInventoryValue,
-      flaggedIngredientCount: { state: "known", value: flagged.length, source: derived },
+      flaggedIngredientCount: { state: "known", value: flagged.length, source: countSource },
       latestPurchaseAt,
     },
     signals: buildSignals(rows.ingredients, env.businessDay),

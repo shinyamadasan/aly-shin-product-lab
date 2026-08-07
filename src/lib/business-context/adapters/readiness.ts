@@ -163,6 +163,11 @@ export function buildReadinessDomainContext(rows: ReadinessRows, env: BuildEnv):
     readOutcome: { ok: true },
     // A derived domain has no rows of its own to be "as of". Its inputs' currency is reported by the
     // domains that own those tables.
+    //
+    // No `inputs` here, deliberately. The computedBy/inputs requirement applies to facts that
+    // actually carry a computed value -- `known` and `stale`. This fact is `unknown`: nothing was
+    // computed, so there is no dependency to name, and adding one would be a fabricated claim
+    // rather than traceability. See the provenance invariant test for the exact scoping.
     sourceAsOf: {
       state: "unknown",
       because: "Readiness is derived from other domains' tables and has no source rows of its own.",

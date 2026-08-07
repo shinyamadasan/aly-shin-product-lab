@@ -258,7 +258,19 @@ export function buildCostingDomainContext(rows: CostingRows): DomainContext {
         };
 
   const empty = rows.costings.length === 0;
-  const collectionSource: Provenance = source("derived", { computedBy: "buildCostingDomainContext" });
+
+  // A root projection of the costing rows themselves, so its provenance is the rows -- kind
+  // "entered", with the table and the row ids it was built from. It is deliberately NOT "derived":
+  // nothing else in this snapshot precedes it, and claiming to be derived from a fact that does not
+  // exist would be a fabricated dependency. Individual values inside each snapshot carry their own
+  // provenance, which is where "calculated" and "inferred" genuinely apply.
+  const rootSource: Provenance = source("entered", { rowIds: rows.costings.map((row) => row.id) });
+
+  // These two ARE derived from a published fact -- the collection above -- so they name it.
+  const countSource: Provenance = source("derived", {
+    computedBy: "buildCostingDomainContext",
+    inputs: ["costing.facts.byCosting"],
+  });
 
   return {
     domain: "costing",
@@ -268,13 +280,13 @@ export function buildCostingDomainContext(rows: CostingRows): DomainContext {
     rowCounts: { read: rows.costings.length, included: snapshots.length, omitted: 0 },
     facts: {
       byCosting: empty
-        ? { state: "empty", source: collectionSource }
-        : { state: "known", value: snapshots, source: collectionSource },
-      costingCount: { state: "known", value: snapshots.length, source: collectionSource },
+        ? { state: "empty", source: rootSource }
+        : { state: "known", value: snapshots, source: rootSource },
+      costingCount: { state: "known", value: snapshots.length, source: countSource },
       yieldReadableCount: {
         state: "known",
         value: snapshots.filter((snapshot) => snapshot.costingYield.state === "known").length,
-        source: collectionSource,
+        source: countSource,
       },
     },
     // No signals. Costing's one signal is cross-domain (it compares against Inventory's purchase
