@@ -142,7 +142,25 @@ export function resolveCostingId(costingId: string): string {
 // it's one tested place, not two inline object literals that could quietly drift apart -- and so
 // costing.id (see resolveCostingId) is never silently dropped from the row actually written to
 // Supabase the way it previously was.
-export function buildCostingSummaryPayload(costing: CostingSummary) {
+//
+// updated_at is written explicitly on every save. The column has existed since the table was
+// created (supabase-schema.sql) but nothing ever wrote it after the insert default, and no trigger
+// maintains it -- so it was functionally a second created_at, and could not answer "has this
+// costing been reviewed since?". Writing it here fixes every real write path at once: this is the
+// only payload builder for costing_summaries, and saveCosting's insert and update branches both
+// use it, with no RPC, worker, import, or repair utility writing that table.
+//
+// An absolute UTC ISO instant, deliberately not localized -- this is a database audit timestamp,
+// not a business-day value. (The business timezone applies to day-boundary calculations, which
+// this is not.)
+//
+// updatedAt is a parameter with a call-time default rather than a clock read in the body, so tests
+// stay deterministic by injecting an explicit value -- the same reason getToday() is documented as
+// "evaluated at call time, not module load". The default exists because the sole call site lives in
+// src/app/product-lab.tsx, which this change deliberately leaves untouched; injecting at that call
+// site is the preferred long-term shape and is a one-line, non-breaking move whenever that file is
+// next edited.
+export function buildCostingSummaryPayload(costing: CostingSummary, updatedAt: string = new Date().toISOString()) {
   return {
     id: costing.id,
     product_id: costing.productId,
@@ -156,5 +174,6 @@ export function buildCostingSummaryPayload(costing: CostingSummary) {
     equipment_cost: costing.equipmentCost,
     suggested_price: costing.suggestedPrice,
     notes: costing.notes,
+    updated_at: updatedAt,
   };
 }
