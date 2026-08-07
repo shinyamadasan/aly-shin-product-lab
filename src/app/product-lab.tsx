@@ -81,6 +81,8 @@ import { useEditNavigation } from "@/hooks/use-edit-navigation";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import { areCostingFormSnapshotsEqual, buildCostingFormSnapshot } from "@/lib/costing-form-snapshot";
 import { areBatchFormSnapshotsEqual, buildBatchFormSnapshot, type BatchFormSnapshot } from "@/lib/batch-form-snapshot";
+import { areSupplyFormSnapshotsEqual, buildSupplyFormSnapshot, type SupplyFormSnapshot } from "@/lib/supply-form-snapshot";
+import { resolveTabChange } from "@/lib/inventory-tab-guard";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
@@ -142,6 +144,7 @@ function isMissingColumnError(error: PostgrestError | null): boolean {
 const UNSAVED_COSTING_MESSAGE = "You have unsaved changes in this costing. Leaving now will discard them. Continue?";
 const UNSAVED_BATCH_MESSAGE = "You have unsaved changes in this batch record. Leaving now will discard them. Continue?";
 const UNSAVED_INGREDIENT_MESSAGE = "You have unsaved changes in this ingredient. Leaving now will discard them. Continue?";
+const UNSAVED_SUPPLY_MESSAGE = "You have unsaved changes in this purchase. Leaving now will discard them. Continue?";
 
 export default function ProductLab({
   view = "dashboard",
@@ -2482,6 +2485,32 @@ export default function ProductLab({
     }
   }
 
+  // Same shape as cancelIngredientEdit/editIngredientWithGuard above, for the Supply purchase
+  // editor -- neither Cancel edit nor switching purchases is a navigation or an unload, so neither
+  // the nav guard nor beforeunload would ever see them; both just call setEditingSupply directly,
+  // remounting PurchaseLogPage via its key.
+  function cancelSupplyEdit() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingSupply(null);
+    }
+  }
+
+  // Blank purchase drafts (id "") don't have a stable id to compare the way an existing record
+  // does -- "Log a purchase" for the same ingredient while already editing that exact blank draft
+  // should be a no-op too (same-record/same-action rule), so this compares ingredientId instead
+  // when both sides are blank drafts.
+  function editSupplyWithGuard(supplyToEdit: SupplyEntry) {
+    const isSameRecord = supplyToEdit.id
+      ? supplyToEdit.id === editingSupply?.id
+      : Boolean(editingSupply) && !editingSupply?.id && supplyToEdit.ingredientId === editingSupply?.ingredientId;
+    if (isSameRecord) {
+      return;
+    }
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingSupply(supplyToEdit);
+    }
+  }
+
   if (isSupabaseConfigured && isAuthLoading) {
     return <LoadingScreen />;
   }
@@ -2537,14 +2566,14 @@ export default function ProductLab({
             <InventoryWorkspace
               adjustStock={adjustStock}
               cancelEditIngredient={cancelIngredientEdit}
-              cancelEditSupply={() => setEditingSupply(null)}
+              cancelEditSupply={cancelSupplyEdit}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
               deleteIngredient={deleteIngredient}
               deleteSupply={deleteSupply}
               discardPurchaseImport={discardPurchaseImport}
               editIngredient={editIngredientWithGuard}
-              editSupply={setEditingSupply}
+              editSupply={editSupplyWithGuard}
               hardDeleteIngredient={hardDeleteIngredient}
               ingredient={editingIngredient}
               initialTab={initialInventoryTab}
@@ -2552,7 +2581,8 @@ export default function ProductLab({
               isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
               isSuppliesTableMissing={isSuppliesTableMissing}
               labState={labState}
-              onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_INGREDIENT_MESSAGE } : null)}
+              reportIngredientDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_INGREDIENT_MESSAGE } : null)}
+              reportSupplyDirty={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_SUPPLY_MESSAGE } : null)}
               repairSupplyInventoryEffects={repairSupplyInventoryEffects}
               reverseInventoryAdjustment={reverseInventoryAdjustment}
               saveIngredient={saveIngredient}
@@ -4466,10 +4496,12 @@ function resolvePackagingItemUnitCost(ingredientId: string, ingredients: Ingredi
 // Dark chocolate" bug did. "Create New Item" is the escape hatch for a genuinely new item, using
 // the same saveIngredient the Items tab itself uses -- not a second, divergent creation path.
 //
-// Lives inside PurchaseLogPage's own <form key={supply?.id ?? "new-supply"}> (see call site), so
-// switching which supply is being edited remounts this component and correctly resets its local
-// state -- the same key-remount convention this file already uses for the outer form itself,
-// rather than a useEffect syncing local state to a changed prop.
+// Lives inside PurchaseLogPage's own <form key={supplyEditorKey(supply)}> (see call site and that
+// function's own comment), so switching which supply is being edited -- including starting a new
+// blank draft for a *different* ingredient, which supplyEditorKey() also gives a distinct key --
+// remounts this component and correctly resets its local state, the same key-remount convention
+// this file already uses for the outer form itself, rather than a useEffect syncing local state to
+// a changed prop.
 //
 // The "Create New Item" panel below is deliberately NOT a nested <form> -- forms cannot nest in
 // HTML, and this field already lives inside PurchaseLogPage's outer <form>. It reads its inputs via
@@ -4479,12 +4511,17 @@ function SupplyIngredientField({
   initialIngredientId,
   initialIngredientName,
   isLocked = false,
+  onSelectionChange,
   saveIngredient,
 }: {
   ingredients: Ingredient[];
   initialIngredientId?: string;
   initialIngredientName: string;
   isLocked?: boolean;
+  // Called whenever the selected ingredient changes via a picker click, the "Change" button, or a
+  // newly created Item -- none of those fire a native form event the way typing does, so
+  // PurchaseLogPage's onChange-based dirty-tracking would never see them without this.
+  onSelectionChange?: () => void;
   saveIngredient: (formData: FormData) => Promise<string | null>;
 }) {
   const matched = ingredients.find((item) => item.id === initialIngredientId) ?? ingredients.find((item) => item.name === initialIngredientName);
@@ -4511,6 +4548,7 @@ function SupplyIngredientField({
     setSelectedIngredientId(newIngredientId);
     setIngredientName(String(formData.get("name") || ""));
     setIsCreatingItem(false);
+    onSelectionChange?.();
   }
 
   return (
@@ -4527,6 +4565,7 @@ function SupplyIngredientField({
               onClick={() => {
                 setSelectedIngredientId("");
                 setIngredientName("");
+                onSelectionChange?.();
               }}
               type="button"
             >
@@ -4542,6 +4581,7 @@ function SupplyIngredientField({
               const item = ingredients.find((entry) => entry.id === ingredientId);
               setSelectedIngredientId(ingredientId);
               setIngredientName(item?.name ?? "");
+              onSelectionChange?.();
             }}
             placeholder="Cocoa powder"
           />
@@ -4868,7 +4908,8 @@ function InventoryWorkspace({
   createPurchaseImportDraft,
   discardPurchaseImport,
   isPurchaseImportPackagesMissing,
-  onDirtyChange,
+  reportIngredientDirty,
+  reportSupplyDirty,
   restoreIngredient,
   saveIngredientAlias,
   updatePurchaseImportHeader,
@@ -4884,10 +4925,11 @@ function InventoryWorkspace({
   ingredient: Ingredient | null;
   isInventoryTableMissing: boolean;
   saveIngredient: (formData: FormData) => Promise<string | null>;
-  // Reports the Ingredient editor's own dirty state upward to ProductLab's shared
-  // activeUnsavedForm slot -- forwarded from the same onDirtyChange InventoryPage reports to
-  // locally (see isIngredientDirty below), not a second, independent signal.
-  onDirtyChange?: (isDirty: boolean) => void;
+  // Reports each editor's own dirty state upward to ProductLab's shared activeUnsavedForm slot --
+  // each is forwarded from this workspace's own local onXDirtyChange wrapper (see isIngredientDirty
+  // / isSupplyDirty below), which also tracks it locally for the tab-switch guards.
+  reportIngredientDirty?: (isDirty: boolean) => void;
+  reportSupplyDirty?: (isDirty: boolean) => void;
   cancelEditSupply: () => void;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
@@ -4909,25 +4951,62 @@ function InventoryWorkspace({
   const [tab, setTab] = useState<InventoryTab>(initialTab ?? "stock");
   const [purchasesTab, setPurchasesTab] = useState<"manual" | "csv">("manual");
   const [isIngredientDirty, setIsIngredientDirty] = useState(false);
+  const [isSupplyDirty, setIsSupplyDirty] = useState(false);
 
   function onIngredientDirtyChange(isDirty: boolean) {
     setIsIngredientDirty(isDirty);
-    onDirtyChange?.(isDirty);
+    reportIngredientDirty?.(isDirty);
   }
 
-  // Switching Inventory's internal tabs is a pure useState change, not a navigation -- neither
-  // AppShell's nav guard nor beforeunload would ever see it -- but leaving the Items tab while its
-  // editor is dirty unmounts InventoryPage exactly like a navigation would. Only guards leaving
-  // Items while its own editor is dirty; switching between any other pair of tabs, or re-clicking
-  // the already-active tab, never prompts.
+  function onSupplyDirtyChange(isDirty: boolean) {
+    setIsSupplyDirty(isDirty);
+    reportSupplyDirty?.(isDirty);
+  }
+
+  // Switching Inventory's internal tabs, or the Purchases tab's own manual/CSV sub-tabs, is a pure
+  // useState change, not a navigation -- neither AppShell's nav guard nor beforeunload would ever
+  // see it -- but leaving a tab whose editor is dirty unmounts that editor exactly like a
+  // navigation would, with no replacement of the same type ever mounting again to report clean.
+  // resolveTabChange (inventory-tab-guard.ts) makes that explicit: a confirmed leave must also
+  // clear the leaving tab's own dirty owner here, not just proceed -- see that module's comment for
+  // why (this is the fix for a real stale-owner bug: without it, activeUnsavedForm could keep
+  // prompting with the discarded editor's message even after the operator already confirmed
+  // leaving it). Only guards leaving the tab whose own editor is dirty; switching between any other
+  // pair of tabs, or re-clicking the already-active tab, never prompts.
   function changeTab(nextTab: InventoryTab) {
-    if (nextTab === tab) {
+    const leavingTabDirtyState =
+      tab === "ingredients"
+        ? { isDirty: isIngredientDirty, message: UNSAVED_INGREDIENT_MESSAGE }
+        : tab === "purchases" && purchasesTab === "manual"
+          ? { isDirty: isSupplyDirty, message: UNSAVED_SUPPLY_MESSAGE }
+          : null;
+    const decision = resolveTabChange(tab, nextTab, leavingTabDirtyState, (message) => window.confirm(message));
+    if (!decision.proceed) {
       return;
     }
-    if (tab === "ingredients" && isIngredientDirty && !window.confirm(UNSAVED_INGREDIENT_MESSAGE)) {
-      return;
+    if (decision.shouldClearDirty) {
+      if (tab === "ingredients") {
+        onIngredientDirtyChange(false);
+      } else if (tab === "purchases") {
+        onSupplyDirtyChange(false);
+      }
     }
     setTab(nextTab);
+  }
+
+  // Same guard, scoped to the Purchases tab's own manual/CSV sub-tabs -- switching to Import CSV
+  // while a manual purchase draft is dirty unmounts PurchaseLogPage exactly like the outer tab
+  // switch does.
+  function changePurchasesTab(nextPurchasesTab: "manual" | "csv") {
+    const leavingTabDirtyState = purchasesTab === "manual" ? { isDirty: isSupplyDirty, message: UNSAVED_SUPPLY_MESSAGE } : null;
+    const decision = resolveTabChange(purchasesTab, nextPurchasesTab, leavingTabDirtyState, (message) => window.confirm(message));
+    if (!decision.proceed) {
+      return;
+    }
+    if (decision.shouldClearDirty) {
+      onSupplyDirtyChange(false);
+    }
+    setPurchasesTab(nextPurchasesTab);
   }
 
   function logPurchaseForIngredient(item: Ingredient) {
@@ -4971,21 +5050,21 @@ function InventoryWorkspace({
           <div className="inline-flex w-fit rounded-md border border-[#d8c7b7] bg-white p-1">
             <button
               className={`rounded px-4 py-1.5 text-sm font-semibold ${purchasesTab === "manual" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-              onClick={() => setPurchasesTab("manual")}
+              onClick={() => changePurchasesTab("manual")}
               type="button"
             >
               Log a purchase
             </button>
             <button
               className={`rounded px-4 py-1.5 text-sm font-semibold ${purchasesTab === "csv" ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-              onClick={() => setPurchasesTab("csv")}
+              onClick={() => changePurchasesTab("csv")}
               type="button"
             >
               Import CSV
             </button>
           </div>
           {purchasesTab === "manual" ? (
-            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} labState={labState} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
+            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
           ) : (
             <PurchaseImportWizard
               confirmPurchaseImport={confirmPurchaseImport}
@@ -5014,12 +5093,28 @@ function InventoryWorkspace({
   );
 }
 
+// A blank purchase draft (id "") always carries the ingredient it was started for
+// (logPurchaseForIngredient, both call sites), but two blank drafts for two *different*
+// ingredients otherwise look identical by id alone -- "" both times. Without the ingredientId
+// suffix, PurchaseLogPage's <form key=...> (and its own outer key in InventoryWorkspace) wouldn't
+// change when the operator starts a new blank draft for a different ingredient mid-edit, so the
+// form would never remount: SupplyIngredientField and SupplyValuePicker are useState-initialized
+// with no resync effect, so they'd keep showing/submitting the *previous* draft's ingredient,
+// brand, supplier, and unit -- a silent misattribution, not just a UI staleness issue.
+function supplyEditorKey(supply: SupplyEntry | null): string {
+  if (!supply) {
+    return "new-supply";
+  }
+  return supply.id || `new-supply-${supply.ingredientId}`;
+}
+
 function PurchaseLogPage({
   cancelEdit,
   deleteSupply,
   editSupply,
   isSuppliesTableMissing,
   labState,
+  onDirtyChange,
   repairSupplyInventoryEffects,
   saveIngredient,
   saveSupply,
@@ -5030,6 +5125,9 @@ function PurchaseLogPage({
   editSupply: (supply: SupplyEntry) => void;
   isSuppliesTableMissing: boolean;
   labState: LabState;
+  // Reports live dirty state upward for AppShell's nav guard and same-page discard actions -- see
+  // useUnsavedChangesGuard. Optional so this page still works standalone (e.g. tests).
+  onDirtyChange?: (isDirty: boolean) => void;
   repairSupplyInventoryEffects: () => void;
   saveIngredient: (formData: FormData) => Promise<string | null>;
   saveSupply: (formData: FormData) => void;
@@ -5046,6 +5144,48 @@ function PurchaseLogPage({
   const purchaseGroups = groupPurchasesByItem(labState.ingredients, labState.supplies);
   const unlinkedPurchases = getUnlinkedPurchases(labState.ingredients, labState.supplies);
   const chronologicalPurchases = getChronologicalPurchases(labState.supplies);
+
+  const formRef = useRef<HTMLFormElement>(null);
+  const [baselineSnapshot, setBaselineSnapshot] = useState<SupplyFormSnapshot | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
+  // Bumped by SupplyIngredientField's onSelectionChange and SupplyValuePicker's onValueChange --
+  // both change real, submitted FormData values via setState (a picker click, "Change", or a
+  // newly created Item), never via a native input/change event the form's own onChange would see.
+  const [pickerNonce, setPickerNonce] = useState(0);
+  function bumpPickerNonce() {
+    setPickerNonce((current) => current + 1);
+  }
+
+  // Most of this form's fields are uncontrolled (see supply-form-snapshot.ts), so the baseline can
+  // only be read from the real DOM <form> -- which doesn't exist yet during the first render.
+  // PurchaseLogPage is keyed by supplyEditorKey() at its own call site in InventoryWorkspace (in
+  // addition to the inner <form>'s own key below), so switching to a different supply -- or a
+  // blank draft for a different ingredient -- remounts this whole component and this effect
+  // re-runs, capturing a fresh baseline instead of leaving a stale one behind.
+  useEffect(() => {
+    if (formRef.current) {
+      setBaselineSnapshot(buildSupplyFormSnapshot(new FormData(formRef.current)));
+    }
+  }, []);
+
+  function recomputeIsDirty() {
+    if (!formRef.current || !baselineSnapshot) {
+      return;
+    }
+    const liveSnapshot = buildSupplyFormSnapshot(new FormData(formRef.current));
+    setIsDirty(!areSupplyFormSnapshotsEqual(liveSnapshot, baselineSnapshot));
+  }
+
+  // Catches the picker-driven changes recomputeIsDirty's onChange trigger (below) can't: see
+  // pickerNonce's own comment.
+  useEffect(() => {
+    recomputeIsDirty();
+    // recomputeIsDirty itself reads formRef/baselineSnapshot via closure; those -- not the
+    // function identity, redefined every render -- are the actual re-run triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerNonce, baselineSnapshot]);
+
+  useUnsavedChangesGuard(isDirty, onDirtyChange);
 
   function logPurchaseForIngredient(item: Ingredient) {
     editSupply({
@@ -5096,17 +5236,17 @@ function PurchaseLogPage({
             Purchase database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
           </div>
         ) : null}
-        <form action={saveSupply} className="grid gap-3" key={supply?.id ?? "new-supply"}>
+        <form action={saveSupply} className="grid gap-3" key={supplyEditorKey(supply)} onChange={recomputeIsDirty} ref={formRef}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-3">
-            <SupplyValuePicker name="brandName" label="Brand" options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
-            <SupplyIngredientField ingredients={labState.ingredients} initialIngredientId={supply?.ingredientId} initialIngredientName={supply?.ingredientName ?? ""} isLocked={Boolean(supply?.ingredientId && !supply.id)} saveIngredient={saveIngredient} />
-            <SupplyValuePicker name="supplierName" label="Supplier" options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
+            <SupplyValuePicker label="Brand" name="brandName" onValueChange={bumpPickerNonce} options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
+            <SupplyIngredientField ingredients={labState.ingredients} initialIngredientId={supply?.ingredientId} initialIngredientName={supply?.ingredientName ?? ""} isLocked={Boolean(supply?.ingredientId && !supply.id)} onSelectionChange={bumpPickerNonce} saveIngredient={saveIngredient} />
+            <SupplyValuePicker label="Supplier" name="supplierName" onValueChange={bumpPickerNonce} options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
             <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? getToday()} ref={fieldRef} />
             <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
-            <SupplyValuePicker name="unit" label="Unit" options={unitOptions} placeholder="g" value={supply?.unit} />
+            <SupplyValuePicker label="Unit" name="unit" onValueChange={bumpPickerNonce} options={unitOptions} placeholder="g" value={supply?.unit} />
             <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
           </div>
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
