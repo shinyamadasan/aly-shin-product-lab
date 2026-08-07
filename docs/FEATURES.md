@@ -21,6 +21,13 @@ Delivered incrementally as 5 milestones; each one ships as its own working, test
 | M4 — Expiration, Dashboard cards | Done | Expiration-status badge (Expired / Expires today / Expires soon within 3 days / Good / none) on the Inventory page, rendered as its own badge next to — never merged with — the stock-status pill. Dashboard gains 3 summary cards: Low stock, Out of stock, Expiring, all driven by one `getInventorySummaryCounts()` call. |
 | M5 — RPC atomicity | Not started | Wraps the already-working M2/M3 confirmations in Postgres RPC functions for real transaction atomicity. No new business logic. |
 
+## Brand Foundation
+
+| Status | What it adds |
+|---|---|
+| Done | `/brand` page: the single source of truth for Aly & Pon's current branding -- Business Name, Brand Status (Exploring/Provisional/Final -- the maturity of the branding decisions, not the business's operating stage), one-line description, target audience, Primary/Secondary/Background/Accent color (swatch + hex + copy, genuinely unset until chosen -- never a fabricated `#000000`), and one Brand Guidelines textarea covering aesthetic, photography style, keywords, mood, inspiration, and things to avoid. One page, one form, one always-active record -- no list, no create/delete flow. Deliberately excludes logo/profile-picture/cover-photo upload, Supabase Storage, typography, brand voice, CTA configuration, phrase lists, version history, multiple profiles, approvals, and AI generation -- each is unbuilt and would need its own separate authorization. |
+| Done | Brand Presence section on the same `/brand` page: Website, Email, Preferred Handle, Facebook, Instagram, TikTok, YouTube -- the single source of truth for Aly & Pon's official online presence. Website renders as a plain clickable hyperlink; Email as a `mailto:` link; each social platform shows its saved handle (e.g. `@alyandpon`) as clickable text that opens its saved URL in a new tab -- no Open/Copy buttons anywhere. Handle and URL are stored separately per platform (never assumes a URL format). Adding a future platform (Threads, Pinterest, LinkedIn, a menu link) is a small config addition, not a page redesign. Deliberately excludes follower counts, analytics, posting, scheduling, and any social-management capability. |
+
 ## Marketing — Creative Pipeline
 
 | Feature | Status | What it adds |

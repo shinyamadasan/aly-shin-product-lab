@@ -33,8 +33,9 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
+import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
@@ -189,6 +190,7 @@ export default function ProductLab({
   const [isContentDraftsTableMissing, setIsContentDraftsTableMissing] = useState(false);
   const [isSellingFormatsTableMissing, setIsSellingFormatsTableMissing] = useState(false);
   const [isProductDecisionColumnMissing, setIsProductDecisionColumnMissing] = useState(false);
+  const [isBrandFoundationColumnsMissing, setIsBrandFoundationColumnsMissing] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
@@ -247,7 +249,7 @@ export default function ProductLab({
       return;
     }
 
-    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
+    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult] = await Promise.all([
       supabase.from("products").select("*").order("name", { ascending: true }),
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
@@ -266,6 +268,7 @@ export default function ProductLab({
       supabase.from("purchase_imports").select("*").order("created_at", { ascending: false }),
       supabase.from("purchase_import_rows").select("*").order("row_index", { ascending: true }),
       supabase.from("inventory_transactions").select("*").order("created_at", { ascending: false }),
+      supabase.from("brand_profiles").select("*").eq("is_active", true).limit(1).maybeSingle(),
     ]);
 
     const supplyMissing = isMissingTableError(supplyResult.error);
@@ -276,6 +279,7 @@ export default function ProductLab({
     // flag -- mirrors the ingredientsMissing bundle below (same rationale: no scenario where only
     // one of a co-shipped pair exists).
     const sellingFormatsMissing = isMissingTableError(sellingFormatResult.error) || isMissingTableError(sellingFormatPackagingLineResult.error);
+    const brandProfileMissing = isMissingTableError(brandProfileResult.error);
     // All 6 inventory tables ship together in supabase-add-inventory.sql, so one shared flag
     // (not one per table) -- there's no real scenario where only some of them exist. Uses the same
     // error-code check as the tables above so a genuine load failure isn't misread as "not set up".
@@ -291,7 +295,7 @@ export default function ProductLab({
     setIsInventoryTableMissing(ingredientsMissing);
     setIsContentDraftsTableMissing(Boolean(contentDraftsMissing));
     setIsSellingFormatsTableMissing(Boolean(sellingFormatsMissing));
-    if (productResult.error || batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!sellingFormatsMissing && (sellingFormatResult.error || sellingFormatPackagingLineResult.error)) || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!contentDraftsMissing && contentDraftResult.error) || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
+    if (productResult.error || batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!sellingFormatsMissing && (sellingFormatResult.error || sellingFormatPackagingLineResult.error)) || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!contentDraftsMissing && contentDraftResult.error) || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error)) || (!brandProfileMissing && brandProfileResult.error)) {
       const error =
         productResult.error?.message ||
         batchResult.error?.message ||
@@ -310,13 +314,49 @@ export default function ProductLab({
         ingredientAliasResult.error?.message ||
         purchaseImportResult.error?.message ||
         purchaseImportRowResult.error?.message ||
-        inventoryTransactionResult.error?.message;
+        inventoryTransactionResult.error?.message ||
+        brandProfileResult.error?.message;
       setMessage(`Could not load Supabase data: ${error}`);
       setMessageTone("bad");
       return;
     }
 
     setLabState({
+      brandProfile:
+        brandProfileMissing || !brandProfileResult.data
+          ? null
+          : {
+              id: brandProfileResult.data.id,
+              businessName: brandProfileResult.data.business_name,
+              brandStatus: brandProfileResult.data.brand_status ?? "Exploring",
+              shortDescription: brandProfileResult.data.short_description ?? "",
+              targetAudience: brandProfileResult.data.target_audience ?? "",
+              brandVoiceNotes: brandProfileResult.data.brand_voice_notes ?? "",
+              primaryCta: brandProfileResult.data.primary_cta ?? "",
+              preferredPhrases: brandProfileResult.data.preferred_phrases ?? "",
+              prohibitedPhrases: brandProfileResult.data.prohibited_phrases ?? "",
+              primaryColor: brandProfileResult.data.primary_color ?? "",
+              secondaryColor: brandProfileResult.data.secondary_color ?? "",
+              backgroundColor: brandProfileResult.data.background_color ?? "",
+              accentColor: brandProfileResult.data.accent_color ?? "",
+              brandGuidelines: brandProfileResult.data.brand_guidelines ?? "",
+              websiteUrl: brandProfileResult.data.website_url ?? "",
+              email: brandProfileResult.data.email ?? "",
+              preferredHandle: brandProfileResult.data.preferred_handle ?? "",
+              facebookHandle: brandProfileResult.data.facebook_handle ?? "",
+              facebookUrl: brandProfileResult.data.facebook_url ?? "",
+              instagramHandle: brandProfileResult.data.instagram_handle ?? "",
+              instagramUrl: brandProfileResult.data.instagram_url ?? "",
+              tiktokHandle: brandProfileResult.data.tiktok_handle ?? "",
+              tiktokUrl: brandProfileResult.data.tiktok_url ?? "",
+              youtubeHandle: brandProfileResult.data.youtube_handle ?? "",
+              youtubeUrl: brandProfileResult.data.youtube_url ?? "",
+              headingFont: brandProfileResult.data.heading_font ?? "",
+              bodyFont: brandProfileResult.data.body_font ?? "",
+              logoStoragePath: brandProfileResult.data.logo_storage_path ?? "",
+              socialLinks: brandProfileResult.data.social_links ?? "",
+              isActive: brandProfileResult.data.is_active ?? true,
+            },
       products: (productResult.data ?? []).map((row) => ({
         id: row.id,
         name: row.name,
@@ -2220,6 +2260,105 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
+  // A bare domain (e.g. "alyandpon.com") would render as a broken relative link -- this only
+  // adds a missing scheme, it never rewrites or validates the rest of the URL.
+  function ensureUrlProtocol(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed || /^https?:\/\//i.test(trimmed)) {
+      return trimmed;
+    }
+    return `https://${trimmed}`;
+  }
+
+  // There is only ever one active Brand Foundation record (see LabState.brandProfile's own
+  // comment) -- this always upserts that single row, never creates a second one.
+  async function saveBrandProfile(formData: FormData) {
+    const profileId = String(formData.get("id") || "");
+    const brandProfile: BrandProfile = {
+      id: profileId || crypto.randomUUID(),
+      businessName: String(formData.get("businessName") || "").trim(),
+      brandStatus: String(formData.get("brandStatus") || "Exploring"),
+      shortDescription: String(formData.get("shortDescription") || "").trim(),
+      targetAudience: String(formData.get("targetAudience") || "").trim(),
+      brandVoiceNotes: labState.brandProfile?.brandVoiceNotes ?? "",
+      primaryCta: labState.brandProfile?.primaryCta ?? "",
+      preferredPhrases: labState.brandProfile?.preferredPhrases ?? "",
+      prohibitedPhrases: labState.brandProfile?.prohibitedPhrases ?? "",
+      primaryColor: String(formData.get("primaryColor") || "").trim(),
+      secondaryColor: String(formData.get("secondaryColor") || "").trim(),
+      backgroundColor: String(formData.get("backgroundColor") || "").trim(),
+      accentColor: String(formData.get("accentColor") || "").trim(),
+      brandGuidelines: String(formData.get("brandGuidelines") || "").trim(),
+      websiteUrl: ensureUrlProtocol(String(formData.get("websiteUrl") || "")),
+      email: String(formData.get("email") || "").trim(),
+      preferredHandle: String(formData.get("preferredHandle") || "").trim(),
+      facebookHandle: String(formData.get("facebookHandle") || "").trim(),
+      facebookUrl: ensureUrlProtocol(String(formData.get("facebookUrl") || "")),
+      instagramHandle: String(formData.get("instagramHandle") || "").trim(),
+      instagramUrl: ensureUrlProtocol(String(formData.get("instagramUrl") || "")),
+      tiktokHandle: String(formData.get("tiktokHandle") || "").trim(),
+      tiktokUrl: ensureUrlProtocol(String(formData.get("tiktokUrl") || "")),
+      youtubeHandle: String(formData.get("youtubeHandle") || "").trim(),
+      youtubeUrl: ensureUrlProtocol(String(formData.get("youtubeUrl") || "")),
+      headingFont: labState.brandProfile?.headingFont ?? "",
+      bodyFont: labState.brandProfile?.bodyFont ?? "",
+      logoStoragePath: labState.brandProfile?.logoStoragePath ?? "",
+      socialLinks: labState.brandProfile?.socialLinks ?? "",
+      isActive: true,
+    };
+
+    if (supabase && session) {
+      const payload = {
+        business_name: brandProfile.businessName,
+        brand_status: brandProfile.brandStatus,
+        short_description: brandProfile.shortDescription,
+        target_audience: brandProfile.targetAudience,
+        primary_color: brandProfile.primaryColor,
+        secondary_color: brandProfile.secondaryColor,
+        background_color: brandProfile.backgroundColor,
+        accent_color: brandProfile.accentColor,
+        brand_guidelines: brandProfile.brandGuidelines,
+        website_url: brandProfile.websiteUrl,
+        email: brandProfile.email,
+        preferred_handle: brandProfile.preferredHandle,
+        facebook_handle: brandProfile.facebookHandle,
+        facebook_url: brandProfile.facebookUrl,
+        instagram_handle: brandProfile.instagramHandle,
+        instagram_url: brandProfile.instagramUrl,
+        tiktok_handle: brandProfile.tiktokHandle,
+        tiktok_url: brandProfile.tiktokUrl,
+        youtube_handle: brandProfile.youtubeHandle,
+        youtube_url: brandProfile.youtubeUrl,
+        is_active: true,
+      };
+      const query = profileId
+        ? supabase.from("brand_profiles").update(payload).eq("id", profileId)
+        : supabase.from("brand_profiles").insert(payload);
+      const { error } = await query;
+      const missingTable = Boolean(error && isMissingTableError(error));
+      const missingColumns = Boolean(error && isMissingColumnError(error));
+      setMessage(
+        error
+          ? missingTable
+            ? "Brand Foundation database table is not ready yet. Run supabase-add-brand-profiles.sql, then supabase-add-brand-foundation-fields.sql, then supabase-add-brand-presence-fields.sql."
+            : missingColumns
+              ? "Some Brand Foundation fields are not ready yet. Run supabase-add-brand-foundation-fields.sql and supabase-add-brand-presence-fields.sql once, then save again."
+              : `Brand Foundation save failed: ${error.message}`
+          : "Brand Foundation saved.",
+      );
+      setMessageTone(error ? "bad" : "good");
+      setIsBrandFoundationColumnsMissing(missingColumns);
+      if (!error) {
+        await loadSupabaseData();
+      }
+      return;
+    }
+
+    setLabState((current) => ({ ...current, brandProfile }));
+    setMessage("Brand Foundation saved locally.");
+    setMessageTone("good");
+  }
+
   // Returns whether the save actually succeeded -- BatchTastingSection's submitCheckpoint awaits
   // this and only closes its form on true, so a database failure leaves the operator's typed
   // feedback in place instead of discarding it (see that function's own comment).
@@ -2625,6 +2764,8 @@ export default function ProductLab({
           {view === "admin" ? <ProductAdminPage cancelEdit={() => setEditingProduct(null)} deleteProduct={deleteProduct} editProduct={setEditingProduct} isProductDecisionColumnMissing={isProductDecisionColumnMissing} labState={labState} product={editingProduct} saveProduct={saveProduct} /> : null}
 
           {view === "launch" ? <LaunchOfferBuilder labState={labState} /> : null}
+
+          {view === "brand" ? <BrandFoundationPage isBrandFoundationColumnsMissing={isBrandFoundationColumnsMissing} labState={labState} saveBrandProfile={saveBrandProfile} /> : null}
 
           {view === "content-studio" ? (
             <ContentStudio

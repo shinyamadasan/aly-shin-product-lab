@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type React from "react";
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string; helper?: string; ref?: React.Ref<HTMLInputElement> }) {
@@ -36,8 +37,66 @@ export function Button({ children, disabled }: { children: React.ReactNode; disa
   return <button className="h-10 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427] disabled:cursor-not-allowed disabled:opacity-60" disabled={disabled} type="submit">{children}</button>;
 }
 
-export function SecondaryButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
-  return <button className="h-10 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d] hover:bg-[#fffaf3]" onClick={onClick} type="button">{children}</button>;
+export function SecondaryButton({ children, disabled, onClick }: { children: React.ReactNode; disabled?: boolean; onClick: () => void }) {
+  return <button className="h-10 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d] hover:bg-[#fffaf3] disabled:cursor-not-allowed disabled:opacity-50" disabled={disabled} onClick={onClick} type="button">{children}</button>;
+}
+
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+// No approved hex palette exists to seed this from (see supabase-add-brand-foundation-fields.sql's
+// comment) -- an unset color must stay unset, never silently become #000000. The native
+// `<input type="color">` picker always needs *some* valid hex to hold internally, so it's layered
+// invisibly over a placeholder swatch; only the hidden input (bound to `hex` state, defaulting to
+// "") is what actually gets submitted, so an untouched field posts "" rather than a fabricated color.
+export function ColorSwatchField({ label, name, defaultValue }: { label: string; name: string; defaultValue?: string }) {
+  const [hex, setHex] = useState(defaultValue && HEX_COLOR_PATTERN.test(defaultValue) ? defaultValue : "");
+  const [copied, setCopied] = useState(false);
+
+  function applyHex(value: string) {
+    setHex(value);
+    setCopied(false);
+  }
+
+  return (
+    <div className="grid gap-1 text-sm font-medium">
+      <span>{label}</span>
+      <div className="flex items-center gap-2">
+        <label className="relative h-10 w-10 shrink-0 overflow-hidden rounded-md border border-[#d8c7b7]" title={hex || "Not set"}>
+          {hex ? (
+            <span className="block h-full w-full" style={{ backgroundColor: hex }} />
+          ) : (
+            <span
+              className="block h-full w-full"
+              style={{ backgroundImage: "repeating-conic-gradient(#e1d4c4 0% 25%, #fff 0% 50%)", backgroundSize: "10px 10px" }}
+            />
+          )}
+          <input
+            aria-label={`Pick ${label}`}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            onChange={(event) => applyHex(event.target.value)}
+            type="color"
+            value={hex || "#000000"}
+          />
+        </label>
+        <input
+          className="h-10 w-28 rounded-md border border-[#d8c7b7] bg-white px-3 font-mono text-sm"
+          onChange={(event) => applyHex(event.target.value.trim())}
+          placeholder="Not set"
+          value={hex}
+        />
+        <SecondaryButton
+          disabled={!hex}
+          onClick={async () => {
+            await navigator.clipboard.writeText(hex);
+            setCopied(true);
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </SecondaryButton>
+      </div>
+      <input name={name} type="hidden" value={hex} />
+    </div>
+  );
 }
 
 export function HeaderBadge({ label, value }: { label: string; value: string }) {

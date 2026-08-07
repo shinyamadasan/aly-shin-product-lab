@@ -1,4 +1,4 @@
-import type { AiReviewRecord, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { AiReviewRecord, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -15,7 +15,8 @@ export type LabView =
   | "admin"
   | "launch"
   | "content-studio"
-  | "guide";
+  | "guide"
+  | "brand";
 
 export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Dashboard", href: "/", view: "dashboard" },
@@ -30,6 +31,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Opportunities", href: "/opportunities", view: "opportunities" },
   { label: "Product Admin", href: "/admin", view: "admin" },
   { label: "Launch Offer", href: "/launch", view: "launch" },
+  { label: "Brand Foundation", href: "/brand", view: "brand" },
   { label: "Content Studio", href: "/content-studio", view: "content-studio" },
   { label: "How To Use", href: "/guide", view: "guide" },
 ];
@@ -37,6 +39,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
 export const storageKey = "aly-shin-product-lab-v1";
 
 export type LabState = {
+  brandProfile: BrandProfile | null;
   products: Product[];
   batches: ProductBatch[];
   batchPhotos: BatchPhoto[];
@@ -58,6 +61,7 @@ export type LabState = {
 };
 
 export const emptyState: LabState = {
+  brandProfile: null,
   products: [],
   batches: [],
   batchPhotos: [],

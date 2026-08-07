@@ -265,3 +265,67 @@ Bake (Milestone 3) reuses `ingredients` and `ingredient_aliases` with no new tab
 shapes (`BakeDeduction`, `ResolvedBakeRow`, both defined in `src/lib/bake-deduction.ts` rather
 than `product-lab-types.ts`, since they're derived/transient shapes computed from a batch formula
 at bake time, not persisted rows with their own DB table).
+
+## Brand Foundation
+
+### `brand_profiles` (Supabase table, `supabase-add-brand-profiles.sql` + `supabase-add-brand-foundation-fields.sql` + `supabase-add-brand-presence-fields.sql`)
+
+`id` (`uuid`), `business_name`, `short_description`, `target_audience`, `primary_color`,
+`secondary_color`, `is_active` (partial unique index enforces exactly one active row),
+`created_at`/`updated_at` -- all from the original PROP-012 migration. `brand_status` (default
+`'Exploring'`), `background_color`, `accent_color`, `brand_guidelines` were added additively by
+the Brand Foundation MVP (PROP-032). No default/seed value exists for `background_color` or
+`accent_color` -- no approved hex palette is recorded anywhere in this repo (`docs/BRAND_BIBLE_V1.md`
+names colors, not hex codes), so both stay `null` until set through the UI. `website_url`, `email`,
+`preferred_handle`, and a `{platform}_handle`/`{platform}_url` pair each for `facebook`,
+`instagram`, `tiktok`, `youtube` were added additively by the Brand Presence enhancement
+(PROP-033) -- flat columns, not a `jsonb` list, matching every other field on this table (see
+`MARKETING_MODULE.md`'s "M1-UI Brand Presence implementation record" for the reasoning). No
+defaults on any of them. `brand_voice_notes`, `primary_cta`, `preferred_phrases`,
+`prohibited_phrases`, `heading_font`, `body_font`, `logo_storage_path`, `social_links` remain from
+PROP-012 -- schema-only, unused by any UI, deferred to a future Marketing milestone.
+
+### `BrandProfile` (`src/lib/product-lab-types.ts`)
+
+```ts
+type BrandProfile = {
+  id: string;
+  businessName: string;
+  brandStatus: string; // maturity of the branding decisions (Exploring/Provisional/Final) --
+                        // not the business's operating stage
+  shortDescription: string;
+  targetAudience: string;
+  primaryColor: string;
+  secondaryColor: string;
+  backgroundColor: string;
+  accentColor: string;
+  brandGuidelines: string; // one freeform field: aesthetic, photography style, keywords,
+                            // mood, inspiration, things to avoid
+  // Brand Presence (PROP-033): website's own URL is its display text; email's mailto: link is
+  // derived at render time, never stored; preferredHandle has no URL, plain reference text.
+  websiteUrl: string;
+  email: string;
+  preferredHandle: string;
+  facebookHandle: string;
+  facebookUrl: string;
+  instagramHandle: string;
+  instagramUrl: string;
+  tiktokHandle: string;
+  tiktokUrl: string;
+  youtubeHandle: string;
+  youtubeUrl: string;
+  // brandVoiceNotes / primaryCta / preferredPhrases / prohibitedPhrases / headingFont /
+  // bodyFont / logoStoragePath / socialLinks: unused by this milestone's UI.
+  isActive: boolean;
+};
+```
+
+### `LabState.brandProfile` (`src/lib/lab-state.ts`)
+
+A **singleton** (`BrandProfile | null`), not an array -- "one active brand record, no version
+history" per the approved MVP scope. Loaded via `loadSupabaseData()`'s `Promise.all`
+(`supabase.from("brand_profiles").select("*").eq("is_active", true).limit(1).maybeSingle()`),
+using the same `isMissingTableError` graceful-degradation pattern as every other optional table;
+read from/written to `window.localStorage` otherwise. `saveBrandProfile` (`src/app/product-lab.tsx`)
+always upserts the single row (`is_active: true`) -- there is never a second row to create, and no
+delete path exists for a single-record settings surface.

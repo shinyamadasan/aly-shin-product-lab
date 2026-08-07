@@ -16,6 +16,7 @@ const titles = {
   opportunities: "Opportunity review",
   admin: "Product admin",
   launch: "Launch offer builder",
+  brand: "Brand Foundation",
   "content-studio": "Content studio",
   guide: "How to use Product Lab",
 };

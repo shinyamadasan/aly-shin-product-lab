@@ -353,15 +353,21 @@ export type EquipmentEntry = {
   isActive: boolean;
 };
 
-// Marketing Module M1 (see PROP-012 in planning/PROPOSALS.md and MARKETING_MODULE.md).
-// Schema/type only in this milestone -- no CRUD UI reads or writes this yet. This app has
-// no per-user/workspace identity anywhere, so there is no "owner" scoping here: isActive
-// marks the single currently-active profile (enforced by a DB partial unique index), not
-// a per-user flag. Older profiles can stay isActive: false for history instead of being
+// Marketing Module M1 (see PROP-012 in planning/PROPOSALS.md and MARKETING_MODULE.md), extended
+// by the Brand Foundation MVP (PROP-032: brandStatus, backgroundColor, accentColor,
+// brandGuidelines) and its Brand Presence enhancement (PROP-033: websiteUrl through
+// youtubeUrl below) -- the only fields that milestone's CRUD UI reads/writes. Every other
+// field stays schema-only, unused by any UI -- deferred to a future Marketing milestone. This
+// app has no per-user/workspace identity anywhere, so there is no "owner" scoping here:
+// isActive marks the single currently-active profile (enforced by a DB partial unique index),
+// not a per-user flag. Older profiles can stay isActive: false for history instead of being
 // overwritten in place.
 export type BrandProfile = {
   id: string;
   businessName: string;
+  // Maturity of the branding decisions themselves (Exploring / Provisional / Final) -- not the
+  // business's operating stage.
+  brandStatus: string;
   shortDescription: string;
   targetAudience: string;
   brandVoiceNotes: string;
@@ -370,6 +376,27 @@ export type BrandProfile = {
   prohibitedPhrases: string;
   primaryColor: string;
   secondaryColor: string;
+  backgroundColor: string;
+  accentColor: string;
+  // Single freeform field: overall aesthetic, photography style, design keywords, mood,
+  // inspiration, things to avoid -- one textarea, not five separate columns.
+  brandGuidelines: string;
+  // Aly & Pon's canonical online presence. Each social platform stores its display handle and
+  // destination URL separately -- the UI shows only the handle, the URL is used only when it's
+  // clicked. websiteUrl/email have no separate handle: a website's own URL is its display text,
+  // an email's mailto: link is derived at render time, never stored. preferredHandle has no
+  // URL -- a plain reference value, not a link.
+  websiteUrl: string;
+  email: string;
+  preferredHandle: string;
+  facebookHandle: string;
+  facebookUrl: string;
+  instagramHandle: string;
+  instagramUrl: string;
+  tiktokHandle: string;
+  tiktokUrl: string;
+  youtubeHandle: string;
+  youtubeUrl: string;
   headingFont: string;
   bodyFont: string;
   logoStoragePath: string;
