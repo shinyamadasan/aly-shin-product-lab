@@ -215,6 +215,37 @@ test("readiness adapter: multiple products each get their own subject", () => {
   assert.deepEqual([...subjects].sort(), ["brownies", "cookies"]);
 });
 
+test("readiness adapter: signal provenance never names a non-existent fact path (F6 regression)", () => {
+  // Provenance.inputs names fact paths, and this domain publishes no facts -- so a Readiness signal
+  // has no fact to name. It previously declared inputs: ["readiness.signals"], which pointed at the
+  // signal array the signal itself lives in and resolved to nothing. Omitting inputs is honest;
+  // inventing a path is not. Same shape as F5's self-referential ledger provenance.
+  const context = buildReadinessDomainContext(rows(), env);
+  const factNames = new Set(Object.keys(context.facts));
+
+  assert.ok(context.signals.length > 0, "the fixture must produce signals or this proves nothing");
+
+  for (const signal of context.signals) {
+    const inputs = signal.provenance.inputs ?? [];
+
+    assert.ok(!inputs.includes("readiness.signals"), `${signal.id} still declares the fabricated readiness.signals input`);
+
+    // If a future change does add inputs, every one must resolve to a fact this domain publishes.
+    for (const input of inputs) {
+      const match = input.match(/^readiness\.facts\.([A-Za-z0-9_]+)/);
+      assert.ok(match, `${signal.id}: input "${input}" is not a fact path`);
+      assert.ok(factNames.has(match[1]), `${signal.id}: input "${input}" names no fact published by readiness`);
+    }
+
+    // Traceability is preserved without the invented path.
+    assert.equal(signal.provenance.computedBy, "evaluateProduct");
+    assert.deepEqual(signal.provenance.rowIds, ["brownies"]);
+  }
+
+  // And the reason there is nothing to name: this domain still publishes no facts.
+  assert.deepEqual(context.facts, {});
+});
+
 test("readiness adapter: is pure -- same rows and env produce identical output", () => {
   const input = rows();
   assert.deepEqual(buildReadinessDomainContext(input, env), buildReadinessDomainContext(input, env));

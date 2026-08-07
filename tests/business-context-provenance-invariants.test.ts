@@ -4,7 +4,9 @@ import { buildCostingDomainContext } from "../src/lib/business-context/adapters/
 import { buildInventoryDomainContext } from "../src/lib/business-context/adapters/inventory.ts";
 import { buildReadinessDomainContext } from "../src/lib/business-context/adapters/readiness.ts";
 import { SIGNAL_IDS } from "../src/lib/business-context/types.ts";
-import type { BuildEnv, DomainContext, Fact, Provenance } from "../src/lib/business-context/types.ts";
+import type { BuildEnv, DomainContext } from "../src/lib/business-context/types.ts";
+import { declaredPath, walkFacts } from "./helpers/business-context-fact-walker.ts";
+import type { AnyFact, VisitedFact } from "./helpers/business-context-fact-walker.ts";
 
 // Structural invariants walked over real built contexts, rather than example-by-example assertions.
 // This is the regression net: it fails for a fact this file has never heard of, which is what makes
@@ -165,14 +167,56 @@ function builtContexts(): DomainContext[] {
   ];
 }
 
-type AnyFact = Fact<unknown> & { source?: Provenance; confidence?: string };
+// Traversal is the shared recursive walker, not a local loop over domain.facts.
+//
+// The local version this replaces reached only the published top level -- it never descended into
+// byCosting.value[] or byIngredient.value[], where most of the facts actually live. Every invariant
+// in this file was therefore checking a small fraction of the data while reporting a clean pass, and
+// twenty-one calculated facts with empty `inputs` sat underneath it unnoticed.
+function visitedFacts(context: DomainContext): VisitedFact[] {
+  const visited = walkFacts(context.sourceAsOf, `${context.domain}.sourceAsOf`);
+  for (const [key, fact] of Object.entries(context.facts)) {
+    visited.push(...walkFacts(fact, `${context.domain}.facts.${key}`));
+  }
+  return visited;
+}
 
 function eachFact(context: DomainContext, visit: (path: string, fact: AnyFact) => void): void {
-  visit(`${context.domain}.sourceAsOf`, context.sourceAsOf as AnyFact);
-  for (const [key, fact] of Object.entries(context.facts)) {
-    visit(`${context.domain}.facts.${key}`, fact as AnyFact);
+  for (const { path, fact } of visitedFacts(context)) {
+    visit(path, fact);
   }
 }
+
+test("[invariant] the walker descends into collection members rather than stopping at the published top level", () => {
+  // Regression guard for F7. Without it, every invariant below can pass while checking almost
+  // nothing, which is exactly what happened.
+  const populated = builtContexts().filter((context) => context.rowCounts.included > 0);
+  const totals = { top: 0, nested: 0 };
+
+  for (const context of populated) {
+    for (const { depth } of visitedFacts(context)) {
+      totals[depth === 0 ? "top" : "nested"] += 1;
+    }
+  }
+
+  assert.ok(totals.top > 0, "the published top-level facts must still be visited");
+  assert.ok(totals.nested >= 30, `expected the walker to reach collection members, saw ${totals.nested} nested facts`);
+
+  // Named domains, so a regression in one cannot be masked by the other.
+  const costing = visitedFacts(buildCostingDomainContext({ costings: [costingRow()], entries: [] }));
+  const inventory = visitedFacts(
+    buildInventoryDomainContext({ ingredients: [ingredientRow()], transactions: [transactionRow()] }, env),
+  );
+
+  assert.ok(
+    costing.some((entry) => entry.path.startsWith("costing.facts.byCosting.value.0.")),
+    "the walker must reach the facts inside a CostingSnapshot",
+  );
+  assert.ok(
+    inventory.some((entry) => entry.path.startsWith("inventory.facts.byIngredient.value.0.")),
+    "the walker must reach the facts inside an IngredientSnapshot",
+  );
+});
 
 test("[invariant] every value-carrying calculated/derived fact names computedBy and non-empty inputs", () => {
   const violations: string[] = [];
@@ -321,7 +365,7 @@ test("[invariant] every declared input resolves to a real fact, and never to the
         if (!factKeys.has(resolved.factKey)) {
           violations.push(`${path}: input "${input}" names no fact published by ${context.domain}`);
         }
-        if (`${context.domain}.facts.${resolved.factKey}` === path) {
+        if (input === declaredPath(path)) {
           violations.push(`${path}: input "${input}" is the declaring fact itself`);
         }
       }
@@ -339,8 +383,46 @@ test("[invariant] a fact never lists itself, even indirectly through a shared pr
 
   for (const context of builtContexts()) {
     eachFact(context, (path, fact) => {
-      if ((fact.source?.inputs ?? []).some((input) => input.startsWith(path))) {
+      // Compared in the declared form, so a nested metric that named itself would be caught. The
+      // raw visited path never matches a member-agnostic input string, so comparing those directly
+      // would make this check silently vacuous for every nested fact.
+      const self = declaredPath(path);
+      if ((fact.source?.inputs ?? []).some((input) => input === self)) {
         violations.push(`${path}: declares a dependency on itself`);
+      }
+    });
+  }
+
+  assert.deepEqual(violations, []);
+});
+
+test("[invariant] a collection-member input names a member that the collection actually publishes", () => {
+  // The check that makes the per-metric dependency lists real rather than decorative: a typo in
+  // "costing.facts.byCosting[].costPerPeice" resolves to the byCosting fact and would otherwise pass
+  // every check above. Here it fails, because no such member exists on the snapshot.
+  const violations: string[] = [];
+
+  for (const context of builtContexts()) {
+    // The member names each collection fact publishes, read off a real member rather than a list.
+    const members = new Map<string, Set<string>>();
+    for (const [key, fact] of Object.entries(context.facts)) {
+      const value = (fact as AnyFact).value;
+      if (Array.isArray(value) && value.length > 0 && typeof value[0] === "object" && value[0] !== null) {
+        members.set(key, new Set(Object.keys(value[0] as Record<string, unknown>)));
+      }
+    }
+
+    eachFact(context, (path, fact) => {
+      for (const input of fact.source?.inputs ?? []) {
+        const match = input.match(/^([A-Za-z]+)\.facts\.([A-Za-z0-9_]+)\[\]\.([A-Za-z0-9_]+)$/);
+        if (!match || match[1] !== context.domain) {
+          continue;
+        }
+        const [, , collection, member] = match;
+        const published = members.get(collection);
+        if (published && !published.has(member)) {
+          violations.push(`${path}: input "${input}" names no member published on ${collection}`);
+        }
       }
     });
   }

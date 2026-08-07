@@ -1,0 +1,3499 @@
+{
+  "contextSchemaVersion": 1,
+  "generatedAt": "2026-08-08T20:00:00.000Z",
+  "timezone": "Asia/Manila",
+  "businessDay": "2026-08-09",
+  "dataSource": "sample",
+  "coverage": {
+    "knownDomains": [
+      "products",
+      "batches",
+      "costing",
+      "sellingFormats",
+      "tasting",
+      "inventory",
+      "supplies",
+      "equipment",
+      "journey",
+      "opportunities",
+      "creative",
+      "brand",
+      "readiness",
+      "aiReviews"
+    ],
+    "present": [
+      "costing",
+      "inventory",
+      "readiness"
+    ],
+    "absent": [
+      {
+        "domain": "products",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "batches",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "sellingFormats",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "tasting",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "supplies",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "equipment",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "journey",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "opportunities",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "creative",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "brand",
+        "reason": "adapter not built yet"
+      },
+      {
+        "domain": "aiReviews",
+        "reason": "adapter not built yet"
+      }
+    ]
+  },
+  "domains": {
+    "costing": {
+      "domain": "costing",
+      "adapterVersion": 1,
+      "readOutcome": {
+        "ok": true
+      },
+      "sourceAsOf": {
+        "state": "known",
+        "value": "2026-07-28T00:00:00.000Z",
+        "source": {
+          "kind": "entered",
+          "table": "costing_summaries",
+          "column": "created_at"
+        }
+      },
+      "rowCounts": {
+        "read": 3,
+        "included": 3,
+        "omitted": 0
+      },
+      "facts": {
+        "byCosting": {
+          "state": "known",
+          "value": [
+            {
+              "costingId": "fixture-costing-brownies",
+              "productId": "fixture-brownies",
+              "batchId": {
+                "state": "known",
+                "value": "fixture-batch-1",
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "batch_id"
+                }
+              },
+              "reviewedAt": {
+                "state": "known",
+                "value": "2026-08-08T09:00:00.000Z",
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "updated_at",
+                  "rowIds": [
+                    "fixture-costing-brownies"
+                  ]
+                }
+              },
+              "ingredientCost": {
+                "state": "known",
+                "value": 240,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "ingredient_cost"
+                }
+              },
+              "packagingCost": {
+                "state": "known",
+                "value": 30,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "packaging_cost"
+                }
+              },
+              "laborEstimate": {
+                "state": "known",
+                "value": 120,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "labor_estimate"
+                }
+              },
+              "waterCost": {
+                "state": "known",
+                "value": 4,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "water_cost"
+                }
+              },
+              "gasCost": {
+                "state": "known",
+                "value": 12,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "gas_cost"
+                }
+              },
+              "ovenElectricCost": {
+                "state": "known",
+                "value": 8,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "oven_electric_cost"
+                }
+              },
+              "refrigerationCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "refrigeration_cost"
+                }
+              },
+              "coffeeEquipmentCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "coffee_equipment_cost"
+                }
+              },
+              "wasteAllowance": {
+                "state": "known",
+                "value": 18,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "waste_allowance"
+                }
+              },
+              "overheadCost": {
+                "state": "known",
+                "value": 36,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "overhead_cost"
+                }
+              },
+              "equipmentCost": {
+                "state": "known",
+                "value": 12,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "equipment_cost"
+                }
+              },
+              "suggestedPrice": {
+                "state": "known",
+                "value": 60,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "suggested_price"
+                }
+              },
+              "costingYield": {
+                "state": "known",
+                "value": 16,
+                "source": {
+                  "kind": "inferred",
+                  "table": "costing_summaries",
+                  "column": "notes",
+                  "computedBy": "getCostingTotals",
+                  "basis": "Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value."
+                },
+                "confidence": "medium"
+              },
+              "targetFoodCost": {
+                "state": "known",
+                "value": 0.32,
+                "source": {
+                  "kind": "inferred",
+                  "table": "costing_summaries",
+                  "column": "notes",
+                  "computedBy": "getCostingTotals",
+                  "basis": "Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value."
+                },
+                "confidence": "medium"
+              },
+              "totalBatchCost": {
+                "state": "known",
+                "value": 480,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost"
+                  ]
+                }
+              },
+              "costPerPiece": {
+                "state": "known",
+                "value": 30,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].totalBatchCost",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
+                }
+              },
+              "grossProfit": {
+                "state": "known",
+                "value": 30,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
+                }
+              },
+              "margin": {
+                "state": "known",
+                "value": 50,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].grossProfit",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
+                }
+              },
+              "foodCostPercent": {
+                "state": "known",
+                "value": 50,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
+                }
+              },
+              "markup": {
+                "state": "known",
+                "value": 100,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
+                }
+              },
+              "targetPrice": {
+                "state": "known",
+                "value": 93.75,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].targetFoodCost"
+                  ]
+                }
+              },
+              "variableCostPerPiece": {
+                "state": "known",
+                "value": 27,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
+                }
+              },
+              "contributionMarginPerPiece": {
+                "state": "known",
+                "value": 33,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].variableCostPerPiece"
+                  ]
+                }
+              },
+              "breakEvenUnits": {
+                "state": "known",
+                "value": 2,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost",
+                    "costing.facts.byCosting[].contributionMarginPerPiece"
+                  ]
+                }
+              },
+              "ingredientLineCount": {
+                "state": "known",
+                "value": 2,
+                "source": {
+                  "kind": "derived",
+                  "table": "costing_entries",
+                  "computedBy": "buildCostingDomainContext",
+                  "inputs": [
+                    "costing.facts.byCosting[].costingId"
+                  ]
+                }
+              }
+            },
+            {
+              "costingId": "fixture-costing-cookies",
+              "productId": "fixture-cookies",
+              "batchId": {
+                "state": "known",
+                "value": "fixture-batch-2",
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "batch_id"
+                }
+              },
+              "reviewedAt": {
+                "state": "unknown",
+                "because": "Costing update timestamps were not maintained before 2026-08-07T18:32:04Z; this value is an insert default and does not record a review.",
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "updated_at",
+                  "rowIds": [
+                    "fixture-costing-cookies"
+                  ]
+                }
+              },
+              "ingredientCost": {
+                "state": "known",
+                "value": 90,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "ingredient_cost"
+                }
+              },
+              "packagingCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "packaging_cost"
+                }
+              },
+              "laborEstimate": {
+                "state": "known",
+                "value": 60,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "labor_estimate"
+                }
+              },
+              "waterCost": {
+                "state": "known",
+                "value": 2,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "water_cost"
+                }
+              },
+              "gasCost": {
+                "state": "known",
+                "value": 5,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "gas_cost"
+                }
+              },
+              "ovenElectricCost": {
+                "state": "known",
+                "value": 3,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "oven_electric_cost"
+                }
+              },
+              "refrigerationCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "refrigeration_cost"
+                }
+              },
+              "coffeeEquipmentCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "coffee_equipment_cost"
+                }
+              },
+              "wasteAllowance": {
+                "state": "known",
+                "value": 6,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "waste_allowance"
+                }
+              },
+              "overheadCost": {
+                "state": "known",
+                "value": 12,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "overhead_cost"
+                }
+              },
+              "equipmentCost": {
+                "state": "known",
+                "value": 4,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "equipment_cost"
+                }
+              },
+              "suggestedPrice": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "suggested_price"
+                }
+              },
+              "costingYield": {
+                "state": "unknown",
+                "because": "No readable 'Costing yield:' line was found in this costing's notes.",
+                "source": {
+                  "kind": "inferred",
+                  "table": "costing_summaries",
+                  "column": "notes",
+                  "computedBy": "getCostingTotals",
+                  "basis": "Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value."
+                }
+              },
+              "targetFoodCost": {
+                "state": "unknown",
+                "because": "No readable target food cost was found in this costing's structured notes blob.",
+                "source": {
+                  "kind": "inferred",
+                  "table": "costing_summaries",
+                  "column": "notes",
+                  "computedBy": "getCostingTotals",
+                  "basis": "Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value."
+                }
+              },
+              "totalBatchCost": {
+                "state": "known",
+                "value": 182,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost"
+                  ]
+                }
+              },
+              "costPerPiece": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].totalBatchCost",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
+                }
+              },
+              "grossProfit": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
+                }
+              },
+              "margin": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].grossProfit",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
+                }
+              },
+              "foodCostPercent": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
+                }
+              },
+              "markup": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
+                }
+              },
+              "targetPrice": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].targetFoodCost"
+                  ]
+                }
+              },
+              "variableCostPerPiece": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
+                }
+              },
+              "contributionMarginPerPiece": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].variableCostPerPiece"
+                  ]
+                }
+              },
+              "breakEvenUnits": {
+                "state": "unknown",
+                "because": "The batch yield could not be read from this costing, and every per-piece number depends on it.",
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost",
+                    "costing.facts.byCosting[].contributionMarginPerPiece"
+                  ]
+                }
+              },
+              "ingredientLineCount": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "derived",
+                  "table": "costing_entries",
+                  "computedBy": "buildCostingDomainContext",
+                  "inputs": [
+                    "costing.facts.byCosting[].costingId"
+                  ]
+                }
+              }
+            },
+            {
+              "costingId": "fixture-costing-cold-brew",
+              "productId": "fixture-cold-brew",
+              "batchId": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "batch_id"
+                }
+              },
+              "reviewedAt": {
+                "state": "known",
+                "value": "2026-08-08T18:00:00.000Z",
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "updated_at",
+                  "rowIds": [
+                    "fixture-costing-cold-brew"
+                  ]
+                }
+              },
+              "ingredientCost": {
+                "state": "known",
+                "value": 150,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "ingredient_cost"
+                }
+              },
+              "packagingCost": {
+                "state": "known",
+                "value": 45,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "packaging_cost"
+                }
+              },
+              "laborEstimate": {
+                "state": "known",
+                "value": 90,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "labor_estimate"
+                }
+              },
+              "waterCost": {
+                "state": "known",
+                "value": 6,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "water_cost"
+                }
+              },
+              "gasCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "gas_cost"
+                }
+              },
+              "ovenElectricCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "oven_electric_cost"
+                }
+              },
+              "refrigerationCost": {
+                "state": "known",
+                "value": 12,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "refrigeration_cost"
+                }
+              },
+              "coffeeEquipmentCost": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "coffee_equipment_cost"
+                }
+              },
+              "wasteAllowance": {
+                "state": "known",
+                "value": 9,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "waste_allowance"
+                }
+              },
+              "overheadCost": {
+                "state": "known",
+                "value": 24,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "overhead_cost"
+                }
+              },
+              "equipmentCost": {
+                "state": "known",
+                "value": 8,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "equipment_cost"
+                }
+              },
+              "suggestedPrice": {
+                "state": "known",
+                "value": 95,
+                "source": {
+                  "kind": "entered",
+                  "table": "costing_summaries",
+                  "column": "suggested_price"
+                }
+              },
+              "costingYield": {
+                "state": "known",
+                "value": 10,
+                "source": {
+                  "kind": "inferred",
+                  "table": "costing_summaries",
+                  "column": "notes",
+                  "computedBy": "getCostingTotals",
+                  "basis": "Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value."
+                },
+                "confidence": "medium"
+              },
+              "targetFoodCost": {
+                "state": "unknown",
+                "because": "No readable target food cost was found in this costing's structured notes blob.",
+                "source": {
+                  "kind": "inferred",
+                  "table": "costing_summaries",
+                  "column": "notes",
+                  "computedBy": "getCostingTotals",
+                  "basis": "Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value."
+                }
+              },
+              "totalBatchCost": {
+                "state": "known",
+                "value": 344,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost"
+                  ]
+                }
+              },
+              "costPerPiece": {
+                "state": "known",
+                "value": 34.4,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].totalBatchCost",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
+                }
+              },
+              "grossProfit": {
+                "state": "known",
+                "value": 60.6,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
+                }
+              },
+              "margin": {
+                "state": "known",
+                "value": 63.78947368421053,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].grossProfit",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
+                }
+              },
+              "foodCostPercent": {
+                "state": "known",
+                "value": 36.21052631578947,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].suggestedPrice"
+                  ]
+                }
+              },
+              "markup": {
+                "state": "known",
+                "value": 176.1627906976744,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].costPerPiece"
+                  ]
+                }
+              },
+              "targetPrice": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].costPerPiece",
+                    "costing.facts.byCosting[].targetFoodCost"
+                  ]
+                }
+              },
+              "variableCostPerPiece": {
+                "state": "known",
+                "value": 31.2,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].ingredientCost",
+                    "costing.facts.byCosting[].packagingCost",
+                    "costing.facts.byCosting[].laborEstimate",
+                    "costing.facts.byCosting[].waterCost",
+                    "costing.facts.byCosting[].gasCost",
+                    "costing.facts.byCosting[].ovenElectricCost",
+                    "costing.facts.byCosting[].refrigerationCost",
+                    "costing.facts.byCosting[].coffeeEquipmentCost",
+                    "costing.facts.byCosting[].wasteAllowance",
+                    "costing.facts.byCosting[].costingYield"
+                  ]
+                }
+              },
+              "contributionMarginPerPiece": {
+                "state": "known",
+                "value": 63.8,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].suggestedPrice",
+                    "costing.facts.byCosting[].variableCostPerPiece"
+                  ]
+                }
+              },
+              "breakEvenUnits": {
+                "state": "known",
+                "value": 1,
+                "source": {
+                  "kind": "calculated",
+                  "table": "costing_summaries",
+                  "computedBy": "getCostingTotals",
+                  "inputs": [
+                    "costing.facts.byCosting[].overheadCost",
+                    "costing.facts.byCosting[].equipmentCost",
+                    "costing.facts.byCosting[].contributionMarginPerPiece"
+                  ]
+                }
+              },
+              "ingredientLineCount": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "derived",
+                  "table": "costing_entries",
+                  "computedBy": "buildCostingDomainContext",
+                  "inputs": [
+                    "costing.facts.byCosting[].costingId"
+                  ]
+                }
+              }
+            }
+          ],
+          "source": {
+            "kind": "entered",
+            "table": "costing_summaries",
+            "rowIds": [
+              "fixture-costing-brownies",
+              "fixture-costing-cookies",
+              "fixture-costing-cold-brew"
+            ]
+          }
+        },
+        "costingCount": {
+          "state": "known",
+          "value": 3,
+          "source": {
+            "kind": "derived",
+            "table": "costing_summaries",
+            "computedBy": "buildCostingDomainContext",
+            "inputs": [
+              "costing.facts.byCosting"
+            ]
+          }
+        },
+        "yieldReadableCount": {
+          "state": "known",
+          "value": 2,
+          "source": {
+            "kind": "derived",
+            "table": "costing_summaries",
+            "computedBy": "buildCostingDomainContext",
+            "inputs": [
+              "costing.facts.byCosting"
+            ]
+          }
+        }
+      },
+      "signals": [],
+      "notes": [
+        "Batch yield and target food cost are parsed from the free-text costing.notes column; no dedicated column exists for either, so both are reported as inferred.",
+        "Costing review timestamps are only reliable from 2026-08-07T18:32:04Z; earlier rows report reviewedAt as unknown rather than substituting their creation time.",
+        "sourceAsOf is the most recent costing record creation time, not a review time."
+      ]
+    },
+    "inventory": {
+      "domain": "inventory",
+      "adapterVersion": 1,
+      "readOutcome": {
+        "ok": true
+      },
+      "sourceAsOf": {
+        "state": "known",
+        "value": "2026-08-08T18:00:00.000Z",
+        "source": {
+          "kind": "entered",
+          "table": "inventory_transactions",
+          "column": "created_at",
+          "rowIds": [
+            "fixture-txn-purchase-1",
+            "fixture-txn-purchase-2",
+            "fixture-txn-consume-1",
+            "fixture-txn-adjustment-1"
+          ]
+        }
+      },
+      "rowCounts": {
+        "read": 6,
+        "included": 6,
+        "omitted": 0
+      },
+      "facts": {
+        "byIngredient": {
+          "state": "known",
+          "value": [
+            {
+              "ingredientId": "fixture-ing-flour",
+              "name": "Fixture Flour",
+              "baseUnit": "g",
+              "isActive": true,
+              "currentQuantity": {
+                "state": "known",
+                "value": 5000,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "current_quantity"
+                }
+              },
+              "lowStockThreshold": {
+                "state": "known",
+                "value": 1000,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "low_stock_threshold"
+                }
+              },
+              "targetStockQuantity": {
+                "state": "known",
+                "value": 10000,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "target_stock_quantity"
+                }
+              },
+              "averageUnitCost": {
+                "state": "known",
+                "value": 0.08,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "average_unit_cost"
+                }
+              },
+              "stockStatus": {
+                "state": "known",
+                "value": "good",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "computedBy": "getStockStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].currentQuantity"
+                  ]
+                }
+              },
+              "expirationStatus": {
+                "state": "known",
+                "value": "good",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date",
+                  "computedBy": "getExpirationStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].nearestExpirationDate"
+                  ]
+                }
+              },
+              "nearestExpirationDate": {
+                "state": "known",
+                "value": "2026-12-01",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date"
+                }
+              },
+              "flaggedReason": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "base_unit_migration_flagged_reason"
+                }
+              }
+            },
+            {
+              "ingredientId": "fixture-ing-milk",
+              "name": "Fixture Milk",
+              "baseUnit": "ml",
+              "isActive": true,
+              "currentQuantity": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "current_quantity"
+                }
+              },
+              "lowStockThreshold": {
+                "state": "known",
+                "value": 500,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "low_stock_threshold"
+                }
+              },
+              "targetStockQuantity": {
+                "state": "known",
+                "value": 2000,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "target_stock_quantity"
+                }
+              },
+              "averageUnitCost": {
+                "state": "known",
+                "value": 0.06,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "average_unit_cost"
+                }
+              },
+              "stockStatus": {
+                "state": "known",
+                "value": "out",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "computedBy": "getStockStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].currentQuantity"
+                  ]
+                }
+              },
+              "expirationStatus": {
+                "state": "unknown",
+                "because": "No expiration date is recorded for this ingredient, so its expiry state cannot be determined.",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date",
+                  "computedBy": "getExpirationStatus"
+                }
+              },
+              "nearestExpirationDate": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date"
+                }
+              },
+              "flaggedReason": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "base_unit_migration_flagged_reason"
+                }
+              }
+            },
+            {
+              "ingredientId": "fixture-ing-butter",
+              "name": "Fixture Butter",
+              "baseUnit": "g",
+              "isActive": true,
+              "currentQuantity": {
+                "state": "known",
+                "value": 800,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "current_quantity"
+                }
+              },
+              "lowStockThreshold": {
+                "state": "known",
+                "value": 200,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "low_stock_threshold"
+                }
+              },
+              "targetStockQuantity": {
+                "state": "known",
+                "value": 2000,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "target_stock_quantity"
+                }
+              },
+              "averageUnitCost": {
+                "state": "known",
+                "value": 0.5,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "average_unit_cost"
+                }
+              },
+              "stockStatus": {
+                "state": "known",
+                "value": "good",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "computedBy": "getStockStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].currentQuantity"
+                  ]
+                }
+              },
+              "expirationStatus": {
+                "state": "known",
+                "value": "expired",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date",
+                  "computedBy": "getExpirationStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].nearestExpirationDate"
+                  ]
+                }
+              },
+              "nearestExpirationDate": {
+                "state": "known",
+                "value": "2026-08-06",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date"
+                }
+              },
+              "flaggedReason": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "base_unit_migration_flagged_reason"
+                }
+              }
+            },
+            {
+              "ingredientId": "fixture-ing-cocoa",
+              "name": "Fixture Cocoa",
+              "baseUnit": "g",
+              "isActive": true,
+              "currentQuantity": {
+                "state": "known",
+                "value": 1200,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "current_quantity"
+                }
+              },
+              "lowStockThreshold": {
+                "state": "known",
+                "value": 300,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "low_stock_threshold"
+                }
+              },
+              "targetStockQuantity": {
+                "state": "known",
+                "value": 3000,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "target_stock_quantity"
+                }
+              },
+              "averageUnitCost": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "average_unit_cost"
+                }
+              },
+              "stockStatus": {
+                "state": "known",
+                "value": "good",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "computedBy": "getStockStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].currentQuantity"
+                  ]
+                }
+              },
+              "expirationStatus": {
+                "state": "unknown",
+                "because": "No expiration date is recorded for this ingredient, so its expiry state cannot be determined.",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date",
+                  "computedBy": "getExpirationStatus"
+                }
+              },
+              "nearestExpirationDate": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date"
+                }
+              },
+              "flaggedReason": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "base_unit_migration_flagged_reason"
+                }
+              }
+            },
+            {
+              "ingredientId": "fixture-ing-sugar",
+              "name": "Fixture Sugar",
+              "baseUnit": "g",
+              "isActive": true,
+              "currentQuantity": {
+                "state": "known",
+                "value": 2500,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "current_quantity"
+                }
+              },
+              "lowStockThreshold": {
+                "state": "known",
+                "value": 500,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "low_stock_threshold"
+                }
+              },
+              "targetStockQuantity": {
+                "state": "known",
+                "value": 5000,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "target_stock_quantity"
+                }
+              },
+              "averageUnitCost": {
+                "state": "known",
+                "value": 0.04,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "average_unit_cost"
+                }
+              },
+              "stockStatus": {
+                "state": "known",
+                "value": "good",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "computedBy": "getStockStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].currentQuantity"
+                  ]
+                }
+              },
+              "expirationStatus": {
+                "state": "unknown",
+                "because": "No expiration date is recorded for this ingredient, so its expiry state cannot be determined.",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date",
+                  "computedBy": "getExpirationStatus"
+                }
+              },
+              "nearestExpirationDate": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date"
+                }
+              },
+              "flaggedReason": {
+                "state": "known",
+                "value": "Unrecognised legacy base_unit; needs manual reconciliation.",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "base_unit_migration_flagged_reason"
+                }
+              }
+            },
+            {
+              "ingredientId": "fixture-ing-vanilla",
+              "name": "Fixture Vanilla",
+              "baseUnit": "ml",
+              "isActive": false,
+              "currentQuantity": {
+                "state": "known",
+                "value": 0,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "current_quantity"
+                }
+              },
+              "lowStockThreshold": {
+                "state": "known",
+                "value": 50,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "low_stock_threshold"
+                }
+              },
+              "targetStockQuantity": {
+                "state": "known",
+                "value": 200,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "target_stock_quantity"
+                }
+              },
+              "averageUnitCost": {
+                "state": "known",
+                "value": 2,
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "average_unit_cost"
+                }
+              },
+              "stockStatus": {
+                "state": "known",
+                "value": "out",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "computedBy": "getStockStatus",
+                  "inputs": [
+                    "inventory.facts.byIngredient[].currentQuantity"
+                  ]
+                }
+              },
+              "expirationStatus": {
+                "state": "unknown",
+                "because": "No expiration date is recorded for this ingredient, so its expiry state cannot be determined.",
+                "source": {
+                  "kind": "derived",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date",
+                  "computedBy": "getExpirationStatus"
+                }
+              },
+              "nearestExpirationDate": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "nearest_expiration_date"
+                }
+              },
+              "flaggedReason": {
+                "state": "unset",
+                "source": {
+                  "kind": "entered",
+                  "table": "ingredients",
+                  "column": "base_unit_migration_flagged_reason"
+                }
+              }
+            }
+          ],
+          "source": {
+            "kind": "entered",
+            "table": "ingredients",
+            "rowIds": [
+              "fixture-ing-flour",
+              "fixture-ing-milk",
+              "fixture-ing-butter",
+              "fixture-ing-cocoa",
+              "fixture-ing-sugar",
+              "fixture-ing-vanilla"
+            ]
+          }
+        },
+        "summaryCounts": {
+          "state": "known",
+          "value": {
+            "lowCount": 0,
+            "outCount": 1,
+            "expiringCount": 1
+          },
+          "source": {
+            "kind": "derived",
+            "table": "ingredients",
+            "computedBy": "getInventorySummaryCounts",
+            "inputs": [
+              "inventory.facts.byIngredient"
+            ]
+          }
+        },
+        "needToBuy": {
+          "state": "known",
+          "value": [
+            {
+              "ingredientId": "fixture-ing-milk",
+              "name": "Fixture Milk",
+              "status": "out",
+              "suggestedBuyQuantity": 2000,
+              "baseUnit": "ml"
+            }
+          ],
+          "source": {
+            "kind": "derived",
+            "table": "ingredients",
+            "computedBy": "getNeedToBuyList",
+            "inputs": [
+              "inventory.facts.byIngredient"
+            ]
+          }
+        },
+        "totalInventoryValue": {
+          "state": "unknown",
+          "because": "1 ingredient(s) could not be converted to a canonical unit, so any total that includes them is not meaningful.",
+          "source": {
+            "kind": "calculated",
+            "table": "ingredients",
+            "computedBy": "getTotalInventoryValue",
+            "inputs": [
+              "inventory.facts.byIngredient[].averageUnitCost"
+            ]
+          }
+        },
+        "flaggedIngredientCount": {
+          "state": "known",
+          "value": 1,
+          "source": {
+            "kind": "derived",
+            "table": "ingredients",
+            "computedBy": "buildInventoryDomainContext",
+            "inputs": [
+              "inventory.facts.byIngredient"
+            ]
+          }
+        },
+        "latestPurchaseAt": {
+          "state": "known",
+          "value": "2026-08-08T12:00:00.000Z",
+          "source": {
+            "kind": "entered",
+            "table": "inventory_transactions",
+            "column": "created_at",
+            "rowIds": [
+              "fixture-txn-purchase-1",
+              "fixture-txn-purchase-2"
+            ]
+          }
+        }
+      },
+      "signals": [
+        {
+          "id": "inventory.outOfStock",
+          "domain": "inventory",
+          "scope": "domain",
+          "subject": {
+            "kind": "ingredient",
+            "id": "fixture-ing-milk"
+          },
+          "severity": "blocker",
+          "status": "fail",
+          "message": "Fixture Milk is out of stock.",
+          "recommendation": "Restock Fixture Milk before the next bake that needs it.",
+          "provenance": {
+            "kind": "derived",
+            "table": "ingredients",
+            "computedBy": "getStockStatus",
+            "inputs": [
+              "inventory.facts.byIngredient[].currentQuantity",
+              "inventory.facts.byIngredient[].lowStockThreshold"
+            ]
+          }
+        },
+        {
+          "id": "inventory.expiring",
+          "domain": "inventory",
+          "scope": "domain",
+          "subject": {
+            "kind": "ingredient",
+            "id": "fixture-ing-butter"
+          },
+          "severity": "blocker",
+          "status": "fail",
+          "message": "Fixture Butter expired on 2026-08-06.",
+          "recommendation": "Use or replace Fixture Butter.",
+          "provenance": {
+            "kind": "derived",
+            "table": "ingredients",
+            "computedBy": "getExpiringIngredients",
+            "inputs": [
+              "inventory.facts.byIngredient[].nearestExpirationDate"
+            ]
+          }
+        },
+        {
+          "id": "inventory.flagged",
+          "domain": "inventory",
+          "scope": "domain",
+          "subject": {
+            "kind": "ingredient",
+            "id": "fixture-ing-sugar"
+          },
+          "severity": "warning",
+          "status": "fail",
+          "message": "Fixture Sugar could not be converted to a canonical unit and needs manual reconciliation.",
+          "recommendation": "Reconcile Fixture Sugar's unit and quantity by hand, then clear its migration flag.",
+          "provenance": {
+            "kind": "derived",
+            "table": "ingredients",
+            "column": "base_unit_migration_flagged_reason",
+            "computedBy": "getFlaggedIngredients",
+            "inputs": [
+              "inventory.facts.byIngredient[].flaggedReason"
+            ]
+          }
+        }
+      ],
+      "notes": [
+        "Expiration and stock states are anchored to 2026-08-09 in Asia/Manila, not to UTC.",
+        "Ingredients whose unit could not be migrated are reported as a data-integrity signal, and any inventory valuation that would include them is reported as unknown.",
+        "Purchase-import staging rows, ingredient aliases, and ledger actor names are deliberately excluded."
+      ]
+    },
+    "readiness": {
+      "domain": "readiness",
+      "adapterVersion": 1,
+      "readOutcome": {
+        "ok": true
+      },
+      "sourceAsOf": {
+        "state": "unknown",
+        "because": "Readiness is derived from other domains' tables and has no source rows of its own.",
+        "source": {
+          "kind": "derived",
+          "computedBy": "buildReadinessDomainContext"
+        }
+      },
+      "rowCounts": {
+        "read": 3,
+        "included": 81,
+        "omitted": 0
+      },
+      "facts": {},
+      "signals": [
+        {
+          "id": "FIN-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "Margin is 50.0% at the current price.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "fail",
+          "message": "Food cost is 50.0% against a 32.0% target -- 18.0 points over.",
+          "recommendation": "Reduce ingredient cost, renegotiate a supplier price, or reconsider whether the target is realistic.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "Labor cost is PHP 120.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "Overhead is PHP 36.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "Selling price is PHP 60.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-006",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "2 pieces need to sell to cover this batch's overhead and equipment allocation.",
+          "recommendation": "Compare against typical order volume for this product; revisit price or overhead allocation if it's consistently out of reach.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-007",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No standalone target margin % is tracked separately from target food cost % yet.",
+          "recommendation": "See FIN-002 (Food Cost %) -- margin and the food cost target are the same underlying check today.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "Yield is set to 16 pieces.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Only 1 batch(es) logged -- not enough history to judge yield consistency.",
+          "recommendation": "Log more proof batches for this product.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "info",
+          "status": "pass",
+          "message": "Waste allowance is 7.5% of ingredient cost; real reject rate across logged batches is 11.1%.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "V2 logged 80 total prep/bake/cool minutes.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Not enough logged issues yet to judge repeatability.",
+          "recommendation": "Log a 'what went wrong' note per batch.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "1 proof batch(es) logged.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "fail",
+          "message": "2 tasting(s) logged, average rating 8.0/10 -- need 5+ at 8+ average.",
+          "recommendation": "Get 3 more independent tastings on the current recipe version.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "Only one batch logged -- no version history to compare yet.",
+          "recommendation": "Log a second batch to see progression.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No structured experiment record exists to check completion against.",
+          "recommendation": "Use the Observation/Hypothesis/.../Conclusion structure in ai-review/workflows/product-experiment-design.md and log the result in the batch's notes.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "Only one batch logged -- not enough history to judge whether the recipe is locked.",
+          "recommendation": "Log another batch with no formula changes to confirm stability.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-006",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "info",
+          "status": "pass",
+          "message": "V2 has taste notes logged.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "QUAL-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "2 time-separated tasting checkpoints logged.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "fail",
+          "message": "Packaging cost is PHP 30.00, but no test note confirms it holds up under real delivery/storage conditions.",
+          "recommendation": "Run a packaging stress test (see ai-review/knowledge/packaging.md) and log the result in a packaging note.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "Baked goods is not a temperature-sensitive category -- this rule does not apply.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "info",
+          "status": "pass",
+          "message": "V2 has a texture note logged.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "QUAL-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "No time/temperature-sensitive ingredient detected in the current formula.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "SUP-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "blocker",
+          "status": "fail",
+          "message": "No supply record matches: Fixture Flour.",
+          "recommendation": "Log a real purchase in Purchases for each missing ingredient, or confirm a manual cost override is intentional.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "SUP-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No matching supply records to check staleness against.",
+          "recommendation": "See SUP-001.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "SUP-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Fewer than 2 purchases on file for any formula ingredient -- nothing to compare yet.",
+          "recommendation": "Log purchases over time to enable this check.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "SUP-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-brownies"
+          },
+          "severity": "info",
+          "status": "pass",
+          "message": "No load-bearing ingredient relies on a single supplier.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-brownies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "Cost per piece is unavailable because yield is missing -- margin can't be checked yet.",
+          "recommendation": "Enter the batch yield on the Costing page (see PROD-001).",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Food cost % is unavailable because yield is missing.",
+          "recommendation": "Enter the batch yield first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "Labor cost is PHP 60.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "Overhead is PHP 12.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "fail",
+          "message": "No selling price has been set.",
+          "recommendation": "Enter a selling price on the Costing page.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-006",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Break-even can't be calculated because yield is missing.",
+          "recommendation": "Enter the batch yield first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-007",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No standalone target margin % is tracked separately from target food cost % yet.",
+          "recommendation": "See FIN-002 (Food Cost %) -- margin and the food cost target are the same underlying check today.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "fail",
+          "message": "No yield set for this costing.",
+          "recommendation": "Enter the batch yield (sellable pieces) this costing is based on.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Only 1 batch(es) logged -- not enough history to judge yield consistency.",
+          "recommendation": "Log more proof batches for this product.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No batch output logged yet to compare waste allowance against.",
+          "recommendation": "Log usable and imperfect pieces per batch.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "fail",
+          "message": "V1 has no prep/bake/cool time logged.",
+          "recommendation": "Log prep, bake, and cooling minutes for this batch.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "PROD-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Not enough logged issues yet to judge repeatability.",
+          "recommendation": "Log a 'what went wrong' note per batch.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "1 proof batch(es) logged.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "No tasting feedback logged yet.",
+          "recommendation": "Log tasting feedback for the current recipe version.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "Only one batch logged -- no version history to compare yet.",
+          "recommendation": "Log a second batch to see progression.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No structured experiment record exists to check completion against.",
+          "recommendation": "Use the Observation/Hypothesis/.../Conclusion structure in ai-review/workflows/product-experiment-design.md and log the result in the batch's notes.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "Only one batch logged -- not enough history to judge whether the recipe is locked.",
+          "recommendation": "Log another batch with no formula changes to confirm stability.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "DEV-006",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "info",
+          "status": "fail",
+          "message": "V1 has no taste notes logged.",
+          "recommendation": "Add a short taste/texture note and a next-step note for this batch.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "QUAL-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No shelf-life checkpoint beyond initial tasting exists.",
+          "recommendation": "Run the shelf-life experiment in ai-review/workflows/product-experiment-design.md.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No packaging cost recorded yet.",
+          "recommendation": "Add packaging cost on the Costing page.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "Baked goods is not a temperature-sensitive category -- this rule does not apply.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "info",
+          "status": "fail",
+          "message": "No explicit texture note for V1.",
+          "recommendation": "Add a texture-specific note next time this formula is tasted.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "QUAL-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "No time/temperature-sensitive ingredient detected in the current formula.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "SUP-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "No formula logged yet.",
+          "recommendation": "Record a proof batch with a formula first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "SUP-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No formula logged yet.",
+          "recommendation": "Record a proof batch with a formula first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "SUP-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Fewer than 2 purchases on file for any formula ingredient -- nothing to compare yet.",
+          "recommendation": "Log purchases over time to enable this check.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "SUP-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cookies"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No formula logged yet.",
+          "recommendation": "Record a proof batch with a formula first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cookies"
+            ]
+          }
+        },
+        {
+          "id": "FIN-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "Margin is 63.8% at the current price.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "FIN-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No target food cost % has been set for this costing.",
+          "recommendation": "Set a target food cost % on the Costing page to enable this check.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "FIN-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "Labor cost is PHP 90.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "FIN-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "Overhead is PHP 24.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "FIN-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "Selling price is PHP 95.00.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "FIN-006",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "pass",
+          "message": "1 pieces need to sell to cover this batch's overhead and equipment allocation.",
+          "recommendation": "Compare against typical order volume for this product; revisit price or overhead allocation if it's consistently out of reach.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "FIN-007",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No standalone target margin % is tracked separately from target food cost % yet.",
+          "recommendation": "See FIN-002 (Food Cost %) -- margin and the food cost target are the same underlying check today.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "PROD-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "pass",
+          "message": "Yield is set to 10 pieces.",
+          "recommendation": "No action needed.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "PROD-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Only 0 batch(es) logged -- not enough history to judge yield consistency.",
+          "recommendation": "Log more proof batches for this product.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "PROD-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No batch output logged yet to compare waste allowance against.",
+          "recommendation": "Log usable and imperfect pieces per batch.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "PROD-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No batch logged yet.",
+          "recommendation": "Record a proof batch on Proof Day.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "PROD-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Not enough logged issues yet to judge repeatability.",
+          "recommendation": "Log a 'what went wrong' note per batch.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "DEV-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "fail",
+          "message": "No proof batches logged yet.",
+          "recommendation": "Run a real kitchen test and log it on Proof Day.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "DEV-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "No tasting feedback logged yet.",
+          "recommendation": "Log tasting feedback for the current recipe version.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "DEV-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "Only one batch logged -- no version history to compare yet.",
+          "recommendation": "Log a second batch to see progression.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "DEV-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No structured experiment record exists to check completion against.",
+          "recommendation": "Use the Observation/Hypothesis/.../Conclusion structure in ai-review/workflows/product-experiment-design.md and log the result in the batch's notes.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "DEV-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "Only one batch logged -- not enough history to judge whether the recipe is locked.",
+          "recommendation": "Log another batch with no formula changes to confirm stability.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "DEV-006",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No batch logged yet.",
+          "recommendation": "Record a proof batch on Proof Day.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "QUAL-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No shelf-life checkpoint beyond initial tasting exists.",
+          "recommendation": "Run the shelf-life experiment in ai-review/workflows/product-experiment-design.md.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "fail",
+          "message": "Packaging cost is PHP 45.00, but no test note confirms it holds up under real delivery/storage conditions.",
+          "recommendation": "Run a packaging stress test (see ai-review/knowledge/packaging.md) and log the result in a packaging note.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "No tasting feedback logged for this temperature-sensitive product yet.",
+          "recommendation": "Log a tasting that records delivery/storage conditions.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "QUAL-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No batch logged yet.",
+          "recommendation": "Record a proof batch on Proof Day.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "QUAL-005",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "No batch logged yet.",
+          "recommendation": "Record a proof batch on Proof Day.",
+          "provenance": {
+            "kind": "inferred",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ],
+            "basis": "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, so a pass here is weaker evidence than an arithmetic or presence check."
+          }
+        },
+        {
+          "id": "SUP-001",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "blocker",
+          "status": "insufficient_data",
+          "message": "No formula logged yet.",
+          "recommendation": "Record a proof batch with a formula first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "SUP-002",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "No formula logged yet.",
+          "recommendation": "Record a proof batch with a formula first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "SUP-003",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "warning",
+          "status": "insufficient_data",
+          "message": "Fewer than 2 purchases on file for any formula ingredient -- nothing to compare yet.",
+          "recommendation": "Log purchases over time to enable this check.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        {
+          "id": "SUP-004",
+          "domain": "readiness",
+          "scope": "domain",
+          "subject": {
+            "kind": "product",
+            "id": "fixture-cold-brew"
+          },
+          "severity": "info",
+          "status": "insufficient_data",
+          "message": "No formula logged yet.",
+          "recommendation": "Record a proof batch with a formula first.",
+          "provenance": {
+            "kind": "derived",
+            "computedBy": "evaluateProduct",
+            "rowIds": [
+              "fixture-cold-brew"
+            ]
+          }
+        }
+      ],
+      "notes": [
+        "Supply-category results are insufficient_data because the Supplies domain is not part of this milestone -- not because the business lacks purchase history.",
+        "Selling Format data is not loaded in this milestone, so QUAL-002 reports insufficient_data for scope reasons rather than as a finding about packaging.",
+        "QUAL-001/002/003/005 are evaluated by keyword search over free text; their provenance is marked inferred and they must not be read as strongly as arithmetic checks.",
+        "Launch composite gates are not evaluated: includeLaunch is false, matching the Rule Engine's own default for routine evaluation."
+      ]
+    }
+  },
+  "signals": [
+    {
+      "id": "costing.staleVsPurchases",
+      "domain": "cross-domain",
+      "scope": "cross-domain",
+      "subject": {
+        "kind": "costing",
+        "id": "fixture-costing-brownies"
+      },
+      "severity": "warning",
+      "status": "fail",
+      "message": "This costing has not been reviewed since the latest recorded ingredient purchase.",
+      "recommendation": "Review this costing against current ingredient prices.",
+      "provenance": {
+        "kind": "derived",
+        "computedBy": "buildCostingFreshnessSignals",
+        "inputs": [
+          "costing.facts.byCosting[].reviewedAt",
+          "inventory.facts.latestPurchaseAt"
+        ]
+      }
+    },
+    {
+      "id": "costing.staleVsPurchases",
+      "domain": "cross-domain",
+      "scope": "cross-domain",
+      "subject": {
+        "kind": "costing",
+        "id": "fixture-costing-cookies"
+      },
+      "severity": "warning",
+      "status": "insufficient_data",
+      "message": "Freshness cannot be determined reliably for this costing: no dependable record exists of when it was last reviewed.",
+      "recommendation": "Re-open and save this costing to establish a reliable review time.",
+      "provenance": {
+        "kind": "derived",
+        "computedBy": "buildCostingFreshnessSignals",
+        "inputs": [
+          "costing.facts.byCosting[].reviewedAt",
+          "inventory.facts.latestPurchaseAt"
+        ],
+        "basis": "Costing update timestamps are only dependable from 2026-08-07T18:32:04Z; this row predates that."
+      }
+    },
+    {
+      "id": "costing.staleVsPurchases",
+      "domain": "cross-domain",
+      "scope": "cross-domain",
+      "subject": {
+        "kind": "costing",
+        "id": "fixture-costing-cold-brew"
+      },
+      "severity": "warning",
+      "status": "pass",
+      "message": "This costing was reviewed after the latest recorded ingredient purchase.",
+      "recommendation": "No action needed.",
+      "provenance": {
+        "kind": "derived",
+        "computedBy": "buildCostingFreshnessSignals",
+        "inputs": [
+          "costing.facts.byCosting[].reviewedAt",
+          "inventory.facts.latestPurchaseAt"
+        ]
+      }
+    }
+  ],
+  "factsDigest": "c11b1059b3455262a253c0026d4376d12b5da7f71cdededd8600d122b68a3598",
+  "signalsDigest": "d184e3cbbd6582e2e9f1a54f56b7d1dcf6f839cea9b1c5ffc6aa6acf5feef2b4"
+}
