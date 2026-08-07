@@ -82,6 +82,38 @@ export type CostingEntry = {
 
 export type CostingIngredientRow = CostingEntry & { brandName: string; isManualCost?: boolean; rowId: string };
 
+// Owned by Costing via costingId (a real foreign key to costing_summaries.id), not by batch or
+// product directly -- format-level margin needs the costing's own base cost per piece, which
+// only exists once a costing exists. See the Selling Formats plan for the full data model.
+export type SellingFormat = {
+  id: string;
+  costingId: string;
+  name: string;
+  piecesPerUnit: number;
+  sellingPrice: number;
+  isActive: boolean;
+  sortOrder: number;
+  notes: string;
+};
+
+// ingredientId set = "catalog-linked" (name/unit inherited from the Ingredient, cost resolved
+// from purchase history); ingredientId "" = "manual" (name/unit/cost all directly entered).
+// unitCostSnapshot is frozen at full precision when the line is saved -- never rounded to cents
+// here, since a bulk-purchased item (e.g. 1000 sheets for PHP 275) can have a genuine sub-centavo
+// per-unit cost that would compound error if rounded before being multiplied by quantity.
+export type SellingFormatPackagingLine = {
+  id: string;
+  sellingFormatId: string;
+  ingredientId: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  unitCostSnapshot: number;
+  isManualCost: boolean;
+  note: string;
+  sortOrder: number;
+};
+
 export type SupplyEntry = {
   id: string;
   ingredientId: string;

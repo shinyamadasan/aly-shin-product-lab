@@ -128,3 +128,33 @@ export function isBatchProductMismatch(batches: ProductBatch[], candidate: { pro
   const batch = batches.find((item) => item.id === candidate.batchId);
   return !batch || batch.productId !== candidate.productId;
 }
+
+// The one place a costing's id is decided when saving -- called once per saveCosting invocation
+// and threaded through the in-memory costing object, the Supabase payload (buildCostingSummaryPayload
+// below), and any Selling Formats saved alongside it, so all three can never disagree. Editing (a
+// non-empty costingId) always returns that exact id, never a freshly generated one -- only a
+// brand-new costing gets a new id, generated once per save.
+export function resolveCostingId(costingId: string): string {
+  return costingId || crypto.randomUUID();
+}
+
+// The exact snake_case shape written to costing_summaries on both insert and update. Extracted so
+// it's one tested place, not two inline object literals that could quietly drift apart -- and so
+// costing.id (see resolveCostingId) is never silently dropped from the row actually written to
+// Supabase the way it previously was.
+export function buildCostingSummaryPayload(costing: CostingSummary) {
+  return {
+    id: costing.id,
+    product_id: costing.productId,
+    batch_id: costing.batchId || null,
+    ingredient_cost: costing.ingredientCost,
+    packaging_cost: costing.packagingCost,
+    labor_estimate: costing.laborEstimate,
+    utilities_estimate: costing.waterCost + costing.gasCost + costing.ovenElectricCost + costing.refrigerationCost + costing.coffeeEquipmentCost,
+    waste_allowance: costing.wasteAllowance,
+    overhead_cost: costing.overheadCost,
+    equipment_cost: costing.equipmentCost,
+    suggested_price: costing.suggestedPrice,
+    notes: costing.notes,
+  };
+}

@@ -1,4 +1,4 @@
-import type { AiReviewRecord, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { AiReviewRecord, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "dashboard"
@@ -42,6 +42,8 @@ export type LabState = {
   batchPhotos: BatchPhoto[];
   costingEntries: CostingEntry[];
   costings: CostingSummary[];
+  sellingFormats: SellingFormat[];
+  sellingFormatPackagingLines: SellingFormatPackagingLine[];
   supplies: SupplyEntry[];
   equipment: EquipmentEntry[];
   ingredients: Ingredient[];
@@ -61,6 +63,8 @@ export const emptyState: LabState = {
   batchPhotos: [],
   costingEntries: [],
   costings: [],
+  sellingFormats: [],
+  sellingFormatPackagingLines: [],
   supplies: [],
   equipment: [],
   ingredients: [],

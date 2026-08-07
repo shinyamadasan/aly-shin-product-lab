@@ -1,5 +1,6 @@
 import { evaluateProduct } from "./rule-engine/index.ts";
-import type { CostingSummary, Product, ProductBatch, TastingFeedback } from "./product-lab-types.ts";
+import { hasActiveSellingFormatWithValidPackaging } from "./selling-formats.ts";
+import type { CostingSummary, Product, ProductBatch, SellingFormat, SellingFormatPackagingLine, TastingFeedback } from "./product-lab-types.ts";
 
 // Delegates to the Rule Engine (src/lib/rule-engine) instead of the original fixed 6-check,
 // unweighted pass count -- readinessPercentage is now severity-weighted (a Blocker counts for
@@ -14,8 +15,10 @@ export function getReadinessScore(
   batches: ProductBatch[] = [],
   costings: CostingSummary[] = [],
   tastings: TastingFeedback[] = [],
+  sellingFormats: SellingFormat[] = [],
+  sellingFormatPackagingLines: SellingFormatPackagingLine[] = [],
 ) {
-  const result = evaluateProduct(product, { batches, costings, tastings, supplies: [], now: Date.now() });
+  const result = evaluateProduct(product, { batches, costings, sellingFormats, sellingFormatPackagingLines, tastings, supplies: [], now: Date.now() });
   const applicable = result.ruleResults.filter((rule) => rule.passed !== null);
   const passed = applicable.filter((rule) => rule.passed === true).length;
 
@@ -36,11 +39,19 @@ export function getReadinessScore(
 // costing" instead of surfacing the real problem). Kept as its own presence-check
 // implementation on purpose; the richer checks are available via getReadinessScore/
 // evaluateProduct for anything that wants them.
+//
+// packagingDone broadened for Selling Formats (Slice 5): "presence" now also means "at least one
+// active Selling Format has valid packaging," not just the legacy batch-wide packagingCost field
+// -- see hasActiveSellingFormatWithValidPackaging (src/lib/selling-formats.ts). sellingFormats/
+// sellingFormatPackagingLines default to [] so every existing caller that doesn't pass them keeps
+// today's exact behavior (packagingDone stays keyed on packagingCost alone).
 export function getProductStats(
   product: Product,
   batches: ProductBatch[],
   costings: CostingSummary[],
   tastings: TastingFeedback[],
+  sellingFormats: SellingFormat[] = [],
+  sellingFormatPackagingLines: SellingFormatPackagingLine[] = [],
 ) {
   const productBatches = batches.filter((batch) => batch.productId === product.id);
   const productCosting = costings.find((costing) => costing.productId === product.id);
@@ -50,11 +61,14 @@ export function getProductStats(
     productTastings.length > 0
       ? productTastings.reduce((total, tasting) => total + tasting.rating, 0) / productTastings.length
       : null;
+  const hasSellingFormatPackaging = productCosting
+    ? hasActiveSellingFormatWithValidPackaging(productCosting.id, sellingFormats, sellingFormatPackagingLines)
+    : false;
 
   return {
     proofBatches: productBatches.length,
     costingDone: Boolean(productCosting && productCosting.ingredientCost > 0),
-    packagingDone: Boolean(productCosting && productCosting.packagingCost > 0),
+    packagingDone: Boolean(productCosting && (productCosting.packagingCost > 0 || hasSellingFormatPackaging)),
     tastingCount: productTastings.length,
     averageRating,
     latestDecision: latestBatch?.launchDecision ?? "not tested",
@@ -82,9 +96,11 @@ export function getClosestToLaunch(
   batches: ProductBatch[] = [],
   costings: CostingSummary[] = [],
   tastings: TastingFeedback[] = [],
+  sellingFormats: SellingFormat[] = [],
+  sellingFormatPackagingLines: SellingFormatPackagingLine[] = [],
 ) {
   return products
-    .map((product) => ({ product, readiness: getReadinessScore(product, batches, costings, tastings) }))
+    .map((product) => ({ product, readiness: getReadinessScore(product, batches, costings, tastings, sellingFormats, sellingFormatPackagingLines) }))
     .filter((entry) => entry.readiness.percent < 100)
     .sort((a, b) => b.readiness.percent - a.readiness.percent)
     .slice(0, 3);

@@ -33,7 +33,7 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import type { AiAction, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
@@ -58,7 +58,24 @@ import {
   createDraftFromJourney,
   mapContentDraftRow,
 } from "@/lib/content-drafts";
-import { findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch } from "@/lib/costing";
+import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "@/lib/costing";
+import {
+  buildMovedManualPackagingLine,
+  buildSellingFormatPackagingLinePayload,
+  buildSellingFormatPayload,
+  calculateMoveToSellingFormatAmount,
+  getRemovedSellingFormatIds,
+  getRemovedSellingFormatPackagingLineIds,
+  getSellingFormatPackagingCost,
+  getSellingFormatMetrics,
+  mapSellingFormatPackagingLineRow,
+  mapSellingFormatRow,
+  parseSellingFormatsFromFormData,
+  replaceSellingFormatPackagingLinesForCosting,
+  replaceSellingFormatsForCosting,
+  validateSellingFormatsForSave,
+  type SellingFormatMoveInterpretation,
+} from "@/lib/selling-formats";
 import { isDuplicateKeyError } from "@/lib/database-errors";
 import { useEditNavigation } from "@/hooks/use-edit-navigation";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
@@ -156,6 +173,7 @@ export default function ProductLab({
   const [isInventoryTableMissing, setIsInventoryTableMissing] = useState(false);
   const [isPurchaseImportPackagesMissing, setIsPurchaseImportPackagesMissing] = useState(false);
   const [isContentDraftsTableMissing, setIsContentDraftsTableMissing] = useState(false);
+  const [isSellingFormatsTableMissing, setIsSellingFormatsTableMissing] = useState(false);
   const [isProductDecisionColumnMissing, setIsProductDecisionColumnMissing] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
@@ -208,12 +226,14 @@ export default function ProductLab({
       return;
     }
 
-    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
+    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult] = await Promise.all([
       supabase.from("products").select("*").order("name", { ascending: true }),
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("costing_summaries").select("*").order("created_at", { ascending: false }),
+      supabase.from("selling_formats").select("*").order("sort_order", { ascending: true }),
+      supabase.from("selling_format_packaging_lines").select("*").order("sort_order", { ascending: true }),
       supabase.from("supply_entries").select("*").order("created_at", { ascending: false }),
       supabase.from("equipment").select("*").order("created_at", { ascending: false }),
       supabase.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
@@ -231,6 +251,10 @@ export default function ProductLab({
     const equipmentMissing = isMissingTableError(equipmentResult.error);
     const aiReviewsMissing = isMissingTableError(aiReviewResult.error);
     const contentDraftsMissing = isMissingTableError(contentDraftResult.error);
+    // Both selling_formats tables ship together in supabase-add-selling-formats.sql, so one shared
+    // flag -- mirrors the ingredientsMissing bundle below (same rationale: no scenario where only
+    // one of a co-shipped pair exists).
+    const sellingFormatsMissing = isMissingTableError(sellingFormatResult.error) || isMissingTableError(sellingFormatPackagingLineResult.error);
     // All 6 inventory tables ship together in supabase-add-inventory.sql, so one shared flag
     // (not one per table) -- there's no real scenario where only some of them exist. Uses the same
     // error-code check as the tables above so a genuine load failure isn't misread as "not set up".
@@ -245,13 +269,16 @@ export default function ProductLab({
     setIsAiReviewsTableMissing(Boolean(aiReviewsMissing));
     setIsInventoryTableMissing(ingredientsMissing);
     setIsContentDraftsTableMissing(Boolean(contentDraftsMissing));
-    if (productResult.error || batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!contentDraftsMissing && contentDraftResult.error) || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
+    setIsSellingFormatsTableMissing(Boolean(sellingFormatsMissing));
+    if (productResult.error || batchResult.error || batchPhotoResult.error || costingEntryResult.error || costingResult.error || (!sellingFormatsMissing && (sellingFormatResult.error || sellingFormatPackagingLineResult.error)) || (!supplyMissing && supplyResult.error) || (!equipmentMissing && equipmentResult.error) || tastingResult.error || journalResult.error || (!contentDraftsMissing && contentDraftResult.error) || (!aiReviewsMissing && aiReviewResult.error) || (!ingredientsMissing && (ingredientResult.error || ingredientAliasResult.error || purchaseImportResult.error || purchaseImportRowResult.error || inventoryTransactionResult.error))) {
       const error =
         productResult.error?.message ||
         batchResult.error?.message ||
         batchPhotoResult.error?.message ||
         costingEntryResult.error?.message ||
         costingResult.error?.message ||
+        sellingFormatResult.error?.message ||
+        sellingFormatPackagingLineResult.error?.message ||
         supplyResult.error?.message ||
         equipmentResult.error?.message ||
         tastingResult.error?.message ||
@@ -338,6 +365,8 @@ export default function ProductLab({
         suggestedPrice: Number(row.suggested_price ?? 0),
         notes: row.notes ?? "",
       })),
+      sellingFormats: sellingFormatsMissing ? [] : (sellingFormatResult.data ?? []).map(mapSellingFormatRow),
+      sellingFormatPackagingLines: sellingFormatsMissing ? [] : (sellingFormatPackagingLineResult.data ?? []).map(mapSellingFormatPackagingLineRow),
       supplies: supplyMissing ? [] : (supplyResult.data ?? []).map((row) => ({
         id: row.id,
         ingredientId: row.ingredient_id ?? "",
@@ -537,14 +566,14 @@ export default function ProductLab({
 
   const metrics = useMemo(() => {
     const launchCandidates = labState.products.filter((product) => {
-      const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
+      const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
       return readiness.percent >= 100;
     }).length;
 
     return {
       productCount: labState.products.length,
       launchCandidates,
-      needsProof: labState.products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings).proofBatches === 0).length,
+      needsProof: labState.products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines).proofBatches === 0).length,
       tastingEntries: labState.tastings.length,
     };
   }, [labState]);
@@ -881,6 +910,20 @@ export default function ProductLab({
       return;
     }
 
+    // Resolved once, here, before anything else -- threaded through the in-memory costing object
+    // below, the Supabase payload (buildCostingSummaryPayload), and every Selling Format saved
+    // alongside it, so all three always agree on this costing's id. See resolveCostingId's own
+    // comment (src/lib/costing.ts) for why this replaced the inline `costingId || crypto.randomUUID()`
+    // that used to live only in the costing object literal and never reached the Supabase payload.
+    const costingSummaryId = resolveCostingId(costingId);
+    const { sellingFormats, sellingFormatPackagingLines } = parseSellingFormatsFromFormData(formData, costingSummaryId);
+    const sellingFormatValidationError = validateSellingFormatsForSave(sellingFormats, sellingFormatPackagingLines);
+    if (sellingFormatValidationError) {
+      setMessage(sellingFormatValidationError);
+      setMessageTone("bad");
+      return;
+    }
+
     const ingredientRowIds = String(formData.get("ingredientRowIds") || "")
       .split(",")
       .filter(Boolean);
@@ -1023,7 +1066,7 @@ export default function ProductLab({
       : "";
     const structuredNotes = buildCostingStructuredDetail({ electricityDetail, equipmentUsage, gasDetail, laborDetail, overheadRows, packagingRows, targetFoodCost, utilityRows, wasteRows, waterDetail });
     const costing: CostingSummary = {
-      id: costingId || crypto.randomUUID(),
+      id: costingSummaryId,
       productId,
       batchId,
       ingredientCost,
@@ -1074,43 +1117,89 @@ export default function ProductLab({
         }
       }
 
-      const payload = {
-        product_id: costing.productId,
-        batch_id: costing.batchId || null,
-        ingredient_cost: costing.ingredientCost,
-        packaging_cost: costing.packagingCost,
-        labor_estimate: costing.laborEstimate,
-        utilities_estimate:
-          costing.waterCost +
-          costing.gasCost +
-          costing.ovenElectricCost +
-          costing.refrigerationCost +
-          costing.coffeeEquipmentCost,
-        waste_allowance: costing.wasteAllowance,
-        overhead_cost: costing.overheadCost,
-        equipment_cost: costing.equipmentCost,
-        suggested_price: costing.suggestedPrice,
-        notes: costing.notes,
-      };
+      const payload = buildCostingSummaryPayload(costing);
       const query = costingId
         ? supabase.from("costing_summaries").update(payload).eq("id", costingId)
         : supabase.from("costing_summaries").insert(payload);
       const { error } = await query;
       const duplicateMessage = "A costing for this batch already exists. Refresh and edit that record instead.";
-      setMessage(error ? (isDuplicateKeyError(error) ? duplicateMessage : `Costing save failed: ${error.message}`) : costingId ? "Costing updated." : "Costing saved.");
-      setMessageTone(error ? "bad" : "good");
-      if (!error) {
-        setEditingCosting(null);
+      if (error) {
+        setMessage(isDuplicateKeyError(error) ? duplicateMessage : `Costing save failed: ${error.message}`);
+        setMessageTone("bad");
+        await loadSupabaseData();
+        return;
       }
+
+      // Steps 4-7 (Selling Formats + their packaging lines) only run once the costing itself is
+      // confirmed saved -- persisting a format against a costing that failed to save would attach
+      // it to nothing. A failure from here on still leaves the costing itself saved, so every
+      // message below says so explicitly rather than reusing the generic failure text above.
+      const partialSaveSuffix = "Reopen and check before trusting these formats' cost.";
+      const existingSellingFormats = labState.sellingFormats.filter((format) => format.costingId === costingSummaryId);
+      const submittedFormatIds = sellingFormats.map((format) => format.id);
+      const removedFormatIds = getRemovedSellingFormatIds(existingSellingFormats, submittedFormatIds);
+
+      if (sellingFormats.length > 0) {
+        const { error: formatsError } = await supabase.from("selling_formats").upsert(sellingFormats.map(buildSellingFormatPayload));
+        if (formatsError) {
+          setMessage(`Costing saved, but selling formats failed to save (${formatsError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      if (removedFormatIds.length > 0) {
+        const { error: removeFormatsError } = await supabase.from("selling_formats").delete().in("id", removedFormatIds);
+        if (removeFormatsError) {
+          setMessage(`Costing saved, but a removed selling format could not be deleted (${removeFormatsError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      const existingLinesForKeptFormats = labState.sellingFormatPackagingLines.filter((line) => submittedFormatIds.includes(line.sellingFormatId));
+      const submittedLineIds = sellingFormatPackagingLines.map((line) => line.id);
+      const removedLineIds = getRemovedSellingFormatPackagingLineIds(existingLinesForKeptFormats, submittedLineIds);
+
+      if (sellingFormatPackagingLines.length > 0) {
+        const { error: linesError } = await supabase.from("selling_format_packaging_lines").upsert(sellingFormatPackagingLines.map(buildSellingFormatPackagingLinePayload));
+        if (linesError) {
+          setMessage(`Selling formats saved, but their packaging lines failed to save (${linesError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      if (removedLineIds.length > 0) {
+        const { error: removeLinesError } = await supabase.from("selling_format_packaging_lines").delete().in("id", removedLineIds);
+        if (removeLinesError) {
+          setMessage(`Selling formats saved, but a removed packaging line could not be deleted (${removeLinesError.message}). ${partialSaveSuffix}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+      }
+
+      setMessage(costingId ? "Costing updated." : "Costing saved.");
+      setMessageTone("good");
+      setEditingCosting(null);
       await loadSupabaseData();
       return;
     }
     const matchesThisCosting = (entry: { productId: string; batchId: string }) =>
       batchId ? entry.batchId === batchId : entry.productId === productId && !entry.batchId;
+    const existingSellingFormatIdsForThisCostingLocal = labState.sellingFormats
+      .filter((format) => format.costingId === costingSummaryId)
+      .map((format) => format.id);
     setLabState((current) => ({
       ...current,
       costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => !matchesThisCosting(entry))],
       costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => !matchesThisCosting(entry))],
+      sellingFormats: replaceSellingFormatsForCosting(current.sellingFormats, costingSummaryId, sellingFormats),
+      sellingFormatPackagingLines: replaceSellingFormatPackagingLinesForCosting(current.sellingFormatPackagingLines, existingSellingFormatIdsForThisCostingLocal, sellingFormatPackagingLines),
     }));
     setEditingCosting(null);
     setMessage(costingId ? "Costing updated locally." : "Costing saved locally.");
@@ -1138,12 +1227,21 @@ export default function ProductLab({
       await loadSupabaseData();
       return;
     }
-    setLabState((current) => ({
-      ...current,
-      costingEntries: current.costingEntries.filter((entry) =>
-        costing.batchId ? entry.batchId !== costing.batchId : !(entry.productId === costing.productId && !entry.batchId)),
-      costings: current.costings.filter((entry) => entry.id !== costing.id),
-    }));
+    setLabState((current) => {
+      // Supabase relies on selling_formats.costing_id's own "on delete cascade" to remove formats
+      // and (transitively) their packaging lines when the costing itself is deleted -- no separate
+      // delete call needed there. Local mode has no database to cascade for it, so it's done by
+      // hand here, scoped the same way -- deleting is "replace with nothing."
+      const removedFormatIds = current.sellingFormats.filter((format) => format.costingId === costing.id).map((format) => format.id);
+      return {
+        ...current,
+        costingEntries: current.costingEntries.filter((entry) =>
+          costing.batchId ? entry.batchId !== costing.batchId : !(entry.productId === costing.productId && !entry.batchId)),
+        costings: current.costings.filter((entry) => entry.id !== costing.id),
+        sellingFormats: replaceSellingFormatsForCosting(current.sellingFormats, costing.id, []),
+        sellingFormatPackagingLines: replaceSellingFormatPackagingLinesForCosting(current.sellingFormatPackagingLines, removedFormatIds, []),
+      };
+    });
     if (editingCosting?.id === costing.id) {
       setEditingCosting(null);
     }
@@ -2348,7 +2446,7 @@ export default function ProductLab({
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} products={labState.products} saveCosting={saveCosting} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
                 <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
@@ -2641,8 +2739,8 @@ function ProductDetailPage({
   const tastings = labState.tastings.filter((entry) => entry.productId === product.id);
   const journal = labState.journal.filter((entry) => entry.productId === product.id);
   const aiReviews = labState.aiReviews.filter((review) => review.productId === product.id);
-  const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
-  const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
+  const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
+  const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
   const averageRating = stats.averageRating ? stats.averageRating.toFixed(1) : "None";
   const costingTotals = costing ? getCostingTotals(costing) : null;
 
@@ -2749,7 +2847,7 @@ function getProductGap(stats: ReturnType<typeof getProductStats>) {
 }
 
 function ReadinessPanels({ labState }: { labState: LabState }) {
-  const closestToLaunch = getClosestToLaunch(labState.products, labState.batches, labState.costings, labState.tastings);
+  const closestToLaunch = getClosestToLaunch(labState.products, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
   const pauseCandidates = getPauseCandidates(labState.products, labState.batches, labState.costings, labState.tastings);
   const reviewItems = getShinReviewItems(labState.products, labState.batches, labState.costings, labState.tastings);
 
@@ -2803,7 +2901,7 @@ function ContextBrain({ labState }: { labState: LabState }) {
           <h4 className="font-semibold">What&apos;s missing, per product</h4>
           <div className="mt-3 divide-y divide-[#f0e4d8]">
             {labState.products.map((product) => {
-              const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+              const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
               return (
                 <div className="flex items-center justify-between gap-3 py-3 text-sm" key={product.id}>
                   <span className="font-medium">{product.name}</span>
@@ -3228,7 +3326,7 @@ function ProductAdminPage({
         <div className="divide-y divide-[#f0e4d8]">
           {labState.products.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No products yet. Add the first one on the right.</p> : null}
           {labState.products.map((item) => {
-            const stats = getProductStats(item, labState.batches, labState.costings, labState.tastings);
+            const stats = getProductStats(item, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
             const referenceCount = getProductReferenceCount(item.id, labState);
             const referenceTotal = totalProductReferenceCount(referenceCount);
             const deletable = canDeleteProduct(referenceCount);
@@ -3295,7 +3393,7 @@ function ProductAdminPage({
 
 function LaunchOfferBuilder({ labState }: { labState: LabState }) {
   const candidates = labState.products.filter((product) => {
-    const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+    const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
     return stats.proofBatches > 0 && stats.costingDone;
   });
 
@@ -3519,8 +3617,8 @@ function ProductReadiness({ labState }: { labState: LabState }) {
       <div className="divide-y divide-[#f0e4d8]">
         {labState.products.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No products yet. Add one from the Product Admin page.</p> : null}
         {labState.products.map((product) => {
-          const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings);
-          const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings);
+          const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
+          const stats = getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
           return (
             <article className="grid gap-4 p-4 md:grid-cols-[92px_1fr_170px]" key={product.id}>
               <div className="relative h-24 overflow-hidden rounded-md border border-[#eaded2] bg-[#fbf2e8]">
@@ -4216,6 +4314,24 @@ function buildNamedCostRows(names: string[], savedRows?: CostingNamedCostRow[], 
     note: "",
     rowId: crypto.randomUUID(),
   }));
+}
+
+// A Selling Format packaging line's "current cost" for a catalog-linked item, resolved the exact
+// same way -- most recent valid purchase wins, never a weighted average -- as ingredient rows
+// already are (getAutoCostedIngredientRowForItems). Falls back to the ingredient's own maintained
+// average only when no matching purchase history exists at all.
+function resolvePackagingItemUnitCost(ingredientId: string, ingredients: Ingredient[], supplies: SupplyEntry[]): number {
+  const ingredient = ingredients.find((item) => item.id === ingredientId);
+  if (!ingredient) {
+    return 0;
+  }
+
+  const bestMatch = getMatchingPurchaseHistoryForIngredient(supplies, ingredients, { ingredientId: ingredient.id, ingredientName: ingredient.name }, "", ingredient.baseUnit)[0];
+  if (bestMatch && bestMatch.packQuantity > 0) {
+    return bestMatch.totalCost / bestMatch.packQuantity;
+  }
+
+  return ingredient.averageUnitCost;
 }
 
 // Manual purchases must attach to an existing Item, not arbitrary free text -- an ingredient and
@@ -5316,10 +5432,13 @@ function CostingForm({
   equipment,
   ingredientEntries,
   ingredients,
+  isSellingFormatsTableMissing,
   message,
   messageTone,
   products,
   saveCosting,
+  sellingFormatPackagingLines,
+  sellingFormats,
   supplies,
 }: {
   batches: ProductBatch[];
@@ -5328,10 +5447,13 @@ function CostingForm({
   equipment: EquipmentEntry[];
   ingredientEntries: CostingEntry[];
   ingredients: Ingredient[];
+  isSellingFormatsTableMissing: boolean;
   message: string;
   messageTone: "good" | "bad" | "info";
   products: Product[];
   saveCosting: (formData: FormData) => void;
+  sellingFormatPackagingLines: SellingFormatPackagingLine[];
+  sellingFormats: SellingFormat[];
   supplies: SupplyEntry[];
 }) {
   const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLSelectElement>(costing?.id ?? null);
@@ -5352,6 +5474,9 @@ function CostingForm({
   const savedIngredients = costing
     ? ingredientEntries.filter((entry) => (costing.batchId ? entry.batchId === costing.batchId : entry.productId === costing.productId && !entry.batchId))
     : [];
+  const existingSellingFormats = costing ? sellingFormats.filter((format) => format.costingId === costing.id) : [];
+  const existingSellingFormatIds = new Set(existingSellingFormats.map((format) => format.id));
+  const existingSellingFormatPackagingLines = sellingFormatPackagingLines.filter((line) => existingSellingFormatIds.has(line.sellingFormatId));
   const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   // A brand-new costing has nothing saved yet to protect, so it starts pre-filled from the
   // selected batch's formula (auto-costed against purchase history) instead of a blank row -- the "Use
@@ -5447,6 +5572,16 @@ function CostingForm({
   const [targetFoodCost, setTargetFoodCost] = useState(structuredDetail?.targetFoodCost ?? 0.35);
   const [localMessage, setLocalMessage] = useState("");
   const [localMessageTone, setLocalMessageTone] = useState<"good" | "bad" | "info">("info");
+  const [formatRows, setFormatRows] = useState<SellingFormat[]>(() => existingSellingFormats);
+  const [packagingLineRows, setPackagingLineRows] = useState<SellingFormatPackagingLine[]>(() => existingSellingFormatPackagingLines);
+  // Frozen once, at load -- never updated after -- so a catalog-linked line's current display can
+  // compare "what was saved" against "what the catalog says now" without losing the saved number
+  // the moment the operator starts editing something else on the same line.
+  const [savedPackagingLineUnitCosts] = useState<Map<string, number>>(() => new Map(existingSellingFormatPackagingLines.map((line) => [line.id, line.unitCostSnapshot])));
+  // "Move to Selling Format" in progress for at most one batch-wide row at a time -- null means
+  // nothing pending, so packagingRows/packagingLineRows are provably untouched until Confirm is
+  // clicked (see confirmMoveToSellingFormat below).
+  const [pendingMove, setPendingMove] = useState<{ row: CostingNamedCostRow; formatId: string; interpretation: SellingFormatMoveInterpretation; manualAmount: number } | null>(null);
 
   const utilityRowsTotal = utilityRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const gasCostDetail = getGasCostDetail(gasDetail, laborDetail.cookingMinutes);
@@ -5501,6 +5636,21 @@ function CostingForm({
     contributionMarginPerPiece,
     breakEvenUnits,
   } = getCostingMetrics({ costingYield, directCost, indirectCost, suggestedPrice, targetFoodCost, totalBatchCost });
+  // The live equivalent of getCostingTotals(costing).costPerPiece -- same value, recomputed on
+  // every keystroke instead of read from a saved row. No second base-cost formula: Selling Format
+  // math is built entirely on this one number, which already includes batch-wide packaging &
+  // consumables (see the relabeled section below) since that field was never excluded from it.
+  const baseProductionCostPerPiece = costPerPiece;
+  const formatsWithMetrics = formatRows.map((format) => {
+    const lines = packagingLineRows.filter((line) => line.sellingFormatId === format.id);
+    const formatPackagingCost = getSellingFormatPackagingCost(lines);
+    return {
+      format,
+      lines,
+      packagingCost: formatPackagingCost,
+      ...getSellingFormatMetrics({ baseProductionCostPerPiece, piecesPerUnit: format.piecesPerUnit, packagingCost: formatPackagingCost, sellingPrice: format.sellingPrice }),
+    };
+  });
   const appliedMessage = message || localMessage;
   const appliedMessageTone = message ? messageTone : localMessageTone;
   const gasEquipmentOptions = Array.from(new Set(["Oven", "Stove", ...customGasEquipmentNames, ...equipment.filter((item) => item.calculationMode === "gas-burn-rate").map((item) => `${item.brand ? `${item.brand} ` : ""}${item.name}`)])).filter(Boolean);
@@ -5510,6 +5660,138 @@ function CostingForm({
     setSelectedBatchId(batchId);
     const newlySelectedBatch = batches.find((item) => item.id === batchId);
     setCostingYield(newlySelectedBatch?.usablePieces || 0);
+  }
+
+  function addSellingFormat() {
+    setFormatRows((current) => [
+      ...current,
+      { id: crypto.randomUUID(), costingId: costing?.id ?? "", name: "", piecesPerUnit: 1, sellingPrice: 0, isActive: true, sortOrder: current.length, notes: "" },
+    ]);
+    setLocalMessage("Selling format added.");
+    setLocalMessageTone("good");
+  }
+
+  function updateSellingFormat(formatId: string, changes: Partial<SellingFormat>) {
+    setFormatRows((current) => current.map((format) => (format.id === formatId ? { ...format, ...changes } : format)));
+  }
+
+  function removeSellingFormat(formatId: string) {
+    setFormatRows((current) => current.filter((format) => format.id !== formatId));
+    setPackagingLineRows((current) => current.filter((line) => line.sellingFormatId !== formatId));
+    setLocalMessage("Selling format removed.");
+    setLocalMessageTone("good");
+  }
+
+  function addPackagingLine(formatId: string) {
+    const lineCount = packagingLineRows.filter((line) => line.sellingFormatId === formatId).length;
+    setPackagingLineRows((current) => [
+      ...current,
+      { id: crypto.randomUUID(), sellingFormatId: formatId, ingredientId: "", name: "", quantity: 1, unit: "", unitCostSnapshot: 0, isManualCost: false, note: "", sortOrder: lineCount },
+    ]);
+  }
+
+  function updatePackagingLine(lineId: string, changes: Partial<SellingFormatPackagingLine>) {
+    setPackagingLineRows((current) => current.map((line) => (line.id === lineId ? { ...line, ...changes } : line)));
+  }
+
+  function removePackagingLine(lineId: string) {
+    setPackagingLineRows((current) => current.filter((line) => line.id !== lineId));
+  }
+
+  // Re-picking a catalog item already used elsewhere in the same format merges into that
+  // existing line (quantity + 1) instead of creating a second line for the same ingredient --
+  // matches the database's own partial unique index (selling_format_packaging_lines_catalog_
+  // unique_idx), enforced here too so the operator sees the merge happen, not a save-time error.
+  function selectPackagingLineIngredient(formatId: string, lineId: string, ingredientId: string) {
+    const ingredient = ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      return;
+    }
+
+    const duplicateLine = packagingLineRows.find((line) => line.sellingFormatId === formatId && line.ingredientId === ingredientId && line.id !== lineId);
+    if (duplicateLine) {
+      setPackagingLineRows((current) =>
+        current
+          .map((line) => (line.id === duplicateLine.id ? { ...line, quantity: line.quantity + 1 } : line))
+          .filter((line) => line.id !== lineId),
+      );
+      setLocalMessage(`"${ingredient.name}" is already used in this format -- increased its quantity instead of adding a duplicate line.`);
+      setLocalMessageTone("good");
+      return;
+    }
+
+    const currentUnitCost = resolvePackagingItemUnitCost(ingredientId, ingredients, supplies);
+    setPackagingLineRows((current) =>
+      current.map((line) =>
+        line.id === lineId
+          ? { ...line, ingredientId, name: ingredient.name, unit: ingredient.baseUnit, unitCostSnapshot: currentUnitCost, isManualCost: false }
+          : line,
+      ),
+    );
+  }
+
+  function switchPackagingLineToManual(lineId: string) {
+    setPackagingLineRows((current) => current.map((line) => (line.id === lineId ? { ...line, ingredientId: "", isManualCost: true } : line)));
+  }
+
+  function updatePackagingLineToCurrentCost(lineId: string) {
+    const line = packagingLineRows.find((item) => item.id === lineId);
+    if (!line?.ingredientId) {
+      return;
+    }
+    const currentUnitCost = resolvePackagingItemUnitCost(line.ingredientId, ingredients, supplies);
+    setPackagingLineRows((current) => current.map((item) => (item.id === lineId ? { ...item, unitCostSnapshot: currentUnitCost } : item)));
+  }
+
+  // Batch-wide packaging rows store a whole-batch total, never a per-unit cost (confirmed by this
+  // section's own "Use per-batch costs" helper text) -- so starting a move never mutates
+  // packagingRows/packagingLineRows itself. It only opens the inline confirmation panel; picking
+  // an interpretation there is still just local pendingMove state until confirmMoveToSellingFormat
+  // actually runs.
+  function startMoveToSellingFormat(row: CostingNamedCostRow, formatId: string) {
+    setPendingMove({ row, formatId, interpretation: costingYield > 0 ? "divide-across-yield" : "use-whole-amount", manualAmount: row.cost });
+  }
+
+  function cancelMoveToSellingFormat() {
+    setPendingMove(null);
+  }
+
+  // The one place the move actually happens -- only ever called from the confirmation panel's
+  // "Confirm move" button, never from selecting a target format or an interpretation.
+  function confirmMoveToSellingFormat() {
+    if (!pendingMove) {
+      return;
+    }
+
+    const targetFormat = formatRows.find((format) => format.id === pendingMove.formatId);
+    if (!targetFormat) {
+      setPendingMove(null);
+      return;
+    }
+
+    const confirmedAmount = calculateMoveToSellingFormatAmount(pendingMove.interpretation, {
+      wholeBatchAmount: pendingMove.row.cost,
+      costingYield,
+      piecesPerUnit: targetFormat.piecesPerUnit,
+      manualAmount: pendingMove.manualAmount,
+    });
+    if (confirmedAmount === null) {
+      return;
+    }
+
+    const lineCount = packagingLineRows.filter((line) => line.sellingFormatId === pendingMove.formatId).length;
+    setPackagingRows((current) => current.filter((item) => item.rowId !== pendingMove.row.rowId));
+    setPackagingLineRows((current) => [...current, buildMovedManualPackagingLine(pendingMove.row, pendingMove.formatId, confirmedAmount, lineCount)]);
+
+    const interpretationLabel =
+      pendingMove.interpretation === "divide-across-yield"
+        ? `divided across the batch yield (${costingYield}) and scaled to this format's ${targetFormat.piecesPerUnit} piece${targetFormat.piecesPerUnit === 1 ? "" : "s"}`
+        : pendingMove.interpretation === "use-whole-amount"
+          ? "used as-is for each selling unit"
+          : "entered manually";
+    setLocalMessage(`Moved "${pendingMove.row.name || "packaging item"}" into "${targetFormat.name || "this format"}" as PHP ${confirmedAmount.toFixed(2)} per unit (${interpretationLabel}). Double-check this reflects what you meant.`);
+    setLocalMessageTone("good");
+    setPendingMove(null);
   }
 
   function addIngredientRow() {
@@ -5607,6 +5889,11 @@ function CostingForm({
         ["Summary", "Selling price", "", "", suggestedPrice, ""],
         ["Summary", "Operating profit per unit", "", "", formatCostingMetric(grossProfit, (value) => value.toFixed(2)), ""],
         ["Summary", "Operating margin %", "", "", formatCostingMetric(margin, (value) => value.toFixed(1)), ""],
+        ...formatsWithMetrics.flatMap(({ format, lines, packagingCost: formatPackagingCost, totalCost, profit, margin: formatMargin }) => [
+          ["Selling Format", format.name, format.piecesPerUnit, format.isActive ? "active" : "archived", format.sellingPrice, `Cost ${formatCostingMetric(totalCost, (value) => value.toFixed(2))} / Profit ${formatCostingMetric(profit, (value) => value.toFixed(2))} / Margin ${formatCostingMetric(formatMargin, (value) => `${value.toFixed(1)}%`)}`],
+          ...lines.map((line) => ["Selling Format Packaging", line.name, line.quantity, line.unit, line.quantity * line.unitCostSnapshot, `${format.name} / ${line.isManualCost ? "manual" : "catalog-linked"}`]),
+          ["Selling Format Packaging Total", `${format.name} packaging`, "", "", formatPackagingCost, ""],
+        ]),
       ],
     );
   }
@@ -5627,6 +5914,7 @@ function CostingForm({
         <input name="overheadRowIds" type="hidden" value={overheadRows.map((row) => row.rowId).join(",")} />
         <input name="equipmentUsageRowIds" type="hidden" value={equipmentUsage.map((row) => row.rowId).join(",")} />
         <input name="wasteRowIds" type="hidden" value={wasteRows.map((row) => row.rowId).join(",")} />
+        <input name="sellingFormatRowIds" type="hidden" value={formatRows.map((format) => format.id).join(",")} />
         <input name="productId" type="hidden" value={selectedProductId} />
         <input name="batchId" type="hidden" value={selectedBatchId} />
         <label className="grid gap-1 text-sm font-medium">
@@ -5704,7 +5992,50 @@ function CostingForm({
           </div>
           <p className="mt-3 text-sm font-semibold text-[#5f4a3d]">Ingredient total: PHP {ingredientTotal.toFixed(2)}</p>
         </div>
-        <NamedCostSection addLabel="Add packaging" namePrefix="packaging" onAdd={() => addNamedCostRow(setPackagingRows, "Packaging")} rows={packagingRows} setRows={setPackagingRows} title="Packaging components" total={packagingCost} updateNamedCostRow={updateNamedCostRow} />
+        <NamedCostSection
+          addLabel="Add batch-wide item"
+          helperNote={
+            <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">
+              Parchment, tray liners, and anything used once for the whole batch stay here. Wrappers, stickers, boxes, and other packaging used for a specific sale belong under Selling Formats below.
+            </p>
+          }
+          namePrefix="packaging"
+          onAdd={() => addNamedCostRow(setPackagingRows, "Packaging")}
+          renderRowExtra={(row) =>
+            formatRows.length > 0 ? (
+              <div className="mt-1">
+                <select
+                  className="h-8 rounded-md border border-[#d8c7b7] bg-white px-2 text-xs"
+                  onChange={(event) => {
+                    if (event.target.value) {
+                      startMoveToSellingFormat(row, event.target.value);
+                    }
+                  }}
+                  value=""
+                >
+                  <option value="">Move to a selling format...</option>
+                  {formatRows.map((format) => <option key={format.id} value={format.id}>{format.name || "Untitled format"}</option>)}
+                </select>
+                {pendingMove && pendingMove.row.rowId === row.rowId ? (
+                  <MoveToSellingFormatConfirm
+                    costingYield={costingYield}
+                    formatRows={formatRows}
+                    onCancel={cancelMoveToSellingFormat}
+                    onChangeInterpretation={(interpretation) => setPendingMove((current) => (current ? { ...current, interpretation } : current))}
+                    onChangeManualAmount={(manualAmount) => setPendingMove((current) => (current ? { ...current, manualAmount } : current))}
+                    onConfirm={confirmMoveToSellingFormat}
+                    pendingMove={pendingMove}
+                  />
+                ) : null}
+              </div>
+            ) : null
+          }
+          rows={packagingRows}
+          setRows={setPackagingRows}
+          title="Batch-wide packaging & consumables"
+          total={packagingCost}
+          updateNamedCostRow={updateNamedCostRow}
+        />
         <Input
           name="costingYield"
           label="Batch yield used for costing"
@@ -5872,6 +6203,83 @@ function CostingForm({
           <CostingBreakdown label="Indirect cost" value={indirectCost} />
           <CostingBreakdown label="Total batch cost" value={totalBatchCost} />
         </div>
+        <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold">Selling Formats</p>
+              <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">
+                How this batch is actually sold -- a single piece, a box of 3, a box of 6 -- each with its own packaging and true margin, built on the base production cost above (PHP {formatCostingMetric(baseProductionCostPerPiece, (value) => value.toFixed(2))} per piece).
+              </p>
+            </div>
+            {!isSellingFormatsTableMissing ? (
+              <button className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={addSellingFormat} type="button">Add selling format</button>
+            ) : null}
+          </div>
+          {isSellingFormatsTableMissing ? (
+            <div className="mt-3 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
+              Selling Formats database tables are not set up yet. Run <strong>supabase-add-selling-formats.sql</strong> once, then reload this page. The rest of Costing still works normally in the meantime, and this costing can still be saved.
+            </div>
+          ) : (
+            <>
+              {formatRows.length === 0 ? (
+                <p className="mt-3 text-sm text-[#6f5a4c]">No selling formats yet. Add one to see the true cost, profit, and margin for how this batch is actually sold.</p>
+              ) : null}
+              {formatsWithMetrics.some(({ format }) => format.isActive) ? (
+                <div className="mt-3 overflow-x-auto rounded-md border border-[#ead9c8] bg-white">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#ead9c8] text-left text-xs uppercase tracking-wide text-[#9a5b2f]">
+                        <th className="px-3 py-2">Format</th>
+                        <th className="px-3 py-2">Pieces</th>
+                        <th className="px-3 py-2">Price</th>
+                        <th className="px-3 py-2">Cost</th>
+                        <th className="px-3 py-2">Profit</th>
+                        <th className="px-3 py-2">Margin</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {formatsWithMetrics.filter(({ format }) => format.isActive).map(({ format, totalCost, profit, margin: formatMargin }) => (
+                        <tr className="border-b border-[#ead9c8] last:border-0" key={format.id}>
+                          <td className="px-3 py-2 font-semibold text-[#5f4a3d]">{format.name || "Untitled format"}</td>
+                          <td className="px-3 py-2">{format.piecesPerUnit}</td>
+                          <td className="px-3 py-2">PHP {format.sellingPrice.toFixed(2)}</td>
+                          <td className="px-3 py-2">{formatCostingMetric(totalCost, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                          <td className="px-3 py-2">{formatCostingMetric(profit, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                          <td className="px-3 py-2">{formatCostingMetric(formatMargin, (value) => `${value.toFixed(1)}%`)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+              <div className="mt-3 grid gap-3">
+                {formatsWithMetrics.map(({ format, lines, packagingCost: formatPackagingCost, totalCost, profit, margin: formatMargin }) => (
+                  <SellingFormatCard
+                    costingYield={costingYield}
+                    format={format}
+                    formatPackagingCost={formatPackagingCost}
+                    ingredients={ingredients}
+                    key={format.id}
+                    lines={lines}
+                    margin={formatMargin}
+                    onAddLine={() => addPackagingLine(format.id)}
+                    onRemove={() => removeSellingFormat(format.id)}
+                    onRemoveLine={removePackagingLine}
+                    onSelectLineIngredient={(lineId, ingredientId) => selectPackagingLineIngredient(format.id, lineId, ingredientId)}
+                    onSwitchLineToManual={switchPackagingLineToManual}
+                    onUpdate={(changes) => updateSellingFormat(format.id, changes)}
+                    onUpdateLine={updatePackagingLine}
+                    onUpdateLineToCurrentCost={updatePackagingLineToCurrentCost}
+                    profit={profit}
+                    savedPackagingLineUnitCosts={savedPackagingLineUnitCosts}
+                    supplies={supplies}
+                    totalCost={totalCost}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={getCostingBaseNotes(costing?.notes ?? "")} />
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button>{costing ? "Update costing" : "Save costing"}</Button>
@@ -5922,8 +6330,242 @@ function CostingForm({
         waterCost={waterCost}
         waterCostDetail={waterCostDetail}
         waterDetail={waterDetail}
+        formatsWithMetrics={formatsWithMetrics}
       />
     </FormPanel>
+  );
+}
+
+function SellingFormatCard({
+  costingYield,
+  format,
+  formatPackagingCost,
+  ingredients,
+  lines,
+  margin,
+  onAddLine,
+  onRemove,
+  onRemoveLine,
+  onSelectLineIngredient,
+  onSwitchLineToManual,
+  onUpdate,
+  onUpdateLine,
+  onUpdateLineToCurrentCost,
+  profit,
+  savedPackagingLineUnitCosts,
+  supplies,
+  totalCost,
+}: {
+  costingYield: number;
+  format: SellingFormat;
+  formatPackagingCost: number;
+  ingredients: Ingredient[];
+  lines: SellingFormatPackagingLine[];
+  margin: number | null;
+  onAddLine: () => void;
+  onRemove: () => void;
+  onRemoveLine: (lineId: string) => void;
+  onSelectLineIngredient: (lineId: string, ingredientId: string) => void;
+  onSwitchLineToManual: (lineId: string) => void;
+  onUpdate: (changes: Partial<SellingFormat>) => void;
+  onUpdateLine: (lineId: string, changes: Partial<SellingFormatPackagingLine>) => void;
+  onUpdateLineToCurrentCost: (lineId: string) => void;
+  profit: number | null;
+  savedPackagingLineUnitCosts: Map<string, number>;
+  supplies: SupplyEntry[];
+  totalCost: number | null;
+}) {
+  const overYield = costingYield > 0 && format.piecesPerUnit > costingYield;
+
+  return (
+    <div className={`rounded-md border p-3 ${format.isActive ? "border-[#ead9c8] bg-white" : "border-[#ead9c8] bg-[#f5efe6] opacity-80"}`}>
+      <input name={`sellingFormatPackagingLineRowIds-${format.id}`} type="hidden" value={lines.map((line) => line.id).join(",")} />
+      <input name={`sellingFormatIsActive-${format.id}`} type="hidden" value={format.isActive ? "true" : "false"} />
+      <input name={`sellingFormatSortOrder-${format.id}`} type="hidden" value={format.sortOrder} />
+      <input name={`sellingFormatNotes-${format.id}`} type="hidden" value={format.notes} />
+      <div className="grid gap-2 lg:grid-cols-[1.5fr_110px_130px_auto_70px]">
+        <Input label="Format name" name={`sellingFormatName-${format.id}`} placeholder="Single Brownie / Box of 6" value={format.name} onChange={(event) => onUpdate({ name: event.target.value })} />
+        <Input
+          helper={overYield ? `Batch yields ${costingYield} -- this uses more than that.` : undefined}
+          label="Pieces per unit"
+          name={`sellingFormatPiecesPerUnit-${format.id}`}
+          step="0.01"
+          type="number"
+          value={format.piecesPerUnit || ""}
+          onChange={(event) => onUpdate({ piecesPerUnit: Number(event.target.value || 0) })}
+        />
+        <Input label="Selling price PHP" name={`sellingFormatSellingPrice-${format.id}`} step="0.01" type="number" value={format.sellingPrice || ""} onChange={(event) => onUpdate({ sellingPrice: Number(event.target.value || 0) })} />
+        <label className="mt-6 flex items-center gap-2 text-sm">
+          <input checked={format.isActive} onChange={(event) => onUpdate({ isActive: event.target.checked })} type="checkbox" />
+          Active
+        </label>
+        <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={onRemove} type="button">Remove</button>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Packaging for this format</p>
+        <button className="h-8 rounded-md border border-[#d8c7b7] bg-white px-2 text-xs font-semibold text-[#5f4a3d]" onClick={onAddLine} type="button">Add packaging line</button>
+      </div>
+      <div className="mt-2 grid gap-2">
+        {lines.length === 0 ? <p className="text-sm text-[#6f5a4c]">No packaging lines yet. Some products legitimately sell with none.</p> : null}
+        {lines.map((line) => {
+          const isCatalogLinked = Boolean(line.ingredientId);
+          const savedUnitCost = savedPackagingLineUnitCosts.get(line.id);
+          const currentUnitCost = isCatalogLinked ? resolvePackagingItemUnitCost(line.ingredientId, ingredients, supplies) : 0;
+          const costsDiffer = isCatalogLinked && savedUnitCost !== undefined && Math.abs(currentUnitCost - savedUnitCost) > 0.001;
+
+          return (
+            <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-2" key={line.id}>
+              <input name={`sellingFormatPackagingLineIngredientId-${line.id}`} type="hidden" value={line.ingredientId} />
+              <input name={`sellingFormatPackagingLineIsManualCost-${line.id}`} type="hidden" value={line.isManualCost ? "true" : "false"} />
+              <input name={`sellingFormatPackagingLineSortOrder-${line.id}`} type="hidden" value={line.sortOrder} />
+              <input name={`sellingFormatPackagingLineNote-${line.id}`} type="hidden" value={line.note} />
+              {line.isManualCost || !isCatalogLinked ? (
+                <div className="grid gap-2 lg:grid-cols-[1fr_90px_110px_100px_70px]">
+                  <Input label="Name" name={`sellingFormatPackagingLineName-${line.id}`} placeholder="Kraft box" value={line.name} onChange={(event) => onUpdateLine(line.id, { name: event.target.value })} />
+                  <Input label="Qty" name={`sellingFormatPackagingLineQuantity-${line.id}`} step="0.01" type="number" value={line.quantity || ""} onChange={(event) => onUpdateLine(line.id, { quantity: Number(event.target.value || 0) })} />
+                  <Input label="Unit" name={`sellingFormatPackagingLineUnit-${line.id}`} placeholder="pcs" value={line.unit} onChange={(event) => onUpdateLine(line.id, { unit: event.target.value })} />
+                  <Input label="Cost PHP" name={`sellingFormatPackagingLineUnitCostSnapshot-${line.id}`} step="0.0001" type="number" value={line.unitCostSnapshot || ""} onChange={(event) => onUpdateLine(line.id, { unitCostSnapshot: Number(event.target.value || 0) })} />
+                  <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => onRemoveLine(line.id)} type="button">Remove</button>
+                </div>
+              ) : (
+                <>
+                  <input name={`sellingFormatPackagingLineName-${line.id}`} type="hidden" value={line.name} />
+                  <input name={`sellingFormatPackagingLineUnit-${line.id}`} type="hidden" value={line.unit} />
+                  <input name={`sellingFormatPackagingLineUnitCostSnapshot-${line.id}`} type="hidden" value={line.unitCostSnapshot} />
+                  <div className="grid gap-2 lg:grid-cols-[1fr_90px_70px]">
+                    <div>
+                      <p className="text-xs font-semibold text-[#5f4a3d]">Catalog item</p>
+                      <p className="text-sm">{line.name} <span className="text-[#9a5b2f]">({line.unit || "unit"})</span></p>
+                    </div>
+                    <Input label="Qty" name={`sellingFormatPackagingLineQuantity-${line.id}`} step="0.01" type="number" value={line.quantity || ""} onChange={(event) => onUpdateLine(line.id, { quantity: Number(event.target.value || 0) })} />
+                    <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => onRemoveLine(line.id)} type="button">Remove</button>
+                  </div>
+                </>
+              )}
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[#6f5a4c]">
+                {isCatalogLinked && !line.isManualCost ? (
+                  <>
+                    <span>Saved PHP {line.unitCostSnapshot.toFixed(2)}/{line.unit || "unit"}{costsDiffer ? ` (current PHP ${currentUnitCost.toFixed(2)})` : ""}</span>
+                    {costsDiffer ? (
+                      <button className="rounded border border-[#d8c7b7] bg-white px-2 py-0.5 font-semibold text-[#5f4a3d]" onClick={() => onUpdateLineToCurrentCost(line.id)} type="button">Update to current cost</button>
+                    ) : null}
+                    <button className="rounded border border-[#d8c7b7] bg-white px-2 py-0.5 font-semibold text-[#5f4a3d]" onClick={() => onSwitchLineToManual(line.id)} type="button">Enter manually instead</button>
+                  </>
+                ) : (
+                  <div className="w-full">
+                    <IngredientPicker
+                      defaultCategory="packaging"
+                      ingredients={ingredients}
+                      onSelect={(ingredientId) => onSelectLineIngredient(line.id, ingredientId)}
+                      placeholder="Search packaging supplies..."
+                      selectedIngredientId={line.ingredientId}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-3 grid gap-2 rounded-md border border-[#ead9c8] bg-white p-2 text-sm text-[#5f4a3d] sm:grid-cols-4">
+        <CostingBreakdown label="Packaging" value={formatPackagingCost} />
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Total cost/unit</p>
+          <p className="mt-1 font-semibold">{formatCostingMetric(totalCost, (value) => `PHP ${value.toFixed(2)}`)}</p>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Profit/unit</p>
+          <p className="mt-1 font-semibold">{formatCostingMetric(profit, (value) => `PHP ${value.toFixed(2)}`)}</p>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Margin</p>
+          <p className="mt-1 font-semibold">{formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MoveToSellingFormatConfirm({
+  costingYield,
+  formatRows,
+  onCancel,
+  onChangeInterpretation,
+  onChangeManualAmount,
+  onConfirm,
+  pendingMove,
+}: {
+  costingYield: number;
+  formatRows: SellingFormat[];
+  onCancel: () => void;
+  onChangeInterpretation: (interpretation: SellingFormatMoveInterpretation) => void;
+  onChangeManualAmount: (amount: number) => void;
+  onConfirm: () => void;
+  pendingMove: { row: CostingNamedCostRow; formatId: string; interpretation: SellingFormatMoveInterpretation; manualAmount: number };
+}) {
+  const targetFormat = formatRows.find((format) => format.id === pendingMove.formatId);
+  if (!targetFormat) {
+    return null;
+  }
+
+  const canDivideAcrossYield = costingYield > 0;
+  const previewAmount = calculateMoveToSellingFormatAmount(pendingMove.interpretation, {
+    wholeBatchAmount: pendingMove.row.cost,
+    costingYield,
+    piecesPerUnit: targetFormat.piecesPerUnit,
+    manualAmount: pendingMove.manualAmount,
+  });
+
+  return (
+    <div className="mt-2 rounded-md border border-[#d8c7b7] bg-white p-2 text-xs text-[#5f4a3d]">
+      <p className="font-semibold">
+        &quot;{pendingMove.row.name || "This item"}&quot; is PHP {pendingMove.row.cost.toFixed(2)} for the whole batch. How should that become a per-unit cost in &quot;{targetFormat.name || "this format"}&quot;?
+      </p>
+      <div className="mt-2 grid gap-2">
+        <label className="flex flex-wrap items-center gap-2">
+          <input
+            checked={pendingMove.interpretation === "divide-across-yield"}
+            disabled={!canDivideAcrossYield}
+            onChange={() => onChangeInterpretation("divide-across-yield")}
+            type="radio"
+          />
+          <span>
+            Divide across the batch yield ({canDivideAcrossYield ? costingYield : "not set"}), scaled to {targetFormat.piecesPerUnit} piece{targetFormat.piecesPerUnit === 1 ? "" : "s"}
+            {canDivideAcrossYield ? ` -- PHP ${((pendingMove.row.cost / costingYield) * targetFormat.piecesPerUnit).toFixed(2)}` : " (needs a real batch yield first)"}
+          </span>
+        </label>
+        <label className="flex flex-wrap items-center gap-2">
+          <input checked={pendingMove.interpretation === "use-whole-amount"} onChange={() => onChangeInterpretation("use-whole-amount")} type="radio" />
+          <span>Use the whole PHP {pendingMove.row.cost.toFixed(2)} for each selling unit</span>
+        </label>
+        <label className="flex flex-wrap items-center gap-2">
+          <input checked={pendingMove.interpretation === "manual"} onChange={() => onChangeInterpretation("manual")} type="radio" />
+          <span>Enter the correct amount manually:</span>
+          <input
+            className="h-7 w-24 rounded border border-[#d8c7b7] px-1"
+            onChange={(event) => onChangeManualAmount(Number(event.target.value || 0))}
+            step="0.01"
+            type="number"
+            value={pendingMove.manualAmount || ""}
+          />
+        </label>
+      </div>
+      <p className="mt-2 font-semibold">{previewAmount === null ? "Choose a valid option before confirming." : `Result: PHP ${previewAmount.toFixed(2)} per unit`}</p>
+      <div className="mt-2 flex gap-2">
+        <button
+          className="h-7 rounded-md border border-[#d8c7b7] bg-[#231813] px-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={previewAmount === null}
+          onClick={onConfirm}
+          type="button"
+        >
+          Confirm move
+        </button>
+        <button className="h-7 rounded-md border border-[#d8c7b7] bg-white px-2 font-semibold text-[#5f4a3d]" onClick={onCancel} type="button">
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -5966,6 +6608,7 @@ function CostingPrintReport({
   equipmentDepreciationCost,
   equipmentMaintenanceCost,
   foodCostPercent,
+  formatsWithMetrics,
   gasCost,
   gasCostDetail,
   gasDetail,
@@ -6010,6 +6653,7 @@ function CostingPrintReport({
   equipmentDepreciationCost: number;
   equipmentMaintenanceCost: number;
   foodCostPercent: number | null;
+  formatsWithMetrics: SellingFormatWithMetrics[];
   gasCost: number;
   gasCostDetail: { cost: number; costPerMinute: number; pricePerKg: number };
   gasDetail: CostingGasDetail;
@@ -6146,6 +6790,39 @@ function CostingPrintReport({
         </tbody>
       </table>
 
+      {formatsWithMetrics.length > 0 ? (
+        <>
+          <h2>Selling Formats</h2>
+          <table>
+            <thead>
+              <tr><th>Format</th><th>Status</th><th>Pieces</th><th>Price</th><th>Cost</th><th>Profit</th><th>Margin</th></tr>
+            </thead>
+            <tbody>
+              {formatsWithMetrics.map(({ format, totalCost, profit, margin: formatMargin }) => (
+                <tr key={format.id}>
+                  <td>{format.name}</td>
+                  <td>{format.isActive ? "Active" : "Archived"}</td>
+                  <td>{format.piecesPerUnit}</td>
+                  <td>PHP {format.sellingPrice.toFixed(2)}</td>
+                  <td>{formatCostingMetric(totalCost, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                  <td>{formatCostingMetric(profit, (value) => `PHP ${value.toFixed(2)}`)}</td>
+                  <td>{formatCostingMetric(formatMargin, (value) => `${value.toFixed(1)}%`)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {formatsWithMetrics.map(({ format, lines, packagingCost: formatPackagingCost }) => (
+            <NamedCostTable
+              emptyLabel={`No packaging lines for ${format.name || "this format"}`}
+              key={format.id}
+              rows={lines.map((line) => ({ cost: line.quantity * line.unitCostSnapshot, name: line.name, note: line.isManualCost ? "manual" : "catalog-linked", rowId: line.id }))}
+              title={`${format.name || "Untitled format"} packaging`}
+              total={formatPackagingCost}
+            />
+          ))}
+        </>
+      ) : null}
+
       {notes ? (
         <>
           <h2>Notes</h2>
@@ -6171,6 +6848,15 @@ type EquipmentAllocation = {
   allocatedTotal: number;
   equipmentItem: EquipmentEntry | undefined;
   row: EquipmentUsageRow;
+};
+
+type SellingFormatWithMetrics = {
+  format: SellingFormat;
+  lines: SellingFormatPackagingLine[];
+  packagingCost: number;
+  totalCost: number | null;
+  profit: number | null;
+  margin: number | null;
 };
 
 function EquipmentUsageSection({
@@ -6244,8 +6930,10 @@ function EquipmentUsageSection({
 function NamedCostSection({
   addLabel,
   extra,
+  helperNote,
   namePrefix,
   onAdd,
+  renderRowExtra,
   rows,
   setRows,
   title,
@@ -6254,8 +6942,10 @@ function NamedCostSection({
 }: {
   addLabel: string;
   extra?: ReactNode;
+  helperNote?: ReactNode;
   namePrefix: string;
   onAdd: () => void;
+  renderRowExtra?: (row: CostingNamedCostRow) => ReactNode;
   rows: CostingNamedCostRow[];
   setRows: Dispatch<SetStateAction<CostingNamedCostRow[]>>;
   title: string;
@@ -6268,17 +6958,21 @@ function NamedCostSection({
         <div>
           <p className="text-sm font-semibold">{title}</p>
           <p className="mt-1 text-xs leading-5 text-[#6f5a4c]">Use per-batch costs so the dashboard stays comparable across products.</p>
+          {helperNote}
         </div>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onAdd} type="button">{addLabel}</button>
       </div>
       {extra}
       <div className="mt-3 grid gap-2">
         {rows.map((row) => (
-          <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_70px]" key={row.rowId}>
-            <Input name={`${namePrefix}Name-${row.rowId}`} label="Name" value={row.name} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { name: event.target.value })} />
-            <Input name={`${namePrefix}Cost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" value={row.cost || ""} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { cost: Number(event.target.value || 0) })} />
-            <Input name={`${namePrefix}Note-${row.rowId}`} label="Note" value={row.note} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { note: event.target.value })} />
-            <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+          <div key={row.rowId}>
+            <div className="grid gap-2 lg:grid-cols-[1fr_120px_1fr_70px]">
+              <Input name={`${namePrefix}Name-${row.rowId}`} label="Name" value={row.name} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { name: event.target.value })} />
+              <Input name={`${namePrefix}Cost-${row.rowId}`} label="Cost PHP" type="number" step="0.01" value={row.cost || ""} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { cost: Number(event.target.value || 0) })} />
+              <Input name={`${namePrefix}Note-${row.rowId}`} label="Note" value={row.note} onChange={(event) => updateNamedCostRow(setRows, row.rowId, { note: event.target.value })} />
+              <button className="mt-6 h-10 rounded-md border border-[#d8c7b7] bg-white text-sm font-semibold text-[#8a3827]" onClick={() => setRows((current) => current.filter((item) => item.rowId !== row.rowId))} type="button">Remove</button>
+            </div>
+            {renderRowExtra?.(row)}
           </div>
         ))}
       </div>
