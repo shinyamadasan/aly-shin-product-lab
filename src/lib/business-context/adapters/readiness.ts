@@ -60,12 +60,20 @@ function toSeverity(severity: RuleResult["severity"]): SignalSeverity {
   return severity;
 }
 
+// No `inputs`, deliberately. Provenance.inputs names *fact paths*, and this domain publishes no
+// facts at all -- so there is no fact for a Readiness signal to name. The earlier value
+// ("readiness.signals") pointed at the signal array the signal itself lives in: a path that
+// resolves to nothing, which is the same fabricated-dependency shape F5 corrected in Inventory.
+//
+// Omitting it is the honest option. The architecture requires non-empty inputs for value-carrying
+// *facts*; the only signal-level requirement is that a cross-domain signal spans two domains, and
+// these are domain-scoped. computedBy still names evaluateProduct, and rowIds still names the
+// product evaluated, so the claim remains fully traceable without inventing a path.
 function provenanceFor(rule: RuleResult, productId: string): Provenance {
   if (FREE_TEXT_RULE_IDS.has(rule.id)) {
     return {
       kind: "inferred",
       computedBy: "evaluateProduct",
-      inputs: ["readiness.signals"],
       rowIds: [productId],
       basis:
         "Evaluated by keyword search over free-text batch and costing notes; no dedicated schema field records this test, " +
@@ -76,7 +84,6 @@ function provenanceFor(rule: RuleResult, productId: string): Provenance {
   return {
     kind: "derived",
     computedBy: "evaluateProduct",
-    inputs: ["readiness.signals"],
     rowIds: [productId],
   };
 }
