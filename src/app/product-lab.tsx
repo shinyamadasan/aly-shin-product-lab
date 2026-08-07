@@ -107,7 +107,7 @@ import {
   parseBatchRecord,
   type BatchFormulaRow,
 } from "@/lib/batches";
-import { archiveItem, canHardDeleteItem, getItemReferenceSummary, itemReferenceCount, restoreItem } from "@/lib/inventory-safety";
+import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "@/lib/inventory-safety";
 import { canDeleteDraftBatch, canVoidBatch, getBatchReferenceSummary, getEffectiveBatchStatus, markBatchCompleted, voidBatch } from "@/lib/batch-safety";
 import { canDeleteProduct, getProductReferenceCount, totalProductReferenceCount } from "@/lib/product-safety";
 
@@ -1715,9 +1715,10 @@ export default function ProductLab({
       purchaseImportRows: labState.purchaseImportRows,
       batches: labState.batches,
       costingEntries: labState.costingEntries,
+      sellingFormatPackagingLines: labState.sellingFormatPackagingLines,
     });
     if (!canHardDeleteItem(summary)) {
-      setMessage(`Permanent delete blocked. ${ingredient.name} has ${itemReferenceCount(summary)} reference${itemReferenceCount(summary) === 1 ? "" : "s"}. Archive keeps history intact.`);
+      setMessage(buildHardDeleteBlockedMessage(ingredient, summary));
       setMessageTone("bad");
       return;
     }
