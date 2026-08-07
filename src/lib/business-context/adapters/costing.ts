@@ -40,20 +40,63 @@ function nullableEnteredNumber(value: number | null, column: string): Fact<numbe
   return { state: "known", value, source: source("entered", { column }) };
 }
 
+// Fact paths a calculated metric can name. Every entry is a fact this adapter actually publishes on
+// each CostingSnapshot -- never a raw column, never a signal.
+const FACT = (name: string) => `costing.facts.byCosting[].${name}`;
+
+// The cost components getCostingTotals sums into directCost (ingredients, packaging, labour, the
+// five utilities, and waste). directCost itself is not published as a fact, so anything derived from
+// it names the published components it is composed of rather than an unpublished intermediate.
+const DIRECT_COST_INPUTS = [
+  FACT("ingredientCost"),
+  FACT("packagingCost"),
+  FACT("laborEstimate"),
+  FACT("waterCost"),
+  FACT("gasCost"),
+  FACT("ovenElectricCost"),
+  FACT("refrigerationCost"),
+  FACT("coffeeEquipmentCost"),
+  FACT("wasteAllowance"),
+];
+
+// indirectCost = overheadCost + equipmentCost, likewise unpublished.
+const INDIRECT_COST_INPUTS = [FACT("overheadCost"), FACT("equipmentCost")];
+
+// The real dependency graph, transcribed from getCostingTotals/getCostingMetrics -- not a uniform
+// list pasted onto every metric. Each entry names exactly the published facts that value is
+// computed from, so a reader can follow any number back to the entered components behind it.
+const METRIC_INPUTS: Record<string, string[]> = {
+  totalBatchCost: [...DIRECT_COST_INPUTS, ...INDIRECT_COST_INPUTS],
+  costPerPiece: [FACT("totalBatchCost"), FACT("costingYield")],
+  grossProfit: [FACT("suggestedPrice"), FACT("costPerPiece")],
+  margin: [FACT("grossProfit"), FACT("suggestedPrice")],
+  foodCostPercent: [FACT("costPerPiece"), FACT("suggestedPrice")],
+  markup: [FACT("suggestedPrice"), FACT("costPerPiece")],
+  targetPrice: [FACT("costPerPiece"), FACT("targetFoodCost")],
+  variableCostPerPiece: [...DIRECT_COST_INPUTS, FACT("costingYield")],
+  contributionMarginPerPiece: [FACT("suggestedPrice"), FACT("variableCostPerPiece")],
+  breakEvenUnits: [...INDIRECT_COST_INPUTS, FACT("contributionMarginPerPiece")],
+};
+
 // getCostingMetrics already returns null for every yield-dependent metric when yield is missing or
 // <= 0 -- the repo's existing "a missing input produces unknown, never a fabricated number"
 // discipline. That maps straight onto the `unknown` state; nothing is recomputed here.
-function metric(value: number | null, name: string, yieldReadable: boolean): Fact<number> {
+//
+// `key` selects the metric's own dependency list above. A calculated fact that carries a value must
+// name what it was computed from: computedBy alone says which function ran, not which facts it read.
+function metric(value: number | null, key: keyof typeof METRIC_INPUTS, name: string, yieldReadable: boolean): Fact<number> {
+  const inputs = METRIC_INPUTS[key];
+
   if (value === null) {
     return {
       state: "unknown",
       because: yieldReadable
         ? `${name} could not be computed from the values recorded on this costing.`
         : "The batch yield could not be read from this costing, and every per-piece number depends on it.",
-      source: source("calculated", { computedBy: "getCostingTotals", inputs: ["costing.facts.byCosting[].costingYield"] }),
+      source: source("calculated", { computedBy: "getCostingTotals", inputs }),
     };
   }
-  return { state: "known", value, source: source("calculated", { computedBy: "getCostingTotals" }) };
+  return { state: "known", value, source: source("calculated", { computedBy: "getCostingTotals", inputs }) };
 }
 
 // `updated_at` is only meaningful from the moment PR0's write-path fix went live. Before that the
@@ -169,17 +212,21 @@ function buildSnapshot(row: CostingSummaryRow, entries: CostingEntryRow[]): Cost
           },
 
     // Not yield-dependent: it is the sum of the entered components, so it is always computable.
-    totalBatchCost: { state: "known", value: totals.totalBatchCost, source: source("calculated", { computedBy: "getCostingTotals" }) },
+    totalBatchCost: {
+      state: "known",
+      value: totals.totalBatchCost,
+      source: source("calculated", { computedBy: "getCostingTotals", inputs: METRIC_INPUTS.totalBatchCost }),
+    },
 
-    costPerPiece: metric(totals.costPerPiece, "Cost per piece", yieldReadable),
-    grossProfit: metric(totals.grossProfit, "Gross profit", yieldReadable),
-    margin: metric(totals.margin, "Margin", yieldReadable),
-    foodCostPercent: metric(totals.foodCostPercent, "Food cost percentage", yieldReadable),
-    markup: metric(totals.markup, "Markup", yieldReadable),
-    targetPrice: metric(totals.targetPrice, "Target price", yieldReadable),
-    variableCostPerPiece: metric(totals.variableCostPerPiece, "Variable cost per piece", yieldReadable),
-    contributionMarginPerPiece: metric(totals.contributionMarginPerPiece, "Contribution margin per piece", yieldReadable),
-    breakEvenUnits: metric(totals.breakEvenUnits, "Break-even units", yieldReadable),
+    costPerPiece: metric(totals.costPerPiece, "costPerPiece", "Cost per piece", yieldReadable),
+    grossProfit: metric(totals.grossProfit, "grossProfit", "Gross profit", yieldReadable),
+    margin: metric(totals.margin, "margin", "Margin", yieldReadable),
+    foodCostPercent: metric(totals.foodCostPercent, "foodCostPercent", "Food cost percentage", yieldReadable),
+    markup: metric(totals.markup, "markup", "Markup", yieldReadable),
+    targetPrice: metric(totals.targetPrice, "targetPrice", "Target price", yieldReadable),
+    variableCostPerPiece: metric(totals.variableCostPerPiece, "variableCostPerPiece", "Variable cost per piece", yieldReadable),
+    contributionMarginPerPiece: metric(totals.contributionMarginPerPiece, "contributionMarginPerPiece", "Contribution margin per piece", yieldReadable),
+    breakEvenUnits: metric(totals.breakEvenUnits, "breakEvenUnits", "Break-even units", yieldReadable),
 
     ingredientLineCount: {
       state: "known",

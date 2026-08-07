@@ -5,7 +5,9 @@ import { COSTING_FRESHNESS_COMPOSER } from "../src/lib/business-context/composer
 import { getBlockers } from "../src/lib/business-context/selectors.ts";
 import { COSTING_UPDATED_AT_RELIABLE_FROM, DOMAIN_IDS, SIGNAL_IDS } from "../src/lib/business-context/types.ts";
 import type { BusinessContext, DomainContext, DomainId, Fact, Provenance, Signal } from "../src/lib/business-context/types.ts";
+import { resolveBusinessDay } from "../src/lib/business-day.ts";
 import { FIXTURE_ENV, FIXTURE_FACTS, fixtureReads } from "./fixtures/business-context-m1.ts";
+import { walkFacts, type AnyFact, type VisitedFact } from "./helpers/business-context-fact-walker.ts";
 
 // The Milestone 1 proof layer: structural invariants asserted over a *fully built* BusinessContext,
 // not over individual adapter outputs.
@@ -26,8 +28,6 @@ const VALUE_CARRYING_STATES = new Set(["known", "stale"]);
 // serialized keys implements the intent without contradicting the type.
 const FORBIDDEN_FACT_NAMES = ["bottleneck", "topPriority", "businessStage", "momentum", "value", "highestValueOpportunity"];
 
-type AnyFact = Fact<unknown> & { source?: Provenance; confidence?: string };
-
 async function buildFixtureContext(): Promise<BusinessContext> {
   return buildBusinessContext({
     reads: fixtureReads(),
@@ -45,13 +45,23 @@ function eachDomain(context: BusinessContext, visit: (domain: DomainContext) => 
   }
 }
 
-function eachFact(context: BusinessContext, visit: (path: string, fact: AnyFact) => void): void {
+// Recursive: descends into collection-valued facts, so every canonical Fact in the snapshot is
+// visited, not only the dozen published directly on each domain. See walkFacts for why.
+function visitedFacts(context: BusinessContext): VisitedFact[] {
+  const visited: VisitedFact[] = [];
   eachDomain(context, (domain) => {
-    visit(`${domain.domain}.sourceAsOf`, domain.sourceAsOf as AnyFact);
+    visited.push(...walkFacts(domain.sourceAsOf, `${domain.domain}.sourceAsOf`));
     for (const [key, fact] of Object.entries(domain.facts)) {
-      visit(`${domain.domain}.facts.${key}`, fact as AnyFact);
+      visited.push(...walkFacts(fact, `${domain.domain}.facts.${key}`));
     }
   });
+  return visited;
+}
+
+function eachFact(context: BusinessContext, visit: (path: string, fact: AnyFact) => void): void {
+  for (const { path, fact } of visitedFacts(context)) {
+    visit(path, fact);
+  }
 }
 
 function allSignals(context: BusinessContext): Signal[] {
@@ -172,49 +182,143 @@ test("[M1] no fact or signal depends on itself", async () => {
   });
 });
 
+test("[M1] the fact walker reaches nested facts, not just the domain's published top level", async () => {
+  // The regression guard for F7. The original walker visited only domain.facts[key] and reached 12
+  // of 141 facts -- every costing metric, reviewedAt, and ingredient snapshot field went unchecked,
+  // hiding 21 real provenance violations. If traversal ever collapses back to the top level, the
+  // thresholds below fail rather than the suite quietly passing on 9% of the data.
+  const context = await buildFixtureContext();
+  const visited = visitedFacts(context);
+
+  const top = visited.filter((entry) => entry.depth === 0);
+  const nested = visited.filter((entry) => entry.depth > 0);
+  const nestedCosting = nested.filter((entry) => entry.path.startsWith("costing.facts.byCosting"));
+  const nestedInventory = nested.filter((entry) => entry.path.startsWith("inventory.facts.byIngredient"));
+
+  // Reported so a reviewer can see the real number without reading the fixture.
+  console.log(`[M1] fact traversal: ${visited.length} facts (${top.length} top-level, ${nested.length} nested)`);
+
+  assert.ok(top.length >= 10, `expected the published top-level facts, saw ${top.length}`);
+  assert.ok(nested.length > top.length, "most facts in this fixture are nested; traversal must reach them");
+  assert.ok(nestedCosting.length >= 20, `expected nested Costing facts, saw ${nestedCosting.length}`);
+  assert.ok(nestedInventory.length >= 20, `expected nested Inventory facts, saw ${nestedInventory.length}`);
+
+  // Every visited path is unique -- each Fact is visited exactly once.
+  assert.equal(new Set(visited.map((entry) => entry.path)).size, visited.length);
+});
+
 test("[M1] inferred provenance always carries a basis and is never high confidence", async () => {
   const context = await buildFixtureContext();
-  let inferredSeen = 0;
 
-  eachFact(context, (path, fact) => {
-    if (fact.source?.kind !== "inferred") {
-      return;
-    }
-    inferredSeen += 1;
-    assert.ok(fact.source.basis && fact.source.basis.length > 0, `${path}: inferred without a basis`);
-    assert.notEqual(fact.confidence, "high", `${path}: inferred evidence cannot be high confidence`);
-  });
+  // Counted separately, deliberately. Signal provenance must never make a fact-level guard look
+  // exercised -- that is exactly how the original version passed while checking no inferred fact
+  // at all.
+  const facts = inferredViolations(visitedFacts(context));
+  assert.deepEqual(facts.violations, []);
 
+  let inferredSignals = 0;
   for (const signal of allSignals(context)) {
     if (signal.provenance.kind === "inferred") {
-      inferredSeen += 1;
+      inferredSignals += 1;
       assert.ok(signal.provenance.basis, `${signal.id}: inferred signal without a basis`);
     }
   }
 
-  // The fixture must actually contain inferred evidence, or this proves nothing: the regex-parsed
-  // costing yield and the free-text QUAL rules both land here.
-  assert.ok(inferredSeen > 0, "the fixture must exercise inferred provenance");
+  const inferredFacts = facts.checked;
+
+  // The regex-parsed costing yield and target food cost are nested inside byCosting, so this only
+  // holds once traversal is recursive.
+  assert.ok(inferredFacts > 0, "the fixture must exercise inferred provenance at FACT level");
+  assert.ok(inferredSignals > 0, "the fixture must exercise inferred provenance at SIGNAL level");
 });
 
-test("[M1] value-carrying calculated/derived facts name computedBy and non-empty inputs", async () => {
-  const context = await buildFixtureContext();
+// The two provenance rules, written once as predicates so the real assertions and the mutation probe
+// below cannot drift apart. `checked` is what keeps them from passing on an empty walk.
+function provenanceViolations(visited: VisitedFact[]): { violations: string[]; checked: number } {
+  const violations: string[] = [];
   let checked = 0;
 
-  eachFact(context, (path, fact) => {
+  for (const { path, fact } of visited) {
     if (!VALUE_CARRYING_STATES.has(fact.state)) {
-      return;
+      continue;
     }
     const kind = fact.source?.kind;
     if (kind !== "calculated" && kind !== "derived") {
-      return;
+      continue;
     }
     checked += 1;
-    assert.ok(fact.source?.computedBy, `${path}: ${kind} without computedBy`);
-    assert.ok(fact.source?.inputs?.length, `${path}: ${kind} with empty inputs`);
-  });
+    if (!fact.source?.computedBy) {
+      violations.push(`${path}: ${kind} without computedBy`);
+    }
+    if (!fact.source?.inputs?.length) {
+      violations.push(`${path}: ${kind} with empty inputs`);
+    }
+  }
 
+  return { violations, checked };
+}
+
+function inferredViolations(visited: VisitedFact[]): { violations: string[]; checked: number } {
+  const violations: string[] = [];
+  let checked = 0;
+
+  for (const { path, fact } of visited) {
+    if (fact.source?.kind !== "inferred") {
+      continue;
+    }
+    checked += 1;
+    if (!fact.source.basis) {
+      violations.push(`${path}: inferred without a basis`);
+    }
+    if (fact.confidence === "high") {
+      violations.push(`${path}: inferred with high confidence`);
+    }
+  }
+
+  return { violations, checked };
+}
+
+test("[M1] value-carrying calculated/derived facts name computedBy and non-empty inputs", async () => {
+  const { violations, checked } = provenanceViolations(visitedFacts(await buildFixtureContext()));
+
+  assert.deepEqual(violations, []);
   assert.ok(checked > 0, "the fixture must exercise calculated/derived facts");
+});
+
+test("[M1] the provenance invariants actually catch a corrupted NESTED fact", async () => {
+  // Anti-vacuity. An invariant that never fails proves nothing, and the F7 walker gap is precisely
+  // how these two passed for weeks while ignoring 129 of 141 facts. Each probe corrupts one fact
+  // *inside* a collection -- never a top-level one -- so a walker that stopped at the published
+  // level would report a clean pass here and fail the test.
+  const context = await buildFixtureContext();
+  const snapshot = (context.domains.costing?.facts.byCosting as { value: Record<string, AnyFact>[] }).value[0];
+
+  // Probe 1: a calculated fact loses its dependency list -- the exact F8 defect shape.
+  const calculated = snapshot.costPerPiece;
+  assert.equal(calculated.source?.kind, "calculated", "the probe must target a genuinely calculated fact");
+  const realInputs = calculated.source?.inputs;
+  calculated.source = { ...calculated.source!, inputs: [] };
+
+  const emptied = provenanceViolations(visitedFacts(context));
+  assert.ok(
+    emptied.violations.some((entry) => entry.includes("costPerPiece") && entry.includes("empty inputs")),
+    `emptying a nested calculated fact's inputs must be caught, got: ${JSON.stringify(emptied.violations)}`,
+  );
+
+  calculated.source = { ...calculated.source, inputs: realInputs };
+  assert.deepEqual(provenanceViolations(visitedFacts(context)).violations, [], "the probe must be reversible");
+
+  // Probe 2: an inferred fact claims certainty it cannot have -- a parsed-from-prose value asserting
+  // high confidence.
+  const inferred = snapshot.costingYield;
+  assert.equal(inferred.source?.kind, "inferred", "the probe must target a genuinely inferred fact");
+  inferred.confidence = "high";
+
+  const overconfident = inferredViolations(visitedFacts(context));
+  assert.ok(
+    overconfident.violations.some((entry) => entry.includes("costingYield") && entry.includes("high confidence")),
+    `a nested inferred fact claiming high confidence must be caught, got: ${JSON.stringify(overconfident.violations)}`,
+  );
 });
 
 test("[M1] root entered facts carry a table and never fabricate inputs or computedBy", async () => {
@@ -463,19 +567,26 @@ test("[M1] the business day is deterministic and honours the injected timezone",
 });
 
 test("[M1] the Manila day boundary shifts businessDay and nothing else", async () => {
+  // businessDay is derived through the real resolveBusinessDay rather than hardcoded into env.
+  // Asserting a value that the test itself supplied would be circular -- it would prove only that
+  // the builder copies what it is handed, not that the boundary lands at 16:00Z.
+  const justBefore = Date.parse("2026-08-09T15:59:00.000Z");
+  const justAfter = Date.parse("2026-08-09T16:01:00.000Z");
+
   const before = await buildBusinessContext({
     reads: fixtureReads(),
-    env: { ...FIXTURE_ENV, now: Date.parse("2026-08-09T15:59:00.000Z"), businessDay: "2026-08-09" },
+    env: { ...FIXTURE_ENV, now: justBefore, businessDay: resolveBusinessDay(justBefore, FIXTURE_ENV.timezone) },
     dataSource: "sample",
     composers: [COSTING_FRESHNESS_COMPOSER.compose],
   });
   const after = await buildBusinessContext({
     reads: fixtureReads(),
-    env: { ...FIXTURE_ENV, now: Date.parse("2026-08-09T16:01:00.000Z"), businessDay: "2026-08-10" },
+    env: { ...FIXTURE_ENV, now: justAfter, businessDay: resolveBusinessDay(justAfter, FIXTURE_ENV.timezone) },
     dataSource: "sample",
     composers: [COSTING_FRESHNESS_COMPOSER.compose],
   });
 
+  // Two minutes apart, one day apart -- computed, not asserted into existence.
   assert.equal(before.businessDay, "2026-08-09");
   assert.equal(after.businessDay, "2026-08-10");
 
