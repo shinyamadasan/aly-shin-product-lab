@@ -78,6 +78,8 @@ import {
 } from "@/lib/selling-formats";
 import { isDuplicateKeyError } from "@/lib/database-errors";
 import { useEditNavigation } from "@/hooks/use-edit-navigation";
+import { useUnsavedCostingChanges } from "@/hooks/use-unsaved-costing-changes";
+import { areCostingFormSnapshotsEqual, buildCostingFormSnapshot } from "@/lib/costing-form-snapshot";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
@@ -133,6 +135,11 @@ function isMissingColumnError(error: PostgrestError | null): boolean {
   return error?.code === "PGRST204" || error?.code === "42703";
 }
 
+// The one warning shown before every way unsaved Costing changes could be discarded -- app nav,
+// Recent Entries' Edit, and Cancel edit all use this exact string so the operator sees the same
+// question regardless of which discard path they hit.
+const UNSAVED_COSTING_MESSAGE = "You have unsaved changes in this costing. Leaving now will discard them. Continue?";
+
 export default function ProductLab({
   view = "dashboard",
   initialInventoryTab,
@@ -178,6 +185,10 @@ export default function ProductLab({
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
+  // Fed by CostingForm's onDirtyChange, consumed by AppShell's generic navigation guard and by
+  // the same-page discard actions below (Recent Entries' Edit, Cancel edit) -- one source of truth
+  // so all three can never disagree about whether there's something to lose.
+  const [isCostingDirty, setIsCostingDirty] = useState(false);
   const [editingSupply, setEditingSupply] = useState<SupplyEntry | null>(null);
   const [editingEquipment, setEditingEquipment] = useState<EquipmentEntry | null>(null);
   const [editingJournal, setEditingJournal] = useState<ContentJournalEntry | null>(null);
@@ -2409,6 +2420,24 @@ export default function ProductLab({
     }
   }
 
+  // Same discard risk as app navigation (product-lab.tsx's AppShell usage below), but neither is
+  // a navigation or an unload -- both just call setEditingCosting directly, remounting
+  // CostingForm via its key -- so neither the nav guard nor beforeunload would ever see them.
+  function cancelCostingEdit() {
+    if (!isCostingDirty || window.confirm(UNSAVED_COSTING_MESSAGE)) {
+      setEditingCosting(null);
+    }
+  }
+
+  function editCostingWithGuard(costingToEdit: CostingSummary) {
+    if (costingToEdit.id === editingCosting?.id) {
+      return;
+    }
+    if (!isCostingDirty || window.confirm(UNSAVED_COSTING_MESSAGE)) {
+      setEditingCosting(costingToEdit);
+    }
+  }
+
   if (isSupabaseConfigured && isAuthLoading) {
     return <LoadingScreen />;
   }
@@ -2418,7 +2447,7 @@ export default function ProductLab({
   }
 
   return (
-    <AppShell view={view}>
+    <AppShell navigationConfirmationMessage={UNSAVED_COSTING_MESSAGE} shouldConfirmNavigation={isCostingDirty} view={view}>
           {message && view !== "dashboard" && view !== "costing" ? <MessageBox message={message} tone={messageTone} /> : null}
           {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
 
@@ -2447,10 +2476,10 @@ export default function ProductLab({
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={() => setEditingCosting(null)} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={setIsCostingDirty} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
-                <RecentEntries deleteCosting={deleteCosting} editCosting={setEditingCosting} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
+                <RecentEntries deleteCosting={deleteCosting} editCosting={editCostingWithGuard} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
               </div>
             </section>
           ) : null}
@@ -5436,6 +5465,7 @@ function CostingForm({
   isSellingFormatsTableMissing,
   message,
   messageTone,
+  onDirtyChange,
   products,
   saveCosting,
   sellingFormatPackagingLines,
@@ -5451,6 +5481,10 @@ function CostingForm({
   isSellingFormatsTableMissing: boolean;
   message: string;
   messageTone: "good" | "bad" | "info";
+  // Reported after every render so ProductLab can gate app navigation while this costing has
+  // unsaved changes -- see useUnsavedCostingChanges. Optional so this form still works standalone
+  // (e.g. in a future test) without a parent that cares.
+  onDirtyChange?: (isDirty: boolean) => void;
   products: Product[];
   saveCosting: (formData: FormData) => void;
   sellingFormatPackagingLines: SellingFormatPackagingLine[];
@@ -5597,6 +5631,88 @@ function CostingForm({
   const selectedBatchFormula = parseBatchIngredients(selectedBatch?.ingredientsNotes ?? "");
   const ingredientTotal = ingredientRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const [costingYield, setCostingYield] = useState(() => getCostingYieldFromNotes(costing?.notes ?? "") || selectedBatch?.usablePieces || 0);
+  // Controlled specifically so its live value can participate in dirty-change detection below --
+  // every other field in this form already is; notes was the one holdout. getCostingBaseNotes
+  // already strips the structured-detail marker lines and trims, matching exactly what saveCosting
+  // re-derives from the submitted FormData (product-lab.tsx's saveCosting, `getCostingBaseNotes(...
+  // formData.get("notes")...)`), so this changes neither what's submitted nor what's displayed.
+  const [notesValue, setNotesValue] = useState(() => getCostingBaseNotes(costing?.notes ?? ""));
+  // The snapshot this form started from -- captured once, at mount, from the same state variables
+  // declared above (their own useState lazy initializers have already run earlier in this same
+  // render, so this reads their real initial values, not a separately re-derived copy that could
+  // drift). A costing switch or a return to "new costing" remounts CostingForm entirely (its
+  // `key` includes the costing id), which re-runs this initializer fresh -- so baseline reset on
+  // record switch and on post-save remount both happen for free, with no extra code here.
+  const [baselineSnapshot] = useState(() =>
+    buildCostingFormSnapshot({
+      selectedBatchId,
+      costingYield,
+      ingredientRows,
+      packagingRows,
+      laborDetail,
+      utilityRows,
+      gasDetail,
+      electricityDetail,
+      waterDetail,
+      customGasEquipmentNames,
+      customElectricEquipmentNames,
+      wasteRows,
+      overheadRows,
+      equipmentUsage,
+      notes: notesValue,
+      suggestedPrice,
+      targetFoodCost,
+      formatRows,
+      packagingLineRows,
+    }),
+  );
+  const liveSnapshot = useMemo(
+    () =>
+      buildCostingFormSnapshot({
+        selectedBatchId,
+        costingYield,
+        ingredientRows,
+        packagingRows,
+        laborDetail,
+        utilityRows,
+        gasDetail,
+        electricityDetail,
+        waterDetail,
+        customGasEquipmentNames,
+        customElectricEquipmentNames,
+        wasteRows,
+        overheadRows,
+        equipmentUsage,
+        notes: notesValue,
+        suggestedPrice,
+        targetFoodCost,
+        formatRows,
+        packagingLineRows,
+      }),
+    [
+      selectedBatchId,
+      costingYield,
+      ingredientRows,
+      packagingRows,
+      laborDetail,
+      utilityRows,
+      gasDetail,
+      electricityDetail,
+      waterDetail,
+      customGasEquipmentNames,
+      customElectricEquipmentNames,
+      wasteRows,
+      overheadRows,
+      equipmentUsage,
+      notesValue,
+      suggestedPrice,
+      targetFoodCost,
+      formatRows,
+      packagingLineRows,
+    ],
+  );
+  const isDirty = !areCostingFormSnapshotsEqual(liveSnapshot, baselineSnapshot);
+  useUnsavedCostingChanges(isDirty, onDirtyChange);
   const packagingCost = packagingRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const overheadCost = overheadRows.reduce((total, row) => total + Number(row.cost || 0), 0);
   const equipmentAllocations = equipmentUsage.map((row) => {
@@ -6281,7 +6397,7 @@ function CostingForm({
             </>
           )}
         </div>
-        <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" defaultValue={getCostingBaseNotes(costing?.notes ?? "")} />
+        <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" onChange={(event) => setNotesValue(event.target.value)} value={notesValue} />
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button>{costing ? "Update costing" : "Save costing"}</Button>
           {costing ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
