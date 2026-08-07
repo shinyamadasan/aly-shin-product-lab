@@ -330,3 +330,35 @@ test("RLS, grants and policies follow the repo template, with no anon grant", ()
   // The public ordering surface is a separate milestone requiring a real server-side boundary.
   assert.doesNotMatch(sqlStatementsOnly, /\bto anon\b/i);
 });
+
+test("save_order EXECUTE is revoked from PUBLIC, not left at the PostgreSQL default", () => {
+  // PostgreSQL grants EXECUTE to PUBLIC on every new function, so `create function` alone leaves
+  // save_order anonymously callable. SECURITY INVOKER plus the table grants stop an anon *write*,
+  // but that is an indirect denial: it would silently widen the moment those table grants changed.
+  // The privilege boundary is stated explicitly instead.
+  assert.match(sqlStatementsOnly, /revoke execute on function save_order\(jsonb, jsonb, uuid\[\]\) from public;/i);
+});
+
+test("the revoke uses the function's exact declared signature", () => {
+  // A revoke naming a signature that does not exist raises rather than silently doing nothing, so
+  // this must match the create statement exactly -- three arguments, in order.
+  const declaredArgs = saveOrderFunction.match(/create or replace function save_order\(([\s\S]*?)\)\s*returns/i)?.[1] ?? "";
+  assert.match(declaredArgs, /p_order jsonb/i);
+  assert.match(declaredArgs, /p_lines jsonb/i);
+  assert.match(declaredArgs, /p_removed_line_ids uuid\[\]/i);
+
+  const revokeSignature = sqlStatementsOnly.match(/revoke execute on function (save_order\([^)]*\))/i)?.[1] ?? "";
+  const grantSignature = sqlStatementsOnly.match(/grant execute on function (save_order\([^)]*\))/i)?.[1] ?? "";
+  assert.equal(revokeSignature, "save_order(jsonb, jsonb, uuid[])");
+  assert.equal(revokeSignature, grantSignature, "revoke and grant must name the identical signature");
+});
+
+test("the revoke precedes the grant, so intent reads in the right order", () => {
+  // Functionally the order does not matter -- PUBLIC and authenticated are different grantees --
+  // but revoke-then-grant is the sequence the reader should see, and asserting it stops a later
+  // edit from reordering them into something that looks like a mistake.
+  const revokeIndex = sqlStatementsOnly.search(/revoke execute on function save_order/i);
+  const grantIndex = sqlStatementsOnly.search(/grant execute on function save_order/i);
+  assert.ok(revokeIndex > -1 && grantIndex > -1, "both statements must be present");
+  assert.ok(revokeIndex < grantIndex, "revoke from public must come before grant to authenticated");
+});

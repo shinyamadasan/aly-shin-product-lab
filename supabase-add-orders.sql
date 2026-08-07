@@ -537,6 +537,20 @@ grant select, insert, update, delete on table customers to authenticated;
 grant select, insert, update, delete on table orders to authenticated;
 grant select, insert, update, delete on table order_lines to authenticated;
 
+-- PostgreSQL grants EXECUTE on a new function to PUBLIC by default, so `create function` alone
+-- leaves save_order anonymously *callable*. Verified live during S1 verification: an anon caller
+-- reached the function body and was stopped only later, by table permissions, with
+-- "42501 permission denied for table orders".
+--
+-- That indirect denial is real but it is not the intended boundary. save_order is meant to be
+-- available to authenticated users, full stop -- not "callable by anyone, and happens to fail
+-- downstream". Relying on the table grants to hold the line means any future change to those
+-- grants silently widens who can execute this function.
+--
+-- Revoke first, then grant: the two target different grantees, so the order does not affect the
+-- outcome, but revoke-then-grant states the intent in the order it is meant to be read. Both
+-- statements are idempotent -- revoking a grant that is not present is a no-op, not an error.
+revoke execute on function save_order(jsonb, jsonb, uuid[]) from public;
 grant execute on function save_order(jsonb, jsonb, uuid[]) to authenticated;
 
 drop policy if exists "Authenticated users can manage customers" on customers;
