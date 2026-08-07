@@ -76,3 +76,39 @@ test("generic over a different tab value set (manual/csv sub-tabs)", () => {
   const decision = resolveTabChange<"manual" | "csv">("manual", "csv", { isDirty: true, message: SUPPLY_MESSAGE }, () => true);
   assert.deepEqual(decision, { proceed: true, shouldClearDirty: true });
 });
+
+// "Buy" (InventoryWorkspace.logPurchaseForIngredient) now resolves this exact ingredients->purchases
+// decision BEFORE creating/opening the Supply draft, specifically so editSupplyWithGuard never sees
+// a stale Ingredient-owned activeUnsavedForm and fires a second, unrelated prompt. These three cases
+// pin the precise decision shape that fix depends on -- confirm() is called exactly once when
+// dirty, and never at all when clean.
+test("Buy from a dirty Ingredient tab, confirmed -- proceeds and clears the Ingredient owner, confirm called exactly once", () => {
+  let confirmCalls = 0;
+  const decision = resolveTabChange("ingredients", "purchases", { isDirty: true, message: INGREDIENT_MESSAGE }, (message) => {
+    confirmCalls += 1;
+    assert.equal(message, INGREDIENT_MESSAGE);
+    return true;
+  });
+  assert.equal(confirmCalls, 1);
+  assert.deepEqual(decision, { proceed: true, shouldClearDirty: true });
+});
+
+test("Buy from a dirty Ingredient tab, cancelled -- does not proceed, does not clear, the caller never reaches the Supply draft step", () => {
+  let confirmCalls = 0;
+  const decision = resolveTabChange("ingredients", "purchases", { isDirty: true, message: INGREDIENT_MESSAGE }, () => {
+    confirmCalls += 1;
+    return false;
+  });
+  assert.equal(confirmCalls, 1);
+  assert.deepEqual(decision, { proceed: false, shouldClearDirty: false });
+});
+
+test("Buy from a clean Ingredient tab -- proceeds without ever calling confirm", () => {
+  let confirmCalls = 0;
+  const decision = resolveTabChange("ingredients", "purchases", { isDirty: false, message: INGREDIENT_MESSAGE }, () => {
+    confirmCalls += 1;
+    return true;
+  });
+  assert.equal(confirmCalls, 0);
+  assert.deepEqual(decision, { proceed: true, shouldClearDirty: false });
+});

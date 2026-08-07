@@ -5090,7 +5090,23 @@ function InventoryWorkspace({
     setPurchasesTab(nextPurchasesTab);
   }
 
+  // "Buy" is only reachable from the Ingredients tab's own row list (InventoryPage), so leaving
+  // that tab is the one real discard risk here -- resolved with the same resolveTabChange decision
+  // changeTab itself uses, but settled BEFORE editSupply (= editSupplyWithGuard in ProductLab) ever
+  // runs. Calling editSupply first would let it see whatever activeUnsavedForm currently holds --
+  // the Ingredient editor's own message, if that's what's dirty -- and confirm a Supply draft the
+  // operator never asked about, ahead of (and independent of) the real "leave Ingredients" prompt.
+  // Resolving the tab-leave decision first, and only then creating the draft, guarantees exactly
+  // one prompt (for the Ingredient editor, the thing actually being discarded) and means a Cancel
+  // leaves no partial Supply state behind.
   function logPurchaseForIngredient(item: Ingredient) {
+    const decision = resolveTabChange("ingredients", "purchases", { isDirty: isIngredientDirty, message: UNSAVED_INGREDIENT_MESSAGE }, (message) => window.confirm(message));
+    if (!decision.proceed) {
+      return;
+    }
+    if (decision.shouldClearDirty) {
+      onIngredientDirtyChange(false);
+    }
     editSupply({
       id: "",
       ingredientId: item.id,
@@ -5106,7 +5122,7 @@ function InventoryWorkspace({
       notes: "",
     });
     setPurchasesTab("manual");
-    changeTab("purchases");
+    setTab("purchases");
   }
 
   return (
