@@ -100,12 +100,21 @@ export type OrdersClient = {
   from(table: "order_lines"): ReadOnlyTable;
   from(table: "customers"): CustomerTable;
   rpc(name: "save_order", args: SaveOrderArgs): PromiseLike<{ data: unknown; error: SupabaseErrorLike | null }>;
+  rpc(name: "save_public_order_once", args: SavePublicOrderOnceArgs): PromiseLike<{ data: { created: boolean } | null; error: SupabaseErrorLike | null }>;
 };
 
 export type SaveOrderArgs = {
   p_order: ReturnType<typeof buildOrderPayload>;
   p_lines: ReturnType<typeof buildOrderLinePayload>[];
   p_removed_line_ids: string[];
+};
+
+// The customer travels WITH the order: both are created inside one transaction, or neither is.
+// No p_removed_line_ids: a public submission only ever creates, never reconciles.
+export type SavePublicOrderOnceArgs = {
+  p_customer: ReturnType<typeof buildCustomerPayload>;
+  p_order: ReturnType<typeof buildOrderPayload>;
+  p_lines: ReturnType<typeof buildOrderLinePayload>[];
 };
 
 export type OrdersFailure = { ok: false; reason: "missing-table" | "failed"; message: string };
@@ -532,4 +541,83 @@ export async function submitNewOrder(client: OrdersClient, { order, lines, newCu
   }
 
   return { ok: true };
+}
+
+// --- Public creation (S9 F2) -----------------------------------------------------------------------
+//
+// The public path does NOT use submitNewOrder, and the difference is the whole point.
+//
+// submitNewOrder ends in save_order, which upserts the entire order row. That is correct for the
+// operator's form -- the id is minted per form, so there is nothing to overwrite. It is NOT correct
+// for a public endpoint, where two concurrent requests can derive the SAME order id from the same
+// idempotency key. Live testing reproduced the consequence: a second caller's creation payload
+// reset a confirmed, paid order to new/unpaid and erased paid_at, paid_amount and payment_method.
+//
+// An application-side existence check cannot fix that, because the check and the write are separate
+// transactions and the caller can pause between them. So creation goes through
+// save_public_order_once, which takes a transaction-scoped advisory lock on the order id, checks
+// existence under that lock, and only then delegates to save_order.
+
+export type SavePublicOrderOnceResult = { ok: true; created: boolean } | OrdersFailure;
+
+// Atomic create-once for the customer AND the order. `created: false` means the order already
+// existed and NOTHING was written -- not the customer, not the order, not its lines.
+export async function savePublicOrderOnce(client: OrdersClient, { customer, order, lines, now }: { customer: Customer; order: Order; lines: OrderLine[]; now: string }): Promise<SavePublicOrderOnceResult> {
+  const foreignLine = lines.find((line) => line.orderId !== order.id);
+  if (foreignLine) {
+    return { ok: false, reason: "failed", message: `"${foreignLine.itemName || "An item"}" belongs to a different order and was not saved.` };
+  }
+
+  const result = await client.rpc("save_public_order_once", {
+    p_customer: buildCustomerPayload(customer, now),
+    p_order: buildOrderPayload(order, now),
+    // order_id is rewritten from the order being saved rather than trusted from the line, matching
+    // saveOrder's own belt-and-braces.
+    p_lines: lines.map((line) => buildOrderLinePayload({ ...line, orderId: order.id })),
+  });
+
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+
+  // A missing/!unreadable `created` is treated as "already existed", which is the safe direction:
+  // it can only cause a redundant replay response, never a second creation.
+  return { ok: true, created: result.data?.created === true };
+}
+
+export type SubmitPublicOrderResult = { ok: true; created: boolean } | { ok: false; message: string };
+
+// Public submission. Same validate-everything-before-writing discipline as submitNewOrder, but the
+// customer AND the order are persisted through one atomic gate.
+//
+// The customer is NOT saved here before the gate, and that placement is the fix for a reproduced
+// defect rather than a style choice. When saveCustomer ran first, two submissions sharing an
+// idempotency key but carrying different contact details -- a customer who edits the form and
+// resubmits while the first request is still in flight -- derived the same customer id, and the
+// LOSER's upsert overwrote the winner's customer after the winning order already pointed at it.
+// Reproduced live in both orderings: an order created for "Alice Race / 111111" ended up addressed
+// to "Bob Race / 222222". Inside the gate, a losing caller writes nothing at all.
+export async function submitPublicOrderOnce(client: OrdersClient, { order, lines, newCustomer, now }: SubmitNewOrderInput): Promise<SubmitPublicOrderResult> {
+  if (!newCustomer) {
+    // The public flow always creates its customer alongside the order; there is no existing-customer
+    // path to select from.
+    return { ok: false, message: "Every order needs a customer." };
+  }
+
+  const nameError = validateCustomerForSave(newCustomer.name);
+  if (nameError) {
+    return { ok: false, message: nameError };
+  }
+
+  const orderError = validateOrderForSave(order, lines);
+  if (orderError) {
+    return { ok: false, message: orderError };
+  }
+
+  const orderResult = await savePublicOrderOnce(client, { customer: newCustomer, order, lines, now });
+  if (!orderResult.ok) {
+    return { ok: false, message: orderResult.message };
+  }
+
+  return { ok: true, created: orderResult.created };
 }

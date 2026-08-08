@@ -1,8 +1,8 @@
-# S9 — Public Ordering Surface: Implementation Plan (Revision 2)
+# S9 — Public Ordering Surface: Implementation Plan (Revision 3)
 
 > ## ✅ FROZEN — APPROVED FOR IMPLEMENTATION
 >
-> **Status:** Architecture approved and frozen at Revision 2. **Verdict: GO WITH PREREQUISITES.**
+> **Status:** Architecture approved and frozen at Revision 3. **Verdict: GO WITH PREREQUISITES.**
 > Do not reopen or redesign the public ordering surface. Changes from here require an explicit owner
 > decision recorded as a new revision in §0, not an in-place edit.
 >
@@ -15,6 +15,109 @@
 > *not* by itself authorise PR-F2. **P2** (`products.is_public`) lands in PR-F1.
 
 ## 0. Change log
+
+### 0.2 Revision 3 — the create-once decision moves into the database
+
+**One correction, driven by a defect reproduced against the live database during PR-F2
+implementation. No other S9 decision changes.**
+
+Revision 2 §6 Q2 concluded that an application-side existence check was sufficient and that **"no
+new RPC is justified."** The reasoning — that a wrapper would become "a second Order persistence
+implementation" — was right about *persistence* and wrong about *concurrency*. It assumed a
+read-then-write in application code could provide create-once semantics. It cannot: the read and the
+write are separate transactions, so two concurrent submissions deriving the same order id can both
+observe "absent", and a serverless request can pause for an unbounded time between them.
+
+**The reproduced sequence** (real Supabase, order id `42f1e5c4-…`, request B's client wrapped so its
+RPC parked *after* its existence check returned absent):
+
+```
+B checks   -> absent
+A creates  -> new / unpaid
+operator   -> confirmed / paid (gcash, 22.00)   [shipped S3/S4 operations]
+B resumes  -> save_order with its CREATION payload
+```
+
+**Fields reset by B**, because `save_order`'s `on conflict (id) do update set` assigns every column
+from `excluded`:
+
+| Field | Before B | After B |
+|---|---|---|
+| `status` | `confirmed` | `new` |
+| `payment_status` | `paid` | `unpaid` |
+| `payment_method` | `gcash` | `null` |
+| `paid_at` | `2026-08-08T16:29:33.776+00:00` | `null` |
+| `paid_amount` | `22` | `null` |
+
+`refunded_at`, `completed_at`, `cancelled_at` and `cancel_reason` sit in the same whole-row
+overwrite set and are equally exposed; they were already null in this run, so they show no delta.
+B returned an ordinary success — a confirmed, paid order was silently un-paid with no error anywhere.
+
+**The correction.** Public creation now goes through `save_public_order_once(p_order, p_lines)`
+(`supabase-add-public-order-once.sql`), which inside one transaction:
+
+1. takes `pg_advisory_xact_lock` keyed to the derived order id — transaction-scoped, released
+   automatically on commit, rollback or exception, and keyed so unrelated orders never block;
+2. checks existence **under that lock**;
+3. returns `{ created: false }` writing nothing if the order exists;
+4. otherwise **delegates to `save_order`**.
+
+The wrapper contains no insert, no upsert, no line handling and no business rule. **`save_order`
+remains the canonical implementation of order + line persistence**, unchanged, with every existing
+internal caller untouched.
+
+**The application-side existence check remains, as an optimization only.** It answers the common
+case — a browser retrying after a lost response — without writing a customer row. It is explicitly
+no longer correctness-critical: a caller that races past it, or an implementation that dropped it,
+is still safe because the database wrapper is the authority.
+
+**The customer is inside the boundary too — and the reasoning that first left it outside was wrong.**
+
+The first version of this correction kept `saveCustomer` in application code just before the
+wrapper, on the argument that a racing retry would re-upsert "byte-identical name and phone" so its
+only effect would be to advance `customers.updated_at`. **That argument was false.** It assumed the
+same idempotency key implies the same request payload. It does not: a customer who edits the form
+and resubmits while the first request is still in flight sends different contact details under the
+same key, and both requests derive the *same* customer id. Adversarial review reproduced the result
+live, in both orderings:
+
+```
+A creates order + customer "Alice Race / 111111"
+B (losing) upserts the same customer id as "Bob Race / 222222"
+result: A's order now points at Bob's name and phone
+```
+
+The earlier reachability trace asked only whether an *operator* could edit a customer — there is no
+such surface — and never asked whether a *second public request* could. Name and phone are the two
+fields the public flow requires, because they are how the order is confirmed; an order carrying the
+wrong person's number is a real delivery failure.
+
+So `save_public_order_once` now takes the customer as well, and under the same advisory lock:
+
+- if the order exists → `{ created: false }` and **zero writes** — no customer, no order, no lines;
+- if absent → persist the customer, then delegate order + line persistence to `save_order`.
+
+Two consequences follow. A losing same-key request can no longer mutate anything the winner
+persisted. And because the customer is now written inside the same transaction, a failure in
+`save_order` rolls it back with everything else — which **eliminates the orphan-customer residual**
+that the sequential shape carried.
+
+The wrapper still contains no `orders` insert, no `order_lines` insert and no order upsert:
+`save_order` remains canonical for order and line persistence.
+
+**Also corrected while implementing:** price consent is decided by the **customer-visible
+representation** (`src/lib/orders/money.ts`), one rule shared by everything that displays a price
+and by the server-side check.
+
+Two earlier attempts were both wrong. The first was a half-centavo epsilon — an arbitrary tolerance.
+The second, `Math.round(value * 100)`, was described as exact but disagrees with the app's own
+formatter: `1.005` renders as `1.01` yet computes to 100 centavos, so a catalog move of
+`1.005 → 1.004` changes what the customer sees (`₱1.01 → ₱1.00`) while both map to the same centavo
+count, and consent would wave it through. Any arithmetic re-derivation of "what two decimal places
+would show" merely approximates the formatter, so the rule is now the formatter itself: identical
+rendering means the customer cannot tell the two apart and the order proceeds; different rendering
+means consent is broken and the submission is refused. The persisted price remains the authoritative
+catalog value in every case.
 
 ### 0.1 Revision 2 — six owner/review revisions applied before freeze
 
@@ -246,7 +349,9 @@ The public flow is the same shape as the internal one, so it uses the same funct
 
 **Partial-failure analysis.** The only residual is: customer written, `save_order` fails → one orphan customer row. This is *already* the accepted behaviour of the approved model, documented in `submitNewOrder`'s own comment. For the public flow it is *less* harmful, because the customer id is derived (below), so a retry reconciles onto the same row rather than adding another.
 
-**No new RPC is justified.** A `save_public_order` wrapper would be a second Order persistence implementation — precisely what the brief forbids. `save_order` remains the canonical order+lines writer, called through the existing repository function.
+**REVISED IN REVISION 3 — see §0.2.** Revision 2 concluded here that *"no new RPC is justified"*, reasoning that a wrapper would be a second Order persistence implementation. Live concurrency testing during PR-F2 disproved the premise rather than the concern: an application-side existence check **cannot** provide create-once semantics, because the check and the write are separate transactions and a caller can pause between them. A second caller reset a confirmed, paid order to `new`/`unpaid`.
+
+Public creation now goes through **`save_public_order_once`**, which serializes on the derived order id with a transaction-scoped advisory lock, checks existence under that lock, and **delegates persistence to `save_order`**. The wrapper contains no insert, no upsert and no line handling — so `save_order` remains the canonical order+lines writer, and the concern Revision 2 was protecting is preserved intact. The application-side check survives only as a fast path and is explicitly no longer correctness-critical.
 
 > **⚠ The one genuinely new hazard, and it must be designed for.** `save_order` **upserts the whole order row, payment columns included** — that is correct for creation and is exactly the constraint recorded in PR-D. A replayed public submission carrying an order id that already exists would therefore reset a confirmed, paid order back to `new`/`unpaid` and wipe `paid_at`/`paid_amount`.
 >
@@ -549,7 +654,7 @@ create index if not exists products_is_public_idx on products (is_public) where 
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | **Replay resets a paid order** (`save_order` writes the whole row) | Existence check before `save_order`; asserted against a `confirmed`/`paid` order. **The single highest-value guard in this slice.** |
+| R1 | **Replay or a CONCURRENT second submission resets a paid order** (`save_order` writes the whole row) | **Revised in Revision 3.** An application-side existence check was proven insufficient against the live database — see §0.2 for the reproduced trace. Creation now runs through `save_public_order_once`, which serializes on the derived order id with a transaction-scoped advisory lock, checks existence under it, and delegates to `save_order`. The application check remains only as a fast path. **The single highest-value guard in this slice.** |
 | R2 | Customer dictates price | Server rebuilds lines; `buildCatalogOrderLine` called without `unitPrice`. Hostile-payload test. |
 | R2b | **Customer charged a price they never saw** | `displayedUnitPrice` compared, not trusted: any mismatch returns `409 prices-changed` with zero writes. The comparison can only *stop* an order, never set a price. |
 | R3 | Server secret leaks to the browser | `import "server-only"` (build error, not runtime surprise) **plus** no `NEXT_PUBLIC_` prefix **plus** a structural test that no client module transitively imports it |

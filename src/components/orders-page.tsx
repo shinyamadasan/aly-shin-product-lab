@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, MessageBox, Panel, SecondaryButton, Tag } from "@/components/ui";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { getOrderCountsBySource } from "@/lib/orders/attribution";
+import { toDisplayPrice } from "@/lib/orders/money";
 import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getActiveDeliveryAddress, sortOrdersByFulfillment, type FulfillmentFilter, type FulfillmentSort } from "@/lib/orders/fulfillment";
 import { buildLinesFromDrafts, CUSTOM_ITEM_KEY, findSellableItem, getSellableItems, type DraftLine, type SellableProductGroup } from "@/lib/orders/menu";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
@@ -57,8 +58,10 @@ function newDraftLine(): DraftLine {
   return { rowId: crypto.randomUUID(), itemKey: "", itemName: "", unitPrice: "", quantity: "1" };
 }
 
+// Delegates to the shared rule so there is exactly one definition of what a price looks like --
+// the same one the public price-consent check compares against.
 function formatPeso(value: number): string {
-  return `₱${value.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `₱${toDisplayPrice(value)}`;
 }
 
 function formatWhen(value: string | null): string {

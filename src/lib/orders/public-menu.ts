@@ -22,8 +22,15 @@
 // Pure. No Supabase client, no clock, no process.env -- so it runs identically on the server (where
 // a later slice will call it) and in a test.
 
-import { getSellableItems } from "./menu.ts";
+import { getSellableItems, type SellableProductGroup } from "./menu.ts";
 import type { CostingSummary, Product, ProductBatch, SellingFormat } from "../product-lab-types.ts";
+
+// The publication gate, in ONE place. Both the customer-facing menu below and the server-side
+// submission path (which needs the richer SellableItem to build an order line) go through this, so
+// the two can never disagree about which products are on offer.
+export function getPublicSellableGroups(products: Product[], batches: ProductBatch[], costings: CostingSummary[], sellingFormats: SellingFormat[]): SellableProductGroup[] {
+  return getSellableItems(products.filter((product) => product.isPublic), batches, costings, sellingFormats);
+}
 
 export type PublicMenuFormat = {
   sellingFormatId: string;
@@ -43,12 +50,11 @@ export type PublicMenuProduct = {
 };
 
 export function getPublicMenu(products: Product[], batches: ProductBatch[], costings: CostingSummary[], sellingFormats: SellingFormat[]): PublicMenuProduct[] {
-  const publicProducts = products.filter((product) => product.isPublic);
-  const imageByProductId = new Map(publicProducts.map((product) => [product.id, product.image]));
+  const imageByProductId = new Map(products.filter((product) => product.isPublic).map((product) => [product.id, product.image]));
 
   // getSellableItems already drops products with no offerable formats and sorts both levels, so a
   // published product with nothing currently sellable simply does not appear.
-  return getSellableItems(publicProducts, batches, costings, sellingFormats).map((group) => ({
+  return getPublicSellableGroups(products, batches, costings, sellingFormats).map((group) => ({
     productId: group.productId,
     productName: group.productName,
     image: imageByProductId.get(group.productId) ?? "",
