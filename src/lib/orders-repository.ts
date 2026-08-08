@@ -12,7 +12,7 @@
 import { buildCustomerPayload, buildOrderLinePayload, buildOrderPayload, mapCustomerRow, mapOrderLineRow, mapOrderRow } from "./orders/mappers.ts";
 import { applyOrderTransition, applyPaymentCorrection, applyPaymentReceived, applyPaymentRecordCorrection, applyRefund } from "./orders/transitions.ts";
 import { validateCustomerForSave, validateOrderForSave } from "./orders/validation.ts";
-import type { Customer, CustomerRow, Order, OrderLine, OrderLineRow, OrderRow, OrderStatus, PaymentMethod } from "./orders/types.ts";
+import type { Customer, CustomerRow, FulfillmentMethod, Order, OrderLine, OrderLineRow, OrderRow, OrderSource, OrderStatus, PaymentMethod } from "./orders/types.ts";
 
 type SupabaseErrorLike = {
   code?: string;
@@ -34,13 +34,15 @@ type ReadOnlyTable = {
   select<T = unknown>(columns: string): SelectBuilder<T>;
 };
 
-// The ONLY two column sets an order may be updated with outside save_order. Both are single-row
-// lifecycle/payment transitions, which the frozen plan explicitly keeps as plain updates: "single-
-// row writes are already atomic; wrapping them would be ceremony."
+// The ONLY column sets an order may be updated with outside save_order. Each is a single-row write,
+// which the frozen plan explicitly keeps as a plain update: "single-row writes are already atomic;
+// wrapping them would be ceremony."
 //
-// The narrowness is the point. Order *content* -- customer_id, source, notes, placed_at, and the
-// lines themselves -- is absent from both shapes, so it remains impossible to persist an order's
-// substance anywhere but save_order. A status update cannot quietly become a second write path.
+// The narrowness is the point, and it is enforced by the type rather than by discipline. Every one
+// of these shapes is hand-enumerated with no `...order` spread, and each contains only the columns
+// its own operation is responsible for. Nothing here can reach a column belonging to another
+// concern, so recording a payment cannot move the lifecycle, correcting a delivery time cannot
+// touch the money, and none of them can rewrite the customer, the lines, or a price.
 export type OrderLifecycleUpdate = {
   status: string;
   completed_at: string | null;
@@ -58,6 +60,24 @@ export type OrderPaymentUpdate = {
   updated_at: string;
 };
 
+// S5. The agreed handover facts, and nothing else. No status, no payment column, no customer, no
+// line, no price -- correcting a pickup time is not an occasion to rewrite an order.
+export type OrderFulfillmentUpdate = {
+  fulfillment_method: string;
+  fulfillment_at: string | null;
+  fulfillment_address: string | null;
+  updated_at: string;
+};
+
+// S6. Exactly the two attribution columns. entry_method is deliberately ABSENT: it records how the
+// record was typed in, which is not something correcting the acquisition channel can change. A
+// hand-typed Instagram order stays entry_method=manual no matter how often its source is fixed.
+export type OrderAttributionUpdate = {
+  source: string;
+  source_ref: string | null;
+  updated_at: string;
+};
+
 type ConditionalUpdateBuilder = {
   // Two eq() calls: one for identity, one for the expected current state. That second predicate is
   // what makes the update optimistic-concurrency safe -- a stale click matches zero rows instead of
@@ -67,7 +87,7 @@ type ConditionalUpdateBuilder = {
 };
 
 type OrdersTable = ReadOnlyTable & {
-  update(row: OrderLifecycleUpdate | OrderPaymentUpdate): ConditionalUpdateBuilder;
+  update(row: OrderLifecycleUpdate | OrderPaymentUpdate | OrderFulfillmentUpdate | OrderAttributionUpdate): ConditionalUpdateBuilder;
 };
 
 // customers is not part of save_order's payload, so it keeps an ordinary upsert.
@@ -369,6 +389,82 @@ export async function updatePaymentStatus(client: OrdersClient, { orderId, actio
   }
 
   return { ok: true, order: mapOrderRow(result.data) };
+}
+
+// --- Field-level edits after creation (S5/S6) -----------------------------------------------------
+//
+// WHY THESE EXIST RATHER THAN save_order. save_order takes the whole order row, payment columns
+// included, because it is the CREATION path -- the order id is minted once per form and there is no
+// existing row to preserve. Routing an after-the-fact fulfilment or attribution edit through it
+// would mean sending payment_status, paid_at, paid_amount and refunded_at back to the database on
+// every schedule correction, from whatever the browser last happened to load. A tab left open
+// across a payment would then quietly restore the pre-payment figures. These two operations cannot
+// do that, because those columns are absent from their payload types entirely.
+//
+// CONCURRENCY. Lifecycle and payment guard their conditional update on the column they are
+// transitioning (`status`, `payment_status`). Fulfilment and attribution have no such column -- an
+// address is not a state machine -- so they guard on `updated_at`, the row's version. Every write
+// path in this app sets updated_at explicitly (no trigger maintains it anywhere in this schema), so
+// any newer write of any kind moves it and a stale tab's edit matches zero rows.
+
+async function conditionalOrderUpdate(client: OrdersClient, orderId: string, payload: OrderFulfillmentUpdate | OrderAttributionUpdate, expectedUpdatedAt: string): Promise<OrderUpdateResult> {
+  const result = await client.from("orders").update(payload).eq("id", orderId).eq("updated_at", expectedUpdatedAt).select(ORDER_COLUMNS).maybeSingle();
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+  if (!result.data) {
+    // Zero matched rows is never success. The order is re-read so the caller is told what it
+    // actually became, and nothing of this caller's edit was written.
+    return reportConflict(client, orderId, "it");
+  }
+
+  return { ok: true, order: mapOrderRow(result.data) };
+}
+
+// Correct the agreed handover facts on an existing order: pickup or delivery, when, and where.
+export async function updateOrderFulfillment(
+  client: OrdersClient,
+  { orderId, fulfillmentMethod, fulfillmentAt, fulfillmentAddress, now }: { orderId: string; fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string; now: string },
+): Promise<OrderUpdateResult> {
+  const before = await getOrderDetail(client, orderId);
+  if (!before.ok) {
+    return { ok: false, reason: before.reason, message: before.message };
+  }
+
+  const payload: OrderFulfillmentUpdate = {
+    fulfillment_method: fulfillmentMethod,
+    fulfillment_at: fulfillmentAt,
+    // Switching to pickup CLEARS the delivery address rather than leaving a hidden one behind --
+    // the same rule the new-order form already applies when it saves "" for a pickup. A retained
+    // address under pickup is data that is true of nothing, and the next person to read the row
+    // has no way to tell it apart from a real one.
+    fulfillment_address: fulfillmentMethod === "delivery" ? fulfillmentAddress || null : null,
+    updated_at: now,
+  };
+
+  return conditionalOrderUpdate(client, orderId, payload, before.order.updatedAt);
+}
+
+// Correct where an order came from, and the opaque reference that goes with it.
+export async function updateOrderAttribution(
+  client: OrdersClient,
+  { orderId, source, sourceRef, now }: { orderId: string; source: OrderSource; sourceRef: string; now: string },
+): Promise<OrderUpdateResult> {
+  const before = await getOrderDetail(client, orderId);
+  if (!before.ok) {
+    return { ok: false, reason: before.reason, message: before.message };
+  }
+
+  const payload: OrderAttributionUpdate = {
+    source,
+    // Passed through exactly as given: not trimmed, not parsed, not validated, not interpreted.
+    // Only the empty string becomes null, so the column holds a single representation of "nothing",
+    // matching buildOrderPayload. Everything else must come back out saying what it said.
+    source_ref: sourceRef === "" ? null : sourceRef,
+    updated_at: now,
+  };
+
+  return conditionalOrderUpdate(client, orderId, payload, before.order.updatedAt);
 }
 
 // --- New-order submission ------------------------------------------------------------------------

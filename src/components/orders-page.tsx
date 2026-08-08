@@ -2,11 +2,13 @@
 
 // Orders: the first usable Selling workflow.
 //
-// Scope is S2 exactly -- select or create a customer, build an order from the sellable menu or
-// custom items, save it atomically, and see it again after a reload. There are deliberately NO
-// status or payment actions here (Confirm / Ready / Complete / Cancel / Mark paid / Refund):
-// those are S3 and S4, and adding a button early would mean shipping a state machine with no way
-// to record the money that goes with it.
+// Scope is S2 + S3 + S4 + S5 + S6, which is the whole approved MVP: create an order, move it
+// through its lifecycle, record payment against it, correct the agreed handover facts, and correct
+// where it came from. Order LINES are still not editable after creation -- that is deliberate and
+// unchanged, and everything downstream of it (see updatePaymentStatus's caller-supplied lines)
+// depends on it staying that way.
+//
+// Nothing here belongs to S7+: no dashboard, no readout, no public ordering surface.
 //
 // Data access goes through src/lib/orders-repository.ts. Orders never enter LabState. The catalog
 // (products, batches, costings, selling formats) is read from LabState because it is already
@@ -16,12 +18,14 @@ import { ClipboardList, PackagePlus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, MessageBox, Panel, SecondaryButton, Tag } from "@/components/ui";
 import { createMutationGuard } from "@/lib/mutation-guard";
+import { getOrderCountsBySource } from "@/lib/orders/attribution";
+import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getActiveDeliveryAddress, sortOrdersByFulfillment, type FulfillmentFilter, type FulfillmentSort } from "@/lib/orders/fulfillment";
 import { buildLinesFromDrafts, CUSTOM_ITEM_KEY, findSellableItem, getSellableItems, type DraftLine, type SellableProductGroup } from "@/lib/orders/menu";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
-import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
-import { listCustomers, listOrderLines, listOrders, submitNewOrder, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
+import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type FulfillmentMethod, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
+import { listCustomers, listOrderLines, listOrders, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import type { LabState } from "@/lib/lab-state";
 import { supabase } from "@/lib/supabase";
@@ -31,6 +35,23 @@ const PAID_CANCEL_PROMPT =
   "OK cancels the order and leaves it paid. Use Refund afterwards to record the money going back; cancelling alone never changes what was received.";
 
 export const UNSAVED_ORDER_MESSAGE = "You have unsaved changes in this order. Leaving now will discard them. Continue?";
+
+// Aly & Pon bakes and hands over in Manila. "Today" has to mean today HERE -- under UTC the
+// business day rolls over at 08:00 local, so the first eight hours of every working day would be
+// filed under yesterday. Resolved through src/lib/business-day.ts, the app's one business-day
+// utility; no second one is introduced.
+const BUSINESS_TIMEZONE = "Asia/Manila";
+
+const FILTER_LABELS: Record<FulfillmentFilter, string> = {
+  all: "All orders",
+  today: "Handover today",
+  unscheduled: "Not scheduled",
+};
+
+const SORT_LABELS: Record<FulfillmentSort, string> = {
+  placed: "Newest first",
+  soonest: "Handover soonest",
+};
 
 function newDraftLine(): DraftLine {
   return { rowId: crypto.randomUUID(), itemKey: "", itemName: "", unitPrice: "", quantity: "1" };
@@ -44,6 +65,14 @@ function formatWhen(value: string | null): string {
   if (!value) return "Not scheduled";
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+// A datetime-local field yields a local "YYYY-MM-DDTHH:mm" or "". Empty means "not scheduled yet",
+// which is a real state and stays null rather than becoming an invented time.
+function toIsoInstant(localValue: string): string | null {
+  if (!localValue) return null;
+  const parsed = new Date(localValue);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 function sourceLabel(source: OrderSource): string {
@@ -61,6 +90,15 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
   const [isCreating, setIsCreating] = useState(false);
+
+  // S5 list controls. Client-side over the orders already loaded -- no extra round trip, and the
+  // defaults ("all", newest first) leave the list exactly as S2 shipped it.
+  const [fulfillmentFilter, setFulfillmentFilter] = useState<FulfillmentFilter>("all");
+  const [fulfillmentSort, setFulfillmentSort] = useState<FulfillmentSort>("placed");
+  // The instant this list was read, stamped by the loader below rather than by render. "Handover
+  // today" has to resolve against a clock, and reading one during render is impure -- so the clock
+  // is read once, where the data is, and Refresh re-stamps it.
+  const [loadedAtMs, setLoadedAtMs] = useState(0);
 
   // Form state.
   const [customerId, setCustomerId] = useState("");
@@ -128,6 +166,7 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
       setOrders(orderResult.orders);
       setLinesByOrderId(lineResult.linesByOrderId);
       setCustomers(customerResult.customers);
+      setLoadedAtMs(Date.now());
       setIsLoading(false);
     }
 
@@ -209,6 +248,17 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
   const previewLines = useMemo(() => buildLinesFromDrafts(draftLines, sellableGroups, "preview"), [draftLines, sellableGroups]);
   const previewTotal = getOrderTotals(previewLines).total;
 
+  // Filter first, then sort. Both are pure reads over the loaded list, and the clock they need is
+  // the load stamp above rather than a fresh reading -- so this stays a pure render.
+  const visibleOrders = useMemo(
+    () => sortOrdersByFulfillment(filterOrdersByFulfillment(orders, fulfillmentFilter, { nowMs: loadedAtMs, timeZone: BUSINESS_TIMEZONE }), fulfillmentSort),
+    [orders, fulfillmentFilter, fulfillmentSort, loadedAtMs],
+  );
+
+  // Counted over everything loaded, not over the current filter: this line answers "where do our
+  // orders come from", which a fulfilment filter has no bearing on.
+  const sourceCounts = useMemo(() => getOrderCountsBySource(orders), [orders]);
+
   function resetForm() {
     orderIdRef.current = crypto.randomUUID();
     pendingCustomerIdRef.current = crypto.randomUUID();
@@ -262,7 +312,7 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
         paidAmount: null,
         refundedAt: null,
         fulfillmentMethod,
-        fulfillmentAt: fulfillmentAt ? new Date(fulfillmentAt).toISOString() : null,
+        fulfillmentAt: toIsoInstant(fulfillmentAt),
         fulfillmentAddress: fulfillmentMethod === "delivery" ? fulfillmentAddress.trim() : "",
         fulfillmentNotes: "",
         source,
@@ -332,7 +382,7 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold">Orders</h3>
-            <p className="text-sm text-[#6f5a4c]">{isLoading ? "Loading…" : `${orders.length} order${orders.length === 1 ? "" : "s"} recorded`}</p>
+            <p className="text-sm text-[#6f5a4c]">{isLoading ? "Loading…" : visibleOrders.length === orders.length ? `${orders.length} order${orders.length === 1 ? "" : "s"} recorded` : `${visibleOrders.length} of ${orders.length} orders shown`}</p>
           </div>
           <div className="flex gap-2">
             <SecondaryButton onClick={reload}>
@@ -340,6 +390,34 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
             </SecondaryButton>
             <SecondaryButton onClick={() => { setIsCreating((value) => !value); setMessage(""); }}>{isCreating ? "Cancel new order" : "New order"}</SecondaryButton>
           </div>
+        </div>
+
+        {/* A cheap read, not a dashboard: one line of counts over the loaded orders. "Unknown" is
+            shown rather than hidden, so the named channels are never made to look more complete
+            than they are. */}
+        {sourceCounts.length > 0 ? (
+          <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[#6f5a4c]">
+            {sourceCounts.map((entry) => (
+              <span key={entry.source}>
+                <span className="capitalize">{sourceLabel(entry.source)}</span> <span className="font-semibold">{entry.count}</span>
+              </span>
+            ))}
+          </p>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2">
+          <label className="grid gap-1 text-xs font-medium">
+            Show
+            <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setFulfillmentFilter(event.target.value as FulfillmentFilter)} value={fulfillmentFilter}>
+              {FULFILLMENT_FILTERS.map((option) => <option key={option} value={option}>{FILTER_LABELS[option]}</option>)}
+            </select>
+          </label>
+          <label className="grid gap-1 text-xs font-medium">
+            Sort
+            <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setFulfillmentSort(event.target.value as FulfillmentSort)} value={fulfillmentSort}>
+              {FULFILLMENT_SORTS.map((option) => <option key={option} value={option}>{SORT_LABELS[option]}</option>)}
+            </select>
+          </label>
         </div>
 
         {message ? <MessageBox message={message} tone={messageTone} /> : null}
@@ -373,7 +451,8 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
 
         <div className="space-y-2">
           {!isLoading && orders.length === 0 ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders recorded yet. Use “New order” to add the first one.</p> : null}
-          {orders.map((order) => {
+          {!isLoading && orders.length > 0 && visibleOrders.length === 0 ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match “{FILTER_LABELS[fulfillmentFilter]}”. The other {orders.length} {orders.length === 1 ? "order is" : "orders are"} still here — switch back to “All orders”.</p> : null}
+          {visibleOrders.map((order) => {
             const lines = linesByOrderId.get(order.id) ?? [];
             const total = getOrderTotals(lines).total;
             const customer = customers.find((entry) => entry.id === order.customerId);
@@ -412,6 +491,16 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
         }}
         onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
         onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
+        onEditAttribution={(attribution) => {
+          if (!client || !selectedOrder) return;
+          const id = selectedOrder.id;
+          void runOrderAction(id, () => updateOrderAttribution(client, { orderId: id, ...attribution, now: new Date().toISOString() }));
+        }}
+        onEditFulfillment={(fulfillment) => {
+          if (!client || !selectedOrder) return;
+          const id = selectedOrder.id;
+          void runOrderAction(id, () => updateOrderFulfillment(client, { orderId: id, ...fulfillment, now: new Date().toISOString() }));
+        }}
         onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
         onRefund={() => runPaymentAction({ kind: "refund" })}
         onStatusChange={(to) => {
@@ -628,6 +717,8 @@ function OrderDetailPanel({
   onCancel,
   onClearPaymentRecord,
   onCorrectPaymentRecord,
+  onEditAttribution,
+  onEditFulfillment,
   onMarkPaid,
   onRefund,
   onStatusChange,
@@ -639,12 +730,16 @@ function OrderDetailPanel({
   onCancel: (reason: string) => void;
   onClearPaymentRecord: () => void;
   onCorrectPaymentRecord: (correction: { paidAmount: number; paidAt: string; method: PaymentMethod }) => void;
+  onEditAttribution: (attribution: { source: OrderSource; sourceRef: string }) => void;
+  onEditFulfillment: (fulfillment: { fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
   onMarkPaid: (method: PaymentMethod) => void;
   onRefund: () => void;
   onStatusChange: (to: OrderStatus) => void;
   order: Order | null;
 }) {
   const [isCorrecting, setIsCorrecting] = useState(false);
+  const [isEditingFulfillment, setIsEditingFulfillment] = useState(false);
+  const [isEditingAttribution, setIsEditingAttribution] = useState(false);
 
   if (!order) {
     return (
@@ -656,6 +751,7 @@ function OrderDetailPanel({
 
   const totals = getOrderTotals(lines);
   const divergence = getPaymentDivergence(order, lines);
+  const activeDeliveryAddress = getActiveDeliveryAddress(order);
   // The buttons come straight from the domain machine, so what the operator can click and what the
   // transition functions permit can never drift apart. A terminal order yields an empty list.
   const forwardTransitions = getAllowedOrderTransitions(order.status).filter((next) => next !== "cancelled");
@@ -665,12 +761,46 @@ function OrderDetailPanel({
     <Panel icon={<ClipboardList size={18} />} title={customer?.name ?? "Order"}>
       <div className="space-y-3 text-sm text-[#5f4a3d]">
         <div className="flex flex-wrap gap-2 text-xs">
+          {/* Two tags, two state machines -- and there is no third. Fulfilment is an attribute of
+              the order, reported on the line below, never a second status that could disagree. */}
           <Tag tone={order.status === "completed" ? "green" : order.status === "cancelled" ? "danger" : "warm"}>{order.status}</Tag>
           <Tag tone={order.paymentStatus === "paid" ? "green" : order.paymentStatus === "refunded" ? "danger" : "warm"}>{order.paymentStatus}</Tag>
-          <Tag tone="warm">{sourceLabel(order.source)}</Tag>
         </div>
         <p className="text-xs">{order.fulfillmentMethod === "delivery" ? "Delivery" : "Pickup"} · {formatWhen(order.fulfillmentAt)}</p>
-        {order.fulfillmentAddress ? <p className="text-xs">{order.fulfillmentAddress}</p> : null}
+        {/* Asked for, never read straight off the row: under pickup a leftover delivery address is
+            not active data and must not render as though it still applies. */}
+        {activeDeliveryAddress ? <p className="text-xs">{activeDeliveryAddress}</p> : null}
+        <p className="text-xs">{sourceLabel(order.source)}{order.sourceRef ? ` · ${order.sourceRef}` : ""}</p>
+
+        <div className="flex flex-wrap gap-2">
+          <SecondaryButton disabled={actionBusy} onClick={() => setIsEditingFulfillment((value) => !value)}>Edit schedule</SecondaryButton>
+          <SecondaryButton disabled={actionBusy} onClick={() => setIsEditingAttribution((value) => !value)}>Edit source</SecondaryButton>
+        </div>
+
+        {isEditingFulfillment ? (
+          <FulfillmentEditForm
+            actionBusy={actionBusy}
+            key={`fulfillment-${order.id}`}
+            onSubmit={(fulfillment) => {
+              setIsEditingFulfillment(false);
+              onEditFulfillment(fulfillment);
+            }}
+            order={order}
+          />
+        ) : null}
+
+        {isEditingAttribution ? (
+          <AttributionEditForm
+            actionBusy={actionBusy}
+            key={`attribution-${order.id}`}
+            onSubmit={(attribution) => {
+              setIsEditingAttribution(false);
+              onEditAttribution(attribution);
+            }}
+            order={order}
+          />
+        ) : null}
+
         {order.completedAt ? <p className="text-xs">Completed {formatWhen(order.completedAt)}</p> : null}
         {order.cancelledAt ? <p className="text-xs">Cancelled {formatWhen(order.cancelledAt)}{order.cancelReason ? ` — ${order.cancelReason}` : ""}</p> : null}
 
@@ -807,6 +937,107 @@ function PaymentCorrectionForm({
       <div className="flex flex-wrap gap-2 pt-1">
         <Button disabled={actionBusy}>Save correction</Button>
         <SecondaryButton disabled={actionBusy} onClick={onClear}>This payment never happened</SecondaryButton>
+      </div>
+    </form>
+  );
+}
+
+// S5. Correcting the agreed handover facts after the order exists -- the plan is explicit that
+// these are attributes, so this form edits fields and never moves the order through a state.
+//
+// The address input appears ONLY for delivery. Switching to pickup and saving clears the stored
+// address rather than hiding it: an address on a pickup order is true of nothing, and a hidden one
+// would resurface the moment someone switched back, silently claiming to be current.
+function FulfillmentEditForm({
+  actionBusy,
+  onSubmit,
+  order,
+}: {
+  actionBusy: boolean;
+  onSubmit: (fulfillment: { fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
+  order: Order;
+}) {
+  const [method, setMethod] = useState<FulfillmentMethod>(order.fulfillmentMethod);
+  const [when, setWhen] = useState(toLocalDateTimeValue(order.fulfillmentAt));
+  const [address, setAddress] = useState(order.fulfillmentAddress);
+
+  return (
+    <form
+      className="grid gap-2 rounded-md border border-[#e8dccd] p-3 text-xs"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit({ fulfillmentMethod: method, fulfillmentAt: toIsoInstant(when), fulfillmentAddress: address });
+      }}
+    >
+      <p className="font-semibold">Edit schedule</p>
+      <label className="grid gap-1 font-medium">
+        Fulfilment
+        <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setMethod(event.target.value as FulfillmentMethod)} value={method}>
+          <option value="pickup">Pickup</option>
+          <option value="delivery">Delivery</option>
+        </select>
+      </label>
+      <label className="grid gap-1 font-medium">
+        When <span className="font-normal text-[#6f5a4c]">(leave blank if not scheduled yet)</span>
+        <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setWhen(event.target.value)} type="datetime-local" value={when} />
+      </label>
+      {method === "delivery" ? (
+        <label className="grid gap-1 font-medium">
+          Delivery address
+          <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setAddress(event.target.value)} value={address} />
+        </label>
+      ) : (
+        <p className="leading-5 text-[#6f5a4c]">Saving as pickup clears any delivery address on this order.</p>
+      )}
+      <div className="pt-1">
+        <Button disabled={actionBusy}>Save schedule</Button>
+      </div>
+    </form>
+  );
+}
+
+// S6. Correcting where the order came from.
+//
+// Notice what is NOT here: entry method. It records how the record was typed in, which no amount of
+// correcting the acquisition channel can change -- a hand-typed Instagram order is source=instagram
+// AND entry_method=manual, both at once. There is no input for it and the update payload has no
+// column for it.
+function AttributionEditForm({
+  actionBusy,
+  onSubmit,
+  order,
+}: {
+  actionBusy: boolean;
+  onSubmit: (attribution: { source: OrderSource; sourceRef: string }) => void;
+  order: Order;
+}) {
+  const [source, setSource] = useState<OrderSource>(order.source);
+  const [sourceRef, setSourceRef] = useState(order.sourceRef);
+
+  return (
+    <form
+      className="grid gap-2 rounded-md border border-[#e8dccd] p-3 text-xs"
+      onSubmit={(event) => {
+        event.preventDefault();
+        // Submitted exactly as typed. Not trimmed, because this value is opaque and the app has no
+        // standing to decide which of its characters matter.
+        onSubmit({ source, sourceRef });
+      }}
+    >
+      <p className="font-semibold">Edit source</p>
+      <label className="grid gap-1 font-medium">
+        Where did this order come from?
+        <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setSource(event.target.value as OrderSource)} value={source}>
+          {ORDER_SOURCES.map((option) => <option key={option} value={option}>{option === "unknown" ? "Unknown" : option}</option>)}
+        </select>
+      </label>
+      <label className="grid gap-1 font-medium">
+        Reference <span className="font-normal text-[#6f5a4c]">(optional)</span>
+        <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setSourceRef(event.target.value)} placeholder="post link, campaign tag, who referred them" value={sourceRef} />
+        <span className="font-normal leading-5 text-[#6f5a4c]">Kept exactly as written, for your own reference. Nothing reads it.</span>
+      </label>
+      <div className="pt-1">
+        <Button disabled={actionBusy}>Save source</Button>
       </div>
     </form>
   );
