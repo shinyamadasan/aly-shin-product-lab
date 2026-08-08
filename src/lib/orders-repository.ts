@@ -10,8 +10,9 @@
 // plausible total, which is silent corruption of the commercial record.
 
 import { buildCustomerPayload, buildOrderLinePayload, buildOrderPayload, mapCustomerRow, mapOrderLineRow, mapOrderRow } from "./orders/mappers.ts";
+import { applyOrderTransition, applyPaymentCorrection, applyPaymentReceived, applyPaymentRecordCorrection, applyRefund } from "./orders/transitions.ts";
 import { validateCustomerForSave, validateOrderForSave } from "./orders/validation.ts";
-import type { Customer, CustomerRow, Order, OrderLine, OrderLineRow, OrderRow } from "./orders/types.ts";
+import type { Customer, CustomerRow, Order, OrderLine, OrderLineRow, OrderRow, OrderStatus, PaymentMethod } from "./orders/types.ts";
 
 type SupabaseErrorLike = {
   code?: string;
@@ -27,10 +28,46 @@ type SelectBuilder<T> = QueryResult<T> & {
   limit(count: number): SelectBuilder<T>;
 };
 
-// Read-only for orders and order_lines. The absence of a write method is the enforcement: this
-// module cannot issue a direct order write even if someone later tries to add one here.
+// Read-only for order_lines. The absence of a write method is the enforcement: line content can
+// only ever be persisted through save_order.
 type ReadOnlyTable = {
   select<T = unknown>(columns: string): SelectBuilder<T>;
+};
+
+// The ONLY two column sets an order may be updated with outside save_order. Both are single-row
+// lifecycle/payment transitions, which the frozen plan explicitly keeps as plain updates: "single-
+// row writes are already atomic; wrapping them would be ceremony."
+//
+// The narrowness is the point. Order *content* -- customer_id, source, notes, placed_at, and the
+// lines themselves -- is absent from both shapes, so it remains impossible to persist an order's
+// substance anywhere but save_order. A status update cannot quietly become a second write path.
+export type OrderLifecycleUpdate = {
+  status: string;
+  completed_at: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  updated_at: string;
+};
+
+export type OrderPaymentUpdate = {
+  payment_status: string;
+  payment_method: string | null;
+  paid_at: string | null;
+  paid_amount: number | null;
+  refunded_at: string | null;
+  updated_at: string;
+};
+
+type ConditionalUpdateBuilder = {
+  // Two eq() calls: one for identity, one for the expected current state. That second predicate is
+  // what makes the update optimistic-concurrency safe -- a stale click matches zero rows instead of
+  // overwriting whatever the order became in the meantime.
+  eq(column: string, value: string): ConditionalUpdateBuilder;
+  select(columns: string): { maybeSingle(): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }> };
+};
+
+type OrdersTable = ReadOnlyTable & {
+  update(row: OrderLifecycleUpdate | OrderPaymentUpdate): ConditionalUpdateBuilder;
 };
 
 // customers is not part of save_order's payload, so it keeps an ordinary upsert.
@@ -39,7 +76,7 @@ type CustomerTable = ReadOnlyTable & {
 };
 
 export type OrdersClient = {
-  from(table: "orders"): ReadOnlyTable;
+  from(table: "orders"): OrdersTable;
   from(table: "order_lines"): ReadOnlyTable;
   from(table: "customers"): CustomerTable;
   rpc(name: "save_order", args: SaveOrderArgs): PromiseLike<{ data: unknown; error: SupabaseErrorLike | null }>;
@@ -194,6 +231,144 @@ export async function saveOrder(client: OrdersClient, { order, lines, removedLin
   }
 
   return { ok: true };
+}
+
+// --- Lifecycle and payment transitions (S3/S4) ---------------------------------------------------
+//
+// Both follow the shape updateOpportunityStatus already established in this repo:
+//
+//   re-read the PERSISTED order -> decide the transition from that, never from the caller's copy
+//   -> conditional update guarded on the expected current value -> zero rows means conflict.
+//
+// Deciding from the persisted row is what makes a stale tab safe: a button rendered ten minutes ago
+// cannot drive a transition off state that has since moved. The conditional predicate is the second
+// line of defence -- even if two operators act at the same instant, only one update matches.
+
+export type OrderTransitionFailureReason = "invalid-transition" | "conflict" | "not-found" | "missing-table" | "failed";
+
+export type OrderUpdateResult =
+  | { ok: true; order: Order }
+  | { ok: false; reason: OrderTransitionFailureReason; message: string; currentOrder?: Order };
+
+export async function getOrderDetail(client: OrdersClient, orderId: string): Promise<{ ok: true; order: Order } | { ok: false; reason: "not-found" | "missing-table" | "failed"; message: string }> {
+  const result = await client.from("orders").select<OrderRow>(ORDER_COLUMNS).eq("id", orderId).limit(1);
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+
+  const row = (result.data ?? [])[0];
+  if (!row) {
+    return { ok: false, reason: "not-found", message: "That order no longer exists. Refresh and try again." };
+  }
+
+  return { ok: true, order: mapOrderRow(row) };
+}
+
+async function reportConflict(client: OrdersClient, orderId: string, what: string): Promise<OrderUpdateResult> {
+  const reread = await getOrderDetail(client, orderId);
+  if (!reread.ok) {
+    return { ok: false, reason: reread.reason, message: reread.message };
+  }
+
+  return {
+    ok: false,
+    reason: "conflict",
+    message: `This order changed while you were looking at it -- ${what} is now ${reread.order.status}/${reread.order.paymentStatus}. Nothing was overwritten. Refresh and try again.`,
+    currentOrder: reread.order,
+  };
+}
+
+// Advance the order's lifecycle. Writes status and its matching timestamp together, and NOTHING to
+// any payment field -- cancelling a paid order leaves it paid until a refund is actually recorded.
+export async function updateOrderStatus(client: OrdersClient, { orderId, to, cancelReason = "", now }: { orderId: string; to: OrderStatus; cancelReason?: string; now: string }): Promise<OrderUpdateResult> {
+  const before = await getOrderDetail(client, orderId);
+  if (!before.ok) {
+    return { ok: false, reason: before.reason, message: before.message };
+  }
+
+  // The transition is decided by the pure domain layer against the PERSISTED order, so the rules
+  // live in exactly one place and a stale UI cannot smuggle an invalid move through.
+  const transition = applyOrderTransition(before.order, to, now, cancelReason);
+  if (!transition.ok) {
+    return { ok: false, reason: "invalid-transition", message: transition.message, currentOrder: before.order };
+  }
+
+  const payload: OrderLifecycleUpdate = {
+    status: transition.order.status,
+    completed_at: transition.order.completedAt,
+    cancelled_at: transition.order.cancelledAt,
+    cancel_reason: transition.order.cancelReason || null,
+    updated_at: transition.order.updatedAt,
+  };
+
+  const result = await client.from("orders").update(payload).eq("id", orderId).eq("status", before.order.status).select(ORDER_COLUMNS).maybeSingle();
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+  if (!result.data) {
+    return reportConflict(client, orderId, "it");
+  }
+
+  return { ok: true, order: mapOrderRow(result.data) };
+}
+
+export type PaymentAction =
+  // Freezes the order's current total into paid_amount. The single moment revenue is created.
+  | { kind: "mark-paid"; method: PaymentMethod; lines: OrderLine[] }
+  // Money given back. Retains paid_at and paid_amount -- both are historical facts.
+  | { kind: "refund" }
+  // The recorded figures were wrong. Amends them; the order stays paid.
+  | { kind: "correct-record"; paidAmount: number; paidAt: string; method: PaymentMethod }
+  // The payment never happened at all. Clears the record entirely.
+  | { kind: "clear-record" };
+
+// Payment is fully independent of the order lifecycle: a new order may be paid, a completed order
+// may be unpaid, and a cancelled order stays paid until a refund is recorded. Nothing here reads
+// or writes orders.status.
+export async function updatePaymentStatus(client: OrdersClient, { orderId, action, now }: { orderId: string; action: PaymentAction; now: string }): Promise<OrderUpdateResult> {
+  const before = await getOrderDetail(client, orderId);
+  if (!before.ok) {
+    return { ok: false, reason: before.reason, message: before.message };
+  }
+
+  let transition: { ok: true; order: Order } | { ok: false; message: string };
+  switch (action.kind) {
+    case "mark-paid":
+      transition = applyPaymentReceived(before.order, action.lines, action.method, now);
+      break;
+    case "refund":
+      transition = applyRefund(before.order, now);
+      break;
+    case "correct-record":
+      transition = applyPaymentRecordCorrection(before.order, { paidAmount: action.paidAmount, paidAt: action.paidAt, method: action.method }, now);
+      break;
+    case "clear-record":
+      transition = applyPaymentCorrection(before.order, now);
+      break;
+  }
+
+  if (!transition.ok) {
+    return { ok: false, reason: "invalid-transition", message: transition.message, currentOrder: before.order };
+  }
+
+  const payload: OrderPaymentUpdate = {
+    payment_status: transition.order.paymentStatus,
+    payment_method: transition.order.paymentMethod,
+    paid_at: transition.order.paidAt,
+    paid_amount: transition.order.paidAmount,
+    refunded_at: transition.order.refundedAt,
+    updated_at: transition.order.updatedAt,
+  };
+
+  const result = await client.from("orders").update(payload).eq("id", orderId).eq("payment_status", before.order.paymentStatus).select(ORDER_COLUMNS).maybeSingle();
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+  if (!result.data) {
+    return reportConflict(client, orderId, "its payment");
+  }
+
+  return { ok: true, order: mapOrderRow(result.data) };
 }
 
 // --- New-order submission ------------------------------------------------------------------------
