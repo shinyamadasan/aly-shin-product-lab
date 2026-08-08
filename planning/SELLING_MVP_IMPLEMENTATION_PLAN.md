@@ -932,35 +932,53 @@ Every slice's acceptance gate is **the S0-recorded baseline, unchanged, plus tha
 
 **— MVP ends here (owner scope decision). Everything below is planned, sequenced, and not built. —**
 
-### S7 — Operational readout *(in progress — G1 merged, G2 outstanding)*
+### S7 — Operational readout ✅ COMPLETE
 Today's orders, today's paid revenue, unpaid total, **to-prepare by product in units and pieces with an explicit unknown-lines count (§7)**, ready-for-handover. Pure functions over orders + lines; zero writes; `?tab=summary` on the existing route. `pieces.ts` and `revenue.ts` already exist from S1.
 
-> #### ✅ S7 PR-G1 — DETERMINISTIC READ LAYER COMPLETE
+> ## ✅ S7 — OPERATIONAL READOUT COMPLETE
 >
-> Merged 2026-08-08 as PR #39 (`4072fc9`, head `4f9ceaa`). Ships `src/lib/orders/summary.ts` and
-> `tests/orders-summary.test.ts` — 37 focused tests, nine mutation checks.
->
-> `buildSellingSummary({ orders, linesByOrderId, nowMs, timeZone })` is pure: no React, no Supabase
-> client, no repository, no query, no write, no clock. It composes `revenue.ts`, `pieces.ts`,
-> `attribution.ts`, `fulfillment.ts`, `totals.ts` and `business-day.ts`, all of which remain
-> byte-identical. `resolveTodayRange` / `resolveRollingWeekRange` are exported for a later consumer.
->
-> **S7 IS NOT COMPLETE.** The readout has no surface yet:
+> Both required parts shipped 2026-08-08:
 >
 > ```
-> G1 ✅ deterministic summary   (merged)
->       ↓
-> G2 ⬜ /orders?tab=summary UI  (not started)
->       ↓
-> S7 complete
+> G1 ✅ deterministic Selling summary   PR #39  (4072fc9, head 4f9ceaa)
+> G2 ✅ /orders?tab=summary operator UI  PR #40  (00a9e34, head 882c5ec)
+> -------------------------------------------------------------------
+> S7 ✅ COMPLETE
 > ```
 >
-> PR-G2 remains: `orders-tabs.ts`, `orders-summary.tsx`, the `searchParams` route change, and the tab
-> switcher. No part of it has begun — no `orders-tabs.ts`, no `orders-summary.tsx`, and zero files
-> under `src/app/orders/` changed by G1.
+> **G1 — the read layer.** `buildSellingSummary({ orders, linesByOrderId, nowMs, timeZone })` is pure:
+> no React, no Supabase client, no repository, no query, no write, no clock. It composes `revenue.ts`,
+> `pieces.ts`, `attribution.ts`, `fulfillment.ts`, `totals.ts` and `business-day.ts`, all of which
+> remain byte-identical. 37 tests, nine mutation checks. `resolveTodayRange` /
+> `resolveRollingWeekRange` are exported for a later consumer.
 >
-> The CRLF checkout finding recorded in "Implementation status" above is a **separate repository-
-> maintenance concern** and is explicitly **not part of G2** unless authorised on its own.
+> **G2 — the surface.** `/orders` remains the default operational list; `/orders?tab=summary` renders
+> the readout from the state the list already loaded — no second loader, cache, query or write. Tabs
+> are real anchors, so reload, sharing and back/forward preserve the URL, and
+> `useUnsavedChangesGuard` remains the sole unload guard. 32 tests, seven mutation checks, plus
+> logged-in browser verification (16/16) covering both viewports, the one-prompt dirty-form path, and
+> an operator cross-check of every count against the same records in the list. Verified live in
+> Production after merge.
+>
+> **The whole S7 contract holds:** loading and failed/unknown states never render a zero summary —
+> successfully loaded empty data is the only state allowed to show zero figures; unknown pack sizes
+> stay explicitly unknown; most-ordered is labelled by selling units; unknown source stays visible;
+> and no lifecycle filter reaches gross revenue.
+>
+> ### Two findings carried forward, neither part of S7
+>
+> 1. **Network-level Orders read failure can leave the loader at "Loading…"** rather than showing the
+>    failure message. Reproduces on the pre-G2 Orders list; `loadAll` is unchanged by G2. G2 still
+>    guarantees no zero summary in that state. Needs its own slice.
+> 2. **The CRLF checkout finding** recorded in "Implementation status" above remains a separate
+>    repository-maintenance concern.
+>
+> ### The Selling MVP is NOT complete
+>
+> **S8 — Business Context exposure remains the final planned Selling MVP slice**, and has not begun:
+> `DOMAIN_IDS` still has no `selling` member and no selling adapter exists. `buildSellingSummary` was
+> built as its reuse boundary — `BuildEnv`'s `now` / `timezone` map directly onto `nowMs` / `timeZone`
+> — but that is preparation, not authorisation.
 
 ### S8 — Business Context exposure *(deferred)*
 A `selling` domain adapter, one `DOMAIN_IDS` entry, one registry entry. Reads `paid_amount` directly (§6.3). Measurements only. Requires BCB M1 fully merged.
