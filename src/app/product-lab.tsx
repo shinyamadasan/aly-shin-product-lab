@@ -44,6 +44,7 @@ import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/compone
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
 import { OpportunitiesPage } from "@/components/opportunities-page";
+import { OrdersPage, UNSAVED_ORDER_MESSAGE } from "@/components/orders-page";
 import { TodayPage } from "@/components/today-page";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
@@ -2706,6 +2707,8 @@ export default function ProductLab({
               </div>
             </section>
           ) : null}
+
+          {view === "orders" ? <OrdersPage labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_ORDER_MESSAGE } : null)} /> : null}
 
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
           {view === "inventory" ? (

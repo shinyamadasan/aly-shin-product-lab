@@ -8,6 +8,7 @@ export type LabView =
   | "proof-day"
   | "batches"
   | "costing"
+  | "orders"
   | "equipment"
   | "inventory"
   | "bake"
@@ -27,6 +28,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Proof Day", href: "/proof-day", view: "proof-day" },
   { label: "Proof Batches", href: "/batches", view: "batches" },
   { label: "Costing", href: "/costing", view: "costing" },
+  { label: "Orders", href: "/orders", view: "orders" },
   { label: "Equipment", href: "/equipment", view: "equipment" },
   { label: "Inventory", href: "/inventory", view: "inventory" },
   { label: "Journey", href: "/journal", view: "journal" },
