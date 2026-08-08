@@ -730,8 +730,10 @@ function OrderDetailPanel({
   onCancel: (reason: string) => void;
   onClearPaymentRecord: () => void;
   onCorrectPaymentRecord: (correction: { paidAmount: number; paidAt: string; method: PaymentMethod }) => void;
-  onEditAttribution: (attribution: { source: OrderSource; sourceRef: string }) => void;
-  onEditFulfillment: (fulfillment: { fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
+  // Both carry expectedUpdatedAt: the version of the order the edit form was populated from, so a
+  // stale form is rejected by the conditional update rather than silently overwriting a newer row.
+  onEditAttribution: (attribution: { expectedUpdatedAt: string; source: OrderSource; sourceRef: string }) => void;
+  onEditFulfillment: (fulfillment: { expectedUpdatedAt: string; fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
   onMarkPaid: (method: PaymentMethod) => void;
   onRefund: () => void;
   onStatusChange: (to: OrderStatus) => void;
@@ -954,9 +956,14 @@ function FulfillmentEditForm({
   order,
 }: {
   actionBusy: boolean;
-  onSubmit: (fulfillment: { fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
+  onSubmit: (fulfillment: { expectedUpdatedAt: string; fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
   order: Order;
 }) {
+  // Captured at mount, in the same breath as the values below. The version and the values MUST come
+  // from one snapshot: reading order.updatedAt at submit time instead would let a background reload
+  // refresh the version while these inputs still held the old values -- which is precisely the stale
+  // write the version predicate exists to reject.
+  const [renderedVersion] = useState(order.updatedAt);
   const [method, setMethod] = useState<FulfillmentMethod>(order.fulfillmentMethod);
   const [when, setWhen] = useState(toLocalDateTimeValue(order.fulfillmentAt));
   const [address, setAddress] = useState(order.fulfillmentAddress);
@@ -966,7 +973,7 @@ function FulfillmentEditForm({
       className="grid gap-2 rounded-md border border-[#e8dccd] p-3 text-xs"
       onSubmit={(event) => {
         event.preventDefault();
-        onSubmit({ fulfillmentMethod: method, fulfillmentAt: toIsoInstant(when), fulfillmentAddress: address });
+        onSubmit({ expectedUpdatedAt: renderedVersion, fulfillmentMethod: method, fulfillmentAt: toIsoInstant(when), fulfillmentAddress: address });
       }}
     >
       <p className="font-semibold">Edit schedule</p>
@@ -1008,9 +1015,11 @@ function AttributionEditForm({
   order,
 }: {
   actionBusy: boolean;
-  onSubmit: (attribution: { source: OrderSource; sourceRef: string }) => void;
+  onSubmit: (attribution: { expectedUpdatedAt: string; source: OrderSource; sourceRef: string }) => void;
   order: Order;
 }) {
+  // Same one-snapshot rule as the schedule form: version and values are captured together.
+  const [renderedVersion] = useState(order.updatedAt);
   const [source, setSource] = useState<OrderSource>(order.source);
   const [sourceRef, setSourceRef] = useState(order.sourceRef);
 
@@ -1021,7 +1030,7 @@ function AttributionEditForm({
         event.preventDefault();
         // Submitted exactly as typed. Not trimmed, because this value is opaque and the app has no
         // standing to decide which of its characters matter.
-        onSubmit({ source, sourceRef });
+        onSubmit({ expectedUpdatedAt: renderedVersion, source, sourceRef });
       }}
     >
       <p className="font-semibold">Edit source</p>

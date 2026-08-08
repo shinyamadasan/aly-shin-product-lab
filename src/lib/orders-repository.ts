@@ -402,10 +402,24 @@ export async function updatePaymentStatus(client: OrdersClient, { orderId, actio
 // do that, because those columns are absent from their payload types entirely.
 //
 // CONCURRENCY. Lifecycle and payment guard their conditional update on the column they are
-// transitioning (`status`, `payment_status`). Fulfilment and attribution have no such column -- an
-// address is not a state machine -- so they guard on `updated_at`, the row's version. Every write
-// path in this app sets updated_at explicitly (no trigger maintains it anywhere in this schema), so
-// any newer write of any kind moves it and a stale tab's edit matches zero rows.
+// transitioning (`status`, `payment_status`), and they decide the transition from the PERSISTED row,
+// so the domain machine itself rejects a stale move (`ready -> ready` is not a transition).
+//
+// Fulfilment and attribution have neither of those protections. There is no state machine -- any
+// handover time is valid from any other -- and the values written come straight from the operator's
+// form rather than being derived from persisted state. So the version predicate is the ONLY thing
+// standing between a stale form and a silently lost edit, and it has to be the version the FORM WAS
+// RENDERED FROM.
+//
+// That is why `expectedUpdatedAt` is a parameter rather than something this module reads for itself.
+// An internal re-read would return the version as it is *now* -- microseconds before the write, and
+// already including whatever another caller just did -- so the predicate would always match and a
+// stale form would overwrite the newer row while reporting success. The adversarial review of PR #35
+// found exactly that: the guard was real but it was measuring the wrong moment.
+//
+// `updated_at` is a sound version token here because no trigger maintains it anywhere in this schema
+// (repo-wide finding F1) -- every write path sets it explicitly, so any newer write of any kind
+// moves it.
 
 async function conditionalOrderUpdate(client: OrdersClient, orderId: string, payload: OrderFulfillmentUpdate | OrderAttributionUpdate, expectedUpdatedAt: string): Promise<OrderUpdateResult> {
   const result = await client.from("orders").update(payload).eq("id", orderId).eq("updated_at", expectedUpdatedAt).select(ORDER_COLUMNS).maybeSingle();
@@ -413,8 +427,9 @@ async function conditionalOrderUpdate(client: OrdersClient, orderId: string, pay
     return { ok: false, ...dbErrorResult(result.error) };
   }
   if (!result.data) {
-    // Zero matched rows is never success. The order is re-read so the caller is told what it
-    // actually became, and nothing of this caller's edit was written.
+    // Zero matched rows is never success. Only NOW is the order read -- to tell the caller whether
+    // it is gone or merely moved, and to hand back what it actually became. Reading it any earlier
+    // is what broke the guarantee in the first place.
     return reportConflict(client, orderId, "it");
   }
 
@@ -422,15 +437,13 @@ async function conditionalOrderUpdate(client: OrdersClient, orderId: string, pay
 }
 
 // Correct the agreed handover facts on an existing order: pickup or delivery, when, and where.
+//
+// `expectedUpdatedAt` must be the `updatedAt` of the order the edit form was populated from. Passing
+// a freshly-read value defeats the guard entirely.
 export async function updateOrderFulfillment(
   client: OrdersClient,
-  { orderId, fulfillmentMethod, fulfillmentAt, fulfillmentAddress, now }: { orderId: string; fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string; now: string },
+  { orderId, expectedUpdatedAt, fulfillmentMethod, fulfillmentAt, fulfillmentAddress, now }: { orderId: string; expectedUpdatedAt: string; fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string; now: string },
 ): Promise<OrderUpdateResult> {
-  const before = await getOrderDetail(client, orderId);
-  if (!before.ok) {
-    return { ok: false, reason: before.reason, message: before.message };
-  }
-
   const payload: OrderFulfillmentUpdate = {
     fulfillment_method: fulfillmentMethod,
     fulfillment_at: fulfillmentAt,
@@ -442,19 +455,17 @@ export async function updateOrderFulfillment(
     updated_at: now,
   };
 
-  return conditionalOrderUpdate(client, orderId, payload, before.order.updatedAt);
+  return conditionalOrderUpdate(client, orderId, payload, expectedUpdatedAt);
 }
 
 // Correct where an order came from, and the opaque reference that goes with it.
+//
+// Same version contract as updateOrderFulfillment: `expectedUpdatedAt` is the version the form was
+// rendered from, not a fresh reading.
 export async function updateOrderAttribution(
   client: OrdersClient,
-  { orderId, source, sourceRef, now }: { orderId: string; source: OrderSource; sourceRef: string; now: string },
+  { orderId, expectedUpdatedAt, source, sourceRef, now }: { orderId: string; expectedUpdatedAt: string; source: OrderSource; sourceRef: string; now: string },
 ): Promise<OrderUpdateResult> {
-  const before = await getOrderDetail(client, orderId);
-  if (!before.ok) {
-    return { ok: false, reason: before.reason, message: before.message };
-  }
-
   const payload: OrderAttributionUpdate = {
     source,
     // Passed through exactly as given: not trimmed, not parsed, not validated, not interpreted.
@@ -464,7 +475,7 @@ export async function updateOrderAttribution(
     updated_at: now,
   };
 
-  return conditionalOrderUpdate(client, orderId, payload, before.order.updatedAt);
+  return conditionalOrderUpdate(client, orderId, payload, expectedUpdatedAt);
 }
 
 // --- New-order submission ------------------------------------------------------------------------
