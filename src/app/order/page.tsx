@@ -12,7 +12,7 @@ import { PublicOrderForm } from "@/components/public-order-form";
 import { getPublicMenu, type PublicMenuProduct } from "@/lib/orders/public-menu";
 import { resolveAttribution } from "@/lib/orders/public-order-form-state";
 import { loadPublicCatalog, type PublicCatalogClient } from "@/lib/public-catalog-repository";
-import { getPublicOrderClient } from "@/lib/supabase-server";
+import { withPublicOrderClient } from "@/lib/supabase-server";
 
 // This page is customer-facing, so it does not inherit the internal app's title.
 export const metadata: Metadata = {
@@ -42,18 +42,24 @@ export default async function PublicOrderPage({ searchParams }: { searchParams: 
   // The customer never sees or chooses these -- they come from the link they followed.
   const attribution = resolveAttribution(first(source), first(ref));
 
-  const client = await getPublicOrderClient();
-  if (!client) {
+  // Read through the recovery wrapper, not a bare client. The website principal's session is
+  // deliberately non-persistent with autoRefreshToken:false, so a warm serverless instance can be
+  // holding one that has since expired; withPublicOrderClient re-authenticates ONCE and retries
+  // ONCE. Retrying is safe here because loading the catalog is read-only -- it writes nothing and
+  // has no side effect to repeat.
+  const attempt = await withPublicOrderClient(
+    (client) => loadPublicCatalog(client as unknown as PublicCatalogClient),
+    (result) => !result.ok,
+  );
+
+  if (!attempt.ok || !attempt.result.ok) {
+    // Recovery failed, or the read failed twice. The repository's message can name a table, so the
+    // customer sees only the generic state.
     return <Unavailable />;
   }
 
-  const catalog = await loadPublicCatalog(client as unknown as PublicCatalogClient);
-  if (!catalog.ok) {
-    // The repository's message can name a table, so it is not rendered.
-    return <Unavailable />;
-  }
-
-  const menu: PublicMenuProduct[] = getPublicMenu(catalog.catalog.products, catalog.catalog.batches, catalog.catalog.costings, catalog.catalog.sellingFormats);
+  const { catalog } = attempt.result;
+  const menu: PublicMenuProduct[] = getPublicMenu(catalog.products, catalog.batches, catalog.costings, catalog.sellingFormats);
 
   return (
     <main className="min-h-full bg-[#fffaf3]">

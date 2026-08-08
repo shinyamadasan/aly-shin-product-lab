@@ -20,6 +20,7 @@ import {
   getSelectedLines,
   getSubmitBlocker,
   markSubmitting,
+  parsePublicOrderResponse,
   resolveAttribution,
   setContact,
   setQuantity,
@@ -271,6 +272,80 @@ test("only a same-origin product-images path is rendered", () => {
   ]) {
     assert.equal(getSafePublicImage(unsafe), null, `${unsafe} must not be rendered`);
   }
+});
+
+// --- Only a known response class may be acted on ---------------------------------------------------------
+//
+// The body is JSON from the network. Casting it would let an unexpected payload -- a proxy error
+// page, a truncated response, a future status this build does not know -- flow into applyResponse
+// and be handled as whichever branch it happened to resemble. The worst case is an unrecognised body
+// landing on `accepted` and telling a customer their order was received when nothing was created.
+
+test("an unknown status is rejected and handled as a temporary failure", () => {
+  for (const unknown of [{ status: "queued" }, { status: "ACCEPTED" }, { status: "" }, { status: 200 }, { status: null }, {}]) {
+    assert.equal(parsePublicOrderResponse(unknown), null, `${JSON.stringify(unknown)} must not be acted on`);
+  }
+});
+
+test("malformed or non-object bodies are rejected", () => {
+  for (const malformed of [null, undefined, "accepted", 42, true, ["accepted"], [{ status: "accepted" }]]) {
+    assert.equal(parsePublicOrderResponse(malformed), null, `${JSON.stringify(malformed) ?? "undefined"} must not be acted on`);
+  }
+});
+
+test("a known class missing its required fields is rejected", () => {
+  // A 409 without a menu cannot refresh anything; an invalid without a message has nothing to show.
+  assert.equal(parsePublicOrderResponse({ status: "prices-changed", message: "x" }), null);
+  assert.equal(parsePublicOrderResponse({ status: "prices-changed", menu: MENU }), null);
+  assert.equal(parsePublicOrderResponse({ status: "unavailable", message: "x", menu: "not-a-menu" }), null);
+  assert.equal(parsePublicOrderResponse({ status: "invalid" }), null);
+});
+
+test("the five known classes are admitted intact", () => {
+  assert.deepEqual(parsePublicOrderResponse({ status: "accepted" }), { status: "accepted" });
+  assert.deepEqual(parsePublicOrderResponse({ status: "invalid", message: "Please add your name." }), { status: "invalid", message: "Please add your name." });
+  assert.deepEqual(parsePublicOrderResponse({ status: "prices-changed", message: "changed", menu: MENU }), { status: "prices-changed", message: "changed", menu: MENU });
+  assert.deepEqual(parsePublicOrderResponse({ status: "unavailable", message: "gone", menu: [] }), { status: "unavailable", message: "gone", menu: [] });
+  assert.deepEqual(parsePublicOrderResponse({ status: "error", message: "later" }), { status: "error", message: "later" });
+  // An error with no copy falls back to the local wording rather than being rejected.
+  assert.deepEqual(parsePublicOrderResponse({ status: "error" }), { status: "error", message: undefined });
+});
+
+test("a rejected body preserves the key and every field, exactly like a transport failure", () => {
+  const s = setContact(ready(), { requestedTime: "Saturday", notes: "no nuts" });
+  const parsed = parsePublicOrderResponse({ status: "who-knows" });
+  assert.equal(parsed, null);
+
+  const after = applyTransportFailure(markSubmitting(s));
+  assert.equal(after.idempotencyKey, s.idempotencyKey);
+  assert.equal(after.contact.customerName, "Maria Santos");
+  assert.equal(after.contact.phone, "09171234567");
+  assert.equal(after.contact.requestedTime, "Saturday");
+  assert.equal(after.contact.notes, "no nuts");
+  assert.deepEqual(after.quantities, s.quantities);
+  assert.equal(after.status.kind, "error");
+  assert.notEqual(after.status.kind, "received");
+});
+
+test("the form parses the response instead of casting it", () => {
+  const component = readFileSync(new URL("../src/components/public-order-form.tsx", import.meta.url), "utf8");
+  assert.match(component, /parsePublicOrderResponse\(/);
+  assert.equal(/as PublicOrderResponse/.test(component), false, "a cast is not a check");
+});
+
+// --- The page must use the auth recovery wrapper -----------------------------------------------------------
+
+test("/order reads the catalog through withPublicOrderClient, not a bare client", () => {
+  // The website principal's session is non-persistent with autoRefreshToken:false, so a warm
+  // instance can hold an expired one. F2 built the recovery path for exactly this; the page must
+  // not bypass it -- which is the same mistake the F2 route made before review caught it.
+  const page = readFileSync(new URL("../src/app/order/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /withPublicOrderClient\(/, "the recovery wrapper must actually be used");
+  assert.equal(/getPublicOrderClient\(/.test(page), false, "a bare client bypasses re-authentication and retry");
+  // A read-only operation, so retrying it once is safe.
+  assert.match(page, /loadPublicCatalog\(/);
+  // Recovery failure still ends in the generic public state.
+  assert.match(page, /<Unavailable \/>/);
 });
 
 // --- Structural: no new write path, no credential, no lookup endpoint ---------------------------------

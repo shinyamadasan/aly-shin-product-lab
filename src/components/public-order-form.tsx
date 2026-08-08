@@ -24,10 +24,10 @@ import {
   getSelectedLines,
   getSubmitBlocker,
   markSubmitting,
+  parsePublicOrderResponse,
   setContact,
   setQuantity,
   startNewOrder,
-  type PublicOrderResponse,
 } from "@/lib/orders/public-order-form-state";
 import type { PublicMenuProduct } from "@/lib/orders/public-menu";
 import type { OrderSource } from "@/lib/orders/types";
@@ -58,9 +58,11 @@ export function PublicOrderForm({ menu, source, sourceRef }: { menu: PublicMenuP
         body: JSON.stringify(body),
       });
 
-      // Any parseable body is the contract; anything else is treated as a temporary failure rather
-      // than guessed at.
-      const parsed = (await response.json().catch(() => null)) as PublicOrderResponse | null;
+      // Only a body matching one of the five known response classes is acted on. Malformed JSON, an
+      // unknown status, or a proxy's error page is treated exactly like a transport failure -- the
+      // order may or may not exist, so the key and the customer's work are kept and a retry is
+      // answered by F2 as a replay.
+      const parsed = parsePublicOrderResponse(await response.json().catch(() => null));
       setState((current) => (parsed ? applyResponse(current, parsed) : applyTransportFailure(current)));
     } catch {
       // Timeout, offline, DNS. The order may in fact have been created, so the key is kept and a

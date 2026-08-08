@@ -170,6 +170,41 @@ export type PublicOrderResponse =
 
 const TEMPORARY_FAILURE = "We could not send that just now. Your order is still here — please try again in a moment.";
 
+// The response is JSON from the network, so it is not a PublicOrderResponse until something checks.
+// Casting it would let an unexpected body -- a proxy's error page, a truncated payload, a future
+// status this build does not know -- flow into applyResponse and be handled as whichever branch it
+// happened to resemble. In the worst case an unrecognised body could land on `accepted` and tell a
+// customer their order was received when nothing was created.
+//
+// So only the five known classes are admitted, each with its own required fields. Anything else
+// returns null and the caller treats it exactly like a transport failure: the key, the selections
+// and the contact details are kept, and the customer can simply try again.
+function isMenu(value: unknown): value is PublicMenuProduct[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "object" && entry !== null && Array.isArray((entry as PublicMenuProduct).formats));
+}
+
+export function parsePublicOrderResponse(raw: unknown): PublicOrderResponse | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const body = raw as Record<string, unknown>;
+  const message = typeof body.message === "string" ? body.message : "";
+
+  switch (body.status) {
+    case "accepted":
+      return { status: "accepted" };
+    case "invalid":
+      return message === "" ? null : { status: "invalid", message };
+    case "prices-changed":
+      return isMenu(body.menu) && message !== "" ? { status: "prices-changed", message, menu: body.menu } : null;
+    case "unavailable":
+      return isMenu(body.menu) && message !== "" ? { status: "unavailable", message, menu: body.menu } : null;
+    case "error":
+      // The server's own copy is used when present; otherwise the local temporary-failure wording.
+      return { status: "error", message: message === "" ? undefined : message };
+    default:
+      return null;
+  }
+}
+
 // The single place a response becomes new state.
 //
 // EVERY non-success branch keeps the contact details, the selections AND the idempotency key. The
