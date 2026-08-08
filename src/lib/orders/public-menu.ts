@@ -1,6 +1,6 @@
 // S9 PR-F1: the sanitized public catalog read model.
 //
-// See planning/S9_PUBLIC_ORDERING_IMPLEMENTATION_PLAN.md (Revision 2, FROZEN) section 6 Q4.
+// See planning/S9_PUBLIC_ORDERING_IMPLEMENTATION_PLAN.md (Revision 3, FROZEN) section 6 Q4.
 //
 // THIS FILE ADDS ONE FILTER AND NOTHING ELSE. Public eligibility is deliberately defined as:
 //

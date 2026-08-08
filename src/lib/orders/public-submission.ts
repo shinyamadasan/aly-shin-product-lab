@@ -1,5 +1,5 @@
 // S9 PR-F2: the public submission contract. See
-// planning/S9_PUBLIC_ORDERING_IMPLEMENTATION_PLAN.md (Revision 2, FROZEN) sections 5 and 6.
+// planning/S9_PUBLIC_ORDERING_IMPLEMENTATION_PLAN.md (Revision 3, FROZEN) sections 5 and 6.
 //
 // THE BROWSER SELECTS; THE SERVER DECIDES.
 //

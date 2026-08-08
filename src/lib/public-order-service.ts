@@ -7,16 +7,23 @@
 //
 // Order of operations, and why it is this order:
 //
-//   parse  ->  resolve against the SERVER's catalog  ->  price consent  ->  derive ids
-//          ->  fast-path replay check (optimization only)
+//   parse  ->  honeypot  ->  derive ids  ->  replay check (optimization only)
+//          ->  load the SERVER's catalog  ->  resolve items + price consent
 //          ->  build  ->  atomic create-once gate (-> save_order)
+//
+// The replay check comes BEFORE the catalog deliberately. An order that already exists was created
+// at the price and availability of its own moment; nothing that happens to the catalog afterwards
+// can retroactively make that submission invalid. Resolving first meant a customer whose response
+// was lost -- the exact case idempotency exists for -- was told "prices have changed" for an order
+// that had already been placed.
 //
 // Everything that can reject the submission happens before anything is written, so a rejected
 // request leaves no customer row, no order, and no lines.
 //
-// The final step is a database-atomic gate rather than another application-side check. Revision 2
-// assumed a read-then-write in application code was sufficient; live concurrency testing disproved
-// it, and a second caller reset a confirmed, paid order. See section 6 Q2 of the frozen plan.
+// The final step is a database-atomic gate rather than another application-side check. An earlier
+// revision assumed a read-then-write in application code was sufficient; live concurrency testing
+// disproved it, and a second caller reset a confirmed, paid order. See section 6 Q2 of the frozen
+// plan, which is authoritative at Revision 3.
 
 import { getPublicMenu, getPublicSellableGroups, type PublicMenuProduct } from "./orders/public-menu.ts";
 import { derivePublicCustomerId, derivePublicOrderId } from "./orders/public-order-id.ts";
