@@ -21,6 +21,7 @@ function product(overrides: Partial<Product> = {}): Product {
     description: "",
     image: "",
     decision: "Needs proof",
+    isPublic: false,
     ...overrides,
   };
 }

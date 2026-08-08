@@ -50,6 +50,7 @@ function productRow(): ProductRow {
     id: "brownies", name: "Brownies", category: "Baked goods", product_role: "Hero candidate",
     status: "testing", description: "Dense fudgy brownies.", notes: null, main_photo_url: null,
     decision: "Needs proof", created_at: "2026-08-01T00:00:00.000Z", updated_at: "2026-08-01T00:00:00.000Z",
+    is_public: false,
   };
 }
 

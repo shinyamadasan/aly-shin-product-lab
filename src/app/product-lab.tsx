@@ -368,6 +368,9 @@ export default function ProductLab({
         description: row.description ?? "",
         image: row.main_photo_url ?? "",
         decision: row.decision ?? "Needs proof",
+        // `?? false` guards the pre-migration case where the column is absent entirely, matching
+        // mapProductRow in src/lib/supabase-mappers.ts. Unpublished is the safe answer.
+        isPublic: row.is_public ?? false,
       })),
       batches: (batchResult.data ?? []).map((row) => ({
         id: row.id,
@@ -652,6 +655,9 @@ export default function ProductLab({
       description: String(formData.get("description") || "").trim(),
       image: String(formData.get("image") || "").trim(),
       decision: formData.get("decision") as Product["decision"],
+      // An unchecked checkbox is absent from FormData entirely, so this reads false -- which is
+      // both the correct HTML semantics and the safe default.
+      isPublic: formData.get("isPublic") === "on",
     };
 
     if (supabase && session) {
@@ -663,6 +669,7 @@ export default function ProductLab({
         description: product.description,
         main_photo_url: product.image || null,
         decision: product.decision,
+        is_public: product.isPublic,
       };
       const query = productId
         ? supabase.from("products").update(payload).eq("id", productId)
@@ -672,7 +679,7 @@ export default function ProductLab({
       setMessage(
         error
           ? missingDecisionColumn
-            ? `Product save failed because products is missing the decision column. Run supabase-add-product-decision.sql in Supabase, then retry. Details: ${error.message}`
+            ? `Product save failed because products is missing a column this form writes. Run supabase-add-product-decision.sql and supabase-add-public-ordering.sql in Supabase, then retry. Details: ${error.message}`
             : `Product save failed: ${error.message}`
           : "Product saved.",
       );
@@ -3686,7 +3693,7 @@ function ProductAdminPage({
         ) : null}
         {isProductDecisionColumnMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
-            Product database fields are not ready yet. Run <strong>supabase-add-product-decision.sql</strong> once, then save again.
+            Product database fields are not ready yet. Run <strong>supabase-add-product-decision.sql</strong> and <strong>supabase-add-public-ordering.sql</strong> once each, then save again.
           </div>
         ) : null}
         <form action={saveProduct} className="grid gap-3" key={product?.id ?? "new-product"}>
@@ -3698,6 +3705,15 @@ function ProductAdminPage({
           <Select name="decision" label="Decision" options={["Needs proof", "Retest", "Candidate", "Add-on test"]} defaultValue={product?.decision ?? "Needs proof"} />
           <Textarea name="description" label="Description" placeholder="Short description of the product idea." defaultValue={product?.description} />
           <Input name="image" label="Photo path (optional)" placeholder="/product-images/whatever.png" helper="Only if you've already added a photo file under public/product-images/. Leave blank for now." defaultValue={product?.image} />
+          {/* Explicit opt-in, defaulting to off for a new product. Publishing is a separate decision
+              from a product being sellable: this only controls whether customers can see it. */}
+          <label className="flex items-start gap-2 text-sm font-medium">
+            <input className="mt-1" defaultChecked={product?.isPublic ?? false} name="isPublic" type="checkbox" />
+            <span>
+              Show on public order page
+              <span className="block text-xs font-normal text-[#6f5a4c]">Customers can order this once it also has a current costing with active selling formats. Off means it stays internal.</span>
+            </span>
+          </label>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button>{product ? "Update product" : "Save product"}</Button>
             {product ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}

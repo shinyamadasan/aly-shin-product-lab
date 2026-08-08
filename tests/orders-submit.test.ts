@@ -224,7 +224,7 @@ test("H1: a genuinely new name produces no warning", () => {
 // --- M1: catalog <-> custom line switching ---------------------------------------------------------
 
 function product(id: string, name: string): Product {
-  return { id, name, category: "Bakery", role: "Hero candidate", status: "costed", description: "", image: "", decision: "Candidate" };
+  return { id, name, category: "Bakery", role: "Hero candidate", status: "costed", description: "", image: "", decision: "Candidate", isPublic: false };
 }
 function batch(id: string, productId: string): ProductBatch {
   return { id, productId, batchVersion: "V1", dateMade: "2026-08-01", ingredientsNotes: "", prepTimeMinutes: 0, bakeTimeMinutes: 0, coolingTimeMinutes: 0, usablePieces: 12, imperfectPieces: 0, stressLevel: 1, tasteNotes: "", textureNotes: "", wentWrong: "", improveNext: "", launchDecision: "launch" };

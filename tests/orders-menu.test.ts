@@ -10,7 +10,7 @@ import type { Order } from "../src/lib/orders/types.ts";
 import type { CostingSummary, Product, ProductBatch, SellingFormat } from "../src/lib/product-lab-types.ts";
 
 function product(id: string, name: string): Product {
-  return { id, name, category: "Bakery", role: "Hero candidate", status: "costed", description: "", image: "", decision: "Candidate" };
+  return { id, name, category: "Bakery", role: "Hero candidate", status: "costed", description: "", image: "", decision: "Candidate", isPublic: false };
 }
 
 // batches are stored newest-first (loadSupabaseData orders by created_at desc), which is the
