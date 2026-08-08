@@ -13,6 +13,7 @@ const titles = {
   "proof-day": "Proof day mode",
   batches: "Product proof batches",
   costing: "Costing and pricing",
+  orders: "Orders",
   equipment: "Equipment and depreciation",
   inventory: "Inventory",
   bake: "Bake and deduct inventory",
