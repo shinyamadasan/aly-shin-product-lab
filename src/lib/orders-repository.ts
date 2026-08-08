@@ -585,7 +585,11 @@ export async function savePublicOrderOnce(client: OrdersClient, { customer, orde
   return { ok: true, created: result.data?.created === true };
 }
 
-export type SubmitPublicOrderResult = { ok: true; created: boolean } | { ok: false; message: string };
+// `reason` separates "the submission was wrong" from "we could not write it". The caller turns the
+// first into a 400 the customer can act on and the second into a generic 503 -- telling someone
+// their order was invalid when the database was merely unavailable would send them off editing a
+// submission that was fine.
+export type SubmitPublicOrderResult = { ok: true; created: boolean } | { ok: false; reason: "invalid" | "failed"; message: string };
 
 // Public submission. Same validate-everything-before-writing discipline as submitNewOrder, but the
 // customer AND the order are persisted through one atomic gate.
@@ -601,22 +605,23 @@ export async function submitPublicOrderOnce(client: OrdersClient, { order, lines
   if (!newCustomer) {
     // The public flow always creates its customer alongside the order; there is no existing-customer
     // path to select from.
-    return { ok: false, message: "Every order needs a customer." };
+    return { ok: false, reason: "invalid", message: "Every order needs a customer." };
   }
 
   const nameError = validateCustomerForSave(newCustomer.name);
   if (nameError) {
-    return { ok: false, message: nameError };
+    return { ok: false, reason: "invalid", message: nameError };
   }
 
   const orderError = validateOrderForSave(order, lines);
   if (orderError) {
-    return { ok: false, message: orderError };
+    return { ok: false, reason: "invalid", message: orderError };
   }
 
   const orderResult = await savePublicOrderOnce(client, { customer: newCustomer, order, lines, now });
   if (!orderResult.ok) {
-    return { ok: false, message: orderResult.message };
+    // A missing table or a database error -- never the customer's fault, and never their 400.
+    return { ok: false, reason: "failed", message: orderResult.message };
   }
 
   return { ok: true, created: orderResult.created };

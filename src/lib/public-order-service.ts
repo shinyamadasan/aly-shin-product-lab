@@ -54,6 +54,31 @@ export async function submitPublicOrder({ ordersClient, catalogClient, now }: Pu
     return { kind: "accepted" };
   }
 
+  const orderId = await derivePublicOrderId(request.idempotencyKey);
+  const customerId = await derivePublicCustomerId(request.idempotencyKey);
+
+  // ---- Replay, answered BEFORE the catalog is consulted -----------------------------------------
+  //
+  // An order that already exists was created at the price and availability of the moment it was
+  // created. Nothing that happens to the catalog afterwards can retroactively make that submission
+  // invalid, so a retry is answered from existence alone.
+  //
+  // This check used to sit after catalog resolution, which meant a customer whose response was lost
+  // -- the exact case idempotency exists for -- got "prices have changed" or "no longer available"
+  // for an order that had in fact already been placed. Worse for an order that had since been
+  // confirmed and paid.
+  //
+  // It remains OPTIMIZATION-ONLY for concurrency: it and the write below are separate transactions,
+  // so a caller can pass it and then pause while another writer creates the order. That is
+  // save_public_order_once's job, and a caller that races past this check is still safe.
+  const existing = await getOrderDetail(ordersClient, orderId);
+  if (existing.ok) {
+    return { kind: "accepted" };
+  }
+  if (existing.reason !== "not-found") {
+    return { kind: "error" };
+  }
+
   const catalog = await loadPublicCatalog(catalogClient);
   if (!catalog.ok) {
     return { kind: "error" };
@@ -63,9 +88,6 @@ export async function submitPublicOrder({ ordersClient, catalogClient, now }: Pu
   // the browser is never consulted -- it is not even part of the request contract.
   const groups = getPublicSellableGroups(catalog.catalog.products, catalog.catalog.batches, catalog.catalog.costings, catalog.catalog.sellingFormats);
 
-  const orderId = await derivePublicOrderId(request.idempotencyKey);
-  const customerId = await derivePublicCustomerId(request.idempotencyKey);
-
   const resolved = resolvePublicOrderLines(request, groups, orderId);
   if (!resolved.ok) {
     // Both rejections hand back the refreshed menu so the customer can see what actually changed.
@@ -74,25 +96,6 @@ export async function submitPublicOrder({ ordersClient, catalogClient, now }: Pu
     return resolved.reason === "prices-changed"
       ? { kind: "prices-changed", message: resolved.message, menu }
       : { kind: "unavailable", message: resolved.message, menu };
-  }
-
-  // ---- Fast path: an ordinary replay ------------------------------------------------------------
-  //
-  // OPTIMIZATION ONLY. This check is no longer correctness-critical, and must not be relied on as
-  // if it were: it and the write below are separate transactions, so a caller can pass it and then
-  // pause while another writer creates and modifies the order. That exact sequence was reproduced
-  // live and reset a confirmed, paid order.
-  //
-  // Its remaining value is real but modest: the common case -- a customer's browser retrying after
-  // a lost response -- is answered without writing a customer row. A caller that races past it, or
-  // an implementation that skipped it entirely, is still safe, because save_public_order_once is
-  // the authority.
-  const existing = await getOrderDetail(ordersClient, orderId);
-  if (existing.ok) {
-    return { kind: "accepted" };
-  }
-  if (existing.reason !== "not-found") {
-    return { kind: "error" };
   }
 
   const order = buildPublicOrder(request, { orderId, customerId, now });
@@ -106,8 +109,10 @@ export async function submitPublicOrder({ ordersClient, catalogClient, now }: Pu
   // so it can never reset the lifecycle or payment facts the order has acquired in the meantime.
   const saved = await submitPublicOrderOnce(ordersClient, { order, lines: resolved.lines, newCustomer: customer, now });
   if (!saved.ok) {
-    // The repository's message can name a database failure, so it is not returned to the public.
-    return { kind: "invalid", message: GENERIC_INVALID };
+    // A persistence failure is a SERVER failure. Returning it as `invalid` would give the customer
+    // a 400 and send them editing an order that was never the problem. Either way the repository's
+    // message can name a table or a database error, so it never reaches the public.
+    return saved.reason === "failed" ? { kind: "error" } : { kind: "invalid", message: GENERIC_INVALID };
   }
 
   // created:false means we lost the race. That is a replay, and it looks exactly like one.

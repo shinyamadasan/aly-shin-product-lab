@@ -72,17 +72,22 @@ export async function getPublicOrderClient(): Promise<SupabaseClient | null> {
   return client;
 }
 
-// Runs `operation` against the signed-in client, and on an authentication failure re-authenticates
-// ONCE and retries ONCE. Never loops: a second failure is reported to the caller, which surfaces
-// publicly as generic temporary unavailability.
-export async function withPublicOrderClient<T>(operation: (client: SupabaseClient) => Promise<T>, isAuthFailure: (result: T) => boolean): Promise<{ ok: true; result: T } | { ok: false }> {
+// Runs `operation` against the signed-in client. If it reports an internal failure -- most often a
+// session that expired while this instance was warm -- the cached session is dropped, the principal
+// re-authenticates ONCE, and the operation is retried ONCE. Never loops: a second failure is
+// reported to the caller, which surfaces publicly as generic temporary unavailability.
+//
+// Retrying is safe because the operation is idempotent by construction: the order id is derived
+// from the submitted key, so a retry either finds the order already created (and returns a replay)
+// or creates it exactly once.
+export async function withPublicOrderClient<T>(operation: (client: SupabaseClient) => Promise<T>, shouldRetry: (result: T) => boolean): Promise<{ ok: true; result: T } | { ok: false }> {
   const client = await getPublicOrderClient();
   if (!client) {
     return { ok: false };
   }
 
   const first = await operation(client);
-  if (!isAuthFailure(first)) {
+  if (!shouldRetry(first)) {
     return { ok: true, result: first };
   }
 
@@ -95,7 +100,7 @@ export async function withPublicOrderClient<T>(operation: (client: SupabaseClien
   cachedClient = retryClient;
 
   const second = await operation(retryClient);
-  return isAuthFailure(second) ? { ok: false } : { ok: true, result: second };
+  return shouldRetry(second) ? { ok: false } : { ok: true, result: second };
 }
 
 // Test seam: lets a test reset module-scope state. Not used by application code.

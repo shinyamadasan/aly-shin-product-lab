@@ -10,7 +10,7 @@
 // There is exactly ONE route and it is a POST. No GET, no order-status lookup, no customer lookup --
 // an idempotency key must never become a way to read an order back.
 
-import { getPublicOrderClient } from "@/lib/supabase-server";
+import { withPublicOrderClient } from "@/lib/supabase-server";
 import { submitPublicOrder, type PublicOrderOutcome } from "@/lib/public-order-service";
 import { MAX_PAYLOAD_BYTES } from "@/lib/orders/public-submission";
 import type { OrdersClient } from "@/lib/orders-repository";
@@ -61,21 +61,29 @@ export async function POST(request: Request): Promise<Response> {
     return toResponse({ kind: "invalid", message: "That order could not be read. Please try again." });
   }
 
-  const client = await getPublicOrderClient();
-  if (!client) {
-    return toResponse({ kind: "error" });
-  }
-
   try {
-    const outcome = await submitPublicOrder(
-      {
-        ordersClient: client as unknown as OrdersClient,
-        catalogClient: client as unknown as PublicCatalogClient,
-        now: new Date().toISOString(),
-      },
-      body,
+    // Runs through the recovery wrapper rather than a bare client: if the submission comes back as
+    // an internal failure -- typically a session that expired while this serverless instance was
+    // warm -- the principal re-authenticates ONCE and the submission is retried ONCE. The retry is
+    // safe because the flow is idempotent: the order id is derived from the submitted key, so the
+    // second attempt either finds the order already created or creates it exactly once.
+    const attempt = await withPublicOrderClient(
+      (client) =>
+        submitPublicOrder(
+          {
+            ordersClient: client as unknown as OrdersClient,
+            catalogClient: client as unknown as PublicCatalogClient,
+            now: new Date().toISOString(),
+          },
+          body,
+        ),
+      // Only an internal failure is worth re-authenticating for. A rejected submission -- invalid,
+      // prices-changed, unavailable -- is a settled answer and must never be retried.
+      (outcome) => outcome.kind === "error",
     );
-    return toResponse(outcome);
+
+    // A second failure is not retried again. The customer is told the one thing that concerns them.
+    return toResponse(attempt.ok ? attempt.result : { kind: "error" });
   } catch {
     // Nothing about an unexpected failure travels to the customer.
     return toResponse({ kind: "error" });

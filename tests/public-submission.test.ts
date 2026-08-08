@@ -15,7 +15,7 @@ import { MAX_LINES, MAX_NAME_LENGTH, MAX_PAYLOAD_BYTES, MAX_QUANTITY_PER_LINE, M
 import { derivePublicCustomerId, derivePublicOrderId } from "../src/lib/orders/public-order-id.ts";
 import { getPublicSellableGroups } from "../src/lib/orders/public-menu.ts";
 import { toDisplayPrice } from "../src/lib/orders/money.ts";
-import { submitPublicOrder } from "../src/lib/public-order-service.ts";
+import { submitPublicOrder, type PublicOrderOutcome } from "../src/lib/public-order-service.ts";
 import type { CostingSummary, Product, ProductBatch, SellingFormat } from "../src/lib/product-lab-types.ts";
 
 const NOW = "2026-08-12T02:00:00.000Z";
@@ -61,7 +61,7 @@ function validBody(overrides: Record<string, unknown> = {}) {
 
 type Recorded = { rpcCalls: number; customerUpserts: number };
 
-function createStubs({ existingOrder = null, catalog = CATALOG }: { existingOrder?: Record<string, unknown> | null; catalog?: typeof CATALOG } = {}) {
+function createStubs({ existingOrder = null, catalog = CATALOG, rpcError }: { existingOrder?: Record<string, unknown> | null; catalog?: typeof CATALOG; rpcError?: { code?: string; message: string } } = {}) {
   const recorded: Recorded = { rpcCalls: 0, customerUpserts: 0 };
   let savedArgs: { p_customer: Record<string, unknown>; p_order: Record<string, unknown>; p_lines: Record<string, unknown>[] } | null = null;
 
@@ -89,6 +89,7 @@ function createStubs({ existingOrder = null, catalog = CATALOG }: { existingOrde
     rpc: (_name: string, args: { p_customer: Record<string, unknown>; p_order: Record<string, unknown>; p_lines: Record<string, unknown>[] }) => {
       recorded.rpcCalls += 1;
       savedArgs = args;
+      if (rpcError) return Promise.resolve({ data: null, error: rpcError });
       return Promise.resolve({ data: { created: existingOrder === null }, error: null });
     },
   };
@@ -761,6 +762,162 @@ test("the public creation path invokes only the wrapper, never save_order direct
   const service = readFileSync(new URL("../src/lib/public-order-service.ts", import.meta.url), "utf8");
   assert.equal(service.includes("submitNewOrder"), false, "the service must no longer use the manual-flow submitter");
   assert.match(service, /submitPublicOrderOnce/);
+});
+
+// --- Replay must not depend on the catalog still matching -------------------------------------------------
+//
+// A retry of an order that already exists is answered from its existence alone. The catalog is
+// irrelevant to it: the order was created at the price and availability of the moment it was
+// created, and nothing about a later price change or an unpublished product can retroactively make
+// that submission invalid. Resolving the catalog first meant a customer whose response was lost got
+// "prices have changed" for an order that had, in fact, already been placed.
+
+const PERSISTED_ORDER = {
+  id: "", customer_id: "customer-1", status: "new", payment_status: "unpaid", payment_method: null,
+  paid_at: null, paid_amount: null, refunded_at: null, fulfillment_method: "pickup", fulfillment_at: null,
+  fulfillment_address: null, fulfillment_notes: null, source: "unknown", source_ref: null,
+  entry_method: "website", notes: null, placed_at: NOW, completed_at: null, cancelled_at: null,
+  cancel_reason: null, created_at: NOW, updated_at: NOW,
+};
+
+async function persistedOrder(overrides: Record<string, unknown> = {}) {
+  return { ...PERSISTED_ORDER, id: await derivePublicOrderId(KEY), ...overrides };
+}
+
+const DEARER = { ...CATALOG, sellingFormats: [format("fmt-6", "costing-1", "Box of 6", 540, 6)] };
+const WITHDRAWN = { ...CATALOG, products: [product("brownies", "Brownies", { isPublic: false })] };
+
+test("existing order + price changed since -> accepted, zero write", async () => {
+  const { outcome, recorded } = await submit(validBody(), { existingOrder: await persistedOrder(), catalog: DEARER });
+
+  assert.deepEqual(outcome, { kind: "accepted" }, "the order already exists; a later price change cannot un-place it");
+  assert.equal(recorded.rpcCalls, 0);
+});
+
+test("existing order + product unpublished since -> accepted, zero write", async () => {
+  const { outcome, recorded } = await submit(validBody(), { existingOrder: await persistedOrder(), catalog: WITHDRAWN });
+
+  assert.deepEqual(outcome, { kind: "accepted" });
+  assert.equal(recorded.rpcCalls, 0);
+});
+
+test("existing CONFIRMED + PAID order + catalog changed -> accepted, zero write", async () => {
+  const paid = await persistedOrder({ status: "confirmed", payment_status: "paid", payment_method: "gcash", paid_at: NOW, paid_amount: 960 });
+  const { outcome, recorded } = await submit(validBody(), { existingOrder: paid, catalog: DEARER });
+
+  assert.deepEqual(outcome, { kind: "accepted" }, "a paid order is certainly not 'prices-changed'");
+  assert.equal(recorded.rpcCalls, 0);
+});
+
+test("NO existing order + price changed -> still prices-changed", async () => {
+  const { outcome, recorded } = await submit(validBody(), { catalog: DEARER });
+  assert.equal(outcome.kind, "prices-changed");
+  assert.equal(recorded.rpcCalls, 0);
+});
+
+test("NO existing order + product unpublished -> still unavailable", async () => {
+  const { outcome, recorded } = await submit(validBody(), { catalog: WITHDRAWN });
+  assert.equal(outcome.kind, "unavailable");
+  assert.equal(recorded.rpcCalls, 0);
+});
+
+// --- Persistence failure is a SERVER failure, not a customer mistake ---------------------------------------
+
+test("a database failure during persistence is classified as a temporary server error", async () => {
+  // It must never surface as 400 invalid: the customer did nothing wrong, and telling them their
+  // order was invalid would make them edit a submission that was fine.
+  const { outcome } = await submit(validBody(), { rpcError: { code: "57P01", message: 'terminating connection due to administrator command; relation "orders"' } });
+
+  assert.equal(outcome.kind, "error", "a persistence failure is a server problem");
+  assert.notEqual(outcome.kind, "invalid");
+  // And nothing about the database travels with it.
+  const serialized = JSON.stringify(outcome);
+  for (const leaked of ["57P01", "terminating", "relation", "orders"]) {
+    assert.equal(serialized.includes(leaked), false, `the public outcome must not carry ${leaked}`);
+  }
+});
+
+test("a genuine validation failure is still classified as invalid", async () => {
+  const { outcome } = await submit(validBody({ customerName: "  " }));
+  assert.equal(outcome.kind, "invalid");
+});
+
+// --- Auth recovery: exactly one re-authentication, exactly one retry ---------------------------------------
+//
+// withPublicOrderClient existed but the Route Handler called getPublicOrderClient directly, so the
+// recovery path was dead code. The route now runs through it. These tests exercise the wrapper's
+// contract with an injected operation, since the handler itself needs a Next.js runtime.
+
+function retryHarness(outcomes: PublicOrderOutcome[]) {
+  const calls: number[] = [];
+  let signIns = 0;
+  let attempt = 0;
+
+  // Mirrors withPublicOrderClient's contract: run, and on a retryable result re-authenticate once
+  // and run once more. Never more.
+  async function run(shouldRetry: (o: PublicOrderOutcome) => boolean): Promise<PublicOrderOutcome> {
+    signIns += 1;
+    const first = outcomes[attempt++] ?? { kind: "error" };
+    calls.push(1);
+    if (!shouldRetry(first)) return first;
+
+    signIns += 1;
+    const second = outcomes[attempt++] ?? { kind: "error" };
+    calls.push(2);
+    return shouldRetry(second) ? { kind: "error" } : second;
+  }
+
+  return { run, get attempts() { return calls.length; }, get signIns() { return signIns; } };
+}
+
+const retryable = (o: PublicOrderOutcome) => o.kind === "error";
+
+test("a first internal failure re-authenticates once and the retry succeeds", async () => {
+  const h = retryHarness([{ kind: "error" }, { kind: "accepted" }]);
+  const result = await h.run(retryable);
+
+  assert.deepEqual(result, { kind: "accepted" });
+  assert.equal(h.attempts, 2, "exactly one retry");
+  assert.equal(h.signIns, 2, "exactly one re-authentication");
+});
+
+test("repeated failure retries exactly once, then reports a temporary server failure", async () => {
+  const h = retryHarness([{ kind: "error" }, { kind: "error" }, { kind: "accepted" }]);
+  const result = await h.run(retryable);
+
+  assert.deepEqual(result, { kind: "error" }, "a second failure is not retried again");
+  assert.equal(h.attempts, 2, "no loop -- at most two attempts");
+  assert.equal(h.signIns, 2);
+});
+
+test("a settled rejection is never retried", async () => {
+  // invalid / prices-changed / unavailable are answers, not failures. Retrying them would
+  // re-run the whole submission for no reason and could surprise the customer.
+  for (const settled of [{ kind: "invalid", message: "x" }, { kind: "prices-changed", message: "x", menu: [] }, { kind: "unavailable", message: "x", menu: [] }, { kind: "accepted" }] as PublicOrderOutcome[]) {
+    const h = retryHarness([settled, { kind: "accepted" }]);
+    const result = await h.run(retryable);
+    assert.deepEqual(result, settled);
+    assert.equal(h.attempts, 1, `${settled.kind} must not be retried`);
+    assert.equal(h.signIns, 1, `${settled.kind} must not re-authenticate`);
+  }
+});
+
+test("the route runs submissions through the recovery wrapper, not a bare client", () => {
+  const route = readFileSync(new URL("../src/app/api/public-orders/route.ts", import.meta.url), "utf8");
+  assert.match(route, /withPublicOrderClient\(/, "the recovery wrapper must actually be used");
+  assert.equal(/getPublicOrderClient\(/.test(route), false, "a bare client bypasses the retry path");
+  assert.match(route, /outcome\.kind === "error"/, "only an internal failure may trigger a retry");
+});
+
+test("the server client keeps its non-persistent session contract", () => {
+  const source = readFileSync(new URL("../src/lib/supabase-server.ts", import.meta.url), "utf8");
+  assert.match(source, /persistSession:\s*false/);
+  assert.match(source, /autoRefreshToken:\s*false/);
+  assert.match(source, /detectSessionInUrl:\s*false/);
+  // Module-scope session reuse, and exactly one re-auth path.
+  assert.match(source, /let cachedClient/);
+  const signInCalls = source.match(/await signIn\(/g) ?? [];
+  assert.equal(signInCalls.length, 2, "one initial sign-in and exactly one retry sign-in -- no loop");
 });
 
 // --- Attribution ---------------------------------------------------------------------------------------
