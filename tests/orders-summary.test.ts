@@ -12,7 +12,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildSellingSummary, ORDER_STATUS_COVERAGE, resolveRollingWeekRange, resolveTodayRange } from "../src/lib/orders/summary.ts";
+import { buildSellingSummary, ORDER_STATUS_COVERAGE, resolveRollingWeekRange, resolveTodayRange, type MostOrderedItem } from "../src/lib/orders/summary.ts";
+import { grossRevenue, netRevenue, refunds } from "../src/lib/orders/revenue.ts";
 import { ORDER_STATUSES, type Order, type OrderLine, type OrderStatus } from "../src/lib/orders/types.ts";
 
 const MANILA = "Asia/Manila";
@@ -407,6 +408,42 @@ test("editing line prices cannot move paid revenue by a centavo", () => {
   assert.equal(withNoLines.today.grossRevenue, 480, "revenue survives its lines being emptied");
 });
 
+test("net revenue comes through the canonical netRevenue helper, not local arithmetic", () => {
+  // Pinned against revenue.ts directly. `gross - refunds` is the same arithmetic today, so this
+  // test is not about the number -- it is about the number having ONE definition. If netRevenue's
+  // contract ever changes (a rounding rule, a currency unit, an ordering of operations), the
+  // summary must move with it rather than keep quietly returning the old answer.
+  const orders = [
+    // Paid today, still open.
+    orderWith({ id: "a", paymentStatus: "paid", paidAt: TODAY_NOON, paidAmount: 480, paymentMethod: "cash" }),
+    // Paid today and refunded today: both sides land in the same window.
+    orderWith({ id: "b", paymentStatus: "refunded", paidAt: TODAY_NOON, paidAmount: 300, refundedAt: TODAY_NOON }),
+    // Paid last month, refunded today: only the refund is in today's window.
+    orderWith({ id: "c", paymentStatus: "refunded", paidAt: LAST_MONTH, paidAmount: 200, refundedAt: TODAY_NOON }),
+    // Paid yesterday: inside the week, outside today.
+    orderWith({ id: "d", paymentStatus: "paid", paidAt: YESTERDAY_NOON, paidAmount: 150, paymentMethod: "gcash" }),
+  ];
+  const summary = summarize(orders);
+
+  const todayRange = resolveTodayRange(NOW, MANILA);
+  const weekRange = resolveRollingWeekRange(NOW, MANILA);
+
+  assert.equal(summary.today.netRevenue, netRevenue(orders, todayRange));
+  assert.equal(summary.week.netRevenue, netRevenue(orders, weekRange));
+
+  // And the three exposed values stay mutually consistent, since the readout shows gross always and
+  // refunds/net only when refunds are non-zero.
+  assert.equal(summary.today.grossRevenue, grossRevenue(orders, todayRange));
+  assert.equal(summary.today.refunds, refunds(orders, todayRange));
+  assert.equal(summary.today.netRevenue, summary.today.grossRevenue - summary.today.refunds);
+  assert.equal(summary.week.netRevenue, summary.week.grossRevenue - summary.week.refunds);
+
+  // Concrete, so a silent sign flip or a swapped range cannot pass: today gross 780, refunds 500.
+  assert.equal(summary.today.grossRevenue, 780);
+  assert.equal(summary.today.refunds, 500);
+  assert.equal(summary.today.netRevenue, 280);
+});
+
 test("unpaid value is a receivable: cancelled orders are excluded, current lines are read", () => {
   const summary = summarize(
     [
@@ -615,9 +652,35 @@ test("summary.ts holds no client, no repository, no React, and no clock", () => 
 test("summary.ts composes the existing helpers rather than reimplementing them", () => {
   const source = readFileSync(new URL("../src/lib/orders/summary.ts", import.meta.url), "utf8");
   // Delegation is the point: if a number here disagrees with revenue.ts, this file is wrong.
-  for (const helper of ["grossRevenue", "refunds", "unpaidOrderValue", "singleDayRange", "getPreparationTotals", "getPreparationByProduct", "getOrderCountsBySource", "isScheduled", "filterOrdersByFulfillment", "resolveBusinessDay"]) {
+  for (const helper of ["grossRevenue", "refunds", "netRevenue", "unpaidOrderValue", "singleDayRange", "getPreparationTotals", "getPreparationByProduct", "getOrderCountsBySource", "isScheduled", "filterOrdersByFulfillment", "resolveBusinessDay"]) {
     assert.equal(source.includes(helper), true, `summary.ts must reuse ${helper}`);
   }
+
+  // All three revenue figures must be imported, not re-derived. Subtracting locally would make this
+  // file a second definition of net revenue that could drift from the canonical one.
+  assert.match(source, /import \{[^}]*\bnetRevenue\b[^}]*\} from "\.\/revenue\.ts"/);
+  const code = source.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+  assert.equal(/gross\w*\s*-\s*refunds\w*/.test(code), false, "net must come from netRevenue(), not local subtraction");
+});
+
+test("most-ordered entries are items, and a hand-typed item can outrank a catalog product", () => {
+  // The ranking is built from preparation groups, which include manual/unlinked items. That is
+  // deliberate: an unlinked item that outsold everything is real demand an operator needs to see.
+  // The contract is named MostOrderedItem rather than MostOrderedProduct because `key` is not
+  // always a catalog identity.
+  const summary = summarize(
+    [orderWith({ id: "a", placedAt: TODAY_NOON })],
+    [
+      lineWith({ id: "l1", orderId: "a", productId: "product-brownies", itemName: "Biscoff Blondie", quantity: 3 }),
+      lineWith({ id: "l2", orderId: "a", productId: "", sellingFormatId: "", itemName: "Custom Gift Pack", piecesPerUnitSnapshot: null, quantity: 8 }),
+    ],
+  );
+
+  const top: MostOrderedItem | undefined = summary.mostOrdered[0];
+  assert.equal(top?.label, "Custom Gift Pack");
+  assert.equal(top?.units, 8);
+  assert.equal(top?.key, "manual:Custom Gift Pack", "keyed as an item, not a product id");
+  assert.equal(summary.mostOrdered[1]?.key, "product:product-brownies");
 });
 
 test("every OrderStatus is exercised by this suite's fixtures", () => {

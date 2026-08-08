@@ -29,7 +29,7 @@ import { resolveBusinessDay } from "../business-day.ts";
 import { getOrderCountsBySource, type SourceCount } from "./attribution.ts";
 import { filterOrdersByFulfillment, isScheduled } from "./fulfillment.ts";
 import { getPreparationByProduct, getPreparationTotals, type PreparationTotals } from "./pieces.ts";
-import { grossRevenue, refunds, singleDayRange, unpaidOrderValue, type BusinessDayRange } from "./revenue.ts";
+import { grossRevenue, netRevenue, refunds, singleDayRange, unpaidOrderValue, type BusinessDayRange } from "./revenue.ts";
 import type { Order, OrderLine, OrderStatus } from "./types.ts";
 
 // --- Lifecycle sets ---------------------------------------------------------------------------
@@ -197,7 +197,13 @@ function buildPreparationGroups(lines: OrderLine[]): PreparationGroup[] {
 
 // --- Most ordered -------------------------------------------------------------------------------
 
-export type MostOrderedProduct = { key: string; label: string; units: number };
+// An ITEM, not a product. The ranking is built from buildPreparationGroups, which returns both
+// `product:<id>` groups and `manual:<frozen itemName>` groups, so an entry here may be a catalog
+// product or a hand-typed item -- and deliberately so: a Custom Gift Pack that outsold everything
+// else is exactly the kind of thing an operator needs to see, and filtering it out to make the type
+// name true would hide real demand. Naming this MostOrderedProduct would have quietly promised a
+// catalog identity that `key` does not always carry.
+export type MostOrderedItem = { key: string; label: string; units: number };
 
 const MOST_ORDERED_LIMIT = 3;
 
@@ -210,7 +216,7 @@ const MOST_ORDERED_LIMIT = 3;
 //
 // The caller must label it as units. "Top product" with no basis stated invites reading it as
 // revenue or margin.
-function buildMostOrdered(lines: OrderLine[]): MostOrderedProduct[] {
+function buildMostOrdered(lines: OrderLine[]): MostOrderedItem[] {
   return buildPreparationGroups(lines)
     .map(({ key, label, units }) => ({ key, label, units }))
     .sort((a, b) => (b.units - a.units) || a.label.localeCompare(b.label) || a.key.localeCompare(b.key))
@@ -256,7 +262,7 @@ export type SellingSummary = {
     // renderer must say so rather than presenting the piece count as complete.
     piecesUnknownLines: number;
   };
-  mostOrdered: MostOrderedProduct[];
+  mostOrdered: MostOrderedItem[];
   sources: SourceCount[];
 };
 
@@ -342,10 +348,18 @@ export function buildSellingSummary({ orders, linesByOrderId, nowMs, timeZone }:
   // NO lifecycle filter -- a cancelled paid order is still money that was received, and stays
   // revenue until an actual refund is recorded. Refunds are dated by refundedAt, so a refund lands
   // in the period the money left and an earlier period's gross is immutable.
+  //
+  // Net calls netRevenue rather than subtracting the two locally. `gross - refunds` is the same
+  // arithmetic today, but writing it here would make this file a second definition of net revenue
+  // that could silently disagree with the canonical one -- exactly the drift the single-source rule
+  // exists to prevent. All three values are exposed because the readout shows gross, and shows
+  // refunds and net only when refunds are non-zero.
   const grossToday = grossRevenue(orders, todayRange);
   const refundsToday = refunds(orders, todayRange);
+  const netToday = netRevenue(orders, todayRange);
   const grossWeek = grossRevenue(orders, weekRange);
   const refundsWeek = refunds(orders, weekRange);
+  const netWeek = netRevenue(orders, weekRange);
 
   return {
     attention: {
@@ -362,14 +376,14 @@ export function buildSellingSummary({ orders, linesByOrderId, nowMs, timeZone }:
       remainingHandovers,
       grossRevenue: grossToday,
       refunds: refundsToday,
-      netRevenue: grossToday - refundsToday,
+      netRevenue: netToday,
     },
     week: {
       range: weekRange,
       ordersPlaced: ordersPlacedWeek,
       grossRevenue: grossWeek,
       refunds: refundsWeek,
-      netRevenue: grossWeek - refundsWeek,
+      netRevenue: netWeek,
     },
     toPrepareToday: {
       groups: toPrepareGroups,
