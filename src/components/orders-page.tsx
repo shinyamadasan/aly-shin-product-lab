@@ -8,7 +8,9 @@
 // unchanged, and everything downstream of it (see updatePaymentStatus's caller-supplied lines)
 // depends on it staying that way.
 //
-// Nothing here belongs to S7+: no dashboard, no readout, no public ordering surface.
+// S7 added a second view on this same surface: `?tab=summary` renders the Selling readout from the
+// state already loaded below. It is presentation only -- every metric is decided by
+// src/lib/orders/summary.ts, and nothing here recomputes one. No public ordering surface lives here.
 //
 // Data access goes through src/lib/orders-repository.ts. Orders never enter LabState. The catalog
 // (products, batches, costings, selling formats) is read from LabState because it is already
@@ -16,7 +18,10 @@
 
 import { ClipboardList, PackagePlus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { OrdersSummary } from "@/components/orders-summary";
 import { Button, MessageBox, Panel, SecondaryButton, Tag } from "@/components/ui";
+import { buildSellingSummary } from "@/lib/orders/summary";
+import { ordersTabs, type OrdersTab } from "@/lib/orders-tabs";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { getOrderCountsBySource } from "@/lib/orders/attribution";
 import { toDisplayPrice } from "@/lib/orders/money";
@@ -82,7 +87,7 @@ function sourceLabel(source: OrderSource): string {
   return source === "unknown" ? "Unknown source" : source.replace(/_/g, " ");
 }
 
-export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; onDirtyChange: (isDirty: boolean) => void }) {
+export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChange }: { initialOrdersTab?: OrdersTab; labState: LabState; onDirtyChange: (isDirty: boolean) => void }) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [linesByOrderId, setLinesByOrderId] = useState<Map<string, OrderLine[]>>(new Map());
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -262,6 +267,20 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
   // orders come from", which a fulfilment filter has no bearing on.
   const sourceCounts = useMemo(() => getOrderCountsBySource(orders), [orders]);
 
+  // S7: the readout, over the SAME loaded state the list above renders. No second query, no second
+  // loader, no second cache -- reloading refreshes both, because both read `orders`/`linesByOrderId`
+  // and both are stamped by the same `loadedAtMs`.
+  //
+  // `loadedAtMs` is the observation time of this dataset, which is what G1 wants: reading a fresh
+  // clock here would let "today" advance past midnight while the numbers on screen still described
+  // yesterday's load. It is 0 until the first successful load, and a 0 would resolve to 1970 in
+  // Manila -- so the summary is only ever BUILT when there is something to build it from, and the
+  // gate below is what guarantees that.
+  const summary = useMemo(
+    () => (loadedAtMs === 0 ? null : buildSellingSummary({ orders, linesByOrderId, nowMs: loadedAtMs, timeZone: BUSINESS_TIMEZONE })),
+    [orders, linesByOrderId, loadedAtMs],
+  );
+
   function resetForm() {
     orderIdRef.current = crypto.randomUUID();
     pendingCustomerIdRef.current = crypto.randomUUID();
@@ -370,6 +389,59 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
     );
   }
 
+  // Real links, not local tab state. Reload keeps the tab, /orders?tab=summary is shareable, and
+  // back/forward behave -- none of which hidden useState gives, and all of which an operator will
+  // assume.
+  //
+  // NO onClick GUARD HERE, deliberately. Because these are real document navigations, the
+  // beforeunload handler that useUnsavedChangesGuard already installs (above, from `isDirty`) fires
+  // on a tab click by itself. Adding a window.confirm as well would stack two independent guards on
+  // one navigation and prompt the operator twice for the same decision -- the second prompt arriving
+  // after they had already answered. One guard, owned by the hook that owns unload protection.
+  const tabBar = (
+    <div className="inline-flex w-fit flex-wrap rounded-md border border-[#d8c7b7] bg-white p-1">
+      {ordersTabs.map((item) => (
+        <a
+          className={`rounded px-4 py-1.5 text-sm font-semibold ${initialOrdersTab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+          href={item.href}
+          key={item.key}
+        >
+          {item.label}
+        </a>
+      ))}
+    </div>
+  );
+
+  if (initialOrdersTab === "summary") {
+    return (
+      <section className="grid gap-5" id="orders">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold">Selling summary</h3>
+            <p className="text-sm text-[#6f5a4c]">What is happening with orders right now.</p>
+          </div>
+          <SecondaryButton onClick={reload}>
+            <span className="inline-flex items-center gap-2"><RefreshCw size={14} /> Refresh</span>
+          </SecondaryButton>
+        </div>
+
+        {tabBar}
+
+        {/* Three genuinely different conditions, told apart rather than collapsed. A summary of
+            zeroes is a claim that the business is quiet; it must never be shown when the truth is
+            "still loading" or "the read failed", because those look identical on screen and only
+            one of them is safe to act on. `summary` is null until a load has actually succeeded. */}
+        {loadFailure ? (
+          <MessageBox message={`${loadFailure.message} The summary is hidden rather than shown as zeroes, because these orders could not be read.`} tone="bad" />
+        ) : isLoading || !summary ? (
+          <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">Loading…</p>
+        ) : (
+          <OrdersSummary summary={summary} />
+        )}
+      </section>
+    );
+  }
+
   const selectedOrder = orders.find((order) => order.id === selectedOrderId) ?? null;
   const selectedLines = selectedOrder ? linesByOrderId.get(selectedOrder.id) ?? [] : [];
 
@@ -394,6 +466,8 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
             <SecondaryButton onClick={() => { setIsCreating((value) => !value); setMessage(""); }}>{isCreating ? "Cancel new order" : "New order"}</SecondaryButton>
           </div>
         </div>
+
+        {tabBar}
 
         {/* A cheap read, not a dashboard: one line of counts over the loaded orders. "Unknown" is
             shown rather than hidden, so the named channels are never made to look more complete

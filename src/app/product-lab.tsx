@@ -40,6 +40,7 @@ import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, In
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
+import type { OrdersTab } from "@/lib/orders-tabs";
 import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/components/purchase-import-wizard";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
@@ -153,10 +154,12 @@ const UNSAVED_SUPPLY_MESSAGE = "You have unsaved changes in this purchase. Leavi
 export default function ProductLab({
   view = "today",
   initialInventoryTab,
+  initialOrdersTab,
   initialOpportunityStatusFilter = "new",
 }: {
   view?: LabView;
   initialInventoryTab?: InventoryTab;
+  initialOrdersTab?: OrdersTab;
   initialOpportunityStatusFilter?: OpportunityStatusFilter;
 }) {
   const router = useRouter();
@@ -2715,7 +2718,7 @@ export default function ProductLab({
             </section>
           ) : null}
 
-          {view === "orders" ? <OrdersPage labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_ORDER_MESSAGE } : null)} /> : null}
+          {view === "orders" ? <OrdersPage initialOrdersTab={initialOrdersTab} labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_ORDER_MESSAGE } : null)} /> : null}
 
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
           {view === "inventory" ? (
