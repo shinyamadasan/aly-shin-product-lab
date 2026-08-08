@@ -80,8 +80,8 @@ test("[M1] coverage accounts for all fourteen declared domains", async () => {
 test("[M1] exactly the built domains are present, and every other is explicitly absent", async () => {
   const context = await buildFixtureContext();
 
-  assert.deepEqual([...context.coverage.present].sort(), ["costing", "inventory", "readiness"]);
-  assert.equal(context.coverage.absent.length, DOMAIN_IDS.length - 3);
+  assert.deepEqual([...context.coverage.present].sort(), ["costing", "inventory", "readiness", "selling"]);
+  assert.equal(context.coverage.absent.length, DOMAIN_IDS.length - 4);
   for (const entry of context.coverage.absent) {
     assert.ok(entry.reason.length > 0, `${entry.domain} must state why it is absent`);
   }
@@ -737,7 +737,7 @@ test("[M1] the business day is deterministic and honours the injected timezone",
   assert.notEqual(context.businessDay, new Date(FIXTURE_ENV.now).toISOString().slice(0, 10));
 });
 
-test("[M1] the Manila day boundary shifts businessDay and nothing else", async () => {
+test("[M1] the Manila day boundary shifts businessDay and only the day-scoped facts", async () => {
   // businessDay is derived through the real resolveBusinessDay rather than hardcoded into env.
   // Asserting a value that the test itself supplied would be circular -- it would prove only that
   // the builder copies what it is handed, not that the boundary lands at 16:00Z.
@@ -761,8 +761,42 @@ test("[M1] the Manila day boundary shifts businessDay and nothing else", async (
   assert.equal(before.businessDay, "2026-08-09");
   assert.equal(after.businessDay, "2026-08-10");
 
-  // Nothing else about the fixture depends on which side of the boundary we are on: the expiring
-  // ingredient is already expired either way, so facts and signals stay identical.
-  assert.equal(before.factsDigest, after.factsDigest);
+  // The TIMEZONE-INDEPENDENT domains publish identical FACTS on both sides. Nothing about their
+  // fixture data depends on which side of the boundary we are on -- the expiring ingredient is
+  // already expired either way.
+  //
+  // Facts rather than the whole DomainContext, deliberately: inventory's `notes` quote the business
+  // day ("anchored to 2026-08-09 in Asia/Manila"), which correctly differs. buildFactsDigest
+  // excludes notes for exactly that reason -- a disclosure sentence naming the day is not the
+  // business changing.
+  for (const domain of ["costing", "inventory", "readiness"] as const) {
+    assert.deepEqual(before.domains[domain]?.facts, after.domains[domain]?.facts, `${domain} facts must not move across a day boundary`);
+    assert.deepEqual(before.domains[domain]?.sourceAsOf, after.domains[domain]?.sourceAsOf);
+    assert.deepEqual(before.domains[domain]?.rowCounts, after.domains[domain]?.rowCounts);
+  }
+  assert.deepEqual(before.signals, after.signals);
   assert.equal(before.signalsDigest, after.signalsDigest);
+
+  // Selling DOES move, and must: it publishes day-scoped measurements, so at midnight in Manila
+  // "today's revenue" genuinely stops being today's. This was asserted as an envelope-wide
+  // invariant before S8, when no domain was day-scoped; keeping that assertion would now require
+  // Selling to report yesterday's takings as today's.
+  //
+  // The fixture's two paid orders land on 2026-08-09 Manila, so they are today's before the
+  // boundary and outside it after.
+  const sellingBefore = before.domains.selling?.facts;
+  const sellingAfter = after.domains.selling?.facts;
+  const value = (fact: Fact<unknown> | undefined) => (fact && fact.state === "known" ? fact.value : undefined);
+  assert.equal(value(sellingBefore?.grossPaidRevenueToday), 720, "both fixture payments land on 2026-08-09 Manila");
+  assert.equal(value(sellingAfter?.grossPaidRevenueToday), 0, "after midnight they are no longer today's");
+  assert.equal(value(sellingBefore?.ordersPlacedToday), 2);
+  assert.equal(value(sellingAfter?.ordersPlacedToday), 0);
+
+  // The two basis facts are raw evidence and carry no window, so they are identical on both sides.
+  // That is the tell that Selling's movement comes from the window, not from the rows.
+  assert.deepEqual(sellingBefore?.orderBasis, sellingAfter?.orderBasis);
+  assert.deepEqual(sellingBefore?.orderLineBasis, sellingAfter?.orderLineBasis);
+
+  // And therefore the facts digest moves, while the signals digest does not.
+  assert.notEqual(before.factsDigest, after.factsDigest);
 });

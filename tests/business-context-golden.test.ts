@@ -107,3 +107,35 @@ test("[golden] the committed snapshot carries no real-clock or random artefact",
   // No UUID-shaped id may appear: every fixture id is a readable fixture-* literal.
   assert.doesNotMatch(raw, /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
 });
+
+test("[golden] Selling cannot change what the other domains publish", async () => {
+  // The property that made the S8 golden regeneration reviewable, kept permanently.
+  //
+  // When `selling` was added, the golden legitimately changed in five ways: knownDomains and
+  // present each gained an entry, a selling block appeared, and both digests moved. What must NEVER
+  // change is the other three domains -- and the whole point of a golden diff is lost if an
+  // unrelated regression can hide inside a large expected change.
+  //
+  // Asserted structurally rather than against a committed copy of the old file: build the same
+  // fixture twice, once with the selling rows and once with none, and the other domains must be
+  // deep-equal. That stays true for every future Selling change, not just this one.
+  const withSelling = await buildFixtureContext();
+  const withoutSellingRows = await buildBusinessContext({
+    reads: { ...fixtureReads(), selling: { ok: true, rows: { orders: [], lines: [] } } },
+    env: FIXTURE_ENV,
+    dataSource: "sample",
+    composers: [COSTING_FRESHNESS_COMPOSER.compose],
+  });
+
+  for (const domain of ["costing", "inventory", "readiness"] as const) {
+    assert.deepEqual(withSelling.domains[domain], withoutSellingRows.domains[domain], `${domain} must not depend on Selling`);
+  }
+  assert.deepEqual(withSelling.signals, withoutSellingRows.signals, "Selling emits no signals and composes into none");
+  assert.deepEqual(withSelling.coverage, withoutSellingRows.coverage, "an empty Selling read is still a present domain");
+
+  // And Selling itself is genuinely present in the committed snapshot, with no signals.
+  const parsed = JSON.parse(readGolden()) as { coverage: { present: string[] }; domains: Record<string, { signals: unknown[]; aiGenerated?: unknown }> };
+  assert.ok(parsed.coverage.present.includes("selling"));
+  assert.deepEqual(parsed.domains.selling?.signals, []);
+  assert.equal(parsed.domains.selling?.aiGenerated, undefined);
+});

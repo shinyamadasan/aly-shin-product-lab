@@ -37,13 +37,18 @@ test("SIGNAL_IDS declares the domain-scoped and cross-domain ids M1 emits", () =
   }
 });
 
-test("DOMAIN_IDS covers all fourteen designed domains, with no duplicates", () => {
-  assert.equal(DOMAIN_IDS.length, 14);
-  assert.equal(new Set(DOMAIN_IDS).size, 14);
-  // The three M1 adapters build these; the other eleven are declared absent by the envelope.
-  for (const domain of ["costing", "inventory", "readiness"]) {
+test("DOMAIN_IDS covers the designed domains plus selling, with no duplicates", () => {
+  // 14 designed domains (D1-D14) + `selling`, appended by S8. Adding a domain is additive and does
+  // not bump CONTEXT_SCHEMA_VERSION; the count is asserted so a domain cannot appear or vanish
+  // unnoticed.
+  assert.equal(DOMAIN_IDS.length, 15);
+  assert.equal(new Set(DOMAIN_IDS).size, 15);
+  // The four adapters build these; the other eleven are declared absent by the envelope.
+  for (const domain of ["costing", "inventory", "readiness", "selling"]) {
     assert.ok((DOMAIN_IDS as readonly string[]).includes(domain));
   }
+  // `selling` is appended, not inserted, so existing ids keep their positions.
+  assert.equal(DOMAIN_IDS[DOMAIN_IDS.length - 1], "selling");
 });
 
 test("COSTING_UPDATED_AT_RELIABLE_FROM is the recorded production-live instant, exactly", () => {

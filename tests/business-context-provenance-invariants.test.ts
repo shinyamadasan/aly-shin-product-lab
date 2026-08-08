@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { buildCostingDomainContext } from "../src/lib/business-context/adapters/costing.ts";
 import { buildInventoryDomainContext } from "../src/lib/business-context/adapters/inventory.ts";
 import { buildReadinessDomainContext } from "../src/lib/business-context/adapters/readiness.ts";
+import { buildSellingDomainContext } from "../src/lib/business-context/adapters/selling.ts";
+import type { OrderLineRow, OrderRow } from "../src/lib/orders/types.ts";
 import { SIGNAL_IDS } from "../src/lib/business-context/types.ts";
 import type { BuildEnv, DomainContext } from "../src/lib/business-context/types.ts";
 import { declaredPath, walkFacts } from "./helpers/business-context-fact-walker.ts";
@@ -152,6 +154,24 @@ function tastingRow() {
   };
 }
 
+function orderRow(): OrderRow {
+  return {
+    id: "order-1", customer_id: "customer-1", status: "confirmed", payment_status: "unpaid",
+    payment_method: null, paid_at: null, paid_amount: null, refunded_at: null,
+    fulfillment_method: "pickup", fulfillment_at: null, fulfillment_address: "", fulfillment_notes: "",
+    source: "instagram", source_ref: "", entry_method: "manual", notes: "", placed_at: "2026-08-08T00:00:00.000Z",
+    completed_at: null, cancelled_at: null, cancel_reason: "",
+    created_at: "2026-08-08T00:00:00.000Z", updated_at: "2026-08-08T00:00:00.000Z",
+  };
+}
+
+function orderLineRow(): OrderLineRow {
+  return {
+    id: "line-1", order_id: "order-1", product_id: "brownies", selling_format_id: null,
+    item_name: "Brownie box", unit_price: 480, pieces_per_unit_snapshot: 6, quantity: 1, sort_order: 0, note: "",
+  };
+}
+
 // Both a populated and an empty build per domain, so the invariants cover the empty/unset/unknown
 // branches as well as the happy path.
 function builtContexts(): DomainContext[] {
@@ -165,6 +185,11 @@ function builtContexts(): DomainContext[] {
       env,
     ),
     buildReadinessDomainContext({ products: [], batches: [], costings: [], tastings: [] }, env),
+    // S8. Added here so every generic invariant above -- non-empty inputs, inputs resolving to real
+    // published facts, no self-dependency, no whole-business verdict key -- automatically covers
+    // Selling too, rather than Selling relying on its own suite to remember them.
+    buildSellingDomainContext({ orders: [orderRow()], lines: [orderLineRow()] }, env),
+    buildSellingDomainContext({ orders: [], lines: [] }, env),
   ];
 }
 

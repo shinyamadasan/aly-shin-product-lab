@@ -84,8 +84,13 @@ export type FactState = Fact<unknown>["state"];
 
 // --- Domains ------------------------------------------------------------------------------------
 
-// The fourteen domains from the design's D1-D14. Declared in full up front so `coverage` can list
-// a domain as declared-absent rather than letting it be silently invisible.
+// The design's fourteen domains D1-D14, plus `selling`. Declared in full up front so `coverage` can
+// list a domain as declared-absent rather than letting it be silently invisible.
+//
+// `selling` is appended by S8 rather than inserted, so the existing ids keep their positions. Adding
+// a domain is additive and does NOT bump CONTEXT_SCHEMA_VERSION -- see the rule above. It does move
+// factsDigest, because that digest deliberately covers `coverage`; a prior answer computed when the
+// envelope knew nothing about selling should be invalidated once selling facts exist.
 export const DOMAIN_IDS = [
   "products",
   "batches",
@@ -101,6 +106,7 @@ export const DOMAIN_IDS = [
   "brand",
   "readiness",
   "aiReviews",
+  "selling",
 ] as const;
 export type DomainId = (typeof DOMAIN_IDS)[number];
 

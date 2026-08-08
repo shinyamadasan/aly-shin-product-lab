@@ -19,12 +19,14 @@
       "creative",
       "brand",
       "readiness",
-      "aiReviews"
+      "aiReviews",
+      "selling"
     ],
     "present": [
       "costing",
       "inventory",
-      "readiness"
+      "readiness",
+      "selling"
     ],
     "absent": [
       {
@@ -3426,6 +3428,311 @@
         "QUAL-001/002/003/005 are evaluated by keyword search over free text; their provenance is marked inferred and they must not be read as strongly as arithmetic checks.",
         "Launch composite gates are not evaluated: includeLaunch is false, matching the Rule Engine's own default for routine evaluation."
       ]
+    },
+    "selling": {
+      "domain": "selling",
+      "adapterVersion": 1,
+      "readOutcome": {
+        "ok": true
+      },
+      "sourceAsOf": {
+        "state": "known",
+        "value": "2026-08-08T19:30:00.000Z",
+        "source": {
+          "kind": "entered",
+          "table": "orders",
+          "column": "updated_at"
+        }
+      },
+      "rowCounts": {
+        "read": 6,
+        "included": 6,
+        "omitted": 0
+      },
+      "facts": {
+        "orderBasis": {
+          "state": "known",
+          "value": [
+            {
+              "id": "fixture-order-paid",
+              "status": "completed",
+              "paymentStatus": "paid",
+              "placedAt": "2026-08-08T17:00:00.000Z",
+              "fulfillmentAt": "2026-08-08T18:00:00.000Z",
+              "paidAt": "2026-08-08T18:00:00.000Z",
+              "paidAmount": 480,
+              "refundedAt": null,
+              "source": "instagram",
+              "updatedAt": "2026-08-08T18:30:00.000Z"
+            },
+            {
+              "id": "fixture-order-cancelled-paid",
+              "status": "cancelled",
+              "paymentStatus": "paid",
+              "placedAt": "2026-08-08T16:30:00.000Z",
+              "fulfillmentAt": null,
+              "paidAt": "2026-08-08T17:00:00.000Z",
+              "paidAmount": 240,
+              "refundedAt": null,
+              "source": "facebook",
+              "updatedAt": "2026-08-08T19:00:00.000Z"
+            },
+            {
+              "id": "fixture-order-refunded",
+              "status": "completed",
+              "paymentStatus": "refunded",
+              "placedAt": "2026-08-05T01:00:00.000Z",
+              "fulfillmentAt": "2026-08-05T03:00:00.000Z",
+              "paidAt": "2026-08-05T02:00:00.000Z",
+              "paidAmount": 900,
+              "refundedAt": "2026-08-08T19:30:00.000Z",
+              "source": "instagram",
+              "updatedAt": "2026-08-08T19:30:00.000Z"
+            },
+            {
+              "id": "fixture-order-ready",
+              "status": "ready",
+              "paymentStatus": "unpaid",
+              "placedAt": "2026-08-07T05:00:00.000Z",
+              "fulfillmentAt": "2026-08-09T02:00:00.000Z",
+              "paidAt": null,
+              "paidAmount": null,
+              "refundedAt": null,
+              "source": null,
+              "updatedAt": "2026-08-08T01:00:00.000Z"
+            }
+          ],
+          "source": {
+            "kind": "entered",
+            "table": "orders",
+            "rowIds": [
+              "fixture-order-paid",
+              "fixture-order-cancelled-paid",
+              "fixture-order-refunded",
+              "fixture-order-ready"
+            ]
+          }
+        },
+        "orderLineBasis": {
+          "state": "known",
+          "value": [
+            {
+              "id": "fixture-line-1",
+              "orderId": "fixture-order-ready",
+              "quantity": 2,
+              "unitPrice": 300
+            },
+            {
+              "id": "fixture-line-2",
+              "orderId": "fixture-order-ready",
+              "quantity": 1,
+              "unitPrice": 180
+            }
+          ],
+          "source": {
+            "kind": "entered",
+            "table": "order_lines",
+            "rowIds": [
+              "fixture-line-1",
+              "fixture-line-2"
+            ]
+          }
+        },
+        "ordersPlacedToday": {
+          "state": "known",
+          "value": 2,
+          "source": {
+            "kind": "derived",
+            "column": "placed_at",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "ordersPlacedRolling7d": {
+          "state": "known",
+          "value": 4,
+          "source": {
+            "kind": "derived",
+            "column": "placed_at",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "grossPaidRevenueToday": {
+          "state": "known",
+          "value": 720,
+          "source": {
+            "kind": "calculated",
+            "column": "paid_amount",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "grossPaidRevenueRolling7d": {
+          "state": "known",
+          "value": 1620,
+          "source": {
+            "kind": "calculated",
+            "column": "paid_amount",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "refundsRolling7d": {
+          "state": "known",
+          "value": 900,
+          "source": {
+            "kind": "calculated",
+            "column": "paid_amount",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "netRevenueRolling7d": {
+          "state": "known",
+          "value": 720,
+          "source": {
+            "kind": "calculated",
+            "column": "paid_amount",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "unpaidActiveOrderCount": {
+          "state": "known",
+          "value": 1,
+          "source": {
+            "kind": "derived",
+            "column": "payment_status",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "unpaidReceivableValue": {
+          "state": "known",
+          "value": 780,
+          "source": {
+            "kind": "calculated",
+            "column": "unit_price",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis",
+              "selling.facts.orderLineBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "newAwaitingConfirmation": {
+          "state": "known",
+          "value": 0,
+          "source": {
+            "kind": "derived",
+            "column": "status",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "confirmedNeedingScheduling": {
+          "state": "known",
+          "value": 0,
+          "source": {
+            "kind": "derived",
+            "column": "fulfillment_at",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "readyForHandover": {
+          "state": "known",
+          "value": 1,
+          "source": {
+            "kind": "derived",
+            "column": "status",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "remainingHandoversToday": {
+          "state": "known",
+          "value": 1,
+          "source": {
+            "kind": "derived",
+            "column": "fulfillment_at",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "overdueHandovers": {
+          "state": "known",
+          "value": 0,
+          "source": {
+            "kind": "derived",
+            "column": "fulfillment_at",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        },
+        "orderCountBySourceRolling7d": {
+          "state": "known",
+          "value": {
+            "unknown": 1,
+            "facebook": 1,
+            "instagram": 2,
+            "tiktok": 0,
+            "messenger": 0,
+            "website": 0,
+            "referral": 0,
+            "direct": 0
+          },
+          "source": {
+            "kind": "derived",
+            "column": "source",
+            "computedBy": "buildSellingSummary",
+            "inputs": [
+              "selling.facts.orderBasis"
+            ]
+          },
+          "confidence": "high"
+        }
+      },
+      "signals": [],
+      "notes": []
     }
   },
   "signals": [
@@ -3494,6 +3801,6 @@
       }
     }
   ],
-  "factsDigest": "c11b1059b3455262a253c0026d4376d12b5da7f71cdededd8600d122b68a3598",
-  "signalsDigest": "d184e3cbbd6582e2e9f1a54f56b7d1dcf6f839cea9b1c5ffc6aa6acf5feef2b4"
+  "factsDigest": "73a12a7b4225d13e021f8c13b0743b0c019962017f32612e4deaac6ad63082f6",
+  "signalsDigest": "71f86d92f8dbf53f24237b73218bf089b89d6a4f0402df48f5d64fbde1d8df3d"
 }
