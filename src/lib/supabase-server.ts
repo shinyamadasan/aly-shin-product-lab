@@ -2,7 +2,7 @@ import "server-only";
 
 // S9 PR-F2: the server-only Supabase client for the public ordering surface.
 //
-// See planning/S9_PUBLIC_ORDERING_IMPLEMENTATION_PLAN.md (Revision 2, FROZEN) section 6 Q1.
+// See planning/S9_PUBLIC_ORDERING_IMPLEMENTATION_PLAN.md (Revision 3, FROZEN) section 6 Q1.
 //
 // `import "server-only"` on the first line is the enforcement: importing this module from a client
 // component is a BUILD ERROR, not a runtime surprise and not a leak discovered in production. The
