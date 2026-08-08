@@ -27,6 +27,7 @@ function product(overrides: Partial<Product> = {}): Product {
     description: "Dense fudgy brownies.",
     image: "",
     decision: "Candidate",
+    isPublic: false,
     ...overrides,
   };
 }

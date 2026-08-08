@@ -39,6 +39,7 @@ function productRow(overrides: Partial<ProductRow> = {}): ProductRow {
     notes: null,
     main_photo_url: "https://example.test/photo.png",
     decision: "Candidate",
+    is_public: false,
     created_at: "2026-08-01T00:00:00.000Z",
     updated_at: "2026-08-01T00:00:00.000Z",
     ...overrides,
@@ -56,6 +57,7 @@ test("mapProductRow: a fully populated row maps every field", () => {
     description: "Dense fudgy brownies.",
     image: "https://example.test/photo.png",
     decision: "Candidate",
+    isPublic: false,
   });
 });
 

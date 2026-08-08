@@ -60,6 +60,11 @@ export type ProductRow = {
   // that a null `decision` is a state the database can produce, which it cannot. The mapper below
   // still guards the absent-column case at runtime.
   decision: string;
+  // `not null default false` (supabase-add-public-ordering.sql). Same shape as `decision` above and
+  // for the same reason: a project that has run the migration can never read null here, and a
+  // project that has NOT run it has no such column at all, so the key arrives absent. That is
+  // schema availability, not SQL nullability, and the mapper guards it at runtime.
+  is_public: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -78,6 +83,10 @@ export function mapProductRow(row: ProductRow): Product {
     description: row.description ?? "",
     image: row.main_photo_url ?? "",
     decision: (row.decision ?? "Needs proof") as Product["decision"],
+    // `?? false` is the pre-migration absent-column guard, not a nullability fallback -- and false
+    // is the only safe answer to "is this published?" when the database cannot say. A project that
+    // has not run supabase-add-public-ordering.sql publishes nothing, which is correct.
+    isPublic: row.is_public ?? false,
   };
 }
 

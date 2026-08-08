@@ -10,6 +10,7 @@ export const products: Product[] = [
     description: "Fudgy brownie candidate for the first weekend dessert box.",
     image: "/product-images/P001_Brownies.png",
     decision: "Needs proof",
+    isPublic: false,
   },
   {
     id: "revel-bars",
@@ -20,6 +21,7 @@ export const products: Product[] = [
     description: "Layered oat and chocolate bar candidate for the first box.",
     image: "/product-images/P003_Revel_Bars.png",
     decision: "Needs proof",
+    isPublic: false,
   },
   {
     id: "cookies",
@@ -30,6 +32,7 @@ export const products: Product[] = [
     description: "Cookie candidate to test size, texture, freshness, and giftability.",
     image: "/product-images/P002_Cookies.png",
     decision: "Needs proof",
+    isPublic: false,
   },
   {
     id: "burnt-cheesecake",
@@ -40,6 +43,7 @@ export const products: Product[] = [
     description: "Premium candidate that needs careful costing, chilling, and packaging tests.",
     image: "/product-images/P004_Burnt_Cheesecake.png",
     decision: "Retest",
+    isPublic: false,
   },
   {
     id: "caramel-macchiato",
@@ -50,6 +54,7 @@ export const products: Product[] = [
     description: "Coffee add-on candidate. Needs freshness and premium-feel proof before launch.",
     image: "/product-images/P005_Bottled_Cold_Brew.png",
     decision: "Add-on test",
+    isPublic: false,
   },
   {
     id: "spanish-latte",
@@ -60,6 +65,7 @@ export const products: Product[] = [
     description: "Coffee add-on candidate. Should not lead the first offer until tested.",
     image: "/product-images/P006_Bottled_Spanish_Latte.png",
     decision: "Add-on test",
+    isPublic: false,
   },
 ];
 

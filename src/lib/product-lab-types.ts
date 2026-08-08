@@ -15,6 +15,14 @@ export type Product = {
   description: string;
   image: string;
   decision: "Needs proof" | "Retest" | "Candidate" | "Add-on test";
+  // Whether this product is offered on the public order page. Explicit opt-in, defaulting to false
+  // in the database (supabase-add-public-ordering.sql) so nothing is ever published by accident.
+  //
+  // Being sellable and being public are two different facts: a product with a current costing and
+  // active selling formats is orderable by the operator on /orders regardless of this flag. Public
+  // eligibility is that existing sellability AND this flag -- see getPublicMenu in
+  // src/lib/orders/public-menu.ts, which adds the filter and delegates everything else.
+  isPublic: boolean;
 };
 
 export type ProductBatch = {

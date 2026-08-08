@@ -1,0 +1,31 @@
+-- S9 Public Ordering, slice PR-F1: make product publication explicit.
+--
+-- See planning/S9_PUBLIC_ORDERING_IMPLEMENTATION_PLAN.md (Revision 2, FROZEN) section 9 and
+-- planning/PROPOSALS.md (PROP-037) for the approved architecture and the owner decisions behind it.
+--
+-- This migration adds ONE column and nothing else. It is the whole schema surface of the public
+-- ordering surface: no new table, no new RPC, no new function, no policy change, and -- most
+-- importantly -- NO GRANT OF ANY KIND. The database's posture toward anonymous visitors is
+-- deliberately unchanged by this file: `anon` still holds only `usage on schema public`
+-- (supabase-fix-permissions.sql), still has no table grant anywhere, and still cannot execute
+-- save_order. PR-F1 creates no public read path and no public write path; the public menu is
+-- served by the application in a later slice, never by widening database access.
+--
+-- Safe to run more than once (`add column if not exists`). Purely additive: no column dropped, no
+-- existing column altered, no existing row's meaning changed.
+--
+-- WHY THE DEFAULT IS `false`, AND WHY THAT IS THE WHOLE POINT.
+-- Every product in this table today is sellable internally -- it has a costing and active selling
+-- formats -- and none of it has ever been offered to a customer directly. If this column defaulted
+-- to `true`, running the migration would publish the entire catalog in one step, silently, with no
+-- one having decided to. `not null default false` means the migration publishes nothing: every
+-- product stays private until someone explicitly ticks "Show on public order page". There is no
+-- backfill for exactly that reason -- the default IS the intended value for every existing row.
+--
+-- Deliberately a plain boolean with no check constraint and no partial index. The index the plan
+-- sketched is not created here: nothing queries `where is_public` yet (the public menu filters an
+-- already-loaded array in pure TypeScript), and this table holds single digits of rows, so an index
+-- would be read by no query and chosen by no planner. It is a one-line addition if a later slice
+-- introduces a filtered query against a table that has grown.
+
+alter table products add column if not exists is_public boolean not null default false;
