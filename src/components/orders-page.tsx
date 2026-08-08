@@ -18,9 +18,9 @@ import { Button, MessageBox, Panel, SecondaryButton, Tag } from "@/components/ui
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { buildLinesFromDrafts, CUSTOM_ITEM_KEY, findSellableItem, getSellableItems, type DraftLine, type SellableProductGroup } from "@/lib/orders/menu";
 import { getOrderTotals } from "@/lib/orders/totals";
-import { validateCustomerForSave, validateOrderForSave } from "@/lib/orders/validation";
+import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
 import { ORDER_SOURCES, type Customer, type Order, type OrderLine, type OrderSource } from "@/lib/orders/types";
-import { listCustomers, listOrderLines, listOrders, saveCustomer, saveOrder, type OrdersClient } from "@/lib/orders-repository";
+import { listCustomers, listOrderLines, listOrders, submitNewOrder, type OrdersClient } from "@/lib/orders-repository";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import type { LabState } from "@/lib/lab-state";
 import { supabase } from "@/lib/supabase";
@@ -67,9 +67,11 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
   const [source, setSource] = useState<OrderSource>("unknown");
   const [notes, setNotes] = useState("");
 
-  // Minted once per form, not per submit: a double-click upserts the same row rather than
-  // inserting two orders. Same discipline as resolveCostingId.
+  // Both minted once per form, not per submit. The order id makes a double-click upsert the same
+  // row; the pending customer id makes a RETRY AFTER A FAILED SAVE upsert the same customer instead
+  // of creating another one. Same discipline as resolveCostingId.
   const orderIdRef = useRef<string>(crypto.randomUUID());
+  const pendingCustomerIdRef = useRef<string>(crypto.randomUUID());
   const guardRef = useRef(createMutationGuard<string>());
 
   const client = supabase as unknown as OrdersClient | null;
@@ -135,10 +137,30 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
     setReloadToken((token) => token + 1);
   }, []);
 
-  const isDirty = isCreating && (customerId !== "" || newCustomerName.trim() !== "" || draftLines.some((line) => line.itemKey !== "" || line.itemName.trim() !== ""));
+  // Every editable field on the new-order form counts, not just customer and lines: an operator who
+  // has only set a delivery time or typed a note has still done work worth warning about.
+  const isDirty =
+    isCreating &&
+    (customerId !== "" ||
+      newCustomerName.trim() !== "" ||
+      draftLines.some((line) => line.itemKey !== "" || line.itemName.trim() !== "") ||
+      fulfillmentMethod !== "pickup" ||
+      fulfillmentAt !== "" ||
+      fulfillmentAddress.trim() !== "" ||
+      source !== "unknown" ||
+      notes.trim() !== "");
   // The app's existing guard, not a second one: it reports upward to ProductLab/AppShell and
   // registers the native beforeunload prompt. Orders is its fourth consumer.
   useUnsavedChangesGuard(isDirty, onDirtyChange);
+
+  // A non-blocking hint, never a hard block: real people share names, so the operator may well be
+  // creating a genuinely different Maria Santos. The candidate id is "" because no existing
+  // customer can have an empty id, which keeps this from ever matching a row against itself --
+  // and keeps the pending-id ref out of render.
+  const possibleDuplicateCustomer = useMemo(
+    () => (customerId === "" ? findPossibleDuplicateCustomer(customers, { id: "", name: newCustomerName }) : null),
+    [customerId, customers, newCustomerName],
+  );
 
   // The running total is a function of prices and quantities only, so the preview lines are built
   // against a placeholder id -- the real order id is applied when the order is actually saved.
@@ -148,6 +170,7 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
 
   function resetForm() {
     orderIdRef.current = crypto.randomUUID();
+    pendingCustomerIdRef.current = crypto.randomUUID();
     setCustomerId("");
     setNewCustomerName("");
     setDraftLines([newDraftLine()]);
@@ -169,33 +192,24 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
     await guardRef.current.run(orderId, async () => {
       const now = new Date().toISOString();
 
-      let resolvedCustomerId = customerId;
-      if (!resolvedCustomerId) {
-        const nameError = validateCustomerForSave(newCustomerName);
-        if (nameError) {
-          setMessage(nameError);
-          setMessageTone("bad");
-          return;
-        }
+      // Resolved up front so the order can be built and validated before anything is written. When
+      // a new customer is being created this is the form's STABLE pending id, so a retry after a
+      // failed save upserts that same customer rather than adding a second one.
+      const isCreatingCustomer = customerId === "";
+      const resolvedCustomerId = isCreatingCustomer ? pendingCustomerIdRef.current : customerId;
 
-        const customer: Customer = {
-          id: crypto.randomUUID(),
-          name: newCustomerName.trim(),
-          phone: "",
-          messagingHandle: "",
-          email: "",
-          notes: "",
-          createdAt: now,
-          updatedAt: now,
-        };
-        const customerResult = await saveCustomer(client, customer, now);
-        if (!customerResult.ok) {
-          setMessage(customerResult.message);
-          setMessageTone("bad");
-          return;
-        }
-        resolvedCustomerId = customer.id;
-      }
+      const newCustomer: Customer | null = isCreatingCustomer
+        ? {
+            id: resolvedCustomerId,
+            name: newCustomerName.trim(),
+            phone: "",
+            messagingHandle: "",
+            email: "",
+            notes: "",
+            createdAt: now,
+            updatedAt: now,
+          }
+        : null;
 
       const order: Order = {
         id: orderId,
@@ -225,14 +239,10 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
       };
 
       const lines = buildLinesFromDrafts(draftLines, sellableGroups, orderId);
-      const validationError = validateOrderForSave(order, lines);
-      if (validationError) {
-        setMessage(validationError);
-        setMessageTone("bad");
-        return;
-      }
 
-      const result = await saveOrder(client, { order, lines, removedLineIds: [], now });
+      // One orchestration call: it validates everything BEFORE writing, so a rejected order never
+      // leaves a customer row behind, then creates the customer (if needed) and saves the order.
+      const result = await submitNewOrder(client, { order, lines, newCustomer, now });
       if (!result.ok) {
         setMessage(result.message);
         setMessageTone("bad");
@@ -299,6 +309,7 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
             newCustomerName={newCustomerName}
             notes={notes}
             onSave={() => void handleSave()}
+            possibleDuplicateCustomer={possibleDuplicateCustomer}
             previewTotal={previewTotal}
             sellableGroups={sellableGroups}
             setCustomerId={setCustomerId}
@@ -358,6 +369,7 @@ function NewOrderForm({
   newCustomerName,
   notes,
   onSave,
+  possibleDuplicateCustomer,
   previewTotal,
   sellableGroups,
   setCustomerId,
@@ -379,6 +391,7 @@ function NewOrderForm({
   newCustomerName: string;
   notes: string;
   onSave: () => void;
+  possibleDuplicateCustomer: { id: string; name: string } | null;
   previewTotal: number;
   sellableGroups: SellableProductGroup[];
   setCustomerId: (value: string) => void;
@@ -420,6 +433,13 @@ function NewOrderForm({
           <label className="grid gap-1 text-sm font-medium">
             New customer name
             <input className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setNewCustomerName(event.target.value)} placeholder="Maria Santos" value={newCustomerName} />
+            {possibleDuplicateCustomer ? (
+              // A hint, not a block. Saving anyway is a legitimate choice -- two people really can
+              // share a name -- so this never disables the form.
+              <span className="text-xs font-normal leading-5 text-[#9a5b2f]">
+                &ldquo;{possibleDuplicateCustomer.name}&rdquo; already exists. Pick them from the list above if this is the same person, or carry on to create a second customer with this name.
+              </span>
+            ) : null}
           </label>
         ) : null}
       </div>
@@ -437,9 +457,14 @@ function NewOrderForm({
                   onChange={(event) => {
                     const nextKey = event.target.value;
                     const picked = findSellableItem(sellableGroups, nextKey);
+                    // Switching a catalog pick to Custom must not leave the catalog's display name
+                    // behind: a manual line called "Brownies - Box of 6" reads like a catalog sale
+                    // while carrying no product, no format, and no pack size. Text already typed on
+                    // an already-custom row is kept, since that is the operator's own.
+                    const wasCatalogPick = line.itemKey !== "" && line.itemKey !== CUSTOM_ITEM_KEY;
                     updateLine(line.rowId, {
                       itemKey: nextKey,
-                      itemName: picked ? picked.itemName : nextKey === CUSTOM_ITEM_KEY ? line.itemName : "",
+                      itemName: picked ? picked.itemName : nextKey === CUSTOM_ITEM_KEY && !wasCatalogPick ? line.itemName : "",
                       // Pre-filled from the format, and editable afterwards.
                       unitPrice: picked ? String(picked.unitPrice) : line.unitPrice,
                     });

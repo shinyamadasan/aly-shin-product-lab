@@ -10,6 +10,7 @@
 // plausible total, which is silent corruption of the commercial record.
 
 import { buildCustomerPayload, buildOrderLinePayload, buildOrderPayload, mapCustomerRow, mapOrderLineRow, mapOrderRow } from "./orders/mappers.ts";
+import { validateCustomerForSave, validateOrderForSave } from "./orders/validation.ts";
 import type { Customer, CustomerRow, Order, OrderLine, OrderLineRow, OrderRow } from "./orders/types.ts";
 
 type SupabaseErrorLike = {
@@ -190,6 +191,62 @@ export async function saveOrder(client: OrdersClient, { order, lines, removedLin
   const result = await client.rpc("save_order", args);
   if (result.error) {
     return { ok: false, ...dbErrorResult(result.error) };
+  }
+
+  return { ok: true };
+}
+
+// --- New-order submission ------------------------------------------------------------------------
+
+export type SubmitNewOrderInput = {
+  // Already carries the resolved customerId -- either an existing customer's, or the form's stable
+  // pending id for a customer that is about to be created.
+  order: Order;
+  lines: OrderLine[];
+  // Set only when this submit must also create the customer. Its id must be the form's stable
+  // pending id, NOT a freshly minted one, so a retry upserts the same row instead of adding another.
+  newCustomer: Customer | null;
+  now: string;
+};
+
+export type SubmitNewOrderResult = { ok: true } | { ok: false; message: string };
+
+// The order of operations for creating an order, extracted from the page component so the
+// sequencing is testable -- which is the whole point, because the sequencing is where it was wrong.
+//
+// VALIDATION RUNS BEFORE ANY WRITE. Previously the customer was created first and the order
+// validated afterwards, so an ordinary typo (quantity 2.5, no item picked) wrote a customer row and
+// then aborted -- and because the customer id was minted per attempt, every retry wrote another.
+// Two "Maria Santos" rows with no phone or handle are indistinguishable after the fact, which
+// silently splits the repeat-buyer count that orders.customer_id exists to make computable.
+//
+// Customers deliberately remain independent entities: there is no customer+order transactional RPC.
+// The residual case -- a customer created, then the order abandoned entirely -- leaves one row with
+// a real name the operator will most likely reuse, which is acceptable under the approved model.
+export async function submitNewOrder(client: OrdersClient, { order, lines, newCustomer, now }: SubmitNewOrderInput): Promise<SubmitNewOrderResult> {
+  if (newCustomer) {
+    const nameError = validateCustomerForSave(newCustomer.name);
+    if (nameError) {
+      return { ok: false, message: nameError };
+    }
+  }
+
+  const orderError = validateOrderForSave(order, lines);
+  if (orderError) {
+    return { ok: false, message: orderError };
+  }
+
+  // Only now, with the whole submission known to be valid, is anything written.
+  if (newCustomer) {
+    const customerResult = await saveCustomer(client, newCustomer, now);
+    if (!customerResult.ok) {
+      return { ok: false, message: customerResult.message };
+    }
+  }
+
+  const orderResult = await saveOrder(client, { order, lines, removedLineIds: [], now });
+  if (!orderResult.ok) {
+    return { ok: false, message: orderResult.message };
   }
 
   return { ok: true };
