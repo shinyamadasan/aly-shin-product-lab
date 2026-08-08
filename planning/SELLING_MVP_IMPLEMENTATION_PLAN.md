@@ -47,6 +47,38 @@ npm run lint      1 error, 0 warnings
 
 The 2 failures are both in `tests/creative-package-asset-create.test.ts` (`[static] … resolveBrief`, `[static] … uploadImage`) and are the CRLF line-ending fixture artifact documented in `planning/BUSINESS_CONTEXT_BUILDER_M1-IMPLEMENTATION-PLAN.md` §2.2 — not code defects. The 1 lint error is pre-existing at `main`: `src/components/bake-page.tsx:58`, `react-hooks/set-state-in-effect`. **The acceptance gate for every Selling slice is exactly these 2 test failures, 0 type errors, and exactly this 1 lint error — never "all green."** None of the three is to be fixed by Selling work.
 
+> ### ⚠ Baseline correction — measured 2026-08-08 during S7 PR-G1
+>
+> **The known-failure count is now 4, not 2.** Measured against `origin/main` @ `b35b488` with a
+> clean working tree and no S7 files present:
+>
+> ```
+> npm test          2103 tests · 2098 pass · 4 fail · 1 skipped
+> npx tsc --noEmit  0 errors
+> npm run lint      1 error, 0 warnings          (unchanged: bake-page.tsx:58)
+> ```
+>
+> The two additional failures are **the same CRLF artifact, in S9's test files**:
+>
+> | Test | File it reads |
+> |---|---|
+> | `no website-user credential can reach client code` (`tests/public-order-form.test.ts`) | `src/components/public-order-form.tsx` |
+> | `the server credential module is server-only and its secrets are not public` (`tests/public-submission.test.ts`) | `src/lib/supabase-server.ts` |
+>
+> Both assert `/^"use client";$/` or an equivalent anchored first-line match, and both now receive
+> `'"use client";\r'`. The files were committed with LF and rewritten with CRLF in the working tree
+> by git's autocrlf on checkout — `file src/components/public-order-form.tsx` reports *"with CRLF
+> line terminators"*. **This is a working-tree line-ending artifact, not a security regression and
+> not a code defect**: the server-only boundary itself is unchanged and still verified in Production.
+>
+> Proven pre-existing rather than assumed: the two tests fail identically with every S7 file removed
+> and `git status` clean. S7 PR-G1 therefore reports **2138 · 2133 pass · 4 fail · 1 skip** — exactly
+> +35 tests and +35 passes, zero new failures.
+>
+> **Not fixed here.** The repair is a repo-wide `.gitattributes` / renormalisation change touching S9
+> files, which is out of scope for a Selling read-layer slice and deserves its own review. Until it
+> lands, **the acceptance gate is these 4 failures, 0 type errors, and 1 lint error.**
+
 ---
 
 ## Context
