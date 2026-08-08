@@ -6,7 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyPaymentCorrection, applyPaymentReceived, applyRefund, isValidPaymentTransition } from "../src/lib/orders/transitions.ts";
+import { applyPaymentCorrection, applyPaymentReceived, applyPaymentRecordCorrection, applyRefund, isValidPaymentTransition } from "../src/lib/orders/transitions.ts";
 import { getPaymentDivergence } from "../src/lib/orders/totals.ts";
 import { validatePaymentFields } from "../src/lib/orders/validation.ts";
 import { PAYMENT_STATUSES, type Order, type OrderLine, type PaymentStatus } from "../src/lib/orders/types.ts";
@@ -232,6 +232,41 @@ test("validatePaymentFields rejects a negative paid_amount but allows null and z
   assert.equal(validatePaymentFields(orderWith({ paidAmount: null })), null);
   // A real zero payment is a real fact.
   assert.equal(validatePaymentFields(orderWith({ paymentStatus: "paid", paidAt: PAID_AT, paidAmount: 0 })), null);
+});
+
+// --- Correcting a mis-recorded payment (S4) --------------------------------------------------------
+
+test("applyPaymentRecordCorrection amends the recorded figures and stays paid", () => {
+  const paid = applyPaymentReceived(orderWith(), [line({ unitPrice: 480 })], "gcash", PAID_AT);
+  assert.equal(paid.ok, true);
+  if (!paid.ok) return;
+
+  const corrected = applyPaymentRecordCorrection(paid.order, { paidAmount: 500, paidAt: "2026-08-08T02:00:00.000Z", method: "cash" }, LATER);
+  assert.equal(corrected.ok, true);
+  if (!corrected.ok) return;
+
+  // Money did arrive -- only the record of it was wrong, so the order stays paid.
+  assert.equal(corrected.order.paymentStatus, "paid");
+  assert.equal(corrected.order.paidAmount, 500);
+  assert.equal(corrected.order.paidAt, "2026-08-08T02:00:00.000Z");
+  assert.equal(corrected.order.paymentMethod, "cash");
+  assert.equal(corrected.order.refundedAt, null, "a correction is not a refund");
+});
+
+test("applyPaymentRecordCorrection rejects an unpaid or refunded order", () => {
+  assert.equal(applyPaymentRecordCorrection(orderWith(), { paidAmount: 480, paidAt: PAID_AT, method: "cash" }, LATER).ok, false);
+
+  const refunded = orderWith({ paymentStatus: "refunded", paidAt: PAID_AT, paidAmount: 480, refundedAt: LATER });
+  assert.equal(applyPaymentRecordCorrection(refunded, { paidAmount: 480, paidAt: PAID_AT, method: "cash" }, LATER).ok, false);
+});
+
+test("applyPaymentRecordCorrection rejects a negative amount or an unparseable date", () => {
+  const paid = orderWith({ paymentStatus: "paid", paidAt: PAID_AT, paidAmount: 480, paymentMethod: "gcash" });
+
+  assert.equal(applyPaymentRecordCorrection(paid, { paidAmount: -1, paidAt: PAID_AT, method: "cash" }, LATER).ok, false);
+  assert.equal(applyPaymentRecordCorrection(paid, { paidAmount: 480, paidAt: "not-a-date", method: "cash" }, LATER).ok, false);
+  // Zero remains legitimate -- a genuinely free order really can be "paid" for nothing.
+  assert.equal(applyPaymentRecordCorrection(paid, { paidAmount: 0, paidAt: PAID_AT, method: "cash" }, LATER).ok, true);
 });
 
 test("payment transitions never mutate their input", () => {

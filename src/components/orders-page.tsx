@@ -17,13 +17,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, MessageBox, Panel, SecondaryButton, Tag } from "@/components/ui";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { buildLinesFromDrafts, CUSTOM_ITEM_KEY, findSellableItem, getSellableItems, type DraftLine, type SellableProductGroup } from "@/lib/orders/menu";
-import { getOrderTotals } from "@/lib/orders/totals";
+import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
+import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
-import { ORDER_SOURCES, type Customer, type Order, type OrderLine, type OrderSource } from "@/lib/orders/types";
-import { listCustomers, listOrderLines, listOrders, submitNewOrder, type OrdersClient } from "@/lib/orders-repository";
+import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
+import { listCustomers, listOrderLines, listOrders, submitNewOrder, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import type { LabState } from "@/lib/lab-state";
 import { supabase } from "@/lib/supabase";
+
+const PAID_CANCEL_PROMPT =
+  "This order was paid \u2014 record a refund?\n\n" +
+  "OK cancels the order and leaves it paid. Use Refund afterwards to record the money going back; cancelling alone never changes what was received.";
 
 export const UNSAVED_ORDER_MESSAGE = "You have unsaved changes in this order. Leaving now will discard them. Continue?";
 
@@ -136,6 +141,42 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
     setIsLoading(true);
     setReloadToken((token) => token + 1);
   }, []);
+
+  // Lifecycle and payment actions. Each one re-reads the persisted order inside the repository
+  // before deciding anything, so a button rendered against stale state cannot drive a transition
+  // off a value that has since moved -- and the conditional update refuses to overwrite it anyway.
+  const [actionBusy, setActionBusy] = useState(false);
+  const actionGuardRef = useRef(createMutationGuard<string>());
+
+  const runOrderAction = useCallback(
+    async (orderId: string, action: () => Promise<{ ok: true; order: Order } | { ok: false; message: string }>) => {
+      if (actionGuardRef.current.isActive(orderId)) {
+        return;
+      }
+
+      await actionGuardRef.current.run(orderId, async () => {
+        setActionBusy(true);
+        try {
+          const result = await action();
+          if (!result.ok) {
+            // Nothing optimistic was rendered, so a failed update leaves the displayed order
+            // exactly as it was. Reloading also pulls in whatever it actually became.
+            setMessage(result.message);
+            setMessageTone("bad");
+            reload();
+            return;
+          }
+
+          setMessage("Order updated.");
+          setMessageTone("good");
+          reload();
+        } finally {
+          setActionBusy(false);
+        }
+      });
+    },
+    [reload],
+  );
 
   // Every editable field on the new-order form counts, not just customer and lines: an operator who
   // has only set a delivery time or typed a note has still done work worth warning about.
@@ -279,6 +320,12 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
   const selectedOrder = orders.find((order) => order.id === selectedOrderId) ?? null;
   const selectedLines = selectedOrder ? linesByOrderId.get(selectedOrder.id) ?? [] : [];
 
+  function runPaymentAction(action: PaymentAction) {
+    if (!client || !selectedOrder) return;
+    const id = selectedOrder.id;
+    void runOrderAction(id, () => updatePaymentStatus(client, { orderId: id, action, now: new Date().toISOString() }));
+  }
+
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]" id="orders">
       <div className="space-y-5">
@@ -354,7 +401,26 @@ export function OrdersPage({ labState, onDirtyChange }: { labState: LabState; on
         </div>
       </div>
 
-      <OrderDetailPanel customer={customers.find((entry) => entry.id === selectedOrder?.customerId) ?? null} lines={selectedLines} order={selectedOrder} />
+      <OrderDetailPanel
+        actionBusy={actionBusy}
+        customer={customers.find((entry) => entry.id === selectedOrder?.customerId) ?? null}
+        lines={selectedLines}
+        onCancel={(reason) => {
+          if (!client || !selectedOrder) return;
+          const id = selectedOrder.id;
+          void runOrderAction(id, () => updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString() }));
+        }}
+        onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
+        onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
+        onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
+        onRefund={() => runPaymentAction({ kind: "refund" })}
+        onStatusChange={(to) => {
+          if (!client || !selectedOrder) return;
+          const id = selectedOrder.id;
+          void runOrderAction(id, () => updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString() }));
+        }}
+        order={selectedOrder}
+      />
     </section>
   );
 }
@@ -555,7 +621,31 @@ function NewOrderForm({
   );
 }
 
-function OrderDetailPanel({ customer, lines, order }: { customer: Customer | null; lines: OrderLine[]; order: Order | null }) {
+function OrderDetailPanel({
+  actionBusy,
+  customer,
+  lines,
+  onCancel,
+  onClearPaymentRecord,
+  onCorrectPaymentRecord,
+  onMarkPaid,
+  onRefund,
+  onStatusChange,
+  order,
+}: {
+  actionBusy: boolean;
+  customer: Customer | null;
+  lines: OrderLine[];
+  onCancel: (reason: string) => void;
+  onClearPaymentRecord: () => void;
+  onCorrectPaymentRecord: (correction: { paidAmount: number; paidAt: string; method: PaymentMethod }) => void;
+  onMarkPaid: (method: PaymentMethod) => void;
+  onRefund: () => void;
+  onStatusChange: (to: OrderStatus) => void;
+  order: Order | null;
+}) {
+  const [isCorrecting, setIsCorrecting] = useState(false);
+
   if (!order) {
     return (
       <Panel icon={<ClipboardList size={18} />} title="Order detail">
@@ -565,17 +655,24 @@ function OrderDetailPanel({ customer, lines, order }: { customer: Customer | nul
   }
 
   const totals = getOrderTotals(lines);
+  const divergence = getPaymentDivergence(order, lines);
+  // The buttons come straight from the domain machine, so what the operator can click and what the
+  // transition functions permit can never drift apart. A terminal order yields an empty list.
+  const forwardTransitions = getAllowedOrderTransitions(order.status).filter((next) => next !== "cancelled");
+  const canCancel = isValidOrderTransition(order.status, "cancelled");
 
   return (
     <Panel icon={<ClipboardList size={18} />} title={customer?.name ?? "Order"}>
       <div className="space-y-3 text-sm text-[#5f4a3d]">
         <div className="flex flex-wrap gap-2 text-xs">
-          <Tag tone="warm">{order.status}</Tag>
-          <Tag tone={order.paymentStatus === "paid" ? "green" : "warm"}>{order.paymentStatus}</Tag>
+          <Tag tone={order.status === "completed" ? "green" : order.status === "cancelled" ? "danger" : "warm"}>{order.status}</Tag>
+          <Tag tone={order.paymentStatus === "paid" ? "green" : order.paymentStatus === "refunded" ? "danger" : "warm"}>{order.paymentStatus}</Tag>
           <Tag tone="warm">{sourceLabel(order.source)}</Tag>
         </div>
         <p className="text-xs">{order.fulfillmentMethod === "delivery" ? "Delivery" : "Pickup"} · {formatWhen(order.fulfillmentAt)}</p>
         {order.fulfillmentAddress ? <p className="text-xs">{order.fulfillmentAddress}</p> : null}
+        {order.completedAt ? <p className="text-xs">Completed {formatWhen(order.completedAt)}</p> : null}
+        {order.cancelledAt ? <p className="text-xs">Cancelled {formatWhen(order.cancelledAt)}{order.cancelReason ? ` — ${order.cancelReason}` : ""}</p> : null}
 
         <div className="divide-y divide-[#f0e6da] border-y border-[#f0e6da]">
           {lines.map((line) => (
@@ -596,8 +693,130 @@ function OrderDetailPanel({ customer, lines, order }: { customer: Customer | nul
           <span className="font-semibold">Current total</span>
           <span className="text-lg font-semibold">{formatPeso(totals.total)}</span>
         </div>
+
+        {order.paidAmount !== null ? (
+          <div className="flex items-center justify-between text-xs">
+            <span>{order.paymentStatus === "refunded" ? "Refunded" : "Paid"} {formatWhen(order.paidAt)}{order.paymentMethod ? ` · ${order.paymentMethod.replace(/_/g, " ")}` : ""}</span>
+            <span className="font-semibold">{formatPeso(order.paidAmount)}</span>
+          </div>
+        ) : null}
+        {order.refundedAt ? <p className="text-xs">Refunded {formatWhen(order.refundedAt)}</p> : null}
+
+        {divergence.state === "diverged" ? (
+          // Informational only. A changed order total is NOT evidence that money moved, so there is
+          // deliberately no "reconcile to current total" action anywhere on this panel.
+          <div className="rounded-md bg-[#fff2d8] p-3 text-xs text-[#7a531d]">
+            <p>Current total {formatPeso(divergence.currentTotal)} · paid {formatPeso(divergence.paidAmount)} · ⚠ {formatPeso(Math.abs(divergence.difference))} difference</p>
+            <p className="mt-1 font-semibold">This does not change what was received.</p>
+          </div>
+        ) : null}
+
         {order.notes ? <p className="text-xs">{order.notes}</p> : null}
+
+        <div className="flex flex-wrap gap-2 border-t border-[#e8dccd] pt-3">
+          {forwardTransitions.map((next) => (
+            <SecondaryButton disabled={actionBusy} key={next} onClick={() => onStatusChange(next)}>
+              {next === "confirmed" ? "Confirm" : next === "ready" ? "Ready" : "Complete"}
+            </SecondaryButton>
+          ))}
+          {order.paymentStatus === "unpaid" ? <SecondaryButton disabled={actionBusy} onClick={() => onMarkPaid(promptForMethod())}>Mark paid</SecondaryButton> : null}
+          {order.paymentStatus === "paid" ? <SecondaryButton disabled={actionBusy} onClick={onRefund}>Refund</SecondaryButton> : null}
+          {order.paymentStatus === "paid" ? <SecondaryButton disabled={actionBusy} onClick={() => setIsCorrecting((value) => !value)}>Correct payment record</SecondaryButton> : null}
+          {canCancel ? (
+            <SecondaryButton
+              disabled={actionBusy}
+              onClick={() => {
+                // Cancelling never touches payment. If money was received it stays received until
+                // the operator records an actual refund -- the prompt asks, it does not act.
+                if (order.paymentStatus === "paid" && !window.confirm(PAID_CANCEL_PROMPT)) {
+                  return;
+                }
+                onCancel(window.prompt("Why is this order cancelled? (optional)") ?? "");
+              }}
+            >
+              Cancel order
+            </SecondaryButton>
+          ) : null}
+        </div>
+
+        {isCorrecting && order.paymentStatus === "paid" ? (
+          <PaymentCorrectionForm
+            actionBusy={actionBusy}
+            onClear={() => {
+              setIsCorrecting(false);
+              onClearPaymentRecord();
+            }}
+            onSubmit={(correction) => {
+              setIsCorrecting(false);
+              onCorrectPaymentRecord(correction);
+            }}
+            order={order}
+          />
+        ) : null}
       </div>
     </Panel>
   );
+}
+
+function promptForMethod(): PaymentMethod {
+  const raw = (window.prompt(`Payment method (${PAYMENT_METHODS.join(" / ")})`, "gcash") ?? "").trim().toLowerCase();
+  return isPaymentMethod(raw) ? raw : "other";
+}
+
+// Pre-filled from the RECORDED payment, never from the current order total. Auto-filling from the
+// total would quietly encode "the lines changed, therefore the payment changed", which is false.
+function PaymentCorrectionForm({
+  actionBusy,
+  onClear,
+  onSubmit,
+  order,
+}: {
+  actionBusy: boolean;
+  onClear: () => void;
+  onSubmit: (correction: { paidAmount: number; paidAt: string; method: PaymentMethod }) => void;
+  order: Order;
+}) {
+  const [amount, setAmount] = useState(order.paidAmount === null ? "" : String(order.paidAmount));
+  const [paidAt, setPaidAt] = useState(toLocalDateTimeValue(order.paidAt));
+  const [method, setMethod] = useState<PaymentMethod>(order.paymentMethod ?? "other");
+
+  return (
+    <form
+      className="grid gap-2 rounded-md border border-[#e8dccd] p-3 text-xs"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit({ paidAmount: Number(amount), paidAt: paidAt ? new Date(paidAt).toISOString() : order.paidAt ?? "", method });
+      }}
+    >
+      <p className="font-semibold">Correct payment record</p>
+      <p className="leading-5">Use this only if the payment was recorded incorrectly. If the customer actually sent more money, that is a second payment — not supported yet.</p>
+      <label className="grid gap-1 font-medium">
+        Amount received
+        <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" min={0} onChange={(event) => setAmount(event.target.value)} step="0.01" type="number" value={amount} />
+      </label>
+      <label className="grid gap-1 font-medium">
+        Received on
+        <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setPaidAt(event.target.value)} type="datetime-local" value={paidAt} />
+      </label>
+      <label className="grid gap-1 font-medium">
+        Method
+        <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setMethod(event.target.value as PaymentMethod)} value={method}>
+          {PAYMENT_METHODS.map((option) => <option key={option} value={option}>{option.replace(/_/g, " ")}</option>)}
+        </select>
+      </label>
+      <div className="flex flex-wrap gap-2 pt-1">
+        <Button disabled={actionBusy}>Save correction</Button>
+        <SecondaryButton disabled={actionBusy} onClick={onClear}>This payment never happened</SecondaryButton>
+      </div>
+    </form>
+  );
+}
+
+// datetime-local wants a local "YYYY-MM-DDTHH:mm", not an ISO instant.
+function toLocalDateTimeValue(iso: string | null): string {
+  if (!iso) return "";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const offset = parsed.getTimezoneOffset() * 60000;
+  return new Date(parsed.getTime() - offset).toISOString().slice(0, 16);
 }

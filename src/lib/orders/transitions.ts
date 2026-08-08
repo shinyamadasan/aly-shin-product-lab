@@ -146,6 +146,45 @@ export function applyRefund(order: Order, now: string): PaymentTransitionResult 
   };
 }
 
+// Amends a recorded payment that was written down wrongly -- the wrong amount typed, or the wrong
+// date. The order stays `paid`, because money did arrive; only the record of it is corrected.
+//
+// This is NOT a reconciliation. It is never pre-filled from the current order total, and nothing
+// about editing order lines may route through here: a changed total is not evidence that money
+// moved. The operator states the corrected figures themselves.
+//
+// If the customer genuinely sent more money later, that is a SECOND PAYMENT, which this milestone
+// does not model -- re-stamping paid_at here would destroy the first payment's date and misstate
+// both periods' revenue. That case is the documented trigger for the deferred payments table.
+export function applyPaymentRecordCorrection(
+  order: Order,
+  correction: { paidAmount: number; paidAt: string; method: PaymentMethod },
+  now: string,
+): PaymentTransitionResult {
+  if (order.paymentStatus !== "paid") {
+    return { ok: false, message: "Only a recorded payment can be corrected." };
+  }
+
+  if (!Number.isFinite(correction.paidAmount) || correction.paidAmount < 0) {
+    return { ok: false, message: "A recorded payment cannot be negative." };
+  }
+
+  if (!Number.isFinite(Date.parse(correction.paidAt))) {
+    return { ok: false, message: "The payment date is not a valid date." };
+  }
+
+  return {
+    ok: true,
+    order: {
+      ...order,
+      paidAmount: correction.paidAmount,
+      paidAt: correction.paidAt,
+      paymentMethod: correction.method,
+      updatedAt: now,
+    },
+  };
+}
+
 // Undoes a payment record that should never have existed. NOT a refund.
 //
 // Clears paidAt, paidAmount and paymentMethod together, because the claim they encoded was false.
