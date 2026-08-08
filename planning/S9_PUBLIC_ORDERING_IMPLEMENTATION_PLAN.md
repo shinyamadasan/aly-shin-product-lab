@@ -14,6 +14,73 @@
 > **Prerequisite status:** **P1** (live credential measurement) is evidence collection and does
 > *not* by itself authorise PR-F2. **P2** (`products.is_public`) lands in PR-F1.
 
+---
+
+## S9 PUBLIC ORDERING — IMPLEMENTATION COMPLETE
+
+**Recorded 2026-08-08**, against `origin/main` @ `11e0fb22290a962388030ec8bc6beca697543871`.
+
+All three slices are merged. This is a status annotation, not an architectural revision — nothing
+frozen below is edited.
+
+| Slice | Contents | PR | Merged at |
+|---|---|---|---|
+| **PR-F1** | `products.is_public` + type/mapper/toggle + `getPublicMenu` | #36 | — |
+| **PR-F2** | `supabase-server.ts` + `POST /api/public-orders` + `save_public_order_once` | #37 | `c69fad5` |
+| **PR-F3** | `/order` page + client form + response validation | #38 | `11e0fb2` |
+
+Every guarantee the plan set out to keep is in place: `save_order` remains the canonical order+line
+writer behind an atomic create-once gate, prices are server-authoritative, payment facts are
+unreachable from a public submission, `fulfillment_at` stays null until an operator agrees a time,
+`source_ref` is stored opaque, inventory receives zero writes, and no order-line editing exists — so
+**M1 remains unreachable**.
+
+### ⚠ Launch-readiness check — OUTSTANDING, not yet performed
+
+**The live happy path has never been exercised end to end over HTTP.** Every live POST to
+`/api/public-orders` during S9 returned 400, 401, 405 or 409; none returned 200. Order *creation* was
+proven live one layer down during PR-F2 — `save_public_order_once` driven against the real database
+showing `created: true`, catalog-authoritative prices, `entry_method = website`, `fulfillment_at`
+null and byte-identical `source_ref` round-tripping, plus create-once and replay safety under
+concurrency — but the browser form's success path was not.
+
+The reason is not a defect: `products.is_public` defaults to `false` by design, so no product is
+intentionally public yet and `/order` correctly renders its empty-menu state.
+
+**Before `/order` is shared with any customer**, once the first real product is intentionally
+published with `is_public = true`, perform exactly one browser happy-path smoke test:
+
+```
+/order  →  submit  →  HTTP 200 accepted  →  "Order received"
+        →  exactly ONE order: website / new / unpaid / pickup
+        →  visible to the operator in /orders
+```
+
+Conditions on that test:
+
+1. **Use the real, intentionally published product.** Do not create temporary production catalog
+   fixtures to manufacture the run — a fixture would prove the fixture, not the launch.
+2. **Clean up only the specifically-created test order and customer afterwards** (order first;
+   `customer_id` is `ON DELETE RESTRICT`). Touch no other business record.
+3. **This check is not complete until it has actually been run.** Do not mark it done by inference
+   from unit tests, Preview probes, or the PR-F2 service-layer evidence above.
+
+### Carried-forward LOW (non-blocking, from PR-F3 review)
+
+`parsePublicOrderResponse` validates the outer refreshed-menu shape — that `menu` is an array whose
+entries are objects carrying a `formats` array — but not every nested `PublicMenuProduct` field. The
+response is produced by the same shared F2 menu contract that builds the page's own menu, so a
+divergence would require the server to contradict itself. Worth tightening only if the menu shape
+ever gains a second producer.
+
+### Known S9 boundary, accepted and unchanged
+
+Public repeat customers are not recognised — a returning customer gets a new `customers` row, so
+repeat-buyer counts under-report for public orders (§6 Q7, R9). Deliberately not solved: auto-matching
+on a phone number silently merges two people who share a handset.
+
+---
+
 ## 0. Change log
 
 ### 0.2 Revision 3 — the create-once decision moves into the database
