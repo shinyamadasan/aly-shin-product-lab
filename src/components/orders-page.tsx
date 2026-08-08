@@ -8,7 +8,9 @@
 // unchanged, and everything downstream of it (see updatePaymentStatus's caller-supplied lines)
 // depends on it staying that way.
 //
-// Nothing here belongs to S7+: no dashboard, no readout, no public ordering surface.
+// S7 added a second view on this same surface: `?tab=summary` renders the Selling readout from the
+// state already loaded below. It is presentation only -- every metric is decided by
+// src/lib/orders/summary.ts, and nothing here recomputes one. No public ordering surface lives here.
 //
 // Data access goes through src/lib/orders-repository.ts. Orders never enter LabState. The catalog
 // (products, batches, costings, selling formats) is read from LabState because it is already
@@ -389,15 +391,13 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
 
   // Real links, not local tab state. Reload keeps the tab, /orders?tab=summary is shareable, and
   // back/forward behave -- none of which hidden useState gives, and all of which an operator will
-  // assume. Plain anchors with an onClick guard is exactly how AppShell already navigates this app
-  // (see its comment on real browser navigation), so a half-typed order still prompts before being
-  // discarded rather than vanishing on a tab click.
-  function handleTabClick(event: React.MouseEvent<HTMLAnchorElement>) {
-    if (isDirty && !window.confirm(UNSAVED_ORDER_MESSAGE)) {
-      event.preventDefault();
-    }
-  }
-
+  // assume.
+  //
+  // NO onClick GUARD HERE, deliberately. Because these are real document navigations, the
+  // beforeunload handler that useUnsavedChangesGuard already installs (above, from `isDirty`) fires
+  // on a tab click by itself. Adding a window.confirm as well would stack two independent guards on
+  // one navigation and prompt the operator twice for the same decision -- the second prompt arriving
+  // after they had already answered. One guard, owned by the hook that owns unload protection.
   const tabBar = (
     <div className="inline-flex w-fit flex-wrap rounded-md border border-[#d8c7b7] bg-white p-1">
       {ordersTabs.map((item) => (
@@ -405,7 +405,6 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
           className={`rounded px-4 py-1.5 text-sm font-semibold ${initialOrdersTab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
           href={item.href}
           key={item.key}
-          onClick={handleTabClick}
         >
           {item.label}
         </a>

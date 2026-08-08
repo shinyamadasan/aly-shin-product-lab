@@ -180,6 +180,16 @@ test("a failed load renders a failure message, never a summary of zeroes", () =>
   assert.match(page, /hidden rather than shown as zeroes/);
 });
 
+test("the loader is the pre-existing one, unchanged by G2", () => {
+  // G2 adds no loading machinery. Logged-in verification found that a network-level failure of the
+  // orders read leaves BOTH tabs on "Loading…" rather than the failure message -- reproduced on the
+  // existing list tab, so it is a pre-existing loader defect and deliberately not repaired here.
+  // The property G2 must hold still holds: a failed load never renders a summary of zeroes.
+  const page = code(ORDERS_TSX);
+  assert.match(page, /void loadAll\(\);/, "the existing call shape is untouched");
+  assert.equal((page.match(/async function loadAll/g) ?? []).length, 1);
+});
+
 test("the existing setup-state degradations still gate both tabs", () => {
   // No Supabase, and missing-table, both early-return before any tab renders -- offering a Summary
   // tab when the orders table does not exist would be a link to nothing.
@@ -289,17 +299,57 @@ test("the default order list remains reachable and its workflow unchanged", () =
   assert.match(page, /id="orders"/);
 });
 
-test("tabs are real links guarded by the existing unsaved-order prompt", () => {
+test("tabs are real anchors pointing at the canonical tab URLs", () => {
   const page = code(ORDERS_TSX);
   // Anchors, not local state: hidden useState would disagree with ?tab= on reload and break
-  // back/forward. This mirrors AppShell's own navigation guard exactly.
+  // back/forward.
+  assert.match(page, /<a\b/);
   assert.match(page, /href=\{item\.href\}/);
   assert.match(page, /ordersTabs\.map/);
-  assert.match(page, /function handleTabClick/);
-  assert.match(page, /isDirty && !window\.confirm\(UNSAVED_ORDER_MESSAGE\)/);
-  assert.match(page, /event\.preventDefault\(\)/);
+  // The hrefs themselves come from the tab contract, and are the two canonical URLs.
+  assert.deepEqual(ordersTabs.map((tab) => tab.href), ["/orders", "/orders?tab=summary"]);
   // Both views show the bar, so the operator can always get back.
   assert.equal((page.match(/\{tabBar\}/g) ?? []).length, 2);
+});
+
+test("the tab bar adds no local tab state", () => {
+  const page = code(ORDERS_TSX);
+  // The active tab is whatever the URL resolved to. A useState copy could disagree with ?tab= after
+  // a reload or a back-navigation, which is exactly the desync the anchor architecture avoids.
+  assert.equal(/useState<OrdersTab>/.test(page), false);
+  assert.equal(/setOrdersTab|setActiveTab|setSelectedTab/.test(page), false);
+  assert.match(page, /initialOrdersTab === item\.key/, "active styling reads the resolved tab");
+  assert.match(page, /if \(initialOrdersTab === "summary"\) \{/, "the view is chosen from the resolved tab");
+});
+
+test("the tab bar installs no second unsaved-changes guard", () => {
+  // These are real document navigations, so the beforeunload handler useUnsavedChangesGuard already
+  // installs fires on a tab click by itself. A window.confirm here as well would stack two
+  // independent guards on one navigation and prompt the operator twice for the same decision.
+  const page = code(ORDERS_TSX);
+  assert.equal(page.includes("handleTabClick"), false, "the G2-specific click guard must be gone");
+  // The tab anchors carry no click handler at all.
+  const tabBar = page.slice(page.indexOf("const tabBar = ("), page.indexOf("if (initialOrdersTab === \"summary\")"));
+  assert.equal(tabBar.length > 0, true, "precondition: tab bar block located");
+  assert.equal(tabBar.includes("onClick"), false, "tab anchors must have no onClick");
+  assert.equal(tabBar.includes("window.confirm"), false, "the tab bar must not prompt");
+  assert.equal(tabBar.includes("preventDefault"), false);
+  // Scoped to the tab bar, NOT the file: the paid-cancel confirmation has shipped since S3 and is a
+  // different decision on a different action. Removing prompts wholesale is not the correction.
+  assert.match(page, /window\.confirm\(PAID_CANCEL_PROMPT\)/, "the S3 paid-cancel prompt must survive");
+});
+
+test("the existing unsaved-changes guard remains intact in OrdersPage", () => {
+  // G2 removes its own prompt; it must not remove the protection. The hook is the single owner of
+  // unload guarding and is untouched by this slice.
+  const page = code(ORDERS_TSX);
+  assert.match(page, /useUnsavedChangesGuard\(isDirty, onDirtyChange\)/);
+  assert.match(page, /const isDirty =/);
+  assert.match(page, /import \{ useUnsavedChangesGuard \} from "@\/hooks\/use-unsaved-changes-guard"/);
+  // And the hook itself is not modified by G2 -- asserted by its content, not by trust.
+  const hook = code("src/hooks/use-unsaved-changes-guard.ts");
+  assert.match(hook, /addEventListener\("beforeunload", handleBeforeUnload\)/);
+  assert.match(hook, /onDirtyChange\?\.\(isDirty\)/);
 });
 
 test("G2 adds no main-navigation destination", () => {
