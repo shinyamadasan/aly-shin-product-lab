@@ -249,6 +249,51 @@ test("a conditional update matching zero rows reports a conflict and overwrites 
   assert.equal(result.currentOrder?.status, "cancelled");
 });
 
+test("a payment conditional update matching zero rows reports a conflict and overwrites nothing", async () => {
+  // M3 from the PR #34 adversarial review. updatePaymentStatus implements the same optimistic-
+  // concurrency pattern as updateOrderStatus, but only the lifecycle conflict outcome was covered --
+  // leaving an untested branch in financial code. This is that branch.
+  //
+  // Scenario: this caller reads an unpaid order and starts marking it paid for 960. A competing
+  // writer records a 240 cash payment first, so this caller's conditional update matches zero rows.
+  const COMPETING_PAID_AT = "2026-08-09T05:00:00.000Z";
+  const client = createStubClient({
+    persisted: orderRow({ payment_status: "unpaid" }),
+    updateMatches: false,
+    afterConflict: orderRow({ payment_status: "paid", paid_at: COMPETING_PAID_AT, paid_amount: 240, payment_method: "cash" }),
+  });
+
+  const result = await updatePaymentStatus(client, {
+    orderId: ORDER_ID,
+    action: { kind: "mark-paid", method: "gcash", lines: [line({ unitPrice: 480, quantity: 2 })] },
+    now: NOW,
+  });
+
+  // No false success.
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "conflict");
+  assert.match(result.message, /changed while you were looking at it/i);
+
+  // The guard was on the payment column, using the value this caller actually read.
+  assert.deepEqual(client.updates[0].predicates, [
+    ["id", ORDER_ID],
+    ["payment_status", "unpaid"],
+  ]);
+
+  // The re-read hands back the competing writer's real payment state, so the UI can resync.
+  assert.equal(result.currentOrder?.paymentStatus, "paid");
+  assert.equal(result.currentOrder?.paidAmount, 240);
+  assert.equal(result.currentOrder?.paidAt, COMPETING_PAID_AT);
+  assert.equal(result.currentOrder?.paymentMethod, "cash");
+
+  // Nothing from THIS caller's losing mutation may be treated as persisted -- not the amount it
+  // would have frozen, not its timestamp, not its method.
+  assert.notEqual(result.currentOrder?.paidAmount, 960);
+  assert.notEqual(result.currentOrder?.paidAt, NOW);
+  assert.notEqual(result.currentOrder?.paymentMethod, "gcash");
+});
+
 test("a payment update is guarded on the expected payment_status", async () => {
   const client = createStubClient({ persisted: orderRow({ payment_status: "unpaid" }) });
   await updatePaymentStatus(client, { orderId: ORDER_ID, action: { kind: "mark-paid", method: "gcash", lines: [line()] }, now: NOW });
