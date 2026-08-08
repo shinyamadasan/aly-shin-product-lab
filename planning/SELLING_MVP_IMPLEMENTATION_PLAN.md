@@ -47,6 +47,52 @@ npm run lint      1 error, 0 warnings
 
 The 2 failures are both in `tests/creative-package-asset-create.test.ts` (`[static] … resolveBrief`, `[static] … uploadImage`) and are the CRLF line-ending fixture artifact documented in `planning/BUSINESS_CONTEXT_BUILDER_M1-IMPLEMENTATION-PLAN.md` §2.2 — not code defects. The 1 lint error is pre-existing at `main`: `src/components/bake-page.tsx:58`, `react-hooks/set-state-in-effect`. **The acceptance gate for every Selling slice is exactly these 2 test failures, 0 type errors, and exactly this 1 lint error — never "all green."** None of the three is to be fixed by Selling work.
 
+> ### ⚠ Environment-specific baseline note — measured 2026-08-08 during S7 PR-G1
+>
+> **The known-failure count is environment-dependent. It is not universally 4.**
+>
+> On the **Windows / `core.autocrlf` checkout** this work was done in, a clean `origin/main`
+> @ `b35b488` — no S7 files present, `git status` clean — produces:
+>
+> ```
+> npm test          2103 tests · 2098 pass · 4 fail · 1 skipped
+> npx tsc --noEmit  0 errors
+> npm run lint      1 error, 0 warnings          (unchanged: bake-page.tsx:58)
+> ```
+>
+> Of those four:
+>
+> - **Two are the previously known fixture failures** in `tests/creative-package-asset-create.test.ts`
+>   (`[static] … resolveBrief`, `[static] … uploadImage`) — the artifact already documented above.
+> - **Two are additional line-ending-sensitive S9 static tests**:
+>
+>   | Test | File it reads |
+>   |---|---|
+>   | `no website-user credential can reach client code` (`tests/public-order-form.test.ts`) | `src/components/public-order-form.tsx` |
+>   | `the server credential module is server-only and its secrets are not public` (`tests/public-submission.test.ts`) | `src/lib/supabase-server.ts` |
+>
+>   Both perform an anchored first-line match such as `/^"use client";$/` and receive
+>   `'"use client";\r'`. The files are committed with LF and rewritten with CRLF **in the working
+>   tree** by autocrlf on checkout; `file src/components/public-order-form.tsx` reports *"with CRLF
+>   line terminators"*.
+>
+> **This is a checkout artifact, not a security regression and not a code defect.** The server-only
+> boundary is unchanged and still verified in Production. **An LF checkout or a CI runner may
+> continue to show only the original 2 failures** — that is expected, not a discrepancy to
+> reconcile, and neither count should be hardcoded as *the* repository baseline.
+>
+> **The acceptance rule is therefore comparative, not absolute: a Selling slice must add zero new
+> failures relative to a clean `origin/main` run in the same environment**, alongside 0 type errors
+> and the single known lint error. Measure the baseline in your own environment before judging a
+> slice; do not carry a number across environments.
+>
+> Proven pre-existing rather than assumed: both tests fail identically with every S7 file removed and
+> the tree clean. S7 PR-G1 reports **2138 · 2133 pass · 4 fail · 1 skip** in this environment —
+> exactly +35 tests and +35 passes, zero new failures.
+>
+> **Not fixed in G1.** The repair is a repo-wide `.gitattributes` / renormalisation change touching
+> S9 files, out of scope for a Selling read-layer slice and deserving its own review.
+
 ---
 
 ## Context
