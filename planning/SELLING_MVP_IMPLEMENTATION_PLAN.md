@@ -508,6 +508,30 @@ Three properties follow, and each answers one review finding:
 
 A `selling` domain adapter under `src/lib/business-context/adapters/` reads raw rows with nullability preserved and publishes `Fact<T>` values: `grossRevenueToDate`, `netRevenueThisWeek`, `unpaidOrderValue`, `orderCountByStatus`, `unitsByProduct`, `piecesByProduct`, `orderCountBySource`, `repeatCustomerCount`.
 
+> **⚠ OWNER-APPROVED DEVIATION — the fact list above is superseded. Approved 2026-08-08, implemented in S8.**
+>
+> The eight facts named here were specified before S7 existed and before S9 revealed the repeat-buyer
+> defect. S8 ships a different set, explicitly approved by the owner rather than absorbed silently:
+>
+> | Frozen fact | S8 disposition |
+> |---|---|
+> | `grossRevenueToDate` | Replaced by `grossPaidRevenueToday` + `grossPaidRevenueRolling7d`. Computable, but outside the shared S7 summary boundary; publishing it would mean adding aggregation that exists only for S8 |
+> | `netRevenueThisWeek` | Replaced by `netRevenueRolling7d` — S7's window is a rolling 7 days ending today, not a calendar week, so the frozen name would misdescribe it |
+> | `unpaidOrderValue` | Kept as `unpaidReceivableValue`, renamed so it can never be read as revenue |
+> | `orderCountByStatus` | Replaced by five named operational counts: `newAwaitingConfirmation`, `confirmedNeedingScheduling`, `readyForHandover`, `remainingHandoversToday`, `overdueHandovers` |
+> | `unitsByProduct` / `piecesByProduct` | **Deferred.** S7 computes them truthfully including the null-pack-size rule; held back because a collection fact adds per-member provenance obligations |
+> | `orderCountBySource` | Kept as `orderCountBySourceRolling7d`, normalized to a complete keyed object |
+> | `repeatCustomerCount` | **Excluded.** S9 derives a customer id per logical public order, so every public customer has exactly one order; the metric undercounts and worsens as the channel grows |
+>
+> Added with no frozen counterpart: `ordersPlacedToday`, `ordersPlacedRolling7d`, and the two
+> sanitized provenance basis facts `orderBasis` / `orderLineBasis` that the existing Business Context
+> provenance invariants require.
+>
+> **The three disciplines below are unchanged and were implemented as written.** So is every §6
+> financial semantic: gross is the frozen `paid_amount` selected by `paid_at` with no lifecycle
+> filter, refunds are dated by `refunded_at`, and the receivable is never revenue. S8 reuses
+> `buildSellingSummary` rather than re-implementing any of them.
+
 Three disciplines carry over unchanged from M1:
 
 - **`paid_amount` null ⇒ the order simply is not in the paid set.** No `known(0)`, no imputation.

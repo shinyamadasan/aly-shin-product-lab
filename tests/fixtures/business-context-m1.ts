@@ -9,6 +9,7 @@ import type {
   ProductRow,
   TastingFeedbackRow,
 } from "../../src/lib/supabase-mappers.ts";
+import type { OrderLineRow, OrderRow } from "../../src/lib/orders/types.ts";
 
 // The committed M1 fixture business. Synthetic but representative, and chosen so that one build
 // exercises every interesting state the milestone can produce.
@@ -482,13 +483,82 @@ const transactions: InventoryTransactionRow[] = [
   },
 ];
 
+// --- Selling (S8) --------------------------------------------------------------------------------
+//
+// Four orders, chosen so one build exercises the invariants most worth protecting rather than every
+// fact -- the focused adapter suite covers each of the fourteen exhaustively, and a smaller golden
+// stays reviewable.
+//
+// Manila is UTC+8 and FIXTURE_NOW is 2026-08-08T20:00Z, so "today" is 2026-08-09 Manila, which
+// begins at 2026-08-08T16:00Z. The rolling window is 2026-08-03..2026-08-09.
+//
+// Raw rows on purpose: the Selling adapter's evidence basis is projected from these, not from the
+// mapped models, so a malformed value would stay visible rather than being normalised away.
+const orders: OrderRow[] = [
+  {
+    // Paid today. Ordinary revenue.
+    id: "fixture-order-paid", customer_id: "fixture-customer-1", status: "completed", payment_status: "paid",
+    payment_method: "gcash", paid_at: "2026-08-08T18:00:00.000Z", paid_amount: 480, refunded_at: null,
+    fulfillment_method: "pickup", fulfillment_at: "2026-08-08T18:00:00.000Z", fulfillment_address: "", fulfillment_notes: "",
+    source: "instagram", source_ref: "", entry_method: "manual", notes: "", placed_at: "2026-08-08T17:00:00.000Z",
+    completed_at: "2026-08-08T18:30:00.000Z", cancelled_at: null, cancel_reason: "",
+    created_at: "2026-08-08T17:00:00.000Z", updated_at: "2026-08-08T18:30:00.000Z",
+  },
+  {
+    // CANCELLED AND PAID. The single most important row here: it must still contribute to gross
+    // revenue, because cancelling changes what you are owed, never what you received.
+    id: "fixture-order-cancelled-paid", customer_id: "fixture-customer-2", status: "cancelled", payment_status: "paid",
+    payment_method: "cash", paid_at: "2026-08-08T17:00:00.000Z", paid_amount: 240, refunded_at: null,
+    fulfillment_method: "pickup", fulfillment_at: null, fulfillment_address: "", fulfillment_notes: "",
+    source: "facebook", source_ref: "", entry_method: "manual", notes: "", placed_at: "2026-08-08T16:30:00.000Z",
+    completed_at: null, cancelled_at: "2026-08-08T19:00:00.000Z", cancel_reason: "Customer could not collect.",
+    created_at: "2026-08-08T16:30:00.000Z", updated_at: "2026-08-08T19:00:00.000Z",
+  },
+  {
+    // Paid earlier in the window, refunded today: the refund lands in today's period and must NOT
+    // rewrite the day the money arrived.
+    id: "fixture-order-refunded", customer_id: "fixture-customer-3", status: "completed", payment_status: "refunded",
+    payment_method: "bank_transfer", paid_at: "2026-08-05T02:00:00.000Z", paid_amount: 900,
+    refunded_at: "2026-08-08T19:30:00.000Z",
+    fulfillment_method: "pickup", fulfillment_at: "2026-08-05T03:00:00.000Z", fulfillment_address: "", fulfillment_notes: "",
+    source: "instagram", source_ref: "", entry_method: "manual", notes: "", placed_at: "2026-08-05T01:00:00.000Z",
+    completed_at: "2026-08-05T03:30:00.000Z", cancelled_at: null, cancel_reason: "",
+    created_at: "2026-08-05T01:00:00.000Z", updated_at: "2026-08-08T19:30:00.000Z",
+  },
+  {
+    // Made, unpaid, and due today -- the receivable, the ready count, and the remaining handover all
+    // come from this one. `source` is null so the adapter's basis records the absence rather than
+    // the mapper's "unknown" substitution.
+    id: "fixture-order-ready", customer_id: "fixture-customer-4", status: "ready", payment_status: "unpaid",
+    payment_method: null, paid_at: null, paid_amount: null, refunded_at: null,
+    fulfillment_method: "pickup", fulfillment_at: "2026-08-09T02:00:00.000Z", fulfillment_address: "", fulfillment_notes: "",
+    source: null, source_ref: "", entry_method: "website", notes: "", placed_at: "2026-08-07T05:00:00.000Z",
+    completed_at: null, cancelled_at: null, cancel_reason: "",
+    created_at: "2026-08-07T05:00:00.000Z", updated_at: "2026-08-08T01:00:00.000Z",
+  },
+];
+
+// Only the unpaid order carries lines here, so the receivable has exactly one source and the golden
+// stays small. 2 x 300 + 1 x 180 = 780.
+const orderLines: OrderLineRow[] = [
+  {
+    id: "fixture-line-1", order_id: "fixture-order-ready", product_id: "brownies", selling_format_id: null,
+    item_name: "Brownie box of 6", unit_price: 300, pieces_per_unit_snapshot: 6, quantity: 2, sort_order: 0, note: "",
+  },
+  {
+    id: "fixture-line-2", order_id: "fixture-order-ready", product_id: "cookies", selling_format_id: null,
+    item_name: "Cookie pack", unit_price: 180, pieces_per_unit_snapshot: null, quantity: 1, sort_order: 1, note: "",
+  },
+];
+
 // The read results the envelope builder consumes. Reading is I/O and happens at the edge; the
-// fixture stands in for a successful read of every M1 table.
+// fixture stands in for a successful read of every table the builder's domains need.
 export function fixtureReads(): M1DomainReadResults {
   return {
     costing: { ok: true, rows: { costings, entries: costingEntries } },
     inventory: { ok: true, rows: { ingredients, transactions } },
     readiness: { ok: true, rows: { products, batches, costings, tastings } },
+    selling: { ok: true, rows: { orders, lines: orderLines } },
   };
 }
 

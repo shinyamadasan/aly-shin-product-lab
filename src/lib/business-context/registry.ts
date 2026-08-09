@@ -16,6 +16,12 @@ import {
   READINESS_ADAPTER_VERSION,
   type ReadinessRows,
 } from "./adapters/readiness.ts";
+import {
+  buildSellingDomainContext,
+  buildSellingDomainContextFromFailure,
+  SELLING_ADAPTER_VERSION,
+  type SellingRows,
+} from "./adapters/selling.ts";
 import { DOMAIN_IDS } from "./types.ts";
 import type { BuildEnv, DomainContext, DomainId, ReadOutcome } from "./types.ts";
 
@@ -38,10 +44,17 @@ export type DomainBuilder<TRows> = {
 };
 
 // The row shapes each registered domain expects from its reader.
+//
+// The `M1` prefix on this type and on M1_DOMAIN_IDS / M1DomainId is HISTORICAL. It named the three
+// domains the first milestone shipped; since S8 added `selling` it means simply "the domains the
+// canonical builder actually builds", as distinct from the wider vocabulary DOMAIN_IDS declares.
+// The names are kept rather than renamed because a rename would touch every core file and every
+// test for no behavioural gain.
 export type M1DomainRows = {
   costing: CostingRows;
   inventory: InventoryRows;
   readiness: ReadinessRows;
+  selling: SellingRows;
 };
 
 export type M1DomainId = keyof M1DomainRows;
@@ -69,14 +82,25 @@ export const READINESS_BUILDER: DomainBuilder<ReadinessRows> = {
   buildFromFailure: buildReadinessDomainContextFromFailure,
 };
 
-// The three domains M1 implements. The other eleven are declared in DOMAIN_IDS and reported absent.
+export const SELLING_BUILDER: DomainBuilder<SellingRows> = {
+  domain: "selling",
+  version: SELLING_ADAPTER_VERSION,
+  build: buildSellingDomainContext,
+  buildFromFailure: buildSellingDomainContextFromFailure,
+};
+
+// The four domains the builder implements. The other eleven are declared in DOMAIN_IDS and reported
+// absent.
 export const M1_DOMAIN_BUILDERS = {
   costing: COSTING_BUILDER,
   inventory: INVENTORY_BUILDER,
   readiness: READINESS_BUILDER,
+  selling: SELLING_BUILDER,
 } as const;
 
-export const M1_DOMAIN_IDS: readonly M1DomainId[] = ["costing", "inventory", "readiness"];
+// buildBusinessContext iterates THIS array, not DOMAIN_IDS. A domain added to the vocabulary but
+// missing here is declared-absent rather than built -- which is why S8 had to touch both.
+export const M1_DOMAIN_IDS: readonly M1DomainId[] = ["costing", "inventory", "readiness", "selling"];
 
 // Every domain the registry knows about, in declaration order. Derived from DOMAIN_IDS rather than
 // hand-listed, so a domain added to the vocabulary cannot be forgotten here.

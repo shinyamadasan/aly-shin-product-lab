@@ -7,6 +7,7 @@ import { CONTEXT_SCHEMA_VERSION, DOMAIN_IDS } from "../src/lib/business-context/
 import type { BuildEnv, DomainId, Signal } from "../src/lib/business-context/types.ts";
 import { getBlockers } from "../src/lib/business-context/selectors.ts";
 import type { CostingSummaryRow, IngredientRow, InventoryTransactionRow, ProductBatchRow, ProductRow, TastingFeedbackRow } from "../src/lib/supabase-mappers.ts";
+import type { OrderRow } from "../src/lib/orders/types.ts";
 
 const env: BuildEnv = { now: Date.parse("2026-08-09T02:00:00.000Z"), timezone: "Asia/Manila", businessDay: "2026-08-09", budgets: {} };
 
@@ -73,6 +74,17 @@ function tastingRow(): TastingFeedbackRow {
   };
 }
 
+function orderRow(): OrderRow {
+  return {
+    id: "order-1", customer_id: "customer-1", status: "completed", payment_status: "paid",
+    payment_method: "cash", paid_at: "2026-08-02T00:00:00.000Z", paid_amount: 100, refunded_at: null,
+    fulfillment_method: "pickup", fulfillment_at: null, fulfillment_address: "", fulfillment_notes: "",
+    source: "direct", source_ref: "", entry_method: "manual", notes: "", placed_at: "2026-08-02T00:00:00.000Z",
+    completed_at: "2026-08-02T00:00:00.000Z", cancelled_at: null, cancel_reason: "",
+    created_at: "2026-08-02T00:00:00.000Z", updated_at: "2026-08-02T00:00:00.000Z",
+  };
+}
+
 // One realistic M1 fixture: a costed product with a proof batch, a tasting, an ingredient, and a
 // purchase. Overrides let each test move exactly one thing.
 function reads(overrides: Partial<M1DomainReadResults> = {}): M1DomainReadResults {
@@ -80,6 +92,9 @@ function reads(overrides: Partial<M1DomainReadResults> = {}): M1DomainReadResult
     costing: { ok: true, rows: { costings: [costingRow()], entries: [] } },
     inventory: { ok: true, rows: { ingredients: [ingredientRow()], transactions: [transactionRow()] } },
     readiness: { ok: true, rows: { products: [productRow()], batches: [batchRow()], costings: [costingRow()], tastings: [tastingRow()] } },
+    // S8. One paid order is enough for the envelope-level tests here; the Selling adapter's own
+    // suite covers its facts exhaustively.
+    selling: { ok: true, rows: { orders: [orderRow()], lines: [] } },
     ...overrides,
   };
 }
@@ -111,14 +126,15 @@ test("integration: Costing, Inventory, and Readiness all build into one envelope
 
 // --- Integration proof 4: honest coverage --------------------------------------------------------
 
-test("integration: coverage names all 14 known domains and lists the 11 unbuilt ones honestly", async () => {
+test("integration: coverage names every known domain and lists the unbuilt ones honestly", async () => {
   const context = await build();
 
   assert.deepEqual([...context.coverage.knownDomains], [...KNOWN_DOMAIN_IDS]);
   assert.equal(context.coverage.knownDomains.length, DOMAIN_IDS.length);
-  assert.deepEqual([...context.coverage.present].sort(), ["costing", "inventory", "readiness"]);
+  assert.deepEqual([...context.coverage.present].sort(), [...M1_DOMAIN_IDS].sort());
 
-  assert.equal(context.coverage.absent.length, 11);
+  // Derived rather than hardcoded, so adding a domain does not silently invalidate the arithmetic.
+  assert.equal(context.coverage.absent.length, DOMAIN_IDS.length - M1_DOMAIN_IDS.length);
   for (const entry of context.coverage.absent) {
     assert.equal(entry.reason, ADAPTER_NOT_BUILT_REASON);
   }
@@ -293,6 +309,7 @@ test("integration: an empty business builds a complete, honest envelope rather t
       costing: { ok: true, rows: { costings: [], entries: [] } },
       inventory: { ok: true, rows: { ingredients: [], transactions: [] } },
       readiness: { ok: true, rows: { products: [], batches: [], costings: [], tastings: [] } },
+      selling: { ok: true, rows: { orders: [], lines: [] } },
     },
     env,
     dataSource: "sample",
@@ -301,7 +318,21 @@ test("integration: an empty business builds a complete, honest envelope rather t
 
   assert.equal(context.domains.costing?.facts.byCosting.state, "empty");
   assert.equal(context.domains.inventory?.facts.byIngredient.state, "empty");
+
+  // Selling on an empty-but-successful read: the two collection bases are `empty`, and every
+  // measurement is a real known(0). A business with no orders yet has genuinely taken ₱0 today --
+  // that is a fact, not an absence, and it must stay distinguishable from a failed read.
+  assert.equal(context.domains.selling?.facts.orderBasis.state, "empty");
+  assert.equal(context.domains.selling?.facts.orderLineBasis.state, "empty");
+  assert.deepEqual(context.domains.selling?.facts.grossPaidRevenueToday, {
+    state: "known",
+    value: 0,
+    source: { kind: "calculated", column: "paid_amount", computedBy: "buildSellingSummary", inputs: ["selling.facts.orderBasis"] },
+    confidence: "high",
+  });
+  assert.equal(context.domains.selling?.readOutcome.ok, true);
+
   assert.deepEqual(context.signals, [], "no costings means nothing to compare");
-  assert.deepEqual(getBlockers(context), []);
-  assert.equal(context.coverage.present.length, 3);
+  assert.deepEqual(getBlockers(context), [], "and Selling emits no signals at all");
+  assert.deepEqual([...context.coverage.present].sort(), [...M1_DOMAIN_IDS].sort());
 });
