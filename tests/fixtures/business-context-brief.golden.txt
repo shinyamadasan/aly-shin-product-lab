@@ -1,0 +1,504 @@
+# Aly & Pon — Business Context
+
+As of 2026-08-08T20:00:00.000Z · timezone Asia/Manila · business day 2026-08-09
+Data source: sample · context schema v1
+factsDigest 73a12a7b4225d13e021f8c13b0743b0c019962017f32612e4deaac6ad63082f6
+signalsDigest 71f86d92f8dbf53f24237b73218bf089b89d6a4f0402df48f5d64fbde1d8df3d
+
+## Domain coverage
+
+Available (4 of 15): costing · inventory · readiness · selling
+
+Not available (11):
+  products        — adapter not built yet
+  batches         — adapter not built yet
+  sellingFormats  — adapter not built yet
+  tasting         — adapter not built yet
+  supplies        — adapter not built yet
+  equipment       — adapter not built yet
+  journey         — adapter not built yet
+  opportunities   — adapter not built yet
+  creative        — adapter not built yet
+  brand           — adapter not built yet
+  aiReviews       — adapter not built yet
+
+## Data currency
+
+costing     source as of 2026-07-28T00:00:00.000Z
+            rows read 3, included 3, omitted 0 · adapter v1
+inventory   source as of 2026-08-08T18:00:00.000Z
+            rows read 6, included 6, omitted 0 · adapter v1
+readiness   source as of not known — Readiness is derived from other domains' tables and has no source rows of its own.
+            rows read 3, included 81, omitted 0 · adapter v1
+selling     source as of 2026-08-08T19:30:00.000Z
+            rows read 6, included 6, omitted 0 · adapter v1
+
+## Costing
+
+  byCosting (3)
+    - costingId: fixture-costing-brownies · productId: fixture-brownies
+      batchId                     fixture-batch-1
+      reviewedAt                  2026-08-08T09:00:00.000Z
+      ingredientCost              240
+      packagingCost               30
+      laborEstimate               120
+      waterCost                   4
+      gasCost                     12
+      ovenElectricCost            8
+      refrigerationCost           0
+      coffeeEquipmentCost         0
+      wasteAllowance              18
+      overheadCost                36
+      equipmentCost               12
+      suggestedPrice              60
+      costingYield                16  [inferred: Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value.]
+      targetFoodCost              0.32  [inferred: Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value.]
+      totalBatchCost              480
+      costPerPiece                30
+      grossProfit                 30
+      margin                      50
+      foodCostPercent             50
+      markup                      100
+      targetPrice                 93.75
+      variableCostPerPiece        27
+      contributionMarginPerPiece  33
+      breakEvenUnits              2
+      ingredientLineCount         2
+    - costingId: fixture-costing-cookies · productId: fixture-cookies
+      batchId                     fixture-batch-2
+      reviewedAt                  not known — Costing update timestamps were not maintained before 2026-08-07T18:32:04Z; this value is an insert default and does not record a review.
+      ingredientCost              90
+      packagingCost               0
+      laborEstimate               60
+      waterCost                   2
+      gasCost                     5
+      ovenElectricCost            3
+      refrigerationCost           0
+      coffeeEquipmentCost         0
+      wasteAllowance              6
+      overheadCost                12
+      equipmentCost               4
+      suggestedPrice              not set — suggested_price was never filled
+      costingYield                not known — No readable 'Costing yield:' line was found in this costing's notes.
+      targetFoodCost              not known — No readable target food cost was found in this costing's structured notes blob.
+      totalBatchCost              182
+      costPerPiece                not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      grossProfit                 not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      margin                      not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      foodCostPercent             not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      markup                      not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      targetPrice                 not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      variableCostPerPiece        not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      contributionMarginPerPiece  not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      breakEvenUnits              not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+      ingredientLineCount         0
+    - costingId: fixture-costing-cold-brew · productId: fixture-cold-brew
+      batchId                     not set — batch_id was never filled
+      reviewedAt                  2026-08-08T18:00:00.000Z
+      ingredientCost              150
+      packagingCost               45
+      laborEstimate               90
+      waterCost                   6
+      gasCost                     0
+      ovenElectricCost            0
+      refrigerationCost           12
+      coffeeEquipmentCost         0
+      wasteAllowance              9
+      overheadCost                24
+      equipmentCost               8
+      suggestedPrice              95
+      costingYield                10  [inferred: Parsed from free-text costing.notes with a line-anchored regex; no dedicated column exists for this value.]
+      targetFoodCost              not known — No readable target food cost was found in this costing's structured notes blob.
+      totalBatchCost              344
+      costPerPiece                34.4
+      grossProfit                 60.6
+      margin                      63.78947368421053
+      foodCostPercent             36.21052631578947
+      markup                      176.1627906976744
+      targetPrice                 0
+      variableCostPerPiece        31.2
+      contributionMarginPerPiece  63.8
+      breakEvenUnits              1
+      ingredientLineCount         0
+  costingCount                  3
+  yieldReadableCount            2
+
+## Inventory
+
+  byIngredient (6)
+    - ingredientId: fixture-ing-flour · name: Fixture Flour · baseUnit: g · isActive: true
+      currentQuantity             5000
+      lowStockThreshold           1000
+      targetStockQuantity         10000
+      averageUnitCost             0.08
+      stockStatus                 good
+      expirationStatus            good
+      nearestExpirationDate       2026-12-01
+      flaggedReason               not set — base_unit_migration_flagged_reason was never filled
+    - ingredientId: fixture-ing-milk · name: Fixture Milk · baseUnit: ml · isActive: true
+      currentQuantity             0
+      lowStockThreshold           500
+      targetStockQuantity         2000
+      averageUnitCost             0.06
+      stockStatus                 out
+      expirationStatus            not known — No expiration date is recorded for this ingredient, so its expiry state cannot be determined.
+      nearestExpirationDate       not set — nearest_expiration_date was never filled
+      flaggedReason               not set — base_unit_migration_flagged_reason was never filled
+    - ingredientId: fixture-ing-butter · name: Fixture Butter · baseUnit: g · isActive: true
+      currentQuantity             800
+      lowStockThreshold           200
+      targetStockQuantity         2000
+      averageUnitCost             0.5
+      stockStatus                 good
+      expirationStatus            expired
+      nearestExpirationDate       2026-08-06
+      flaggedReason               not set — base_unit_migration_flagged_reason was never filled
+    - ingredientId: fixture-ing-cocoa · name: Fixture Cocoa · baseUnit: g · isActive: true
+      currentQuantity             1200
+      lowStockThreshold           300
+      targetStockQuantity         3000
+      averageUnitCost             not set — average_unit_cost was never filled
+      stockStatus                 good
+      expirationStatus            not known — No expiration date is recorded for this ingredient, so its expiry state cannot be determined.
+      nearestExpirationDate       not set — nearest_expiration_date was never filled
+      flaggedReason               not set — base_unit_migration_flagged_reason was never filled
+    - ingredientId: fixture-ing-sugar · name: Fixture Sugar · baseUnit: g · isActive: true
+      currentQuantity             2500
+      lowStockThreshold           500
+      targetStockQuantity         5000
+      averageUnitCost             0.04
+      stockStatus                 good
+      expirationStatus            not known — No expiration date is recorded for this ingredient, so its expiry state cannot be determined.
+      nearestExpirationDate       not set — nearest_expiration_date was never filled
+      flaggedReason               Unrecognised legacy base_unit; needs manual reconciliation.
+    - ingredientId: fixture-ing-vanilla · name: Fixture Vanilla · baseUnit: ml · isActive: false
+      currentQuantity             0
+      lowStockThreshold           50
+      targetStockQuantity         200
+      averageUnitCost             2
+      stockStatus                 out
+      expirationStatus            not known — No expiration date is recorded for this ingredient, so its expiry state cannot be determined.
+      nearestExpirationDate       not set — nearest_expiration_date was never filled
+      flaggedReason               not set — base_unit_migration_flagged_reason was never filled
+  summaryCounts                 lowCount 0 · outCount 1 · expiringCount 1
+  needToBuy (1)
+    - ingredientId: fixture-ing-milk · name: Fixture Milk · status: out · suggestedBuyQuantity: 2000 · baseUnit: ml
+  totalInventoryValue           not known — 1 ingredient(s) could not be converted to a canonical unit, so any total that includes them is not meaningful.
+  flaggedIngredientCount        1
+  latestPurchaseAt              2026-08-08T12:00:00.000Z
+
+## Readiness
+
+  This domain publishes no facts by design; its findings appear in the signal sections below (81 signal(s)).
+
+## Selling
+
+  ordersPlacedToday             2
+  ordersPlacedRolling7d         4
+  grossPaidRevenueToday         720
+  grossPaidRevenueRolling7d     1620
+  refundsRolling7d              900
+  netRevenueRolling7d           720
+  unpaidActiveOrderCount        1
+  unpaidReceivableValue         780
+  newAwaitingConfirmation       0
+  confirmedNeedingScheduling    0
+  readyForHandover              1
+  remainingHandoversToday       1
+  overdueHandovers              0
+  orderCountBySourceRolling7d   unknown 1 · facebook 1 · instagram 2 · tiktok 0 · messenger 0 · website 0 · referral 0 · direct 0
+
+  Not shown: orderBasis, orderLineBasis — per-order evidence roots held as provenance for the figures above, deliberately not reproduced here.
+
+## Blockers (getBlockers)
+
+  [inventory.outOfStock] ingredient fixture-ing-milk — blocker · fail
+    Fixture Milk is out of stock.
+    Recommendation: Restock Fixture Milk before the next bake that needs it.
+  [inventory.expiring] ingredient fixture-ing-butter — blocker · fail
+    Fixture Butter expired on 2026-08-06.
+    Recommendation: Use or replace Fixture Butter.
+  [DEV-002] product fixture-brownies — blocker · fail
+    2 tasting(s) logged, average rating 8.0/10 -- need 5+ at 8+ average.
+    Recommendation: Get 3 more independent tastings on the current recipe version.
+  [SUP-001] product fixture-brownies — blocker · fail
+    No supply record matches: Fixture Flour.
+    Recommendation: Log a real purchase in Purchases for each missing ingredient, or confirm a manual cost override is intentional.
+  [FIN-005] product fixture-cookies — blocker · fail
+    No selling price has been set.
+    Recommendation: Enter a selling price on the Costing page.
+  [PROD-001] product fixture-cookies — blocker · fail
+    No yield set for this costing.
+    Recommendation: Enter the batch yield (sellable pieces) this costing is based on.
+  [DEV-001] product fixture-cold-brew — blocker · fail
+    No proof batches logged yet.
+    Recommendation: Run a real kitchen test and log it on Proof Day.
+
+## Other signals
+
+  [inventory.flagged] ingredient fixture-ing-sugar — warning · fail
+    Fixture Sugar could not be converted to a canonical unit and needs manual reconciliation.
+    Recommendation: Reconcile Fixture Sugar's unit and quantity by hand, then clear its migration flag.
+  [FIN-001] product fixture-brownies — blocker · pass
+    Margin is 50.0% at the current price.
+    Recommendation: No action needed.
+  [FIN-002] product fixture-brownies — warning · fail
+    Food cost is 50.0% against a 32.0% target -- 18.0 points over.
+    Recommendation: Reduce ingredient cost, renegotiate a supplier price, or reconsider whether the target is realistic.
+  [FIN-003] product fixture-brownies — warning · pass
+    Labor cost is PHP 120.00.
+    Recommendation: No action needed.
+  [FIN-004] product fixture-brownies — warning · pass
+    Overhead is PHP 36.00.
+    Recommendation: No action needed.
+  [FIN-005] product fixture-brownies — blocker · pass
+    Selling price is PHP 60.00.
+    Recommendation: No action needed.
+  [FIN-006] product fixture-brownies — warning · pass
+    2 pieces need to sell to cover this batch's overhead and equipment allocation.
+    Recommendation: Compare against typical order volume for this product; revisit price or overhead allocation if it's consistently out of reach.
+  [PROD-001] product fixture-brownies — blocker · pass
+    Yield is set to 16 pieces.
+    Recommendation: No action needed.
+  [PROD-003] product fixture-brownies — info · pass
+    Waste allowance is 7.5% of ingredient cost; real reject rate across logged batches is 11.1%.
+    Recommendation: No action needed.
+  [PROD-004] product fixture-brownies — warning · pass
+    V2 logged 80 total prep/bake/cool minutes.
+    Recommendation: No action needed.
+  [DEV-001] product fixture-brownies — blocker · pass
+    1 proof batch(es) logged.
+    Recommendation: No action needed.
+  [DEV-006] product fixture-brownies — info · pass
+    V2 has taste notes logged.
+    Recommendation: No action needed.
+  [QUAL-001] product fixture-brownies — warning · pass
+    2 time-separated tasting checkpoints logged.
+    Recommendation: No action needed.
+  [QUAL-002] product fixture-brownies — warning · fail
+    Packaging cost is PHP 30.00, but no test note confirms it holds up under real delivery/storage conditions.
+    Recommendation: Run a packaging stress test (see ai-review/knowledge/packaging.md) and log the result in a packaging note.
+  [QUAL-004] product fixture-brownies — info · pass
+    V2 has a texture note logged.
+    Recommendation: No action needed.
+  [QUAL-005] product fixture-brownies — blocker · pass
+    No time/temperature-sensitive ingredient detected in the current formula.
+    Recommendation: No action needed.
+  [SUP-004] product fixture-brownies — info · pass
+    No load-bearing ingredient relies on a single supplier.
+    Recommendation: No action needed.
+  [FIN-003] product fixture-cookies — warning · pass
+    Labor cost is PHP 60.00.
+    Recommendation: No action needed.
+  [FIN-004] product fixture-cookies — warning · pass
+    Overhead is PHP 12.00.
+    Recommendation: No action needed.
+  [PROD-004] product fixture-cookies — warning · fail
+    V1 has no prep/bake/cool time logged.
+    Recommendation: Log prep, bake, and cooling minutes for this batch.
+  [DEV-001] product fixture-cookies — blocker · pass
+    1 proof batch(es) logged.
+    Recommendation: No action needed.
+  [DEV-006] product fixture-cookies — info · fail
+    V1 has no taste notes logged.
+    Recommendation: Add a short taste/texture note and a next-step note for this batch.
+  [QUAL-004] product fixture-cookies — info · fail
+    No explicit texture note for V1.
+    Recommendation: Add a texture-specific note next time this formula is tasted.
+  [QUAL-005] product fixture-cookies — blocker · pass
+    No time/temperature-sensitive ingredient detected in the current formula.
+    Recommendation: No action needed.
+  [FIN-001] product fixture-cold-brew — blocker · pass
+    Margin is 63.8% at the current price.
+    Recommendation: No action needed.
+  [FIN-003] product fixture-cold-brew — warning · pass
+    Labor cost is PHP 90.00.
+    Recommendation: No action needed.
+  [FIN-004] product fixture-cold-brew — warning · pass
+    Overhead is PHP 24.00.
+    Recommendation: No action needed.
+  [FIN-005] product fixture-cold-brew — blocker · pass
+    Selling price is PHP 95.00.
+    Recommendation: No action needed.
+  [FIN-006] product fixture-cold-brew — warning · pass
+    1 pieces need to sell to cover this batch's overhead and equipment allocation.
+    Recommendation: Compare against typical order volume for this product; revisit price or overhead allocation if it's consistently out of reach.
+  [PROD-001] product fixture-cold-brew — blocker · pass
+    Yield is set to 10 pieces.
+    Recommendation: No action needed.
+  [QUAL-002] product fixture-cold-brew — warning · fail
+    Packaging cost is PHP 45.00, but no test note confirms it holds up under real delivery/storage conditions.
+    Recommendation: Run a packaging stress test (see ai-review/knowledge/packaging.md) and log the result in a packaging note.
+  [costing.staleVsPurchases] costing fixture-costing-brownies — warning · fail
+    This costing has not been reviewed since the latest recorded ingredient purchase.
+    Recommendation: Review this costing against current ingredient prices.
+  [costing.staleVsPurchases] costing fixture-costing-cold-brew — warning · pass
+    This costing was reviewed after the latest recorded ingredient purchase.
+    Recommendation: No action needed.
+
+## Could not be evaluated (insufficient data)
+
+  These could not be evaluated. That is "we did not look", not "the business is broken".
+
+  [FIN-007] product fixture-brownies — warning · insufficient_data
+    No standalone target margin % is tracked separately from target food cost % yet.
+    Recommendation: See FIN-002 (Food Cost %) -- margin and the food cost target are the same underlying check today.
+  [PROD-002] product fixture-brownies — warning · insufficient_data
+    Only 1 batch(es) logged -- not enough history to judge yield consistency.
+    Recommendation: Log more proof batches for this product.
+  [PROD-005] product fixture-brownies — warning · insufficient_data
+    Not enough logged issues yet to judge repeatability.
+    Recommendation: Log a 'what went wrong' note per batch.
+  [DEV-003] product fixture-brownies — info · insufficient_data
+    Only one batch logged -- no version history to compare yet.
+    Recommendation: Log a second batch to see progression.
+  [DEV-004] product fixture-brownies — info · insufficient_data
+    No structured experiment record exists to check completion against.
+    Recommendation: Use the Observation/Hypothesis/.../Conclusion structure in ai-review/workflows/product-experiment-design.md and log the result in the batch's notes.
+  [DEV-005] product fixture-brownies — info · insufficient_data
+    Only one batch logged -- not enough history to judge whether the recipe is locked.
+    Recommendation: Log another batch with no formula changes to confirm stability.
+  [QUAL-003] product fixture-brownies — blocker · insufficient_data
+    Baked goods is not a temperature-sensitive category -- this rule does not apply.
+    Recommendation: No action needed.
+  [SUP-002] product fixture-brownies — warning · insufficient_data
+    No matching supply records to check staleness against.
+    Recommendation: See SUP-001.
+  [SUP-003] product fixture-brownies — warning · insufficient_data
+    Fewer than 2 purchases on file for any formula ingredient -- nothing to compare yet.
+    Recommendation: Log purchases over time to enable this check.
+  [FIN-001] product fixture-cookies — blocker · insufficient_data
+    Cost per piece is unavailable because yield is missing -- margin can't be checked yet.
+    Recommendation: Enter the batch yield on the Costing page (see PROD-001).
+  [FIN-002] product fixture-cookies — warning · insufficient_data
+    Food cost % is unavailable because yield is missing.
+    Recommendation: Enter the batch yield first.
+  [FIN-006] product fixture-cookies — warning · insufficient_data
+    Break-even can't be calculated because yield is missing.
+    Recommendation: Enter the batch yield first.
+  [FIN-007] product fixture-cookies — warning · insufficient_data
+    No standalone target margin % is tracked separately from target food cost % yet.
+    Recommendation: See FIN-002 (Food Cost %) -- margin and the food cost target are the same underlying check today.
+  [PROD-002] product fixture-cookies — warning · insufficient_data
+    Only 1 batch(es) logged -- not enough history to judge yield consistency.
+    Recommendation: Log more proof batches for this product.
+  [PROD-003] product fixture-cookies — info · insufficient_data
+    No batch output logged yet to compare waste allowance against.
+    Recommendation: Log usable and imperfect pieces per batch.
+  [PROD-005] product fixture-cookies — warning · insufficient_data
+    Not enough logged issues yet to judge repeatability.
+    Recommendation: Log a 'what went wrong' note per batch.
+  [DEV-002] product fixture-cookies — blocker · insufficient_data
+    No tasting feedback logged yet.
+    Recommendation: Log tasting feedback for the current recipe version.
+  [DEV-003] product fixture-cookies — info · insufficient_data
+    Only one batch logged -- no version history to compare yet.
+    Recommendation: Log a second batch to see progression.
+  [DEV-004] product fixture-cookies — info · insufficient_data
+    No structured experiment record exists to check completion against.
+    Recommendation: Use the Observation/Hypothesis/.../Conclusion structure in ai-review/workflows/product-experiment-design.md and log the result in the batch's notes.
+  [DEV-005] product fixture-cookies — info · insufficient_data
+    Only one batch logged -- not enough history to judge whether the recipe is locked.
+    Recommendation: Log another batch with no formula changes to confirm stability.
+  [QUAL-001] product fixture-cookies — warning · insufficient_data
+    No shelf-life checkpoint beyond initial tasting exists.
+    Recommendation: Run the shelf-life experiment in ai-review/workflows/product-experiment-design.md.
+  [QUAL-002] product fixture-cookies — warning · insufficient_data
+    No packaging cost recorded yet.
+    Recommendation: Add packaging cost on the Costing page.
+  [QUAL-003] product fixture-cookies — blocker · insufficient_data
+    Baked goods is not a temperature-sensitive category -- this rule does not apply.
+    Recommendation: No action needed.
+  [SUP-001] product fixture-cookies — blocker · insufficient_data
+    No formula logged yet.
+    Recommendation: Record a proof batch with a formula first.
+  [SUP-002] product fixture-cookies — warning · insufficient_data
+    No formula logged yet.
+    Recommendation: Record a proof batch with a formula first.
+  [SUP-003] product fixture-cookies — warning · insufficient_data
+    Fewer than 2 purchases on file for any formula ingredient -- nothing to compare yet.
+    Recommendation: Log purchases over time to enable this check.
+  [SUP-004] product fixture-cookies — info · insufficient_data
+    No formula logged yet.
+    Recommendation: Record a proof batch with a formula first.
+  [FIN-002] product fixture-cold-brew — warning · insufficient_data
+    No target food cost % has been set for this costing.
+    Recommendation: Set a target food cost % on the Costing page to enable this check.
+  [FIN-007] product fixture-cold-brew — warning · insufficient_data
+    No standalone target margin % is tracked separately from target food cost % yet.
+    Recommendation: See FIN-002 (Food Cost %) -- margin and the food cost target are the same underlying check today.
+  [PROD-002] product fixture-cold-brew — warning · insufficient_data
+    Only 0 batch(es) logged -- not enough history to judge yield consistency.
+    Recommendation: Log more proof batches for this product.
+  [PROD-003] product fixture-cold-brew — info · insufficient_data
+    No batch output logged yet to compare waste allowance against.
+    Recommendation: Log usable and imperfect pieces per batch.
+  [PROD-004] product fixture-cold-brew — warning · insufficient_data
+    No batch logged yet.
+    Recommendation: Record a proof batch on Proof Day.
+  [PROD-005] product fixture-cold-brew — warning · insufficient_data
+    Not enough logged issues yet to judge repeatability.
+    Recommendation: Log a 'what went wrong' note per batch.
+  [DEV-002] product fixture-cold-brew — blocker · insufficient_data
+    No tasting feedback logged yet.
+    Recommendation: Log tasting feedback for the current recipe version.
+  [DEV-003] product fixture-cold-brew — info · insufficient_data
+    Only one batch logged -- no version history to compare yet.
+    Recommendation: Log a second batch to see progression.
+  [DEV-004] product fixture-cold-brew — info · insufficient_data
+    No structured experiment record exists to check completion against.
+    Recommendation: Use the Observation/Hypothesis/.../Conclusion structure in ai-review/workflows/product-experiment-design.md and log the result in the batch's notes.
+  [DEV-005] product fixture-cold-brew — info · insufficient_data
+    Only one batch logged -- not enough history to judge whether the recipe is locked.
+    Recommendation: Log another batch with no formula changes to confirm stability.
+  [DEV-006] product fixture-cold-brew — info · insufficient_data
+    No batch logged yet.
+    Recommendation: Record a proof batch on Proof Day.
+  [QUAL-001] product fixture-cold-brew — warning · insufficient_data
+    No shelf-life checkpoint beyond initial tasting exists.
+    Recommendation: Run the shelf-life experiment in ai-review/workflows/product-experiment-design.md.
+  [QUAL-003] product fixture-cold-brew — blocker · insufficient_data
+    No tasting feedback logged for this temperature-sensitive product yet.
+    Recommendation: Log a tasting that records delivery/storage conditions.
+  [QUAL-004] product fixture-cold-brew — info · insufficient_data
+    No batch logged yet.
+    Recommendation: Record a proof batch on Proof Day.
+  [QUAL-005] product fixture-cold-brew — blocker · insufficient_data
+    No batch logged yet.
+    Recommendation: Record a proof batch on Proof Day.
+  [SUP-001] product fixture-cold-brew — blocker · insufficient_data
+    No formula logged yet.
+    Recommendation: Record a proof batch with a formula first.
+  [SUP-002] product fixture-cold-brew — warning · insufficient_data
+    No formula logged yet.
+    Recommendation: Record a proof batch with a formula first.
+  [SUP-003] product fixture-cold-brew — warning · insufficient_data
+    Fewer than 2 purchases on file for any formula ingredient -- nothing to compare yet.
+    Recommendation: Log purchases over time to enable this check.
+  [SUP-004] product fixture-cold-brew — info · insufficient_data
+    No formula logged yet.
+    Recommendation: Record a proof batch with a formula first.
+  [costing.staleVsPurchases] costing fixture-costing-cookies — warning · insufficient_data
+    Freshness cannot be determined reliably for this costing: no dependable record exists of when it was last reviewed.
+    Recommendation: Re-open and save this costing to establish a reliable review time.
+
+## Notes and caveats
+
+  costing: Batch yield and target food cost are parsed from the free-text costing.notes column; no dedicated column exists for either, so both are reported as inferred.
+  costing: Costing review timestamps are only reliable from 2026-08-07T18:32:04Z; earlier rows report reviewedAt as unknown rather than substituting their creation time.
+  costing: sourceAsOf is the most recent costing record creation time, not a review time.
+  inventory: Expiration and stock states are anchored to 2026-08-09 in Asia/Manila, not to UTC.
+  inventory: Ingredients whose unit could not be migrated are reported as a data-integrity signal, and any inventory valuation that would include them is reported as unknown.
+  inventory: Purchase-import staging rows, ingredient aliases, and ledger actor names are deliberately excluded.
+  readiness: Supply-category results are insufficient_data because the Supplies domain is not part of this milestone -- not because the business lacks purchase history.
+  readiness: Selling Format data is not loaded in this milestone, so QUAL-002 reports insufficient_data for scope reasons rather than as a finding about packaging.
+  readiness: QUAL-001/002/003/005 are evaluated by keyword search over free text; their provenance is marked inferred and they must not be read as strongly as arithmetic checks.
+  readiness: Launch composite gates are not evaluated: includeLaunch is false, matching the Rule Engine's own default for routine evaluation.
+
+## What this snapshot does not know
+
+  11 of 15 declared domains have no adapter: products, batches, sellingFormats, tasting, supplies, equipment, journey, opportunities, creative, brand, aiReviews.
+
+  No canonical Product domain is available. Costing and Readiness above still refer to
+  products, but only by product ID — no product name, category, or description is in
+  this snapshot.
