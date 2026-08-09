@@ -40,6 +40,41 @@ function nullableNumber(value: number | null, column: string): Fact<number> {
   return { state: "known", value, source: source("entered", { column }) };
 }
 
+// base_unit_migration_flagged_reason is added by supabase-migrate-canonical-base-units.sql, a
+// migration that runs against an ALREADY EXISTING ingredients table. A project that has not run it
+// returns rows without the key at all, so `undefined` arrives here where IngredientRow promises
+// `string | null` -- the compiler cannot see it, so the guard has to be at runtime.
+//
+// Three different facts, and they must stay three:
+//   a string  -- the migration ran and flagged this ingredient, and this is why
+//   null      -- the migration ran and found nothing wrong with this ingredient
+//   undefined -- the migration has not run; we cannot say either way
+//
+// Collapsing the third into `unset` would claim the migration had cleared this ingredient, which is
+// the opposite of what is known. Collapsing it into `known(undefined)` would assert a value that
+// does not exist.
+//
+// Scope note: getFlaggedIngredients reads the MAPPED model, where mapIngredientRow already flattens
+// an absent column to null, so flaggedIngredientCount and the data-integrity signal keep their
+// existing behaviour. Only this fact is corrected.
+function flaggedReasonFact(flagged: string | null | undefined): Fact<string> {
+  const column = "base_unit_migration_flagged_reason";
+
+  if (flagged === undefined) {
+    return {
+      state: "unknown",
+      because: `The ${column} column does not exist in this project yet, so no value could be read for it.`,
+      source: source("entered", { column }),
+    };
+  }
+
+  if (flagged === null) {
+    return { state: "unset", source: source("entered", { column }) };
+  }
+
+  return { state: "known", value: flagged, source: source("entered", { column }) };
+}
+
 export type IngredientSnapshot = {
   ingredientId: string;
   name: string;
@@ -97,10 +132,7 @@ function buildIngredientSnapshot(row: IngredientRow, businessDay: string): Ingre
       row.nearest_expiration_date === null
         ? { state: "unset", source: source("entered", { column: "nearest_expiration_date" }) }
         : { state: "known", value: row.nearest_expiration_date, source: source("entered", { column: "nearest_expiration_date" }) },
-    flaggedReason:
-      flagged === null
-        ? { state: "unset", source: source("entered", { column: "base_unit_migration_flagged_reason" }) }
-        : { state: "known", value: flagged, source: source("entered", { column: "base_unit_migration_flagged_reason" }) },
+    flaggedReason: flaggedReasonFact(flagged),
   };
 }
 
@@ -227,19 +259,49 @@ export function buildInventoryDomainContext(rows: InventoryRows, env: BuildEnv):
 
   const empty = rows.ingredients.length === 0;
 
+  // Whether flag status can be established AT ALL.
+  //
+  // getFlaggedIngredients reads the mapped model, where mapIngredientRow has already flattened an
+  // absent column to null -- so on a project that has not run
+  // supabase-migrate-canonical-base-units.sql it returns an empty list, which is indistinguishable
+  // from "the migration ran and nothing was flagged". One row without the property is enough to
+  // know the whole answer is unavailable.
+  //
+  // No ingredients at all is knowable, not unknown: there is genuinely nothing to flag.
+  const flagStatusKnowable = rows.ingredients.every(
+    (row) => (row as unknown as Record<string, unknown>).base_unit_migration_flagged_reason !== undefined,
+  );
+  const flagColumnMissing =
+    "Whether any ingredient is flagged cannot be determined: the base_unit_migration_flagged_reason column does not exist in this project yet.";
+
+  const valuationSource = source("calculated", {
+    computedBy: "getTotalInventoryValue",
+    inputs: ["inventory.facts.byIngredient[].averageUnitCost"],
+  });
+
   // Any valuation that includes a flagged ingredient is arithmetic over an unknown unit, so the
   // total is unknowable rather than merely approximate.
-  const totalInventoryValue: Fact<number> =
-    flagged.length > 0
+  //
+  // The same rule has to apply when flag status itself cannot be established. Asserting a total then
+  // would rest on a flattened "nothing is flagged" assumption that the database never actually made
+  // -- the unit-integrity rule would be silently satisfied by an absent column rather than by
+  // evidence.
+  const totalInventoryValue: Fact<number> = !flagStatusKnowable
+    ? {
+        state: "unknown",
+        because: `${flagColumnMissing} A total that assumes no ingredient is flagged is therefore not meaningful.`,
+        source: valuationSource,
+      }
+    : flagged.length > 0
       ? {
           state: "unknown",
           because: `${flagged.length} ingredient(s) could not be converted to a canonical unit, so any total that includes them is not meaningful.`,
-          source: source("calculated", { computedBy: "getTotalInventoryValue", inputs: ["inventory.facts.byIngredient[].averageUnitCost"] }),
+          source: valuationSource,
         }
       : {
           state: "known",
           value: getTotalInventoryValue(ingredients),
-          source: source("calculated", { computedBy: "getTotalInventoryValue", inputs: ["inventory.facts.byIngredient[].averageUnitCost"] }),
+          source: valuationSource,
         };
 
   // Both of the timestamps below are root projections of the ledger rows themselves: no published
@@ -311,7 +373,11 @@ export function buildInventoryDomainContext(rows: InventoryRows, env: BuildEnv):
         source: source("derived", { computedBy: "getNeedToBuyList", inputs: ["inventory.facts.byIngredient"] }),
       },
       totalInventoryValue,
-      flaggedIngredientCount: { state: "known", value: flagged.length, source: countSource },
+      // known(0) here would assert the migration ran and found nothing, which is exactly what an
+      // absent column cannot tell us.
+      flaggedIngredientCount: flagStatusKnowable
+        ? { state: "known", value: flagged.length, source: countSource }
+        : { state: "unknown", because: flagColumnMissing, source: countSource },
       latestPurchaseAt,
     },
     signals: buildSignals(rows.ingredients, env.businessDay),

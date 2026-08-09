@@ -26,14 +26,55 @@ function source(kind: Provenance["kind"], extra: Partial<Provenance> = {}): Prov
   return { kind, table: "costing_summaries", ...extra };
 }
 
+// A column this project does not have.
+//
+// Several costing columns are added by migrations that run against an ALREADY EXISTING
+// costing_summaries table -- water/gas/oven_electric/refrigeration/coffee_equipment by
+// supabase-update-costing-and-journal.sql, overhead/equipment by
+// supabase-add-costing-overhead-equipment-columns.sql. supabase-schema.sql also declares them, but
+// that file only describes a project created fresh; a project created before those columns existed
+// has them only once its migration is run.
+//
+// PostgREST returns rows without the key at all in that case, so `undefined` -- not null -- is what
+// arrives here, while CostingSummaryRow declares `number` because that is what the SQL says once the
+// migration HAS run. That mismatch is precisely why the compiler cannot catch this and why the guard
+// has to exist at runtime. supabase-mappers.ts documents the same phenomenon on ProductRow.decision.
+//
+// It must become neither known(undefined), which asserts a value that does not exist, nor known(0),
+// which asserts the owner entered a zero. "This column is not here" is its own fact, and `unknown`
+// is the state the vocabulary provides for it: computable in principle, but an input is missing.
+//
+// Scope note: only the FACTS are corrected here. mapCostingSummaryRow flattens the same absent
+// column to 0 (`Number(row.water_cost ?? 0)`), so getCostingTotals and every metric derived from it
+// keep their existing behaviour. Correcting that is a separate change to a shared mapper with its
+// own consumers, and is deliberately not bundled into an adapter honesty fix.
+function absentColumn(column: string): Fact<never> {
+  return {
+    state: "unknown",
+    because: `The ${column} column does not exist in this project yet, so no value could be read for it.`,
+    source: source("entered", { column }),
+  };
+}
+
 // Every cost component is `not null default 0` in SQL, so a 0 read back is a genuinely entered
 // zero -- the one costing case where 0 is unambiguous. Only suggested_price is nullable, and there
 // a null is "never priced", which is not the same fact as "priced at zero".
-function enteredNumber(value: number, column: string): Fact<number> {
+//
+// The parameter admits `undefined` because a row can genuinely arrive without the key; the row type
+// cannot express that without changing a shared mapper contract, so the honesty lives here.
+function enteredNumber(value: number | undefined, column: string): Fact<number> {
+  if (value === undefined) {
+    return absentColumn(column);
+  }
   return { state: "known", value, source: source("entered", { column }) };
 }
 
-function nullableEnteredNumber(value: number | null, column: string): Fact<number> {
+// Three distinct facts, and they stay three: an absent column is not an unfilled one, and an
+// unfilled one is not a zero.
+function nullableEnteredNumber(value: number | null | undefined, column: string): Fact<number> {
+  if (value === undefined) {
+    return absentColumn(column);
+  }
   if (value === null) {
     return { state: "unset", source: source("entered", { column }) };
   }
@@ -173,15 +214,9 @@ function buildSnapshot(row: CostingSummaryRow, entries: CostingEntryRow[]): Cost
 
   const lineCount = entries.filter((entry) => entry.id && rowBelongsToCosting(entry, row)).length;
 
-  return {
-    costingId: row.id,
-    productId: row.product_id,
-    batchId:
-      row.batch_id === null
-        ? { state: "unset", source: source("entered", { column: "batch_id" }) }
-        : { state: "known", value: row.batch_id, source: source("entered", { column: "batch_id" }) },
-    reviewedAt: reviewedAt(row),
-
+  // The entered and inferred facts are built FIRST, because what they say decides whether anything
+  // calculated from them is publishable. Keys match the names METRIC_INPUTS uses.
+  const inputFacts: Record<string, Fact<number>> = {
     ingredientCost: enteredNumber(row.ingredient_cost, "ingredient_cost"),
     packagingCost: enteredNumber(row.packaging_cost, "packaging_cost"),
     laborEstimate: enteredNumber(row.labor_estimate, "labor_estimate"),
@@ -210,23 +245,106 @@ function buildSnapshot(row: CostingSummaryRow, entries: CostingEntryRow[]): Cost
             because: "No readable target food cost was found in this costing's structured notes blob.",
             source: parsedFrom,
           },
+  };
 
-    // Not yield-dependent: it is the sum of the entered components, so it is always computable.
-    totalBatchCost: {
-      state: "known",
-      value: totals.totalBatchCost,
-      source: source("calculated", { computedBy: "getCostingTotals", inputs: METRIC_INPUTS.totalBatchCost }),
-    },
+  // --- Absent columns poison whatever was computed from them --------------------------------------
+  //
+  // getCostingTotals remains the one calculator: its arithmetic is not re-implemented and not
+  // second-guessed. What is decided here is whether its OUTPUT has enough evidence to be published.
+  //
+  // mapCostingSummaryRow flattens an absent column to 0 before the calculator ever sees it
+  // (`Number(row.water_cost ?? 0)`), so a project missing water_cost still gets a totalBatchCost --
+  // one computed as though the owner had entered zero for water. Publishing that as `known` while
+  // waterCost itself says `unknown` is the same lie moved one step downstream.
+  //
+  // Detected from the row, not by matching a reason string: a column is absent exactly when the
+  // property is missing. `null` is a real value here and is deliberately NOT unusable.
+  const absentColumns: string[] = [];
+  const unusable = new Set<string>();
 
-    costPerPiece: metric(totals.costPerPiece, "costPerPiece", "Cost per piece", yieldReadable),
-    grossProfit: metric(totals.grossProfit, "grossProfit", "Gross profit", yieldReadable),
-    margin: metric(totals.margin, "margin", "Margin", yieldReadable),
-    foodCostPercent: metric(totals.foodCostPercent, "foodCostPercent", "Food cost percentage", yieldReadable),
-    markup: metric(totals.markup, "markup", "Markup", yieldReadable),
-    targetPrice: metric(totals.targetPrice, "targetPrice", "Target price", yieldReadable),
-    variableCostPerPiece: metric(totals.variableCostPerPiece, "variableCostPerPiece", "Variable cost per piece", yieldReadable),
-    contributionMarginPerPiece: metric(totals.contributionMarginPerPiece, "contributionMarginPerPiece", "Contribution margin per piece", yieldReadable),
-    breakEvenUnits: metric(totals.breakEvenUnits, "breakEvenUnits", "Break-even units", yieldReadable),
+  for (const [key, fact] of Object.entries(inputFacts)) {
+    const column = "source" in fact ? fact.source.column : undefined;
+    if (column !== undefined && (row as unknown as Record<string, unknown>)[column] === undefined) {
+      unusable.add(key);
+      absentColumns.push(column);
+    }
+  }
+
+  // Fixpoint over METRIC_INPUTS -- the dependency graph this adapter ALREADY publishes as
+  // provenance. Walking the declared graph rather than a second hand-written list is what keeps the
+  // gate and the provenance from drifting apart: anything computed from something unusable is itself
+  // unusable, transitively. A metric whose own inputs are all fine stays publishable, so an absent
+  // overhead_cost invalidates totalBatchCost and everything below it without touching
+  // variableCostPerPiece, which never depended on it.
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [key, inputs] of Object.entries(METRIC_INPUTS)) {
+      if (unusable.has(key)) {
+        continue;
+      }
+      if (inputs.some((path) => unusable.has(path.slice(path.lastIndexOf(".") + 1)))) {
+        unusable.add(key);
+        changed = true;
+      }
+    }
+  }
+
+  const absentBecause = `This value depends on ${absentColumns.join(", ")}, which ${absentColumns.length === 1 ? "does" : "do"} not exist in this project yet, so the calculator worked from a substituted zero rather than a recorded value.`;
+
+  const absentDerived = (key: keyof typeof METRIC_INPUTS): Fact<number> => ({
+    state: "unknown",
+    because: absentBecause,
+    source: source("calculated", { computedBy: "getCostingTotals", inputs: METRIC_INPUTS[key] }),
+  });
+
+  // The absent-column gate sits in front of the existing yield gate; neither replaces the other.
+  const publish = (value: number | null, key: keyof typeof METRIC_INPUTS, name: string): Fact<number> =>
+    unusable.has(key) ? absentDerived(key) : metric(value, key, name, yieldReadable);
+
+  return {
+    costingId: row.id,
+    productId: row.product_id,
+    batchId:
+      row.batch_id === null
+        ? { state: "unset", source: source("entered", { column: "batch_id" }) }
+        : { state: "known", value: row.batch_id, source: source("entered", { column: "batch_id" }) },
+    reviewedAt: reviewedAt(row),
+
+    ingredientCost: inputFacts.ingredientCost,
+    packagingCost: inputFacts.packagingCost,
+    laborEstimate: inputFacts.laborEstimate,
+    waterCost: inputFacts.waterCost,
+    gasCost: inputFacts.gasCost,
+    ovenElectricCost: inputFacts.ovenElectricCost,
+    refrigerationCost: inputFacts.refrigerationCost,
+    coffeeEquipmentCost: inputFacts.coffeeEquipmentCost,
+    wasteAllowance: inputFacts.wasteAllowance,
+    overheadCost: inputFacts.overheadCost,
+    equipmentCost: inputFacts.equipmentCost,
+    suggestedPrice: inputFacts.suggestedPrice,
+
+    costingYield: inputFacts.costingYield,
+    targetFoodCost: inputFacts.targetFoodCost,
+
+    // Not yield-dependent: it is the sum of the entered components, so it is computable whenever
+    // those components are actually recorded -- which is exactly what the gate now checks.
+    totalBatchCost: unusable.has("totalBatchCost")
+      ? absentDerived("totalBatchCost")
+      : {
+          state: "known",
+          value: totals.totalBatchCost,
+          source: source("calculated", { computedBy: "getCostingTotals", inputs: METRIC_INPUTS.totalBatchCost }),
+        },
+
+    costPerPiece: publish(totals.costPerPiece, "costPerPiece", "Cost per piece"),
+    grossProfit: publish(totals.grossProfit, "grossProfit", "Gross profit"),
+    margin: publish(totals.margin, "margin", "Margin"),
+    foodCostPercent: publish(totals.foodCostPercent, "foodCostPercent", "Food cost percentage"),
+    markup: publish(totals.markup, "markup", "Markup"),
+    targetPrice: publish(totals.targetPrice, "targetPrice", "Target price"),
+    variableCostPerPiece: publish(totals.variableCostPerPiece, "variableCostPerPiece", "Variable cost per piece"),
+    contributionMarginPerPiece: publish(totals.contributionMarginPerPiece, "contributionMarginPerPiece", "Contribution margin per piece"),
+    breakEvenUnits: publish(totals.breakEvenUnits, "breakEvenUnits", "Break-even units"),
 
     ingredientLineCount: {
       state: "known",
