@@ -202,3 +202,79 @@ test("inventory adapter: is pure and reads no clock", () => {
   const input = rows();
   assert.deepEqual(buildInventoryDomainContext(input, env), buildInventoryDomainContext(input, env));
 });
+
+// --- Absent column (pre-migration project) --------------------------------------------------------
+//
+// base_unit_migration_flagged_reason is added by supabase-migrate-canonical-base-units.sql, against
+// an already existing ingredients table. A project that has not run it returns rows WITHOUT the key,
+// so the property is genuinely absent rather than null -- and `undefined === null` is false, which
+// is how it previously fell through to known(undefined) and rendered as the literal "undefined".
+
+// Deletes the key outright. Partial<IngredientRow> can express null but not absence.
+function ingredientRowWithout(column: string): IngredientRow {
+  const row = { ...ingredientRow() } as unknown as Record<string, unknown>;
+  delete row[column];
+  return row as unknown as IngredientRow;
+}
+
+function flaggedReasonOf(row: IngredientRow): Fact<string> {
+  const fact = buildInventoryDomainContext({ ingredients: [row], transactions: [] }, env).facts.byIngredient as Fact<IngredientSnapshot[]>;
+  assert.equal(fact.state, "known");
+  return (fact as { state: "known"; value: IngredientSnapshot[] }).value[0].flaggedReason;
+}
+
+test("[absent-column] an absent base_unit_migration_flagged_reason is unknown, never known(undefined)", () => {
+  const row = ingredientRowWithout("base_unit_migration_flagged_reason");
+  assert.equal("base_unit_migration_flagged_reason" in (row as unknown as Record<string, unknown>), false, "the test must exercise a genuinely absent property");
+
+  const fact = flaggedReasonOf(row);
+
+  assert.equal(fact.state, "unknown");
+  assert.equal("value" in fact, false);
+  assert.ok((fact as { because: string }).because.includes("base_unit_migration_flagged_reason"));
+  assert.match((fact as { because: string }).because, /does not exist in this project/);
+});
+
+test("[absent-column] an explicit null still means the migration ran and cleared this ingredient", () => {
+  const fact = flaggedReasonOf(ingredientRow({ base_unit_migration_flagged_reason: null }));
+
+  // Collapsing the absent case into this one would claim the migration had cleared the ingredient,
+  // which is the opposite of what is known.
+  assert.equal(fact.state, "unset");
+});
+
+test("[absent-column] a real flag string is still known and preserved verbatim", () => {
+  const reason = "kg could not be converted to a canonical unit";
+  const fact = flaggedReasonOf(ingredientRow({ base_unit_migration_flagged_reason: reason }));
+
+  assert.equal(fact.state, "known");
+  assert.equal((fact as { value: string }).value, reason);
+});
+
+test("[absent-column] the three flaggedReason states stay distinct", () => {
+  const absent = flaggedReasonOf(ingredientRowWithout("base_unit_migration_flagged_reason"));
+  const cleared = flaggedReasonOf(ingredientRow({ base_unit_migration_flagged_reason: null }));
+  const flagged = flaggedReasonOf(ingredientRow({ base_unit_migration_flagged_reason: "bad unit" }));
+
+  assert.deepEqual([absent.state, cleared.state, flagged.state], ["unknown", "unset", "known"]);
+});
+
+test("[absent-column] an absent column keeps truthful provenance naming the column", () => {
+  const fact = flaggedReasonOf(ingredientRowWithout("base_unit_migration_flagged_reason"));
+  const provenance = (fact as { source: { kind: string; table?: string; column?: string } }).source;
+
+  assert.equal(provenance.kind, "entered");
+  assert.equal(provenance.table, "ingredients");
+  assert.equal(provenance.column, "base_unit_migration_flagged_reason");
+});
+
+test("[absent-column] no other ingredient fact changes when the column is absent", () => {
+  const context = buildInventoryDomainContext({ ingredients: [ingredientRowWithout("base_unit_migration_flagged_reason")], transactions: [] }, env);
+  const snapshot = ((context.facts.byIngredient as { state: "known"; value: IngredientSnapshot[] }).value)[0];
+
+  assert.equal((snapshot.currentQuantity as { state: string; value: number }).state, "known");
+  assert.equal((snapshot.currentQuantity as { state: string; value: number }).value, 1000);
+  // getFlaggedIngredients reads the mapped model, where an absent column is already flattened to
+  // null, so the data-integrity count keeps its existing behaviour.
+  assert.equal((context.facts.flaggedIngredientCount as { state: string; value: number }).value, 0);
+});

@@ -26,14 +26,55 @@ function source(kind: Provenance["kind"], extra: Partial<Provenance> = {}): Prov
   return { kind, table: "costing_summaries", ...extra };
 }
 
+// A column this project does not have.
+//
+// Several costing columns are added by migrations that run against an ALREADY EXISTING
+// costing_summaries table -- water/gas/oven_electric/refrigeration/coffee_equipment by
+// supabase-update-costing-and-journal.sql, overhead/equipment by
+// supabase-add-costing-overhead-equipment-columns.sql. supabase-schema.sql also declares them, but
+// that file only describes a project created fresh; a project created before those columns existed
+// has them only once its migration is run.
+//
+// PostgREST returns rows without the key at all in that case, so `undefined` -- not null -- is what
+// arrives here, while CostingSummaryRow declares `number` because that is what the SQL says once the
+// migration HAS run. That mismatch is precisely why the compiler cannot catch this and why the guard
+// has to exist at runtime. supabase-mappers.ts documents the same phenomenon on ProductRow.decision.
+//
+// It must become neither known(undefined), which asserts a value that does not exist, nor known(0),
+// which asserts the owner entered a zero. "This column is not here" is its own fact, and `unknown`
+// is the state the vocabulary provides for it: computable in principle, but an input is missing.
+//
+// Scope note: only the FACTS are corrected here. mapCostingSummaryRow flattens the same absent
+// column to 0 (`Number(row.water_cost ?? 0)`), so getCostingTotals and every metric derived from it
+// keep their existing behaviour. Correcting that is a separate change to a shared mapper with its
+// own consumers, and is deliberately not bundled into an adapter honesty fix.
+function absentColumn(column: string): Fact<never> {
+  return {
+    state: "unknown",
+    because: `The ${column} column does not exist in this project yet, so no value could be read for it.`,
+    source: source("entered", { column }),
+  };
+}
+
 // Every cost component is `not null default 0` in SQL, so a 0 read back is a genuinely entered
 // zero -- the one costing case where 0 is unambiguous. Only suggested_price is nullable, and there
 // a null is "never priced", which is not the same fact as "priced at zero".
-function enteredNumber(value: number, column: string): Fact<number> {
+//
+// The parameter admits `undefined` because a row can genuinely arrive without the key; the row type
+// cannot express that without changing a shared mapper contract, so the honesty lives here.
+function enteredNumber(value: number | undefined, column: string): Fact<number> {
+  if (value === undefined) {
+    return absentColumn(column);
+  }
   return { state: "known", value, source: source("entered", { column }) };
 }
 
-function nullableEnteredNumber(value: number | null, column: string): Fact<number> {
+// Three distinct facts, and they stay three: an absent column is not an unfilled one, and an
+// unfilled one is not a zero.
+function nullableEnteredNumber(value: number | null | undefined, column: string): Fact<number> {
+  if (value === undefined) {
+    return absentColumn(column);
+  }
   if (value === null) {
     return { state: "unset", source: source("entered", { column }) };
   }

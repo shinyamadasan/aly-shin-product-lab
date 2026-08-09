@@ -40,6 +40,41 @@ function nullableNumber(value: number | null, column: string): Fact<number> {
   return { state: "known", value, source: source("entered", { column }) };
 }
 
+// base_unit_migration_flagged_reason is added by supabase-migrate-canonical-base-units.sql, a
+// migration that runs against an ALREADY EXISTING ingredients table. A project that has not run it
+// returns rows without the key at all, so `undefined` arrives here where IngredientRow promises
+// `string | null` -- the compiler cannot see it, so the guard has to be at runtime.
+//
+// Three different facts, and they must stay three:
+//   a string  -- the migration ran and flagged this ingredient, and this is why
+//   null      -- the migration ran and found nothing wrong with this ingredient
+//   undefined -- the migration has not run; we cannot say either way
+//
+// Collapsing the third into `unset` would claim the migration had cleared this ingredient, which is
+// the opposite of what is known. Collapsing it into `known(undefined)` would assert a value that
+// does not exist.
+//
+// Scope note: getFlaggedIngredients reads the MAPPED model, where mapIngredientRow already flattens
+// an absent column to null, so flaggedIngredientCount and the data-integrity signal keep their
+// existing behaviour. Only this fact is corrected.
+function flaggedReasonFact(flagged: string | null | undefined): Fact<string> {
+  const column = "base_unit_migration_flagged_reason";
+
+  if (flagged === undefined) {
+    return {
+      state: "unknown",
+      because: `The ${column} column does not exist in this project yet, so no value could be read for it.`,
+      source: source("entered", { column }),
+    };
+  }
+
+  if (flagged === null) {
+    return { state: "unset", source: source("entered", { column }) };
+  }
+
+  return { state: "known", value: flagged, source: source("entered", { column }) };
+}
+
 export type IngredientSnapshot = {
   ingredientId: string;
   name: string;
@@ -97,10 +132,7 @@ function buildIngredientSnapshot(row: IngredientRow, businessDay: string): Ingre
       row.nearest_expiration_date === null
         ? { state: "unset", source: source("entered", { column: "nearest_expiration_date" }) }
         : { state: "known", value: row.nearest_expiration_date, source: source("entered", { column: "nearest_expiration_date" }) },
-    flaggedReason:
-      flagged === null
-        ? { state: "unset", source: source("entered", { column: "base_unit_migration_flagged_reason" }) }
-        : { state: "known", value: flagged, source: source("entered", { column: "base_unit_migration_flagged_reason" }) },
+    flaggedReason: flaggedReasonFact(flagged),
   };
 }
 

@@ -617,3 +617,70 @@ test("[PR-2] domain notes render verbatim, in fixed domain order", async () => {
     }
   }
 });
+
+// --- Absent columns must never reach the page as "undefined" -------------------------------------
+//
+// Found on live production data: five costing facts and one inventory fact rendered as the literal
+// string "undefined", because a pre-migration project returns rows without those keys and the
+// adapters emitted known(undefined). The renderer was faithfully printing what the envelope claimed.
+// This is the end-to-end guard for that.
+
+const LATER_MIGRATION_COSTING_COLUMNS = ["water_cost", "gas_cost", "oven_electric_cost", "refrigeration_cost", "coffee_equipment_cost"];
+
+// Copies before deleting: the fixture's row arrays are module-level and shared with every other test.
+function stripColumns<T>(rows: readonly T[], columns: readonly string[]): T[] {
+  return rows.map((row) => {
+    const copy = { ...(row as object) } as Record<string, unknown>;
+    for (const column of columns) {
+      delete copy[column];
+    }
+    return copy as T;
+  });
+}
+
+// The canonical fixture as a project that has not run supabase-update-costing-and-journal.sql or
+// supabase-migrate-canonical-base-units.sql would actually return it.
+async function preMigrationContext(): Promise<BusinessContext> {
+  const reads = fixtureReads();
+  const costing = reads.costing as Extract<typeof reads.costing, { ok: true }>;
+  const inventory = reads.inventory as Extract<typeof reads.inventory, { ok: true }>;
+
+  return buildBusinessContext({
+    reads: {
+      ...reads,
+      costing: { ok: true, rows: { costings: stripColumns(costing.rows.costings, LATER_MIGRATION_COSTING_COLUMNS), entries: costing.rows.entries } },
+      inventory: { ok: true, rows: { ingredients: stripColumns(inventory.rows.ingredients, ["base_unit_migration_flagged_reason"]), transactions: inventory.rows.transactions } },
+    },
+    env: FIXTURE_ENV,
+    dataSource: "sample",
+    composers: [COSTING_FRESHNESS_COMPOSER.compose],
+  });
+}
+
+test("[absent-column] a pre-migration snapshot renders no literal 'undefined' anywhere", async () => {
+  const brief = renderBusinessBrief(await preMigrationContext());
+
+  assert.equal(brief.includes("undefined"), false, "an absent column must never surface as the string 'undefined'");
+});
+
+test("[absent-column] a pre-migration snapshot says which column is missing, and does not say zero", async () => {
+  const brief = renderBusinessBrief(await preMigrationContext());
+
+  for (const column of LATER_MIGRATION_COSTING_COLUMNS) {
+    assert.ok(brief.includes(`not known — The ${column} column does not exist in this project yet`), `${column} must be reported as unknown, naming itself`);
+  }
+  assert.ok(brief.includes("not known — The base_unit_migration_flagged_reason column does not exist in this project yet"));
+
+  // The failure this replaces would have been worse than "undefined": reporting 0 would have
+  // asserted the owner entered a zero utility cost.
+  assert.equal(/waterCost\s+0\b/.test(brief), false);
+  assert.equal(/gasCost\s+0\b/.test(brief), false);
+});
+
+test("[absent-column] the fully migrated fixture is unchanged and still renders no 'undefined'", async () => {
+  const brief = renderBusinessBrief(await fixtureContext());
+
+  assert.equal(brief.includes("undefined"), false);
+  // Entered zeroes still render as zeroes, not as absences.
+  assert.ok(brief.includes("refrigerationCost           0"), "an entered zero still renders as 0");
+});

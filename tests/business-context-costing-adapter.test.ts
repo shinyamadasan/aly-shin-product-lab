@@ -179,3 +179,106 @@ test("costing adapter: takes no BuildEnv, and is still assignable to DomainAdapt
   assert.equal(typeof registered, "function");
   assert.equal(buildCostingDomainContext.length, 1, "the adapter declares exactly one parameter");
 });
+
+// --- Absent columns (pre-migration projects) -----------------------------------------------------
+//
+// water/gas/oven_electric/refrigeration/coffee_equipment are added by
+// supabase-update-costing-and-journal.sql, and overhead/equipment by
+// supabase-add-costing-overhead-equipment-columns.sql -- both against an already existing
+// costing_summaries table. A project that has not run them returns rows WITHOUT those keys, so the
+// property is genuinely absent rather than null, and CostingSummaryRow's `number` is a promise the
+// database has not yet kept.
+//
+// This was found on live production data, where five facts rendered as the literal string
+// "undefined". The golden fixture has every column present, which is exactly why the existing proof
+// layer could not see it.
+
+// Deletes keys outright. `Partial<CostingSummaryRow>` cannot express absence -- only null -- so the
+// row is built and then stripped, which is what PostgREST actually returns.
+function rowWithoutColumns(...columns: string[]): CostingSummaryRow {
+  const row = { ...costingRow() } as unknown as Record<string, unknown>;
+  for (const column of columns) {
+    delete row[column];
+  }
+  return row as unknown as CostingSummaryRow;
+}
+
+const LATER_MIGRATION_COLUMNS: Array<[string, keyof CostingSnapshot]> = [
+  ["water_cost", "waterCost"],
+  ["gas_cost", "gasCost"],
+  ["oven_electric_cost", "ovenElectricCost"],
+  ["refrigeration_cost", "refrigerationCost"],
+  ["coffee_equipment_cost", "coffeeEquipmentCost"],
+  ["overhead_cost", "overheadCost"],
+  ["equipment_cost", "equipmentCost"],
+];
+
+for (const [column, factKey] of LATER_MIGRATION_COLUMNS) {
+  test(`[absent-column] an absent ${column} is unknown, never known(undefined)`, () => {
+    const row = rowWithoutColumns(column);
+    assert.equal(column in (row as unknown as Record<string, unknown>), false, "the test must exercise a genuinely absent property");
+
+    const fact = snapshots(buildCostingDomainContext({ costings: [row], entries: [] }))[0][factKey] as Fact<number>;
+
+    assert.equal(fact.state, "unknown");
+    assert.equal("value" in fact, false, "an unknown fact carries no value");
+    assert.ok((fact as { because: string }).because.includes(column), "the reason must name the actual column");
+    assert.match((fact as { because: string }).because, /does not exist in this project/);
+  });
+
+  test(`[absent-column] an explicit 0 in ${column} is still a real entered zero`, () => {
+    const fact = snapshots(buildCostingDomainContext({ costings: [costingRow({ [column]: 0 } as Partial<CostingSummaryRow>)], entries: [] }))[0][factKey] as Fact<number>;
+
+    // The whole point of the Fact vocabulary: a real zero is a value, and must never be confused
+    // with an absent column in either direction.
+    assert.equal(fact.state, "known");
+    assert.equal((fact as { value: number }).value, 0);
+  });
+}
+
+test("[absent-column] an absent column keeps truthful provenance naming the column", () => {
+  const fact = snapshots(buildCostingDomainContext({ costings: [rowWithoutColumns("water_cost")], entries: [] }))[0].waterCost as Fact<number>;
+  const provenance = (fact as { source: { kind: string; table?: string; column?: string } }).source;
+
+  assert.equal(provenance.kind, "entered");
+  assert.equal(provenance.table, "costing_summaries");
+  assert.equal(provenance.column, "water_cost");
+});
+
+test("[absent-column] all five utility columns absent at once yields five unknowns and no undefined value", () => {
+  const row = rowWithoutColumns("water_cost", "gas_cost", "oven_electric_cost", "refrigeration_cost", "coffee_equipment_cost");
+  const snapshot = snapshots(buildCostingDomainContext({ costings: [row], entries: [] }))[0];
+
+  for (const key of ["waterCost", "gasCost", "ovenElectricCost", "refrigerationCost", "coffeeEquipmentCost"] as const) {
+    const fact = snapshot[key] as Fact<number>;
+    assert.equal(fact.state, "unknown", `${key} must be unknown`);
+    assert.equal((fact as { value?: unknown }).value, undefined);
+    assert.equal("value" in fact, false);
+  }
+
+  // Untouched columns are unaffected -- this fix changes nothing for a fully migrated project.
+  assert.equal((snapshot.ingredientCost as { state: string; value: number }).state, "known");
+  assert.equal((snapshot.ingredientCost as { state: string; value: number }).value, 200);
+});
+
+test("[absent-column] suggested_price keeps three distinct states", () => {
+  const absent = snapshots(buildCostingDomainContext({ costings: [rowWithoutColumns("suggested_price")], entries: [] }))[0].suggestedPrice as Fact<number>;
+  const unfilled = snapshots(buildCostingDomainContext({ costings: [costingRow({ suggested_price: null })], entries: [] }))[0].suggestedPrice as Fact<number>;
+  const priced = snapshots(buildCostingDomainContext({ costings: [costingRow({ suggested_price: 0 })], entries: [] }))[0].suggestedPrice as Fact<number>;
+
+  // "the column is not here", "the owner never priced it", and "the owner priced it at zero" are
+  // three different facts about the business.
+  assert.equal(absent.state, "unknown");
+  assert.equal(unfilled.state, "unset");
+  assert.equal(priced.state, "known");
+  assert.equal((priced as { value: number }).value, 0);
+});
+
+test("[absent-column] a fully migrated row is completely unchanged by this fix", () => {
+  const snapshot = snapshots(buildCostingDomainContext(rows()))[0];
+
+  for (const key of ["waterCost", "gasCost", "ovenElectricCost", "refrigerationCost", "coffeeEquipmentCost", "overheadCost", "equipmentCost"] as const) {
+    assert.equal((snapshot[key] as Fact<number>).state, "known", `${key} must stay known when the column exists`);
+  }
+  assert.equal((snapshot.coffeeEquipmentCost as { value: number }).value, 0, "an entered zero stays an entered zero");
+});
