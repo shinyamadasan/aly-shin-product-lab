@@ -501,7 +501,10 @@ test("[PR-1] resolveRuntimeEnv honours an explicitly injected timezone", () => {
   assert.equal(manila.businessDay, resolveBusinessDay(manila.now, "Asia/Manila"));
 });
 
-test("[PR-1] the orchestrator reads all eight tables across the four domains", async () => {
+test("[PR-1] the orchestrator reads all nine unique tables required by the four domains", async () => {
+  // Nine UNIQUE tables, from ten read executions: costing_summaries is read twice, once by Costing
+  // and once independently by Readiness. That duplication is deliberate -- it is what keeps the two
+  // domains independent, so neither waits on nor consumes the other's rows.
   const stub = createStub({ rows: HEALTHY_ROWS });
   await buildCurrentBusinessContext({ client: stub.client, nowMs: NOW_MS });
 
