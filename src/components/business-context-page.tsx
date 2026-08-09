@@ -30,9 +30,23 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 // The brief is rendered once, when the context is built, and stored beside it. Copy Context hands
 // over these exact bytes rather than re-rendering, so what was read on screen is what gets pasted.
+//
+// `userId` is OWNERSHIP, not data. It records which authenticated identity authorized this build, so
+// a snapshot can never outlive the session that produced it: sign out and back in as someone else
+// and the previous operator's business context is not displayable, even for the moment before the
+// new build lands. It is UI state only -- never rendered, never copied, never persisted, and not
+// part of the canonical BusinessContext.
 type Snapshot = {
   context: BusinessContext;
   brief: string;
+  userId: string;
+};
+
+// Errors carry the same ownership, for the same reason: one identity's failure must not be shown
+// to the next.
+type LoadError = {
+  message: string;
+  userId: string;
 };
 
 type CopyNotice = { message: string; tone: "good" | "bad" };
@@ -60,8 +74,13 @@ export function BusinessContextPage() {
   // update before its first await, and the explicit set-to-true lives in the user-driven refresh.
   const [isBuilding, setIsBuilding] = useState(isSupabaseConfigured);
   const [reloadToken, setReloadToken] = useState(0);
-  const [loadError, setLoadError] = useState("");
+  const [loadError, setLoadError] = useState<LoadError | null>(null);
   const [copyNotice, setCopyNotice] = useState<CopyNotice | null>(null);
+
+  // The authenticated identity, not the Session object. Keying on the user id means a routine token
+  // refresh -- which replaces the Session object for the SAME operator -- does not throw away a
+  // valid snapshot or trigger a pointless rebuild, while an actual change of operator does both.
+  const sessionUserId = session?.user.id ?? null;
 
   // The app's existing session lifecycle, unchanged. No new auth system, no second client, and no
   // sign-in form: the app already owns sign-in, and this page only needs to know whether one
@@ -78,6 +97,14 @@ export function BusinessContextPage() {
 
     const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
+
+      if (!nextSession) {
+        // Signed out: drop the previous identity's context rather than merely hiding it. Ownership
+        // below would already make it undisplayable; this also stops it lingering in memory.
+        setSnapshot(null);
+        setLoadError(null);
+        setCopyNotice(null);
+      }
     });
 
     return () => data.subscription.unsubscribe();
@@ -92,8 +119,8 @@ export function BusinessContextPage() {
 
     async function buildSnapshot() {
       // THE GATE, before any I/O. Both conditions, every time -- including on Refresh. Nothing is
-      // read until we know there is a configured project and a signed-in session to read as.
-      if (!isSupabaseConfigured || !supabase || !session) {
+      // read until we know there is a configured project and a signed-in identity to read as.
+      if (!isSupabaseConfigured || !supabase || !sessionUserId) {
         return;
       }
 
@@ -108,9 +135,10 @@ export function BusinessContextPage() {
           nowMs,
         });
         if (cancelled) return;
-        // The previous snapshot is replaced only now, once a canonical context exists.
-        setSnapshot({ context, brief: renderBusinessBrief(context) });
-        setLoadError("");
+        // The previous snapshot is replaced only now, once a canonical context exists -- and it is
+        // stamped with the identity that authorized this build.
+        setSnapshot({ context, brief: renderBusinessBrief(context), userId: sessionUserId });
+        setLoadError(null);
         setCopyNotice(null);
       } catch (error) {
         if (cancelled) return;
@@ -122,7 +150,7 @@ export function BusinessContextPage() {
         // The previous snapshot is dropped rather than left on screen, so a failed Refresh can
         // never be mistaken for a successful one.
         setSnapshot(null);
-        setLoadError(error instanceof Error ? error.message : String(error));
+        setLoadError({ message: error instanceof Error ? error.message : String(error), userId: sessionUserId });
       } finally {
         // A cancelled build no longer owns this flag; the newer one does.
         if (!cancelled) {
@@ -135,7 +163,7 @@ export function BusinessContextPage() {
     return () => {
       cancelled = true;
     };
-  }, [session, reloadToken]);
+  }, [sessionUserId, reloadToken]);
 
   // Refresh is user-driven and is the only path that flips into the building state explicitly. It
   // bumps the token, which re-runs the effect, which captures a NEW nowMs and rebuilds everything
@@ -171,7 +199,7 @@ export function BusinessContextPage() {
       return <MessageBox message={CHECKING_SESSION} tone="info" />;
     }
 
-    if (!session) {
+    if (!sessionUserId) {
       return <MessageBox message={SIGNED_OUT} tone="info" />;
     }
 
@@ -180,20 +208,26 @@ export function BusinessContextPage() {
       return <MessageBox message={READING} tone="info" />;
     }
 
-    if (loadError) {
+    // OWNERSHIP, checked before anything from a previous build can reach the screen. After an
+    // identity change the effect has started a fresh build but isBuilding is still false, so
+    // without this the outgoing operator's context would render to the incoming one.
+    const ownedError = loadError && loadError.userId === sessionUserId ? loadError : null;
+    const ownedSnapshot = snapshot && snapshot.userId === sessionUserId ? snapshot : null;
+
+    if (ownedError) {
       return (
         <div className="space-y-4">
-          <MessageBox message={`Could not build the business context: ${loadError}`} tone="bad" />
+          <MessageBox message={`Could not build the business context: ${ownedError.message}`} tone="bad" />
           <SecondaryButton onClick={refresh}>Refresh</SecondaryButton>
         </div>
       );
     }
 
-    if (!snapshot) {
+    if (!ownedSnapshot) {
       return <MessageBox message={READING} tone="info" />;
     }
 
-    return renderSnapshot(snapshot);
+    return renderSnapshot(ownedSnapshot);
   }
 
   function renderSnapshot({ context, brief }: Snapshot) {

@@ -83,7 +83,7 @@ test("[PR-3] no server-only, service-role or website-user credential path is rea
 });
 
 test("[PR-3] the configured-and-signed-in gate precedes the runtime read", () => {
-  const guard = PAGE_CODE.indexOf("if (!isSupabaseConfigured || !supabase || !session)");
+  const guard = PAGE_CODE.indexOf("if (!isSupabaseConfigured || !supabase || !sessionUserId)");
   const read = PAGE_CODE.indexOf("buildCurrentBusinessContext({");
 
   assert.ok(guard > -1, "the gate must exist as a single explicit condition");
@@ -107,7 +107,7 @@ test("[PR-3] an unconfigured project renders the approved no-build state", () =>
 
 test("[PR-3] a signed-out visitor gets the approved state and no build", () => {
   assert.ok(PAGE_CODE.includes("Sign in to generate a snapshot."));
-  assert.ok(/if \(!session\) \{/.test(PAGE_CODE));
+  assert.ok(/if \(!sessionUserId\) \{/.test(PAGE_CODE));
 });
 
 test("[PR-3] auth loading is distinguishable from signed out", () => {
@@ -158,7 +158,7 @@ test("[PR-3] Refresh rebuilds and is disabled while a build is in flight", () =>
   assert.ok(PAGE_CODE.includes("disabled={isBuilding}"));
   assert.ok(PAGE_CODE.includes("onClick={refresh}"));
   assert.ok(PAGE_CODE.includes("setReloadToken((token) => token + 1)"));
-  assert.ok(/\}, \[session, reloadToken\]\)/.test(PAGE_CODE), "the build effect must re-run on the reload token");
+  assert.ok(/\}, \[sessionUserId, reloadToken\]\)/.test(PAGE_CODE), "the build effect must re-run on the reload token");
   // A response from a superseded build is discarded rather than overwriting a fresher snapshot.
   assert.ok(PAGE_CODE.includes("let cancelled = false;"));
   assert.ok(PAGE_CODE.includes("if (cancelled) return;"));
@@ -176,21 +176,86 @@ test("[PR-3] a thrown runtime error surfaces, and never fabricates a context", (
   assert.ok(PAGE_CODE.includes("Could not build the business context:"));
   // The message is retained for debugging rather than replaced by a generic string.
   assert.ok(PAGE_CODE.includes("error instanceof Error ? error.message : String(error)"));
+  assert.ok(PAGE_CODE.includes("ownedError.message"), "the surfaced error must be the one owned by the current identity");
   // The failure path offers a retry.
-  const errorBranch = PAGE_CODE.slice(PAGE_CODE.indexOf("if (loadError)"));
+  const errorBranch = PAGE_CODE.slice(PAGE_CODE.indexOf("if (ownedError)"));
   assert.ok(errorBranch.slice(0, 400).includes("Refresh"));
 });
 
-test("[PR-3] the snapshot is discarded only on a thrown exception, so partial reads still render", () => {
+test("[PR-3] the snapshot is discarded only on a thrown exception or sign-out, so partial reads still render", () => {
   const discards = PAGE_CODE.match(/setSnapshot\(null\)/g) ?? [];
-  assert.equal(discards.length, 1, "there must be exactly one place a snapshot is dropped");
+  assert.equal(discards.length, 2, "a snapshot is dropped in exactly two places");
 
-  // ...and that place is the catch block, not a coverage check. A context whose domains failed is a
-  // success path: build.ts already degraded them and the brief already explains what is unavailable.
+  // One: the signed-out transition, inside the auth callback.
+  const authCallback = PAGE_CODE.slice(PAGE_CODE.indexOf("onAuthStateChange"), PAGE_CODE.indexOf("return () => data.subscription.unsubscribe();"));
+  assert.ok(authCallback.includes("if (!nextSession)"));
+  assert.ok(authCallback.includes("setSnapshot(null)"));
+
+  // Two: the catch block -- never a coverage check. A context whose domains failed is a success
+  // path: build.ts already degraded them and the brief already explains what is unavailable.
   const catchStart = PAGE_CODE.indexOf("catch (error)");
   const finallyStart = PAGE_CODE.indexOf("} finally {");
-  assert.ok(catchStart < PAGE_CODE.indexOf("setSnapshot(null)"));
-  assert.ok(PAGE_CODE.indexOf("setSnapshot(null)") < finallyStart);
+  const inCatch = PAGE_CODE.slice(catchStart, finallyStart);
+  assert.ok(inCatch.includes("setSnapshot(null)"));
+});
+
+// --- Auth-transition ownership ----------------------------------------------------------------------
+//
+// A previous operator's Business Context must never be presented as the current one's, even for the
+// moment between an identity change and the new build landing.
+
+test("[PR-3] a snapshot is stamped with the identity that authorized its build", () => {
+  assert.ok(/userId: string;/.test(PAGE_CODE), "Snapshot carries the owning user id");
+  assert.ok(PAGE_CODE.includes("const sessionUserId = session?.user.id ?? null;"));
+  assert.ok(PAGE_CODE.includes("userId: sessionUserId"), "the build stamps the snapshot with the current identity");
+});
+
+test("[PR-3] a snapshot owned by a different identity cannot render", () => {
+  assert.ok(PAGE_CODE.includes("snapshot && snapshot.userId === sessionUserId ? snapshot : null"));
+  assert.ok(PAGE_CODE.includes("renderSnapshot(ownedSnapshot)"), "only the owned snapshot is ever rendered");
+  // The unowned case falls through to the truthful loading state rather than to stale data.
+  const ownership = PAGE_CODE.slice(PAGE_CODE.indexOf("const ownedError"));
+  assert.ok(/if \(!ownedSnapshot\) \{\s*return <MessageBox message=\{READING\}/.test(ownership));
+});
+
+test("[PR-3] an error is owned too, so one identity's failure is not shown to the next", () => {
+  assert.ok(PAGE_CODE.includes("loadError && loadError.userId === sessionUserId ? loadError : null"));
+  assert.ok(PAGE_CODE.includes("userId: sessionUserId }"), "a failed build records whose build failed");
+});
+
+test("[PR-3] signing out clears the retained snapshot and stale load/copy state", () => {
+  const authCallback = PAGE_CODE.slice(PAGE_CODE.indexOf("onAuthStateChange"), PAGE_CODE.indexOf("return () => data.subscription.unsubscribe();"));
+
+  assert.ok(authCallback.includes("if (!nextSession)"));
+  assert.ok(authCallback.includes("setSnapshot(null)"));
+  assert.ok(authCallback.includes("setLoadError(null)"));
+  assert.ok(authCallback.includes("setCopyNotice(null)"));
+});
+
+test("[PR-3] the build effect is keyed to authenticated identity, not Session object identity", () => {
+  // Keying on the user id means a routine token refresh -- a new Session object for the SAME
+  // operator -- neither discards a valid snapshot nor triggers a pointless rebuild, while an actual
+  // change of operator does both.
+  assert.ok(/\}, \[sessionUserId, reloadToken\]\)/.test(PAGE_CODE));
+  assert.equal(/\}, \[session, reloadToken\]\)/.test(PAGE_CODE), false, "the effect must not depend on the Session object");
+
+  // The build body reads the identity, not the session object.
+  const effect = PAGE_CODE.slice(PAGE_CODE.indexOf("async function buildSnapshot"), PAGE_CODE.indexOf("}, [sessionUserId, reloadToken])"));
+  assert.equal(/[^U]\bsession\b(?!UserId)/.test(effect), false, "the build must not reference the raw session object");
+});
+
+test("[PR-3] ownership is UI state only and never reaches the brief, JSON, clipboard or metadata", () => {
+  // renderSnapshot destructures context and brief only, so the owning id has no path to the screen.
+  assert.ok(PAGE_CODE.includes("function renderSnapshot({ context, brief }: Snapshot)"));
+  // The copied bytes and the raw JSON are the canonical artefacts, unchanged by ownership.
+  assert.ok(PAGE_CODE.includes('copyText(brief, "Business context")'));
+  assert.ok(PAGE_CODE.includes('copyText(JSON.stringify(context, null, 2), "Raw JSON")'));
+  // No metadata row exposes it, and it is never written anywhere.
+  assert.equal(PAGE_CODE.includes("label=\"User\""), false);
+  assert.equal(/Metadata[^\n]*userId/.test(PAGE_CODE), false);
+  for (const persist of ["localStorage.setItem", "sessionStorage", "document.cookie"]) {
+    assert.equal(PAGE_CODE.includes(persist), false, `ownership must not be persisted via ${persist}`);
+  }
 });
 
 test("[PR-3] the all-domains-failed warning is derived from DomainContexts, not coverage counts", () => {
