@@ -21,6 +21,19 @@
 // deliberately not bundled here, and until it lands the app and the builder will disagree about
 // "today" -- harmlessly, because nothing in the app consumes the builder yet.
 
+// The canonical timezone for Business Context runtime assembly.
+//
+// Aly & Pon bakes and hands over in Manila, so "today" has to mean today HERE. Declared once, here,
+// because this is the module that owns the business day: the runtime resolves businessDay from it
+// and threads the result to every adapter through BuildEnv, so one snapshot cannot contain two
+// notions of today.
+//
+// Scope note: this constant does NOT change what the rest of the app thinks "today" is. The UTC
+// behaviour described above stays exactly as it is, and correcting it remains a separate,
+// separately-reviewable change. src/components/orders-page.tsx still declares its own local copy of
+// this value; adopting this one there is a recorded follow-up, deliberately not bundled here.
+export const BUSINESS_TIMEZONE = "Asia/Manila";
+
 // en-CA formats as YYYY-MM-DD directly, with no dependency and no manual padding. Node ships full
 // ICU from v14 onward, so the timezone database is available without configuration -- the same
 // assumption scripts/daily-advisor/run.ts already relies on in production.
