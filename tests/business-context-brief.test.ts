@@ -225,6 +225,92 @@ test("[PR-2] every absent domain keeps its verbatim reason and is never called e
   }
 });
 
+// --- Unbuilt domains vs unreadable domains -----------------------------------------------------------
+//
+// coverage.absent holds both, and conflating them is a real defect rather than a wording nit: a
+// Runtime domain whose read failed still HAS an adapter, and reporting it as architecturally missing
+// turns a transient outage into a permanent gap.
+
+function unbuiltDomains(context: BusinessContext): string[] {
+  return context.coverage.knownDomains.filter((domain) => context.domains[domain] === undefined);
+}
+
+const RUNTIME_DOMAINS = ["costing", "inventory", "readiness", "selling"] as const;
+
+test("[PR-2] the healthy fixture reports exactly the eleven genuinely unbuilt domains", async () => {
+  const context = await fixtureContext();
+  const brief = renderBusinessBrief(context);
+
+  assert.equal(unbuiltDomains(context).length, 11);
+  assert.equal(context.coverage.absent.length, 11, "with no failures the two happen to agree");
+  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
+});
+
+test("[PR-2] all four Runtime reads failing still reports 11 unbuilt domains, not 15", async () => {
+  const context = await failedContext();
+  const brief = renderBusinessBrief(context);
+
+  // The regression: coverage.absent is now 15, because the four failed domains joined the eleven
+  // that were never built. The closing statement must not follow it.
+  assert.equal(context.coverage.absent.length, 15);
+  assert.equal(unbuiltDomains(context).length, 11);
+
+  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
+  assert.equal(brief.includes("15 of 15 declared domains have no adapter"), false);
+});
+
+test("[PR-2] a failed Runtime domain is never described as lacking an adapter", async () => {
+  const brief = renderBusinessBrief(await failedContext());
+  const sentence = brief.slice(brief.indexOf("declared domains have no adapter:"));
+  // Exact list membership, not substring: "sellingFormats" legitimately contains "selling", and a
+  // substring check would fail on a correct brief.
+  const listed = sentence.slice(sentence.indexOf(":") + 1, sentence.indexOf(".")).split(",").map((entry) => entry.trim());
+
+  assert.deepEqual(listed, ["products", "batches", "sellingFormats", "tasting", "supplies", "equipment", "journey", "opportunities", "creative", "brand", "aiReviews"]);
+  for (const domain of RUNTIME_DOMAINS) {
+    assert.equal(listed.includes(domain), false, `${domain} has an adapter; its read merely failed`);
+  }
+});
+
+test("[PR-2] failed Runtime domains are still reported separately as unreadable", async () => {
+  const brief = renderBusinessBrief(await failedContext());
+
+  assert.ok(brief.includes("4 domain(s) could not be read this run (costing, inventory, readiness, selling)."));
+  assert.ok(brief.includes("unavailable, which is not the same as empty"));
+  // Both statements coexist: eleven are missing by architecture, four by outage.
+  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
+});
+
+test("[PR-2] one failed Runtime domain does not increase the unbuilt-domain count", async () => {
+  const down = { ok: false, reason: "failed", message: "connection reset" } as const;
+  const reads = fixtureReads();
+  const mixed = await buildBusinessContext({
+    reads: { ...reads, selling: down },
+    env: FIXTURE_ENV,
+    dataSource: "supabase",
+    composers: [COSTING_FRESHNESS_COMPOSER.compose],
+  });
+  const brief = renderBusinessBrief(mixed);
+
+  assert.equal(mixed.coverage.absent.length, 12, "eleven unbuilt plus one failed");
+  assert.equal(unbuiltDomains(mixed).length, 11);
+
+  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
+  assert.equal(brief.includes("12 of 15 declared domains have no adapter"), false);
+  assert.ok(brief.includes("1 domain(s) could not be read this run (selling)."));
+  assert.ok(brief.includes("costing"), "the healthy domains are unaffected");
+});
+
+test("[PR-2] the unbuilt-domain count is derived from built contexts, not from coverage.absent", () => {
+  // Kills the mutation back to coverage.absent.length: the closing statement must be derived from
+  // which domains the builder actually produced, which is the only thing that distinguishes
+  // "no adapter" from "adapter ran and the read failed".
+  assert.ok(BRIEF_CODE.includes("knownDomains.filter"));
+  const closing = BRIEF_CODE.slice(BRIEF_CODE.indexOf("function renderUnknowns"));
+  const statement = closing.slice(0, closing.indexOf("No canonical Product domain"));
+  assert.equal(statement.includes("absent.length"), false, "the no-adapter count must not come from coverage.absent");
+});
+
 test("[PR-2] the closing section carries the corrected Product statement", async () => {
   const brief = renderBusinessBrief(await fixtureContext());
 

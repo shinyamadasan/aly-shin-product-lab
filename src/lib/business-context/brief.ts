@@ -309,10 +309,21 @@ function renderNotes(context: BusinessContext): string[] {
 }
 
 function renderUnknowns(context: BusinessContext): string[] {
-  const absent = context.coverage.absent;
+  const { knownDomains } = context.coverage;
   const lines = ["## What this snapshot does not know", ""];
 
-  lines.push(`${INDENT}${absent.length} of ${context.coverage.knownDomains.length} declared domains have no adapter: ${absent.length === 0 ? "none" : absent.map((entry) => entry.domain).join(", ")}.`);
+  // coverage.absent mixes TWO different situations: a domain with no adapter at all, and a built
+  // domain whose read failed this run. Only the first means "this system cannot describe that yet";
+  // the second means "we tried and could not read it", and it is reported in its own paragraph
+  // below. Counting absent.length here would report a transient outage as a permanent gap in the
+  // architecture -- with all four Runtime domains failing it would claim 15 of 15 declared domains
+  // have no adapter, and name Costing, Inventory, Readiness and Selling among them, which is false.
+  //
+  // Derived from the envelope alone: a domain is unbuilt exactly when the builder produced no
+  // DomainContext for it. No new coverage field, no new selector.
+  const unbuilt = knownDomains.filter((domain) => context.domains[domain] === undefined);
+
+  lines.push(`${INDENT}${unbuilt.length} of ${knownDomains.length} declared domains have no adapter: ${unbuilt.length === 0 ? "none" : unbuilt.join(", ")}.`);
   lines.push("");
   lines.push(`${INDENT}No canonical Product domain is available. Costing and Readiness above still refer to`);
   lines.push(`${INDENT}products, but only by product ID — no product name, category, or description is in`);
