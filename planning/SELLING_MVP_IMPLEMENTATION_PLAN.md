@@ -1004,8 +1004,55 @@ Today's orders, today's paid revenue, unpaid total, **to-prepare by product in u
 > built as its reuse boundary — `BuildEnv`'s `now` / `timezone` map directly onto `nowMs` / `timeZone`
 > — but that is preparation, not authorisation.
 
-### S8 — Business Context exposure *(deferred)*
+### S8 — Business Context exposure ✅ COMPLETE
 A `selling` domain adapter, one `DOMAIN_IDS` entry, one registry entry. Reads `paid_amount` directly (§6.3). Measurements only. Requires BCB M1 fully merged.
+
+> ## ✅ SELLING MVP — COMPLETE
+>
+> **Recorded 2026-08-09.** Status and history only; no frozen architecture section is edited.
+>
+> ```
+> S7 ✅ Operational Readout                 PR #39 (G1) · PR #40 (G2)
+> S8 ✅ Selling → Business Context exposure PR #41
+> -----------------------------------------------------------------
+> SELLING MVP ✅ COMPLETE
+> ```
+>
+> | | |
+> |---|---|
+> | **PR** | #41 — *feat(business-context): expose deterministic Selling facts (PR-H1)* |
+> | **Merge SHA** | `078564862db3944c158396b5dba79dbde3719190` |
+> | **S8 head SHA** | `2d0208ad92773cd4489bfd75fc556c600bd29f3f` |
+> | **Merge parents** | `5618b36` (prior main) + `2d0208a` (S8 head) |
+>
+> S8 ships `src/lib/business-context/adapters/selling.ts` plus one `DOMAIN_IDS` entry and one registry
+> entry, exactly as this section specified. The fact set is the owner-approved deviation recorded in
+> §6.3. `buildSellingSummary` is called once per build and no Selling formula is reimplemented;
+> `build.ts`, `selectors.ts`, `digest.ts`, the composers, `SIGNAL_IDS` and `CONTEXT_SCHEMA_VERSION`
+> are unchanged, and the six Selling helpers, `orders-repository.ts`, all SQL, `src/app/**` and
+> `src/components/**` are byte-identical.
+>
+> Verified on merged main: focused 27/27 · full Business Context suite 12 files passing · full suite
+> 2200 · 2195 pass · 4 known fail · 1 skip, zero new failures against the same-environment baseline ·
+> tsc 0 · lint unchanged. Production deployed and healthy; `/orders` and `/orders?tab=summary` both
+> 200.
+>
+> ### Selling development stops here
+>
+> **S10 remains trigger-based and is NOT authorised.** Nothing below is scheduled work: payment
+> tables, repeat-customer logic, further analytics or dashboards, additional Selling Business Context
+> facts, and runtime AI integration all require a fresh decision. The canonical Business Context still
+> has **no runtime caller**, which is deliberate — S8 exposes facts; it does not wire a consumer.
+>
+> ### Carried-forward items, none of them Selling work
+>
+> 1. **Launch smoke for `/order`** — the public happy path has never been exercised over HTTP, because
+>    no product is intentionally public yet. See the S9 completion note above; still outstanding.
+> 2. **Orders network-loader hang** — a transport-level failure leaves the loader on "Loading…".
+>    Pre-existing, reproduces on the pre-G2 list.
+> 3. **CRLF checkout artifact** — environment-specific; see the baseline note in "Implementation
+>    status".
+> 4. **`unitsByProduct` / `piecesByProduct`** — deferred from S8 (§6.3), not refused.
 
 ### S9 — Public ordering surface *(deferred)*
 Requires a real server-side execution boundary first (§9). Writes through the same `save_order` RPC with `entry_method = 'website'`.
