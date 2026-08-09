@@ -24,6 +24,8 @@ const titles = {
   brand: "Brand Foundation",
   "content-studio": "Content studio",
   guide: "How to use Product Lab",
+  // Reachable at /context by URL only -- deliberately not in navItems (see LabView in lab-state.ts).
+  context: "Business context",
 };
 
 // shouldConfirmNavigation/navigationConfirmationMessage are deliberately generic, not named after
