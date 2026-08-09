@@ -684,3 +684,32 @@ test("[absent-column] the fully migrated fixture is unchanged and still renders 
   // Entered zeroes still render as zeroes, not as absences.
   assert.ok(brief.includes("refrigerationCost           0"), "an entered zero still renders as 0");
 });
+
+test("[derived] the brief never shows a known calculated number whose input an absent column removed", async () => {
+  const context = await preMigrationContext();
+  const brief = renderBusinessBrief(context);
+  const costing = context.domains.costing as DomainContext;
+  const snapshots = (costing.facts.byCosting as Extract<Fact<Record<string, Fact<unknown>>[]>, { state: "known" }>).value;
+
+  for (const snapshot of snapshots) {
+    for (const key of ["totalBatchCost", "costPerPiece", "grossProfit", "margin", "foodCostPercent", "markup", "targetPrice", "variableCostPerPiece", "contributionMarginPerPiece", "breakEvenUnits"]) {
+      assert.equal((snapshot[key] as Fact<number>).state, "unknown", `${key} must not be published from a substituted zero`);
+    }
+  }
+
+  // ...and the page says why, naming the columns rather than printing a number.
+  assert.ok(brief.includes("substituted zero rather than a recorded value"));
+  assert.equal(brief.includes("undefined"), false);
+});
+
+test("[derived] the brief reports inventory flag status and valuation as unknown when the column is absent", async () => {
+  const context = await preMigrationContext();
+  const inventory = context.domains.inventory as DomainContext;
+  const brief = renderBusinessBrief(context);
+
+  assert.equal(inventory.facts.flaggedIngredientCount.state, "unknown");
+  assert.equal(inventory.facts.totalInventoryValue.state, "unknown");
+  assert.ok(brief.includes("Whether any ingredient is flagged cannot be determined"));
+  // A count of 0 would assert the migration ran and found nothing.
+  assert.equal(/flaggedIngredientCount\s+0/.test(brief), false);
+});
