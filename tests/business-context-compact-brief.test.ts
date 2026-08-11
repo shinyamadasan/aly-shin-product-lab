@@ -311,9 +311,67 @@ test("[PR-2] Inventory keeps attention items and states how many were omitted", 
   assert.ok(compact.includes("Fixture Butter"), "an expired ingredient must appear");
   assert.ok(compact.includes("Fixture Sugar"), "a flagged ingredient must appear");
   assert.match(compact, /Needing attention \(\d+ of \d+\)/);
-  assert.match(compact, /further ingredient\(s\) recorded with no stock, expiry or data-integrity attention item/);
+  assert.match(compact, /further ingredient\(s\) with no attention item identified; \d+ of them with an undetermined stock or expiry state/);
   // The unknown valuation caveat is not dropped by compaction.
   assert.ok(compact.includes("totalInventoryValue"));
+});
+
+// F-A: an omitted ingredient is not a healthy one. This reproduces the live Aly & Pon shape, where
+// expiry could not be determined for ANY ingredient, and pins that compaction reports that fact
+// rather than describing every omitted ingredient as expiry-clean.
+function withUndeterminedExpiry(context: BusinessContext): BusinessContext {
+  const inventory = context.domains.inventory as DomainContext;
+  const byIngredient = inventory.facts.byIngredient as Fact<Record<string, unknown>[]> & { state: "known" };
+  const undetermined: Fact<string> = {
+    state: "unknown",
+    because: "No expiration date is recorded for this ingredient.",
+    source: { kind: "entered", table: "ingredients", column: "expiration_date" },
+  };
+
+  return {
+    ...context,
+    domains: {
+      ...context.domains,
+      inventory: {
+        ...inventory,
+        facts: {
+          ...inventory.facts,
+          byIngredient: { ...byIngredient, value: byIngredient.value.map((ingredient) => ({ ...ingredient, expirationStatus: undetermined })) },
+        },
+      },
+    },
+  };
+}
+
+test("[PR-2] an omitted ingredient with an undetermined expiry is never described as expiry-clean", async () => {
+  const context = await fixtureContext();
+  const compact = renderCompactBrief(withUndeterminedExpiry(context));
+
+  // 1. The old claim -- that every omitted ingredient had no expiry attention item -- must be gone.
+  assert.equal(
+    /no stock, expiry or data-integrity attention item/.test(compact),
+    false,
+    "an undetermined expiry must not be reported as the absence of an expiry problem",
+  );
+
+  // 2. The undetermined count is stated explicitly, and it is not zero on this shape.
+  const stated = compact.match(/\((\d+) further ingredient\(s\) with no attention item identified; (\d+) of them with an undetermined stock or expiry state/);
+  assert.ok(stated, "the omission line must report both the omitted total and the undetermined count");
+  assert.ok(Number(stated[2]) > 0, "every omitted ingredient here has an undetermined expiry, so the count must be > 0");
+
+  // 3. Known-good ingredients still count toward the omitted total: it is a superset, not a swap.
+  const shown = compact.match(/Needing attention \((\d+) of (\d+)\)/);
+  assert.ok(shown);
+  assert.equal(Number(stated[1]), Number(shown[2]) - Number(shown[1]), "omitted total must be every ingredient not shown");
+  assert.ok(Number(stated[1]) >= Number(stated[2]), "the undetermined group is part of the omitted total, never larger than it");
+
+  // 4. This is a rendering change only -- the canonical envelope and both digests are untouched.
+  const before = JSON.stringify(context);
+  renderCompactBrief(context);
+  assert.equal(JSON.stringify(context), before, "rendering must not mutate the context");
+  assert.equal(context.factsDigest, (await fixtureContext()).factsDigest);
+  assert.equal(context.signalsDigest, (await fixtureContext()).signalsDigest);
+  assert.equal(renderBusinessBrief(context), renderBusinessBrief(await fixtureContext()), "the full brief is unaffected by this correction");
 });
 
 test("[PR-2] Costing shows pricing facts per costing and preserves absence states verbatim", async () => {

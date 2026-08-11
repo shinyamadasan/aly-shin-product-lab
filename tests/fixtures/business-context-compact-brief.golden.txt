@@ -59,7 +59,7 @@ what it does not.
     Fixture Butter (fixture-ing-butter) · stock good · expiry expired
     Fixture Sugar (fixture-ing-sugar) · stock good · flagged: Unrecognised legacy base_unit; needs manual reconciliation.
     Fixture Vanilla (fixture-ing-vanilla) · stock out
-    (2 further ingredient(s) recorded with no stock, expiry or data-integrity attention item — full detail in the full brief.)
+    (2 further ingredient(s) with no attention item identified; 1 of them with an undetermined stock or expiry state — full detail in the full brief.)
 
 ## Selling
 

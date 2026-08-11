@@ -33,8 +33,10 @@ import type { BusinessContext, DomainContext, DomainId, Fact, Signal } from "./t
 
 const INDENT = "  ";
 
-// Ingredient states that need attention. Everything else is a healthy ingredient the compact brief
-// omits -- and counts.
+// Ingredient states that need attention. Everything else is omitted -- and counted. "Omitted" is NOT
+// "healthy": an ingredient whose stock or expiry state could not be determined also lands there,
+// because an undetermined state can never match an attention value. That group is counted separately
+// rather than described as clean.
 const ATTENTION_STOCK = new Set(["out", "low"]);
 const ATTENTION_EXPIRY = new Set(["expired", "expires-today", "expires-soon"]);
 
@@ -238,9 +240,25 @@ function inventory(context: BusinessContext): string[] {
     lines.push(`${INDENT}${INDENT}${parts.join(" · ")}`);
   }
 
-  const omitted = ingredients.length - attention.length;
-  if (omitted > 0) {
-    lines.push(`${INDENT}${INDENT}(${omitted} further ingredient(s) recorded with no stock, expiry or data-integrity attention item — full detail in the full brief.)`);
+  // Which ingredients are shown is unchanged. What changes is how the remainder is DESCRIBED: an
+  // ingredient reaches this group either because both states were read and neither needed attention,
+  // or because a state could not be determined at all. Those are not the same thing, and calling the
+  // second one clean would report an unknown expiry as a checked one. `knownString` returning
+  // undefined is exactly the condition that kept the ingredient out of the attention list above, so
+  // the same test decides the caveat -- no second interpretation of the Fact states.
+  const omitted = ingredients.filter((ingredient) => !attention.includes(ingredient));
+  const undetermined = omitted.filter(
+    (ingredient) =>
+      knownString(factOf(ingredient, "stockStatus")) === undefined ||
+      knownString(factOf(ingredient, "expirationStatus")) === undefined,
+  );
+
+  if (omitted.length > 0) {
+    // The undetermined count is printed even when it is 0, for the same reason adapters/selling.ts
+    // keeps explicit zeroes: "none were undetermined" must stay distinguishable from "nobody looked".
+    lines.push(
+      `${INDENT}${INDENT}(${omitted.length} further ingredient(s) with no attention item identified; ${undetermined.length} of them with an undetermined stock or expiry state — full detail in the full brief.)`,
+    );
   }
 
   return lines;
