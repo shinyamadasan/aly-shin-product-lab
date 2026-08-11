@@ -11,6 +11,12 @@ import {
   type InventoryRows,
 } from "./adapters/inventory.ts";
 import {
+  buildProductsDomainContext,
+  buildProductsDomainContextFromFailure,
+  PRODUCTS_ADAPTER_VERSION,
+  type ProductsRows,
+} from "./adapters/products.ts";
+import {
   buildReadinessDomainContext,
   buildReadinessDomainContextFromFailure,
   READINESS_ADAPTER_VERSION,
@@ -51,6 +57,7 @@ export type DomainBuilder<TRows> = {
 // The names are kept rather than renamed because a rename would touch every core file and every
 // test for no behavioural gain.
 export type M1DomainRows = {
+  products: ProductsRows;
   costing: CostingRows;
   inventory: InventoryRows;
   readiness: ReadinessRows;
@@ -58,6 +65,15 @@ export type M1DomainRows = {
 };
 
 export type M1DomainId = keyof M1DomainRows;
+
+// Identity only -- see adapters/products.ts. buildProductsDomainContext takes no env, the same way
+// buildCostingDomainContext does; a shorter parameter list is structurally assignable here.
+export const PRODUCTS_BUILDER: DomainBuilder<ProductsRows> = {
+  domain: "products",
+  version: PRODUCTS_ADAPTER_VERSION,
+  build: buildProductsDomainContext,
+  buildFromFailure: buildProductsDomainContextFromFailure,
+};
 
 export const COSTING_BUILDER: DomainBuilder<CostingRows> = {
   domain: "costing",
@@ -89,9 +105,10 @@ export const SELLING_BUILDER: DomainBuilder<SellingRows> = {
   buildFromFailure: buildSellingDomainContextFromFailure,
 };
 
-// The four domains the builder implements. The other eleven are declared in DOMAIN_IDS and reported
+// The five domains the builder implements. The other ten are declared in DOMAIN_IDS and reported
 // absent.
 export const M1_DOMAIN_BUILDERS = {
+  products: PRODUCTS_BUILDER,
   costing: COSTING_BUILDER,
   inventory: INVENTORY_BUILDER,
   readiness: READINESS_BUILDER,
@@ -100,7 +117,7 @@ export const M1_DOMAIN_BUILDERS = {
 
 // buildBusinessContext iterates THIS array, not DOMAIN_IDS. A domain added to the vocabulary but
 // missing here is declared-absent rather than built -- which is why S8 had to touch both.
-export const M1_DOMAIN_IDS: readonly M1DomainId[] = ["costing", "inventory", "readiness", "selling"];
+export const M1_DOMAIN_IDS: readonly M1DomainId[] = ["products", "costing", "inventory", "readiness", "selling"];
 
 // Every domain the registry knows about, in declaration order. Derived from DOMAIN_IDS rather than
 // hand-listed, so a domain added to the vocabulary cannot be forgotten here.

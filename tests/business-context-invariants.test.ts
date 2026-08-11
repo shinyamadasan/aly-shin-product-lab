@@ -80,8 +80,8 @@ test("[M1] coverage accounts for all fourteen declared domains", async () => {
 test("[M1] exactly the built domains are present, and every other is explicitly absent", async () => {
   const context = await buildFixtureContext();
 
-  assert.deepEqual([...context.coverage.present].sort(), ["costing", "inventory", "readiness", "selling"]);
-  assert.equal(context.coverage.absent.length, DOMAIN_IDS.length - 4);
+  assert.deepEqual([...context.coverage.present].sort(), ["costing", "inventory", "products", "readiness", "selling"]);
+  assert.equal(context.coverage.absent.length, DOMAIN_IDS.length - 5);
   for (const entry of context.coverage.absent) {
     assert.ok(entry.reason.length > 0, `${entry.domain} must state why it is absent`);
   }

@@ -89,6 +89,7 @@ function orderRow(): OrderRow {
 // purchase. Overrides let each test move exactly one thing.
 function reads(overrides: Partial<M1DomainReadResults> = {}): M1DomainReadResults {
   return {
+    products: { ok: true, rows: { products: [productRow()] } },
     costing: { ok: true, rows: { costings: [costingRow()], entries: [] } },
     inventory: { ok: true, rows: { ingredients: [ingredientRow()], transactions: [transactionRow()] } },
     readiness: { ok: true, rows: { products: [productRow()], batches: [batchRow()], costings: [costingRow()], tastings: [tastingRow()] } },
@@ -306,6 +307,7 @@ test("integration: getBlockers returns existing signal references from a real bu
 test("integration: an empty business builds a complete, honest envelope rather than failing", async () => {
   const context = await buildBusinessContext({
     reads: {
+      products: { ok: true, rows: { products: [] } },
       costing: { ok: true, rows: { costings: [], entries: [] } },
       inventory: { ok: true, rows: { ingredients: [], transactions: [] } },
       readiness: { ok: true, rows: { products: [], batches: [], costings: [], tastings: [] } },

@@ -12,7 +12,7 @@
 import { resolveBusinessDay, BUSINESS_TIMEZONE } from "../business-day.ts";
 import { buildBusinessContext } from "./build.ts";
 import { COSTING_FRESHNESS_COMPOSER } from "./composers/costing-freshness.ts";
-import { readCosting, readInventory, readReadiness, readSelling, type BusinessContextReadClient } from "./readers/supabase.ts";
+import { readCosting, readInventory, readProducts, readReadiness, readSelling, type BusinessContextReadClient } from "./readers/supabase.ts";
 import type { BusinessContext, BuildEnv } from "./types.ts";
 
 export type BuildCurrentBusinessContextInput = {
@@ -65,8 +65,10 @@ export async function buildCurrentBusinessContext({
   const env = resolveRuntimeEnv(nowMs, timezone);
 
   // Concurrent and independent, in registry order. No reader consumes another's rows: Readiness
-  // reads costing_summaries itself rather than waiting on Costing, and Selling depends on neither.
-  const [costing, inventory, readiness, selling] = await Promise.all([
+  // reads products and costing_summaries itself rather than waiting on Products or Costing, and
+  // Selling depends on neither.
+  const [products, costing, inventory, readiness, selling] = await Promise.all([
+    readProducts(client, env),
     readCosting(client, env),
     readInventory(client, env),
     readReadiness(client, env),
@@ -74,7 +76,7 @@ export async function buildCurrentBusinessContext({
   ]);
 
   return buildBusinessContext({
-    reads: { costing, inventory, readiness, selling },
+    reads: { products, costing, inventory, readiness, selling },
     env,
     dataSource: "supabase",
     composers: [COSTING_FRESHNESS_COMPOSER.compose],

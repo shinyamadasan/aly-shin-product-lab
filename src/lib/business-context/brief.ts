@@ -39,6 +39,7 @@ import type { BusinessContext, DomainContext, DomainId, Fact, Signal } from "./t
 // Section headings for the domains a snapshot can currently build. A domain with no entry renders
 // under its canonical id verbatim rather than a guessed title.
 const DOMAIN_HEADINGS: Partial<Record<DomainId, string>> = {
+  products: "Products",
   costing: "Costing",
   inventory: "Inventory",
   readiness: "Readiness",

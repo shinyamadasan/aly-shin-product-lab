@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { readCosting, readInventory, readReadiness, readSelling, type BusinessContextReadClient } from "../src/lib/business-context/readers/supabase.ts";
+import { readCosting, readInventory, readProducts, readReadiness, readSelling, type BusinessContextReadClient } from "../src/lib/business-context/readers/supabase.ts";
 import { buildCurrentBusinessContext, resolveRuntimeEnv } from "../src/lib/business-context/runtime.ts";
 import { BUSINESS_TIMEZONE, resolveBusinessDay } from "../src/lib/business-day.ts";
 import { COSTING_FRESHNESS_COMPOSER_ID } from "../src/lib/business-context/composers/costing-freshness.ts";
@@ -357,6 +357,7 @@ test("[PR-1] the readers module imports and calls no Selling mapper or repositor
 // --- Readers: failure semantics -------------------------------------------------------------------
 
 const DOMAIN_READERS = [
+  { name: "products", read: readProducts, table: "products" },
   { name: "costing", read: readCosting, table: "costing_summaries" },
   { name: "inventory", read: readInventory, table: "ingredients" },
   { name: "readiness", read: readReadiness, table: "products" },
@@ -501,10 +502,10 @@ test("[PR-1] resolveRuntimeEnv honours an explicitly injected timezone", () => {
   assert.equal(manila.businessDay, resolveBusinessDay(manila.now, "Asia/Manila"));
 });
 
-test("[PR-1] the orchestrator reads all nine unique tables required by the four domains", async () => {
-  // Nine UNIQUE tables, from ten read executions: costing_summaries is read twice, once by Costing
-  // and once independently by Readiness. That duplication is deliberate -- it is what keeps the two
-  // domains independent, so neither waits on nor consumes the other's rows.
+test("[PR-1] the orchestrator reads all nine unique tables required by the five domains", async () => {
+  // Nine UNIQUE tables, from ELEVEN read executions: costing_summaries is read twice (Costing and
+  // Readiness) and products is read twice (Products and Readiness). Both duplications are deliberate
+  // -- they are what keep the domains independent, so none waits on or consumes another's rows.
   const stub = createStub({ rows: HEALTHY_ROWS });
   await buildCurrentBusinessContext({ client: stub.client, nowMs: NOW_MS });
 
@@ -634,7 +635,7 @@ test("[PR-1] all four domains failing still returns a canonical context, never a
   assert.equal(context.domains.costing?.facts.byCosting.state, "unavailable");
 });
 
-test("[PR-1] the four domain reads are issued concurrently, not sequenced", async () => {
+test("[PR-1] the five domain reads are issued concurrently, not sequenced", async () => {
   // Ordering evidence rather than timing: all four from() calls are recorded before any read
   // resolves, which is only true if they were started together.
   const stub = createStub({ rows: HEALTHY_ROWS });
@@ -644,5 +645,6 @@ test("[PR-1] the four domain reads are issued concurrently, not sequenced", asyn
   await pending;
 
   assert.equal(startedSynchronously, 9, "every domain read must start before any of them is awaited");
+  assert.equal(stub.tablesRead.length, 11, "eleven read executions across nine unique tables");
   assert.ok(RUNTIME_CODE.includes("Promise.all"));
 });
