@@ -456,9 +456,56 @@ test("[PR-2] costing snapshots render product ids and publish no product name to
   }
 });
 
-test("[PR-2] brief.ts contains no product lookup, id-to-name transform or title-casing", () => {
-  for (const pattern of ["toUpperCase", "titleCase", "startCase", "capitalize", "replace(/-/", "split(\"-\")", "productName", "products["]) {
-    assert.equal(BRIEF_CODE.includes(pattern), false, `brief.ts must not contain ${pattern}`);
+test("[PR-2] brief.ts synthesizes no product name from an id", () => {
+  // NARROWED, not deleted. The renderer legitimately reads canonical Products identity now, so the
+  // old blanket ban on `products[` would forbid the intended behaviour. What must stay forbidden is
+  // INFERENCE: turning an id into a name, rather than reading a name the envelope published.
+  for (const pattern of ["toUpperCase", "titleCase", "startCase", "capitalize", "humanize", "replace(/-/", "replace(/_/", 'split("-")', "split('-')", 'split("_")']) {
+    assert.equal(BRIEF_CODE.includes(pattern), false, `brief.ts must not contain the id-to-name transform ${pattern}`);
+  }
+
+  // No hardcoded id→name table, and no reach outside the envelope.
+  for (const forbidden of ["PRODUCT_NAMES", "NAME_BY_ID", "labState", "LabState", "supabase", "orders-repository", "@/lib/orders", "fetch(", "productName"]) {
+    assert.equal(BRIEF_CODE.includes(forbidden), false, `brief.ts must not reference ${forbidden}`);
+  }
+
+  // The ONLY permitted source is the Products domain's own published fact, read through a `known`
+  // name -- an unset or unknown name must not be coerced into a label.
+  assert.ok(BRIEF_CODE.includes("context.domains.products"));
+  assert.ok(BRIEF_CODE.includes('name.state === "known"'));
+  // Imports unchanged: still business-context only.
+  const imports = [...BRIEF_CODE.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
+  for (const specifier of imports) {
+    assert.ok(specifier.startsWith("./") && !specifier.startsWith("../"), `brief.ts may import only from business-context/**, found "${specifier}"`);
+  }
+});
+
+test("[PR-2] an unresolved product id is rendered id-only, never humanised", async () => {
+  const context = await fixtureContext();
+  const readiness = context.domains.readiness as DomainContext;
+
+  // A bait id with no Products identity, whose "obvious" human name is unmistakable.
+  const bait = "dark-chocolate-brownie-v2";
+  const baited: Signal = {
+    id: "DEV-001",
+    domain: "readiness",
+    scope: "domain",
+    subject: { kind: "product", id: bait },
+    severity: "blocker",
+    status: "fail",
+    message: "Not enough tasting feedback yet.",
+    recommendation: "Log more tasting feedback.",
+    provenance: { kind: "derived", computedBy: "evaluateProduct" },
+  };
+
+  const brief = renderBusinessBrief({ ...context, domains: { ...context.domains, readiness: { ...readiness, signals: [baited] } } });
+
+  // Bare id, and specifically NOT annotated -- no parenthesised name of any kind follows it.
+  assert.ok(brief.includes(`product ${bait} —`), "an unresolved id must render alone, with no name annotation");
+  assert.equal(new RegExp(`product ${bait} \\(`).test(brief), false, "an unresolved id must not acquire a label");
+
+  for (const fabricated of ["Dark Chocolate Brownie", "Dark-Chocolate-Brownie", "dark chocolate brownie v2", "Brownie V2"]) {
+    assert.equal(brief.includes(fabricated), false, `the brief must not invent "${fabricated}"`);
   }
 });
 

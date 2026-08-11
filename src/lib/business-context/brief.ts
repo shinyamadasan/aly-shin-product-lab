@@ -10,16 +10,28 @@
 // "healthy". Interpretation belongs to whoever reads the brief (today: a human pasting it into
 // ChatGPT or Claude), never to the deterministic context layer. Design P13 and section 14 rule 16.
 //
-// NO ENRICHMENT, AND THE PRODUCT CASE IS THE ONE THAT MATTERS. The envelope contains productId and
-// Signal.subject.id, and NO product name anywhere: Readiness publishes zero facts by design, and
-// CostingSnapshot carries costingId/productId only. So products are rendered by ID, verbatim.
-// Turning "fixture-brownies" into "Brownies" would mean either a lookup outside this contract or an
-// invented mapping, and both are the laundering this architecture exists to prevent.
+// NO ENRICHMENT, AND THE PRODUCT CASE IS THE ONE THAT MATTERS.
 //
-// The asymmetry with Inventory is deliberate and is enforced structurally rather than by a rule:
-// renderMember below prints whatever plain scalar fields a snapshot actually publishes.
-// IngredientSnapshot publishes `name`, so ingredient names appear. CostingSnapshot does not, so no
-// product name can appear -- there is nothing to print.
+// A product name may be rendered ONLY when it is already published as a canonical Products fact in
+// this BusinessContext. The Products identity domain publishes { productId, name } per product, and
+// productLabels() below reads exactly that -- nothing else. There is no lookup map, no LabState, no
+// row, no client, and no id-derived guess anywhere in this module.
+//
+// The STABLE ID REMAINS AUTHORITATIVE and is always printed. A published name annotates it:
+//
+//     product be801165-6d37-469d-8cd7-ba4d9f545ff6 (Biscoff Blondie)
+//
+// It never replaces it. That is what keeps two products sharing a name distinguishable, and what
+// keeps every rendered reference traceable back to the envelope.
+//
+// When no Products row exists for an id, or its name is unset/unknown, the id renders ALONE. It is
+// never humanised: turning "dark-chocolate-brownie-v2" into "Dark Chocolate Brownie V2" would be
+// inventing a fact the envelope does not contain, which is precisely the laundering this
+// architecture exists to prevent. UUID and slug ids are treated identically -- nothing here branches
+// on the shape of an id.
+//
+// Inventory needs no such machinery: IngredientSnapshot publishes `name` inside the snapshot itself,
+// and renderMember prints whatever plain scalar fields a snapshot actually publishes.
 //
 // ORDER IS SERIALIZATION, NOT RANKING. Sections follow a fixed declaration order; domains follow
 // DOMAIN_IDS; facts, signals, notes and keyed records follow the order the envelope already holds.
@@ -53,6 +65,48 @@ const DOMAIN_HEADINGS: Partial<Record<DomainId, string>> = {
 const SELLING_EVIDENCE_FACTS = new Set(["orderBasis", "orderLineBasis"]);
 
 const INDENT = "  ";
+
+// --- Product identity ----------------------------------------------------------------------------
+
+// The one place a product name can come from: the Products domain's own published facts.
+//
+// Built once per render and passed down. A product with no row, an unset name or an unknown name
+// simply never enters this map, so the render path falls back to the bare id without a branch of its
+// own -- absence in the envelope is the fallback.
+export type ProductLabels = ReadonlyMap<string, string>;
+
+export function productLabels(context: BusinessContext): ProductLabels {
+  const products = context.domains.products;
+  const labels = new Map<string, string>();
+
+  if (!products) {
+    return labels;
+  }
+
+  const byProduct = products.facts.byProduct;
+  if (byProduct === undefined || byProduct.state !== "known" || !Array.isArray(byProduct.value)) {
+    return labels;
+  }
+
+  for (const entry of byProduct.value) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const { productId, name } = entry as { productId?: unknown; name?: unknown };
+    // Only a `known` name is a name. unset, unknown, empty and absent all leave the id unannotated.
+    if (typeof productId === "string" && isFact(name) && name.state === "known" && typeof name.value === "string") {
+      labels.set(productId, name.value);
+    }
+  }
+
+  return labels;
+}
+
+// `product <id>` or `product <id> (<published name>)`. The id is always first and always verbatim.
+function renderProductRef(productId: string, labels: ProductLabels): string {
+  const name = labels.get(productId);
+  return name === undefined ? `product ${productId}` : `product ${productId} (${name})`;
+}
 
 // --- Fact rendering ------------------------------------------------------------------------------
 
@@ -126,13 +180,18 @@ export function renderFact(fact: Fact<unknown>): string {
 // are listed beneath. Nothing here knows what a costing or an ingredient is, so the renderer can
 // only ever print identifiers and names the adapter genuinely published -- which is precisely why no
 // product name can leak in, and why ingredient names legitimately appear.
-function renderMember(member: Record<string, unknown>, indent: string): string[] {
+function renderMember(member: Record<string, unknown>, indent: string, labels: ProductLabels): string[] {
   const scalars: string[] = [];
   const facts: string[] = [];
 
   for (const [key, value] of Object.entries(member)) {
     if (isFact(value)) {
       facts.push(`${indent}${INDENT}${key.padEnd(28)}${renderFact(value)}`);
+    } else if (key === "productId" && typeof value === "string") {
+      // The one annotated scalar. A CostingSnapshot's productId is the same canonical identity a
+      // signal subject carries, so it reads the same way: id first, published name in parentheses.
+      const name = labels.get(value);
+      scalars.push(name === undefined ? `${key}: ${value}` : `${key}: ${value} (${name})`);
     } else {
       scalars.push(`${key}: ${renderScalar(value)}`);
     }
@@ -145,9 +204,9 @@ function isMemberCollection(value: unknown): value is Record<string, unknown>[] 
   return Array.isArray(value) && value.length > 0 && value.every((entry) => typeof entry === "object" && entry !== null && !Array.isArray(entry));
 }
 
-function renderFactEntry(key: string, fact: Fact<unknown>, indent: string): string[] {
+function renderFactEntry(key: string, fact: Fact<unknown>, indent: string, labels: ProductLabels): string[] {
   if (fact.state === "known" && isMemberCollection(fact.value)) {
-    const members = fact.value.flatMap((member) => renderMember(member, `${indent}${INDENT}`));
+    const members = fact.value.flatMap((member) => renderMember(member, `${indent}${INDENT}`, labels));
     return [`${indent}${key} (${fact.value.length})${inferredSuffix(fact)}`, ...members];
   }
   return [`${indent}${key.padEnd(30)}${renderFact(fact)}`];
@@ -206,7 +265,7 @@ function renderCurrency(context: BusinessContext): string[] {
   return lines;
 }
 
-function renderDomainSection(context: BusinessContext, domainId: DomainId): string[] {
+function renderDomainSection(context: BusinessContext, domainId: DomainId, labels: ProductLabels): string[] {
   const heading = DOMAIN_HEADINGS[domainId] ?? domainId;
   const domain = context.domains[domainId];
   const lines = [`## ${heading}`, ""];
@@ -236,7 +295,7 @@ function renderDomainSection(context: BusinessContext, domainId: DomainId): stri
   }
 
   for (const key of factKeys) {
-    lines.push(...renderFactEntry(key, domain.facts[key], INDENT));
+    lines.push(...renderFactEntry(key, domain.facts[key], INDENT, labels));
   }
 
   if (domainId === "selling") {
@@ -257,13 +316,21 @@ function allSignals(context: BusinessContext): Signal[] {
   return [...domainSignals, ...context.signals];
 }
 
-function renderSubject(signal: Signal): string {
-  // Verbatim id, labelled by its kind so a reader knows it is an identifier and not a name.
-  return signal.subject ? `${signal.subject.kind} ${signal.subject.id}` : "business-wide";
+function renderSubject(signal: Signal, labels: ProductLabels): string {
+  // Verbatim id, labelled by its kind so a reader knows it is an identifier and not a name. A
+  // product subject additionally carries its published name; no other subject kind is annotated,
+  // because no other kind has a canonical identity fact to annotate it with.
+  if (!signal.subject) {
+    return "business-wide";
+  }
+  if (signal.subject.kind === "product") {
+    return renderProductRef(signal.subject.id, labels);
+  }
+  return `${signal.subject.kind} ${signal.subject.id}`;
 }
 
-function renderSignal(signal: Signal): string[] {
-  const lines = [`${INDENT}[${signal.id}] ${renderSubject(signal)} — ${signal.severity} · ${signal.status}`];
+function renderSignal(signal: Signal, labels: ProductLabels): string[] {
+  const lines = [`${INDENT}[${signal.id}] ${renderSubject(signal, labels)} — ${signal.severity} · ${signal.status}`];
   lines.push(`${INDENT}${INDENT}${signal.message}`);
   // The Signal's own deterministic recommendation, printed verbatim. This is serialization of a
   // value the rule already produced, not advice generated here.
@@ -271,7 +338,7 @@ function renderSignal(signal: Signal): string[] {
   return lines;
 }
 
-function renderSignalSection(heading: string, signals: Signal[], emptyLine: string, trailer?: string): string[] {
+function renderSignalSection(heading: string, signals: Signal[], labels: ProductLabels, emptyLine: string, trailer?: string): string[] {
   const lines = [`## ${heading}`, ""];
   if (signals.length === 0) {
     lines.push(`${INDENT}${emptyLine}`);
@@ -281,7 +348,7 @@ function renderSignalSection(heading: string, signals: Signal[], emptyLine: stri
     lines.push(`${INDENT}${trailer}`, "");
   }
   for (const signal of signals) {
-    lines.push(...renderSignal(signal));
+    lines.push(...renderSignal(signal, labels));
   }
   return lines;
 }
@@ -345,6 +412,7 @@ function renderUnknowns(context: BusinessContext): string[] {
 // Deterministic: same context in, byte-identical string out. Reads nothing outside its argument and
 // mutates nothing -- every array it walks is iterated, never sorted in place.
 export function renderBusinessBrief(context: BusinessContext): string {
+  const labels = productLabels(context);
   const signals = allSignals(context);
   const blockers = getBlockers(context);
   const blockerSet = new Set(blockers);
@@ -360,12 +428,13 @@ export function renderBusinessBrief(context: BusinessContext): string {
     renderHeader(context),
     renderCoverage(context),
     renderCurrency(context),
-    ...DOMAIN_IDS.filter((domainId) => DOMAIN_HEADINGS[domainId] !== undefined).map((domainId) => renderDomainSection(context, domainId)),
-    renderSignalSection("Blockers (getBlockers)", blockers, "none — no signal is a known, active failure at blocker severity"),
-    renderSignalSection("Other signals", others, "none recorded"),
+    ...DOMAIN_IDS.filter((domainId) => DOMAIN_HEADINGS[domainId] !== undefined).map((domainId) => renderDomainSection(context, domainId, labels)),
+    renderSignalSection("Blockers (getBlockers)", blockers, labels, "none — no signal is a known, active failure at blocker severity"),
+    renderSignalSection("Other signals", others, labels, "none recorded"),
     renderSignalSection(
       "Could not be evaluated (insufficient data)",
       insufficient,
+      labels,
       "none — every signal could be evaluated",
       'These could not be evaluated. That is "we did not look", not "the business is broken".',
     ),
