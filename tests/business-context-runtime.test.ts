@@ -250,6 +250,33 @@ const HEALTHY_ROWS: Record<string, Record<string, unknown>[]> = {
 
 // --- Readers: successful raw reads ----------------------------------------------------------------
 
+test("[PR-1] the Products reader returns every product row, unfiltered by lifecycle state", async () => {
+  // Identity resolution depends on this. An archived, unpublished or retired product still owns its
+  // name, and findings about one are exactly the findings most likely to be questioned later -- so a
+  // product that has left the catalogue must still be resolvable from a stable id.
+  //
+  // The two rows below differ on every field a future filter would plausibly key on: status,
+  // is_public and decision. A client-side `.eq(...)` cannot cause this regression -- the narrow
+  // ReadBuilder exposes only `order`, so that would be a compile error -- but an in-reader
+  // `rows.filter(...)` could, and this is what would catch it.
+  const current = productRow({ id: "brownies", name: "Brownies", status: "active", is_public: true, decision: "Candidate" });
+  const retired = productRow({ id: "retired-loaf", name: "Retired Loaf", status: "archived", is_public: false, decision: "Retired" });
+
+  const stub = createStub({ rows: { products: [current, retired] } });
+  const result = await readProducts(stub.client, ENV);
+
+  assert.ok(result.ok);
+  assert.equal(result.rows.products.length, 2, "an archived product must not be dropped by the reader");
+  assert.deepEqual(result.rows.products.map((row) => row.id), ["brownies", "retired-loaf"]);
+  assert.deepEqual(result.rows.products.map((row) => row.name), ["Brownies", "Retired Loaf"]);
+
+  // Raw rows, snake_case and untouched -- no mapper ran between the driver and the adapter.
+  assert.equal(result.rows.products[1].status, "archived");
+  assert.equal(result.rows.products[1].is_public, false);
+  assert.equal(result.rows.products[1].decision, "Retired");
+  assert.deepEqual(stub.tablesRead, ["products"]);
+});
+
 test("[PR-1] the Costing reader returns costing_summaries and costing_entries as raw rows", async () => {
   const stub = createStub({ rows: { costing_summaries: [costingRow()], costing_entries: [{ id: "entry-1", product_id: "product-1", batch_id: null, ingredient_name: "Flour", quantity_used: null, unit: null, cost: 12, supplier_note: null, created_at: "2026-08-01T00:00:00.000Z" }] } });
 
