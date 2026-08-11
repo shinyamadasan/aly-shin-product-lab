@@ -1,0 +1,171 @@
+# Aly & Pon — Business Context (compact)
+
+As of 2026-08-08T20:00:00.000Z · timezone Asia/Manila · business day 2026-08-09
+Data source: sample · context schema v1
+Coverage: 5 of 15 domains available, 10 not
+factsDigest 1492e0d0e2b7e47b564e583eb615154b5e45c16176cd2e397250e9614076e4f8
+signalsDigest 154c0b2685dc83a92410b4a9a8e83635aeca3bb667b966eaab1e24965c21ca95
+
+This is a compacted rendering of a canonical snapshot. Every omission below is stated with a
+count. Nothing here is ranked, prioritised or concluded -- it reports what the system knows and
+what it does not.
+
+## Coverage
+
+  Available: products · costing · inventory · readiness · selling
+  Not available (10):
+    batches         — adapter not built yet
+    sellingFormats  — adapter not built yet
+    tasting         — adapter not built yet
+    supplies        — adapter not built yet
+    equipment       — adapter not built yet
+    journey         — adapter not built yet
+    opportunities   — adapter not built yet
+    creative        — adapter not built yet
+    brand           — adapter not built yet
+    aiReviews       — adapter not built yet
+
+## Data currency
+
+  products   as of 2026-07-03T00:00:00.000Z · 3 row(s)
+  costing    as of 2026-07-28T00:00:00.000Z · 3 row(s)
+  inventory  as of 2026-08-08T18:00:00.000Z · 6 row(s)
+  readiness  as of not known — Readiness is derived from other domains' tables and has no source rows of its own. · 3 row(s)
+  selling    as of 2026-08-08T19:30:00.000Z · 6 row(s)
+
+## Costing
+
+  product fixture-brownies (Fixture Brownies) · costing fixture-costing-brownies
+    price 60 · cost/piece 30 · margin % 50 · food cost % 50
+  product fixture-cookies (Fixture Cookies) · costing fixture-costing-cookies
+    price: not set — suggested_price was never filled
+    cost/piece: not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+    margin %: not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+    food cost %: not known — The batch yield could not be read from this costing, and every per-piece number depends on it.
+  product fixture-cold-brew (Fixture Cold Brew) · costing fixture-costing-cold-brew
+    price 95 · cost/piece 34.4 · margin % 63.78947368421053 · food cost % 36.21052631578947
+
+  Showing 4 pricing facts per costing. The full brief carries every published cost component.
+
+## Inventory
+
+  summaryCounts           lowCount 0 · outCount 1 · expiringCount 1
+  totalInventoryValue     not known — 1 ingredient(s) could not be converted to a canonical unit, so any total that includes them is not meaningful.
+  flaggedIngredientCount  1
+  latestPurchaseAt        2026-08-08T12:00:00.000Z
+
+  Needing attention (4 of 6):
+    Fixture Milk (fixture-ing-milk) · stock out
+    Fixture Butter (fixture-ing-butter) · stock good · expiry expired
+    Fixture Sugar (fixture-ing-sugar) · stock good · flagged: Unrecognised legacy base_unit; needs manual reconciliation.
+    Fixture Vanilla (fixture-ing-vanilla) · stock out
+    (2 further ingredient(s) recorded with no stock, expiry or data-integrity attention item — full detail in the full brief.)
+
+## Selling
+
+  ordersPlacedToday             2
+  ordersPlacedRolling7d         4
+  grossPaidRevenueToday         720
+  grossPaidRevenueRolling7d     1620
+  refundsRolling7d              900
+  netRevenueRolling7d           720
+  unpaidActiveOrderCount        1
+  unpaidReceivableValue         780
+  newAwaitingConfirmation       0
+  confirmedNeedingScheduling    0
+  readyForHandover              1
+  remainingHandoversToday       1
+  overdueHandovers              0
+  orderCountBySourceRolling7d   unknown 1 · facebook 1 · instagram 2 · tiktok 0 · messenger 0 · website 0 · referral 0 · direct 0
+
+  Not shown: orderBasis, orderLineBasis — per-order evidence roots held as provenance for the figures above.
+
+## Readiness
+
+  Publishes no facts by design; its 81 finding(s) appear in the signal sections below.
+
+## Blockers
+
+  [inventory.outOfStock] ingredient fixture-ing-milk
+    Fixture Milk is out of stock.
+    → Restock Fixture Milk before the next bake that needs it.
+  [inventory.expiring] ingredient fixture-ing-butter
+    Fixture Butter expired on 2026-08-06.
+    → Use or replace Fixture Butter.
+  [DEV-002] product fixture-brownies (Fixture Brownies)
+    2 tasting(s) logged, average rating 8.0/10 -- need 5+ at 8+ average.
+    → Get 3 more independent tastings on the current recipe version.
+  [SUP-001] product fixture-brownies (Fixture Brownies)
+    No supply record matches: Fixture Flour.
+    → Log a real purchase in Purchases for each missing ingredient, or confirm a manual cost override is intentional.
+  [FIN-005] product fixture-cookies (Fixture Cookies)
+    No selling price has been set.
+    → Enter a selling price on the Costing page.
+  [PROD-001] product fixture-cookies (Fixture Cookies)
+    No yield set for this costing.
+    → Enter the batch yield (sellable pieces) this costing is based on.
+  [DEV-001] product fixture-cold-brew (Fixture Cold Brew)
+    No proof batches logged yet.
+    → Run a real kitchen test and log it on Proof Day.
+
+## Other active failures
+
+  [inventory.flagged] warning · ingredient fixture-ing-sugar — Fixture Sugar could not be converted to a canonical unit and needs manual reconciliation.
+  [FIN-002] warning · product fixture-brownies (Fixture Brownies) — Food cost is 50.0% against a 32.0% target -- 18.0 points over.
+  [QUAL-002] warning · product fixture-brownies (Fixture Brownies) — Packaging cost is PHP 30.00, but no test note confirms it holds up under real delivery/storage conditions.
+  [PROD-004] warning · product fixture-cookies (Fixture Cookies) — V1 has no prep/bake/cool time logged.
+  [DEV-006] info · product fixture-cookies (Fixture Cookies) — V1 has no taste notes logged.
+  [QUAL-004] info · product fixture-cookies (Fixture Cookies) — No explicit texture note for V1.
+  [QUAL-002] warning · product fixture-cold-brew (Fixture Cold Brew) — Packaging cost is PHP 45.00, but no test note confirms it holds up under real delivery/storage conditions.
+  [costing.staleVsPurchases] warning · costing fixture-costing-brownies — This costing has not been reviewed since the latest recorded ingredient purchase.
+
+## Could not be evaluated (insufficient data)
+
+  47 finding(s) could not be evaluated. This is "we did not look", NOT "the business is
+  fine". Grouped by rule; per-subject detail is in the full brief.
+
+    FIN-007                     3
+    PROD-002                    3
+    PROD-005                    3
+    DEV-003                     3
+    DEV-004                     3
+    DEV-005                     3
+    QUAL-003                    3
+    SUP-002                     3
+    SUP-003                     3
+    FIN-001                     1
+    FIN-002                     2
+    FIN-006                     1
+    PROD-003                    2
+    DEV-002                     2
+    QUAL-001                    2
+    QUAL-002                    1
+    SUP-001                     2
+    SUP-004                     2
+    PROD-004                    1
+    DEV-006                     1
+    QUAL-004                    1
+    QUAL-005                    1
+    costing.staleVsPurchases    1
+
+## Checks that passed
+
+  25 check(s) passed and are not listed individually. The full brief carries each one.
+
+## Notes and caveats
+
+  products: This domain publishes product identity only -- id and name. Category, role, status, decision, publication state and every other catalogue field are deliberately not loaded.
+  costing: Batch yield and target food cost are parsed from the free-text costing.notes column; no dedicated column exists for either, so both are reported as inferred.
+  costing: Costing review timestamps are only reliable from 2026-08-07T18:32:04Z; earlier rows report reviewedAt as unknown rather than substituting their creation time.
+  costing: sourceAsOf is the most recent costing record creation time, not a review time.
+  inventory: Expiration and stock states are anchored to 2026-08-09 in Asia/Manila, not to UTC.
+  inventory: Ingredients whose unit could not be migrated are reported as a data-integrity signal, and any inventory valuation that would include them is reported as unknown.
+  inventory: Purchase-import staging rows, ingredient aliases, and ledger actor names are deliberately excluded.
+  readiness: Supply-category results are insufficient_data because the Supplies domain is not part of this milestone -- not because the business lacks purchase history.
+  readiness: Selling Format data is not loaded in this milestone, so QUAL-002 reports insufficient_data for scope reasons rather than as a finding about packaging.
+  readiness: QUAL-001/002/003/005 are evaluated by keyword search over free text; their provenance is marked inferred and they must not be read as strongly as arithmetic checks.
+  readiness: Launch composite gates are not evaluated: includeLaunch is false, matching the Rule Engine's own default for routine evaluation.
+
+## What this snapshot does not know
+
+  10 of 15 declared domains have no adapter: batches, sellingFormats, tasting, supplies, equipment, journey, opportunities, creative, brand, aiReviews.
