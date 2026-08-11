@@ -19,9 +19,8 @@ export type LabView =
   | "content-studio"
   | "guide"
   | "brand"
-  // Registered so AppShell can type and title the standalone /context route. Deliberately absent
-  // from navItems below: /context is reachable by URL only until live use decides whether a
-  // deterministic business brief earns permanent sidebar space.
+  // Registered so AppShell can type and title the /context route. Listed in navItems below since
+  // Runtime v1 passed live validation -- it is a normal internal surface now, not an experiment.
   | "context";
 
 export const navItems: Array<{ label: string; href: string; view: LabView }> = [
@@ -41,6 +40,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView }> = [
   { label: "Launch Offer", href: "/launch", view: "launch" },
   { label: "Brand Foundation", href: "/brand", view: "brand" },
   { label: "Content Studio", href: "/content-studio", view: "content-studio" },
+  { label: "Business Context", href: "/context", view: "context" },
   { label: "How To Use", href: "/guide", view: "guide" },
 ];
 
