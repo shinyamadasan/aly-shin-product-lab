@@ -42,7 +42,7 @@ async function fixtureContext(): Promise<BusinessContext> {
 async function failedContext(): Promise<BusinessContext> {
   const down = { ok: false, reason: "failed", message: "connection reset" } as const;
   return buildBusinessContext({
-    reads: { costing: down, inventory: down, readiness: down, selling: down },
+    reads: { products: down, costing: down, inventory: down, readiness: down, selling: down },
     env: FIXTURE_ENV,
     dataSource: "supabase",
     composers: [COSTING_FRESHNESS_COMPOSER.compose],
@@ -219,7 +219,7 @@ test("[PR-2] every absent domain keeps its verbatim reason and is never called e
   const context = await fixtureContext();
   const brief = renderBusinessBrief(context);
 
-  assert.equal(context.coverage.absent.length, 11);
+  assert.equal(context.coverage.absent.length, 10);
   for (const entry of context.coverage.absent) {
     assert.ok(brief.includes(`${entry.domain.padEnd(16)}— ${entry.reason}`), `${entry.domain} must render with its reason verbatim`);
   }
@@ -235,27 +235,27 @@ function unbuiltDomains(context: BusinessContext): string[] {
   return context.coverage.knownDomains.filter((domain) => context.domains[domain] === undefined);
 }
 
-const RUNTIME_DOMAINS = ["costing", "inventory", "readiness", "selling"] as const;
+const RUNTIME_DOMAINS = ["products", "costing", "inventory", "readiness", "selling"] as const;
 
 test("[PR-2] the healthy fixture reports exactly the eleven genuinely unbuilt domains", async () => {
   const context = await fixtureContext();
   const brief = renderBusinessBrief(context);
 
-  assert.equal(unbuiltDomains(context).length, 11);
-  assert.equal(context.coverage.absent.length, 11, "with no failures the two happen to agree");
-  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
+  assert.equal(unbuiltDomains(context).length, 10);
+  assert.equal(context.coverage.absent.length, 10, "with no failures the two happen to agree");
+  assert.ok(brief.includes("10 of 15 declared domains have no adapter:"));
 });
 
-test("[PR-2] all four Runtime reads failing still reports 11 unbuilt domains, not 15", async () => {
+test("[PR-2] all five Runtime reads failing still reports 10 unbuilt domains, not 15", async () => {
   const context = await failedContext();
   const brief = renderBusinessBrief(context);
 
   // The regression: coverage.absent is now 15, because the four failed domains joined the eleven
   // that were never built. The closing statement must not follow it.
   assert.equal(context.coverage.absent.length, 15);
-  assert.equal(unbuiltDomains(context).length, 11);
+  assert.equal(unbuiltDomains(context).length, 10);
 
-  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
+  assert.ok(brief.includes("10 of 15 declared domains have no adapter:"));
   assert.equal(brief.includes("15 of 15 declared domains have no adapter"), false);
 });
 
@@ -266,7 +266,7 @@ test("[PR-2] a failed Runtime domain is never described as lacking an adapter", 
   // substring check would fail on a correct brief.
   const listed = sentence.slice(sentence.indexOf(":") + 1, sentence.indexOf(".")).split(",").map((entry) => entry.trim());
 
-  assert.deepEqual(listed, ["products", "batches", "sellingFormats", "tasting", "supplies", "equipment", "journey", "opportunities", "creative", "brand", "aiReviews"]);
+  assert.deepEqual(listed, ["batches", "sellingFormats", "tasting", "supplies", "equipment", "journey", "opportunities", "creative", "brand", "aiReviews"]);
   for (const domain of RUNTIME_DOMAINS) {
     assert.equal(listed.includes(domain), false, `${domain} has an adapter; its read merely failed`);
   }
@@ -275,10 +275,10 @@ test("[PR-2] a failed Runtime domain is never described as lacking an adapter", 
 test("[PR-2] failed Runtime domains are still reported separately as unreadable", async () => {
   const brief = renderBusinessBrief(await failedContext());
 
-  assert.ok(brief.includes("4 domain(s) could not be read this run (costing, inventory, readiness, selling)."));
+  assert.ok(brief.includes("5 domain(s) could not be read this run (products, costing, inventory, readiness, selling)."));
   assert.ok(brief.includes("unavailable, which is not the same as empty"));
   // Both statements coexist: eleven are missing by architecture, four by outage.
-  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
+  assert.ok(brief.includes("10 of 15 declared domains have no adapter:"));
 });
 
 test("[PR-2] one failed Runtime domain does not increase the unbuilt-domain count", async () => {
@@ -292,11 +292,11 @@ test("[PR-2] one failed Runtime domain does not increase the unbuilt-domain coun
   });
   const brief = renderBusinessBrief(mixed);
 
-  assert.equal(mixed.coverage.absent.length, 12, "eleven unbuilt plus one failed");
-  assert.equal(unbuiltDomains(mixed).length, 11);
+  assert.equal(mixed.coverage.absent.length, 11, "ten unbuilt plus one failed");
+  assert.equal(unbuiltDomains(mixed).length, 10);
 
-  assert.ok(brief.includes("11 of 15 declared domains have no adapter:"));
-  assert.equal(brief.includes("12 of 15 declared domains have no adapter"), false);
+  assert.ok(brief.includes("10 of 15 declared domains have no adapter:"));
+  assert.equal(brief.includes("11 of 15 declared domains have no adapter"), false);
   assert.ok(brief.includes("1 domain(s) could not be read this run (selling)."));
   assert.ok(brief.includes("costing"), "the healthy domains are unaffected");
 });
@@ -413,9 +413,33 @@ test("[PR-2] a product id renders verbatim and never acquires a display name", a
   assert.ok(brief.includes(`product ${enrichmentBait}`), "the id must appear verbatim, labelled as an id");
 
   // None of the plausible fabrications may appear.
-  for (const fabricated of ["Dark Chocolate Brownie", "Dark-Chocolate-Brownie", "dark chocolate brownie v2", "Brownies", "Brownie V2"]) {
+  //
+  // A bare "Brownies" is deliberately NOT in this list any more. Since the Products identity domain
+  // landed, "Fixture Brownies" is a genuinely PUBLISHED fact for fixture-brownies, so that substring
+  // appears legitimately. The rule was never "no product name may appear" -- it was "no name may
+  // appear that the envelope did not publish", and the bait id has no product row at all, so nothing
+  // may be produced for it.
+  for (const fabricated of ["Dark Chocolate Brownie", "Dark-Chocolate-Brownie", "dark chocolate brownie v2", "Brownie V2"]) {
     assert.equal(brief.includes(fabricated), false, `the brief must not invent "${fabricated}"`);
   }
+});
+
+test("[PR-1] the brief renders exactly the product names the envelope published, and nothing else", async () => {
+  const context = await fixtureContext();
+  const brief = renderBusinessBrief(context);
+  const products = context.domains.products as DomainContext;
+  const identities = (products.facts.byProduct as Extract<Fact<{ productId: string; name: Fact<string> }[]>, { state: "known" }>).value;
+
+  // Every published identity renders as id AND name -- the id is never replaced by the name.
+  for (const identity of identities) {
+    assert.ok(brief.includes(`productId: ${identity.productId}`), `${identity.productId} must render verbatim`);
+    if (identity.name.state === "known") {
+      assert.ok(brief.includes(identity.name.value), `${identity.name.value} is a published fact and may render`);
+    }
+  }
+
+  // A product id with no row publishes no name, so none can be rendered for it.
+  assert.equal(identities.some((identity) => identity.productId === "dark-chocolate-brownie-v2"), false);
 });
 
 test("[PR-2] costing snapshots render product ids and publish no product name to render", async () => {

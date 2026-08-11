@@ -2,15 +2,14 @@
 
 As of 2026-08-08T20:00:00.000Z · timezone Asia/Manila · business day 2026-08-09
 Data source: sample · context schema v1
-factsDigest 73a12a7b4225d13e021f8c13b0743b0c019962017f32612e4deaac6ad63082f6
-signalsDigest 71f86d92f8dbf53f24237b73218bf089b89d6a4f0402df48f5d64fbde1d8df3d
+factsDigest 1492e0d0e2b7e47b564e583eb615154b5e45c16176cd2e397250e9614076e4f8
+signalsDigest 154c0b2685dc83a92410b4a9a8e83635aeca3bb667b966eaab1e24965c21ca95
 
 ## Domain coverage
 
-Available (4 of 15): costing · inventory · readiness · selling
+Available (5 of 15): products · costing · inventory · readiness · selling
 
-Not available (11):
-  products        — adapter not built yet
+Not available (10):
   batches         — adapter not built yet
   sellingFormats  — adapter not built yet
   tasting         — adapter not built yet
@@ -24,6 +23,8 @@ Not available (11):
 
 ## Data currency
 
+products    source as of 2026-07-03T00:00:00.000Z
+            rows read 3, included 3, omitted 0 · adapter v1
 costing     source as of 2026-07-28T00:00:00.000Z
             rows read 3, included 3, omitted 0 · adapter v1
 inventory   source as of 2026-08-08T18:00:00.000Z
@@ -32,6 +33,17 @@ readiness   source as of not known — Readiness is derived from other domains' 
             rows read 3, included 81, omitted 0 · adapter v1
 selling     source as of 2026-08-08T19:30:00.000Z
             rows read 6, included 6, omitted 0 · adapter v1
+
+## Products
+
+  byProduct (3)
+    - productId: fixture-brownies
+      name                        Fixture Brownies
+    - productId: fixture-cookies
+      name                        Fixture Cookies
+    - productId: fixture-cold-brew
+      name                        Fixture Cold Brew
+  productCount                  3
 
 ## Costing
 
@@ -484,6 +496,7 @@ selling     source as of 2026-08-08T19:30:00.000Z
 
 ## Notes and caveats
 
+  products: This domain publishes product identity only -- id and name. Category, role, status, decision, publication state and every other catalogue field are deliberately not loaded.
   costing: Batch yield and target food cost are parsed from the free-text costing.notes column; no dedicated column exists for either, so both are reported as inferred.
   costing: Costing review timestamps are only reliable from 2026-08-07T18:32:04Z; earlier rows report reviewedAt as unknown rather than substituting their creation time.
   costing: sourceAsOf is the most recent costing record creation time, not a review time.
@@ -497,7 +510,7 @@ selling     source as of 2026-08-08T19:30:00.000Z
 
 ## What this snapshot does not know
 
-  11 of 15 declared domains have no adapter: products, batches, sellingFormats, tasting, supplies, equipment, journey, opportunities, creative, brand, aiReviews.
+  10 of 15 declared domains have no adapter: batches, sellingFormats, tasting, supplies, equipment, journey, opportunities, creative, brand, aiReviews.
 
   No canonical Product domain is available. Costing and Readiness above still refer to
   products, but only by product ID — no product name, category, or description is in

@@ -23,16 +23,13 @@
       "selling"
     ],
     "present": [
+      "products",
       "costing",
       "inventory",
       "readiness",
       "selling"
     ],
     "absent": [
-      {
-        "domain": "products",
-        "reason": "adapter not built yet"
-      },
       {
         "domain": "batches",
         "reason": "adapter not built yet"
@@ -76,6 +73,95 @@
     ]
   },
   "domains": {
+    "products": {
+      "domain": "products",
+      "adapterVersion": 1,
+      "readOutcome": {
+        "ok": true
+      },
+      "sourceAsOf": {
+        "state": "known",
+        "value": "2026-07-03T00:00:00.000Z",
+        "source": {
+          "kind": "entered",
+          "table": "products",
+          "column": "updated_at"
+        }
+      },
+      "rowCounts": {
+        "read": 3,
+        "included": 3,
+        "omitted": 0
+      },
+      "facts": {
+        "byProduct": {
+          "state": "known",
+          "value": [
+            {
+              "productId": "fixture-brownies",
+              "name": {
+                "state": "known",
+                "value": "Fixture Brownies",
+                "source": {
+                  "kind": "entered",
+                  "table": "products",
+                  "column": "name"
+                }
+              }
+            },
+            {
+              "productId": "fixture-cookies",
+              "name": {
+                "state": "known",
+                "value": "Fixture Cookies",
+                "source": {
+                  "kind": "entered",
+                  "table": "products",
+                  "column": "name"
+                }
+              }
+            },
+            {
+              "productId": "fixture-cold-brew",
+              "name": {
+                "state": "known",
+                "value": "Fixture Cold Brew",
+                "source": {
+                  "kind": "entered",
+                  "table": "products",
+                  "column": "name"
+                }
+              }
+            }
+          ],
+          "source": {
+            "kind": "entered",
+            "table": "products",
+            "rowIds": [
+              "fixture-brownies",
+              "fixture-cookies",
+              "fixture-cold-brew"
+            ]
+          }
+        },
+        "productCount": {
+          "state": "known",
+          "value": 3,
+          "source": {
+            "kind": "derived",
+            "table": "products",
+            "computedBy": "buildProductsDomainContext",
+            "inputs": [
+              "products.facts.byProduct"
+            ]
+          }
+        }
+      },
+      "signals": [],
+      "notes": [
+        "This domain publishes product identity only -- id and name. Category, role, status, decision, publication state and every other catalogue field are deliberately not loaded."
+      ]
+    },
     "costing": {
       "domain": "costing",
       "adapterVersion": 1,
@@ -3801,6 +3887,6 @@
       }
     }
   ],
-  "factsDigest": "73a12a7b4225d13e021f8c13b0743b0c019962017f32612e4deaac6ad63082f6",
-  "signalsDigest": "71f86d92f8dbf53f24237b73218bf089b89d6a4f0402df48f5d64fbde1d8df3d"
+  "factsDigest": "1492e0d0e2b7e47b564e583eb615154b5e45c16176cd2e397250e9614076e4f8",
+  "signalsDigest": "154c0b2685dc83a92410b4a9a8e83635aeca3bb667b966eaab1e24965c21ca95"
 }

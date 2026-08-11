@@ -555,6 +555,7 @@ const orderLines: OrderLineRow[] = [
 // fixture stands in for a successful read of every table the builder's domains need.
 export function fixtureReads(): M1DomainReadResults {
   return {
+    products: { ok: true, rows: { products } },
     costing: { ok: true, rows: { costings, entries: costingEntries } },
     inventory: { ok: true, rows: { ingredients, transactions } },
     readiness: { ok: true, rows: { products, batches, costings, tastings } },

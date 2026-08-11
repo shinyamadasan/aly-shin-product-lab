@@ -21,6 +21,7 @@
 
 import type { CostingRows } from "../adapters/costing.ts";
 import type { InventoryRows } from "../adapters/inventory.ts";
+import type { ProductsRows } from "../adapters/products.ts";
 import type { ReadinessRows } from "../adapters/readiness.ts";
 import type { SellingRows } from "../adapters/selling.ts";
 import type { DomainReader, ReadResult } from "../types.ts";
@@ -188,6 +189,21 @@ export const readInventory: DomainReader<BusinessContextReadClient, InventoryRow
   if (!transactions.ok) return transactions;
 
   return { ok: true, rows: { ingredients: ingredients.rows, transactions: transactions.rows } };
+};
+
+const PRODUCTS_MISSING_TABLE =
+  "Products are not available yet. Run supabase-schema.sql once in the Supabase SQL editor, then reload this page.";
+
+// Identity only. The same `products` table is also read by readReadiness, which needs the full rows
+// as Rule Engine input -- the same deliberate duplication costing_summaries already has, and for the
+// same reason: it is what keeps the two domains independent, so neither waits on nor consumes the
+// other's rows. Unfiltered by status, because an archived product still owns its identity.
+export const readProducts: DomainReader<BusinessContextReadClient, ProductsRows> = async (client) => {
+  const products = await readTable<ProductRow>(client, "products", [{ column: "name", ascending: true }, BY_ID], PRODUCTS_MISSING_TABLE);
+
+  if (!products.ok) return products;
+
+  return { ok: true, rows: { products: products.rows } };
 };
 
 const READINESS_MISSING_TABLE =

@@ -13,7 +13,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { readCosting, readInventory, readReadiness, readSelling, type BusinessContextReadClient } from "../src/lib/business-context/readers/supabase.ts";
+import { readCosting, readInventory, readProducts, readReadiness, readSelling, type BusinessContextReadClient } from "../src/lib/business-context/readers/supabase.ts";
 import { buildCurrentBusinessContext, resolveRuntimeEnv } from "../src/lib/business-context/runtime.ts";
 import { BUSINESS_TIMEZONE, resolveBusinessDay } from "../src/lib/business-day.ts";
 import { COSTING_FRESHNESS_COMPOSER_ID } from "../src/lib/business-context/composers/costing-freshness.ts";
@@ -250,6 +250,33 @@ const HEALTHY_ROWS: Record<string, Record<string, unknown>[]> = {
 
 // --- Readers: successful raw reads ----------------------------------------------------------------
 
+test("[PR-1] the Products reader returns every product row, unfiltered by lifecycle state", async () => {
+  // Identity resolution depends on this. An archived, unpublished or retired product still owns its
+  // name, and findings about one are exactly the findings most likely to be questioned later -- so a
+  // product that has left the catalogue must still be resolvable from a stable id.
+  //
+  // The two rows below differ on every field a future filter would plausibly key on: status,
+  // is_public and decision. A client-side `.eq(...)` cannot cause this regression -- the narrow
+  // ReadBuilder exposes only `order`, so that would be a compile error -- but an in-reader
+  // `rows.filter(...)` could, and this is what would catch it.
+  const current = productRow({ id: "brownies", name: "Brownies", status: "active", is_public: true, decision: "Candidate" });
+  const retired = productRow({ id: "retired-loaf", name: "Retired Loaf", status: "archived", is_public: false, decision: "Retired" });
+
+  const stub = createStub({ rows: { products: [current, retired] } });
+  const result = await readProducts(stub.client, ENV);
+
+  assert.ok(result.ok);
+  assert.equal(result.rows.products.length, 2, "an archived product must not be dropped by the reader");
+  assert.deepEqual(result.rows.products.map((row) => row.id), ["brownies", "retired-loaf"]);
+  assert.deepEqual(result.rows.products.map((row) => row.name), ["Brownies", "Retired Loaf"]);
+
+  // Raw rows, snake_case and untouched -- no mapper ran between the driver and the adapter.
+  assert.equal(result.rows.products[1].status, "archived");
+  assert.equal(result.rows.products[1].is_public, false);
+  assert.equal(result.rows.products[1].decision, "Retired");
+  assert.deepEqual(stub.tablesRead, ["products"]);
+});
+
 test("[PR-1] the Costing reader returns costing_summaries and costing_entries as raw rows", async () => {
   const stub = createStub({ rows: { costing_summaries: [costingRow()], costing_entries: [{ id: "entry-1", product_id: "product-1", batch_id: null, ingredient_name: "Flour", quantity_used: null, unit: null, cost: 12, supplier_note: null, created_at: "2026-08-01T00:00:00.000Z" }] } });
 
@@ -357,6 +384,7 @@ test("[PR-1] the readers module imports and calls no Selling mapper or repositor
 // --- Readers: failure semantics -------------------------------------------------------------------
 
 const DOMAIN_READERS = [
+  { name: "products", read: readProducts, table: "products" },
   { name: "costing", read: readCosting, table: "costing_summaries" },
   { name: "inventory", read: readInventory, table: "ingredients" },
   { name: "readiness", read: readReadiness, table: "products" },
@@ -501,10 +529,10 @@ test("[PR-1] resolveRuntimeEnv honours an explicitly injected timezone", () => {
   assert.equal(manila.businessDay, resolveBusinessDay(manila.now, "Asia/Manila"));
 });
 
-test("[PR-1] the orchestrator reads all nine unique tables required by the four domains", async () => {
-  // Nine UNIQUE tables, from ten read executions: costing_summaries is read twice, once by Costing
-  // and once independently by Readiness. That duplication is deliberate -- it is what keeps the two
-  // domains independent, so neither waits on nor consumes the other's rows.
+test("[PR-1] the orchestrator reads all nine unique tables required by the five domains", async () => {
+  // Nine UNIQUE tables, from ELEVEN read executions: costing_summaries is read twice (Costing and
+  // Readiness) and products is read twice (Products and Readiness). Both duplications are deliberate
+  // -- they are what keep the domains independent, so none waits on or consumes another's rows.
   const stub = createStub({ rows: HEALTHY_ROWS });
   await buildCurrentBusinessContext({ client: stub.client, nowMs: NOW_MS });
 
@@ -634,7 +662,7 @@ test("[PR-1] all four domains failing still returns a canonical context, never a
   assert.equal(context.domains.costing?.facts.byCosting.state, "unavailable");
 });
 
-test("[PR-1] the four domain reads are issued concurrently, not sequenced", async () => {
+test("[PR-1] the five domain reads are issued concurrently, not sequenced", async () => {
   // Ordering evidence rather than timing: all four from() calls are recorded before any read
   // resolves, which is only true if they were started together.
   const stub = createStub({ rows: HEALTHY_ROWS });
@@ -644,5 +672,6 @@ test("[PR-1] the four domain reads are issued concurrently, not sequenced", asyn
   await pending;
 
   assert.equal(startedSynchronously, 9, "every domain read must start before any of them is awaited");
+  assert.equal(stub.tablesRead.length, 11, "eleven read executions across nine unique tables");
   assert.ok(RUNTIME_CODE.includes("Promise.all"));
 });
