@@ -5,8 +5,8 @@
 // anything; this page needs none of that. It reads through the Business Context runtime, holds no
 // LabState, and shares no state with the monolith -- the same independence Orders established.
 //
-// Unlisted on purpose. It is reachable by typing /context and is not in navItems, because whether a
-// deterministic brief is worth permanent sidebar space is a question live use answers, not this PR.
+// Listed in navItems. It was unlisted through Runtime v1 while it was unproven; live validation
+// against real Aly & Pon data settled that, so it is a normal internal surface now.
 //
 // AppShell is rendered by the client component rather than here: app-shell.tsx has no "use client"
 // directive and carries onClick handlers, so it is only valid inside the client boundary -- exactly

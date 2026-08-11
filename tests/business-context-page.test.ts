@@ -51,15 +51,15 @@ test("[PR-3] the context view is registered in LabView and titled in AppShell", 
   assert.ok(/context:\s*"Business context"/.test(APP_SHELL), "AppShell must title the context view");
 });
 
-test("[PR-3] /context is deliberately absent from navigation", () => {
+test("[PR-2] Business Context is discoverable from the normal navigation", () => {
   const navItems = LAB_STATE.slice(LAB_STATE.indexOf("export const navItems"), LAB_STATE.indexOf("export const storageKey"));
 
-  assert.ok(navItems.length > 0);
-  assert.equal(navItems.includes("/context"), false, "/context must not appear in navItems");
-  assert.equal(navItems.includes('view: "context"'), false);
-  // The sidebar is unchanged: still the same seventeen entries it had before this slice. Counted by
-  // href rather than by `{ label:`, which also appears in the array's own type annotation.
-  assert.equal((navItems.match(/href: "/g) ?? []).length, 17);
+  // Unlisted through Runtime v1 while it was unproven; listed now that live validation settled it.
+  // One entry added using the existing convention -- no new hierarchy, no badge, no count.
+  assert.ok(navItems.includes('{ label: "Business Context", href: "/context", view: "context" }'));
+  assert.equal((navItems.match(/href: "/g) ?? []).length, 18, "exactly one nav entry added");
+  assert.equal(navItems.includes("badge"), false);
+  assert.equal(navItems.includes("count"), false);
 });
 
 // --- Auth, and the gate --------------------------------------------------------------------------
@@ -152,6 +152,7 @@ test("[PR-3] the page calls the runtime and the brief renderer, each once", () =
   // Rendered once, at build time, and stored. Copy hands over those exact bytes rather than
   // re-rendering, so what was read on screen is what gets pasted.
   assert.equal((PAGE_CODE.match(/renderBusinessBrief\(/g) ?? []).length, 1);
+  assert.equal((PAGE_CODE.match(/renderCompactBrief\(/g) ?? []).length, 1);
 });
 
 test("[PR-3] Refresh rebuilds and is disabled while a build is in flight", () => {
@@ -246,9 +247,9 @@ test("[PR-3] the build effect is keyed to authenticated identity, not Session ob
 
 test("[PR-3] ownership is UI state only and never reaches the brief, JSON, clipboard or metadata", () => {
   // renderSnapshot destructures context and brief only, so the owning id has no path to the screen.
-  assert.ok(PAGE_CODE.includes("function renderSnapshot({ context, brief }: Snapshot)"));
+  assert.ok(PAGE_CODE.includes("function renderSnapshot({ context, compact, brief }: Snapshot)"));
   // The copied bytes and the raw JSON are the canonical artefacts, unchanged by ownership.
-  assert.ok(PAGE_CODE.includes('copyText(brief, "Business context")'));
+  assert.ok(PAGE_CODE.includes('copyText(compact, "Business context")'));
   assert.ok(PAGE_CODE.includes('copyText(JSON.stringify(context, null, 2), "Raw JSON")'));
   // No metadata row exposes it, and it is never written anywhere.
   assert.equal(PAGE_CODE.includes("label=\"User\""), false);
@@ -274,9 +275,11 @@ test("[PR-3] the all-domains-failed warning is derived from DomainContexts, not 
 
 // --- Copy -------------------------------------------------------------------------------------------
 
-test("[PR-3] Copy Context writes exactly the rendered brief, with nothing added", () => {
+test("[PR-2] Copy Context writes exactly the rendered COMPACT brief, with nothing added", () => {
   assert.ok(PAGE_CODE.includes("navigator.clipboard.writeText"));
-  assert.ok(PAGE_CODE.includes('copyText(brief, "Business context")'), "Copy Context copies the stored brief string");
+  assert.ok(PAGE_CODE.includes('copyText(compact, "Business context")'), "Copy Context copies the stored compact brief");
+  // Full fidelity stays available under its own action.
+  assert.ok(PAGE_CODE.includes('copyText(brief, "Full brief")'));
 
   // No wrapper prompt, no instruction, no fence, no hidden context around the copied bytes.
   for (const wrapper of ["```", "You are", "Given this", "Please analyse", "Please analyze", "prompt"]) {
@@ -345,5 +348,32 @@ test("[PR-3] business-context modules stay free of server-only and node builtins
     const code = withoutComments(source);
     assert.equal(code.includes("server-only"), false, `${name} must not import server-only`);
     assert.equal(/from\s+"node:/.test(code), false, `${name} must not import a node builtin`);
+  }
+});
+
+// --- PR-2: compact primary, full fidelity retained ---------------------------------------------------
+
+test("[PR-2] the compact brief is the primary readout and the full brief stays available", () => {
+  assert.ok(PAGE_CODE.includes('title="Business brief (compact)"'), "the panel shows the compact brief");
+  assert.ok(PAGE_CODE.includes("{compact}"), "compact is what renders in the primary panel");
+  // Full fidelity is one click away, in its own collapsed section with its own copy action.
+  assert.ok(PAGE_CODE.includes("Full brief (every published fact)"));
+  assert.ok(PAGE_CODE.includes(">Copy Full Brief<"));
+  assert.ok(PAGE_CODE.includes("{brief}"));
+  // Raw canonical JSON is untouched and still copyable.
+  assert.ok(PAGE_CODE.includes("Raw BusinessContext JSON"));
+  assert.ok(PAGE_CODE.includes(">Copy JSON<"));
+});
+
+test("[PR-2] all three payloads are rendered once and stored, never re-rendered on copy", () => {
+  // Copy hands over stored bytes, so what was read on screen is what gets pasted.
+  assert.ok(PAGE_CODE.includes("compact: renderCompactBrief(context)"));
+  assert.ok(PAGE_CODE.includes("brief: renderBusinessBrief(context)"));
+  assert.equal((PAGE_CODE.match(/renderCompactBrief\(/g) ?? []).length, 1);
+});
+
+test("[PR-2] the page is still read-only", () => {
+  for (const write of [".insert(", ".update(", ".upsert(", ".delete(", ".rpc(", "<form", "<input", "<textarea", "onSubmit"]) {
+    assert.equal(PAGE_CODE.includes(write), false, `the page must not introduce ${write}`);
   }
 });

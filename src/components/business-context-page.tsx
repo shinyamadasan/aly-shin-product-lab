@@ -23,13 +23,19 @@ import type { Session } from "@supabase/supabase-js";
 import { AppShell } from "@/components/app-shell";
 import { MessageBox, Panel, SecondaryButton } from "@/components/ui";
 import { renderBusinessBrief } from "@/lib/business-context/brief";
+import { renderCompactBrief } from "@/lib/business-context/compact-brief";
 import type { BusinessContextReadClient } from "@/lib/business-context/readers/supabase";
 import { buildCurrentBusinessContext } from "@/lib/business-context/runtime";
 import type { BusinessContext, DomainContext } from "@/lib/business-context/types";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
-// The brief is rendered once, when the context is built, and stored beside it. Copy Context hands
-// over these exact bytes rather than re-rendering, so what was read on screen is what gets pasted.
+// Both briefs are rendered once, when the context is built, and stored beside it. Each copy button
+// hands over those exact bytes rather than re-rendering, so what was read on screen is what gets
+// pasted.
+//
+// `compact` is the primary readout and what Copy Context copies: it is the AI-facing payload. `full`
+// stays one click away so fidelity is never lost, and the canonical JSON below it is the source of
+// truth for both.
 //
 // `userId` is OWNERSHIP, not data. It records which authenticated identity authorized this build, so
 // a snapshot can never outlive the session that produced it: sign out and back in as someone else
@@ -38,6 +44,7 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 // part of the canonical BusinessContext.
 type Snapshot = {
   context: BusinessContext;
+  compact: string;
   brief: string;
   userId: string;
 };
@@ -137,7 +144,7 @@ export function BusinessContextPage() {
         if (cancelled) return;
         // The previous snapshot is replaced only now, once a canonical context exists -- and it is
         // stamped with the identity that authorized this build.
-        setSnapshot({ context, brief: renderBusinessBrief(context), userId: sessionUserId });
+        setSnapshot({ context, compact: renderCompactBrief(context), brief: renderBusinessBrief(context), userId: sessionUserId });
         setLoadError(null);
         setCopyNotice(null);
       } catch (error) {
@@ -230,7 +237,7 @@ export function BusinessContextPage() {
     return renderSnapshot(ownedSnapshot);
   }
 
-  function renderSnapshot({ context, brief }: Snapshot) {
+  function renderSnapshot({ context, compact, brief }: Snapshot) {
     return (
       <div className="space-y-4">
         {hasNoReadableDomain(context) ? (
@@ -260,15 +267,24 @@ export function BusinessContextPage() {
                 Refresh
               </span>
             </SecondaryButton>
-            {/* Copies the already-rendered brief bytes: no wrapper prompt, no instruction, no JSON,
-                no Markdown fence. What is on screen is what is pasted. */}
-            <SecondaryButton onClick={() => void copyText(brief, "Business context")}>Copy Context</SecondaryButton>
+            {/* Copies the already-rendered COMPACT bytes: no wrapper prompt, no instruction, no
+                JSON, no Markdown fence. What is on screen is what is pasted. */}
+            <SecondaryButton onClick={() => void copyText(compact, "Business context")}>Copy Context</SecondaryButton>
           </div>
         </Panel>
 
-        <Panel icon={<FileText size={16} />} title="Business brief">
-          <pre className="max-h-[32rem] overflow-auto rounded-md border border-[#e1d4c4] bg-[#fffaf3] p-4 text-xs leading-5 text-[#3d2c22]">{brief}</pre>
+        <Panel icon={<FileText size={16} />} title="Business brief (compact)">
+          <pre className="max-h-[32rem] overflow-auto rounded-md border border-[#e1d4c4] bg-[#fffaf3] p-4 text-xs leading-5 text-[#3d2c22]">{compact}</pre>
         </Panel>
+
+        {/* Full fidelity, one click away. Every fact the envelope publishes, rendered in full. */}
+        <details className="rounded-lg border border-[#e1d4c4] bg-white p-5">
+          <summary className="cursor-pointer text-sm font-semibold text-[#5f4a3d]">Full brief (every published fact)</summary>
+          <div className="mt-4 space-y-3">
+            <SecondaryButton onClick={() => void copyText(brief, "Full brief")}>Copy Full Brief</SecondaryButton>
+            <pre className="max-h-[32rem] overflow-auto rounded-md border border-[#e1d4c4] bg-[#fffaf3] p-4 text-xs leading-5 text-[#3d2c22]">{brief}</pre>
+          </div>
+        </details>
 
         {/* Debugging only, and collapsed by default. The canonical BusinessContext -- not a database
             row, not a query result. Nothing here is persisted or downloaded. */}
