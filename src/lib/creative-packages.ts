@@ -10,6 +10,7 @@ import {
   type CreativeJobWorkerType,
 } from "./creative-jobs.ts";
 import type { CreativeJobAttemptClient } from "./creative-job-attempts.ts";
+import { isCreativeFormat, isCreativePlatform, type CreativePlatform } from "./creative-formats.ts";
 
 export const CREATIVE_PACKAGE_STATUSES = ["ready"] as const;
 export type CreativePackageStatus = (typeof CREATIVE_PACKAGE_STATUSES)[number];
@@ -19,26 +20,18 @@ export type CreativePackageSchemaVersion = (typeof CREATIVE_PACKAGE_SCHEMA_VERSI
 
 // --- v2 vocabulary (Content Creation MVP S2) ----------------------------------------------------
 //
-// One package describes exactly ONE primary creative. Repurposing a Reel into a Story is a new
-// Creative Job producing a new package, never a second format bolted onto this one -- the
-// discriminated union below is what makes that structurally impossible rather than merely
-// discouraged, and it is what later makes "which format actually worked" a groupable question.
-export const CREATIVE_FORMATS = ["photo", "reel", "carousel", "story"] as const;
-export type CreativeFormat = (typeof CREATIVE_FORMATS)[number];
-
-// Only the platforms Aly & Pon's own order attribution names and Brand Presence stores handles for.
-// YouTube is deliberately absent: no v2 format targets it, and a platform nothing can be published
-// to is a promise the contract cannot keep.
-export const CREATIVE_PLATFORMS = ["instagram", "facebook", "tiktok"] as const;
-export type CreativePlatform = (typeof CREATIVE_PLATFORMS)[number];
-
-export function isCreativeFormat(value: unknown): value is CreativeFormat {
-  return typeof value === "string" && (CREATIVE_FORMATS as readonly string[]).includes(value);
-}
-
-export function isCreativePlatform(value: unknown): value is CreativePlatform {
-  return typeof value === "string" && (CREATIVE_PLATFORMS as readonly string[]).includes(value);
-}
+// Moved to the leaf module ./creative-formats.ts in S3B and re-exported here unchanged, so every
+// existing importer and the S2 contract stay exactly as they were. The move exists only to let
+// CreativeInput validate a human-supplied formatHint without closing a runtime import cycle --
+// see creative-formats.ts for the full reasoning.
+export {
+  CREATIVE_FORMATS,
+  CREATIVE_PLATFORMS,
+  isCreativeFormat,
+  isCreativePlatform,
+  type CreativeFormat,
+  type CreativePlatform,
+} from "./creative-formats.ts";
 
 // Carries the same provenance v1 does, plus the two decisions a generator makes that would be
 // unreconstructable afterwards: which format it picked and why, and whether the subject was stated

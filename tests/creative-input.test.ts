@@ -52,10 +52,14 @@ test("CreativeInput carries no generated creative decision, from either adapter"
     for (const key of forbidden) {
       assert.ok(!(key in input), `CreativeInput must not carry the generated field "${key}"`);
     }
-    // The exact permitted surface, so a future field addition is a deliberate, visible decision.
+    // The exact permitted surface, so a future field addition is a deliberate, visible decision --
+    // which is precisely what happened in S3B. `formatHint` joined the list because it is an
+    // explicit HUMAN input, not a generated one: a person asking for a Reel is context, the same
+    // way a stated subject is. The forbidden list above is unchanged, and still includes the
+    // generated `format` that a model would choose.
     assert.deepEqual(
       Object.keys(input).sort(),
-      ["evidenceSummary", "origin", "productId", "productName", "reason", "requestText", "subject"],
+      ["evidenceSummary", "formatHint", "origin", "productId", "productName", "reason", "requestText", "subject"],
     );
   }
 });

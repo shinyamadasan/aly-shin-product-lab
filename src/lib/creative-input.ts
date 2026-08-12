@@ -1,4 +1,5 @@
 import type { OpportunityRecord } from "./opportunities.ts";
+import { isCreativeFormat, type CreativeFormat } from "./creative-formats.ts";
 
 // The convergence point for both content-creation entry paths (Content Creation MVP S1).
 //
@@ -34,6 +35,12 @@ export type CreativeInput = {
   productName: string | null;
   productId: string | null;
 
+  // A format the HUMAN explicitly asked for -- never an AI decision, and never inferred from
+  // prose. Null means unresolved: the generator will choose, and the package will record
+  // formatChosenBy "ai". Added in S3B; S1 deferred it only because CreativeFormat did not exist
+  // until S2, which is why every pre-S3B job and stored intent reads back as null.
+  formatHint: CreativeFormat | null;
+
   origin: { kind: "opportunity"; opportunityId: string } | { kind: "user_request" };
 };
 
@@ -44,6 +51,10 @@ export type CreativeRequest = {
   subject?: string | null;
   productId?: string | null;
   productName?: string | null;
+  // Optional and structured. A future UI supplies it from an explicit control; nothing parses it
+  // out of the owner's sentence, because guessing a format from prose is exactly the kind of
+  // silent reinterpretation formatHint exists to avoid.
+  formatHint?: CreativeFormat | null;
 };
 
 export type CreativeRequestValidation = { ok: true; request: CreativeRequest } | { ok: false; message: string };
@@ -64,6 +75,13 @@ export function validateCreativeRequest(value: unknown): CreativeRequestValidati
   if (typeof value.text !== "string" || value.text.trim().length === 0) {
     return { ok: false, message: "Creative request text is required." };
   }
+  // Absent or null is legitimate -- it means the human did not ask for a format. Present but not
+  // one of the four supported formats is a real error, not something to silently drop: a caller
+  // asking for "video" must be told, never quietly given an AI-chosen format instead.
+  if (value.formatHint !== undefined && value.formatHint !== null && !isCreativeFormat(value.formatHint)) {
+    return { ok: false, message: `Creative request formatHint is not a supported format: ${String(value.formatHint)}.` };
+  }
+
   return {
     ok: true,
     request: {
@@ -73,6 +91,7 @@ export function validateCreativeRequest(value: unknown): CreativeRequestValidati
       subject: optionalString(value.subject),
       productId: optionalString(value.productId),
       productName: optionalString(value.productName),
+      formatHint: isCreativeFormat(value.formatHint) ? value.formatHint : null,
     },
   };
 }
@@ -98,6 +117,9 @@ export function buildCreativeInputFromOpportunity(opportunity: OpportunityRecord
     evidenceSummary: opportunity.summary,
     productName: optionalString(product?.name),
     productId: optionalString(product?.id),
+    // An Opportunity never states a format -- it describes a business reason, not a creative
+    // decision -- so this is always null and the generator always chooses.
+    formatHint: null,
     origin: { kind: "opportunity", opportunityId: opportunity.id },
   };
 }
@@ -114,6 +136,7 @@ export function buildCreativeInputFromRequest(request: CreativeRequest): Creativ
     evidenceSummary: null,
     productName: optionalString(request.productName),
     productId: optionalString(request.productId),
+    formatHint: request.formatHint ?? null,
     origin: { kind: "user_request" },
   };
 }
@@ -127,6 +150,10 @@ export function toIntentJson(request: CreativeRequest): Record<string, unknown> 
     subject: request.subject ?? null,
     productId: request.productId ?? null,
     productName: request.productName ?? null,
+    // Additive. Intent rows written before S3B simply have no key here, and validateCreativeRequest
+    // reads that absence as null -- which is why the intent schemaVersion stays "v1" rather than
+    // bumping and rejecting every previously stored request.
+    formatHint: request.formatHint ?? null,
   };
 }
 
