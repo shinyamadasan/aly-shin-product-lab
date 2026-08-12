@@ -1,5 +1,6 @@
-import type { CostingSummary, ProductBatch, SupplyEntry, TastingFeedback } from "../../src/lib/product-lab-types.ts";
+import type { CostingSummary, Product, ProductBatch, SupplyEntry, TastingFeedback } from "../../src/lib/product-lab-types.ts";
 import type { RuleEngineContext } from "../../src/lib/rule-engine/index.ts";
+import { mapProductRow, type ProductRow } from "../../src/lib/supabase-mappers.ts";
 
 // Minimal structural shape of what this module actually calls -- deliberately not the full
 // @supabase/supabase-js SupabaseClient type, so tests can pass a hand-built stub without
@@ -22,7 +23,11 @@ export type SupabaseLikeClient = {
   };
 };
 
-export type SupabaseLoadResult = { ok: true; context: RuleEngineContext } | { ok: false; reason: string };
+// `products` rides alongside the context rather than inside it: RuleEngineContext is a shared type
+// consumed by the app and every rule, and evaluateProduct already takes the product as its own
+// separate argument. Widening that shared shape would be a domain refactor; returning the catalog
+// next to it is the smallest change that lets run.ts stop reaching for the static fixture list.
+export type SupabaseLoadResult = { ok: true; context: RuleEngineContext; products: Product[] } | { ok: false; reason: string };
 
 function toNumber(value: unknown, fallback = 0): number {
   const num = Number(value ?? fallback);
@@ -122,7 +127,10 @@ export async function loadSupabaseContext(client: SupabaseLikeClient, credential
     return { ok: false, reason: `Supabase sign-in failed: ${signInError.message}` };
   }
 
-  const [batchResult, costingResult, tastingResult, supplyResult] = await Promise.all([
+  const [productResult, batchResult, costingResult, tastingResult, supplyResult] = await Promise.all([
+    // Ordered by name ascending, matching product-lab.tsx's loadSupabaseData and the Marketing
+    // Advisor's own read (S0), so all three see the catalog in the same deterministic order.
+    client.from("products").select("*").order("name", { ascending: true }),
     client.from("product_batches").select("*").order("created_at", { ascending: false }),
     client.from("costing_summaries").select("*").order("created_at", { ascending: false }),
     client.from("tasting_feedback").select("*").order("created_at", { ascending: false }),
@@ -134,11 +142,16 @@ export async function loadSupabaseContext(client: SupabaseLikeClient, credential
   // stop, matching this task's "no silent fallback" requirement: a failure here must propagate as
   // an error, never be masked by continuing with partial data.
   const supplyMissing = Boolean(supplyResult.error?.message.includes("supply_entries"));
-  if (batchResult.error || costingResult.error || tastingResult.error || (!supplyMissing && supplyResult.error)) {
-    const message = batchResult.error?.message || costingResult.error?.message || tastingResult.error?.message || supplyResult.error?.message;
+  if (productResult.error || batchResult.error || costingResult.error || tastingResult.error || (!supplyMissing && supplyResult.error)) {
+    const message = productResult.error?.message || batchResult.error?.message || costingResult.error?.message || tastingResult.error?.message || supplyResult.error?.message;
     return { ok: false, reason: `Supabase read failed: ${message}` };
   }
 
+  // Mapped with the shared mapProductRow rather than a fifth local mapper: it already guards the
+  // pre-migration absent-column cases (`decision`, `is_public`), and it is the same mapper the
+  // public catalog and the Marketing Advisor (S0) use. The four local map*Row functions above
+  // predate that module and stay as they are -- migrating them is a separate, unrelated change.
+  const products = (productResult.data ?? []).map((row) => mapProductRow(row as unknown as ProductRow));
   const batches = (batchResult.data ?? []).map(mapBatchRow);
   const costings = (costingResult.data ?? []).map(mapCostingRow);
   const tastings = (tastingResult.data ?? []).map(mapTastingRow);
@@ -164,8 +177,25 @@ export async function loadSupabaseContext(client: SupabaseLikeClient, credential
     };
   }
 
+  // The same ambiguity the guard above refuses to guess at, one table over. An empty catalog beside
+  // real operational rows is exactly what an RLS policy blocking `products` looks like -- and it is
+  // NOT harmless, because every evaluation, ranking and Opportunity is keyed off this list: zero
+  // products yields a briefing that confidently reports nothing to do. Checked separately rather
+  // than folded into the guard above, which fires only when all three of those tables are empty.
+  if (products.length === 0 && (batches.length > 0 || costings.length > 0 || tastings.length > 0)) {
+    return {
+      ok: false,
+      reason:
+        "Supabase authentication succeeded and returned operational rows, but the products table returned zero rows. " +
+        "Every ranking and Opportunity is keyed off the product catalog, so continuing would produce a briefing that " +
+        "reports nothing to do for reasons that have nothing to do with the business -- verify this account's RLS " +
+        "access to `products` before assuming the catalog is genuinely empty.",
+    };
+  }
+
   return {
     ok: true,
     context: { batches, costings, tastings, supplies, now },
+    products,
   };
 }
