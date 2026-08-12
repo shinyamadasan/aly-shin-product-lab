@@ -98,6 +98,13 @@ begin
     end if;
 
     if actual_not_null <> required_column.is_required then
+      -- The one nullability mismatch with a known, one-command fix: a pre-S1 project still has
+      -- opportunity_id NOT NULL. "Reconcile the stale draft table" would send the operator into
+      -- manual surgery when the migration shipping beside this file is the whole answer.
+      if required_column.column_name = 'opportunity_id' and actual_not_null then
+        raise exception 'creative_jobs.opportunity_id is still NOT NULL, so this project predates Content Creation MVP S1. Run supabase-add-creative-job-manual-origin.sql once, then re-run this file.';
+      end if;
+
       raise exception 'creative_jobs column % nullability is %, expected %; reconcile the stale draft table before continuing.', required_column.column_name, actual_not_null, required_column.is_required;
     end if;
   end loop;
