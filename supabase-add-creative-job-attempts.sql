@@ -184,7 +184,28 @@ begin
   end if;
 end $$;
 
-create or replace function claim_creative_job_with_attempt(p_job_id uuid)
+-- H1 (2026-08-12): dropped before creation, and the final select names every column explicitly
+-- instead of using `claimed.*`.
+--
+-- The original paired a hand-written RETURNS TABLE with `select claimed.*`, which silently coupled
+-- the declared result shape to the table's PHYSICAL COLUMN ORDER. When S1 added creative_jobs.intent
+-- the two stopped matching and every call failed with:
+--
+--   ERROR: return type mismatch in function declared to return record
+--   DETAIL: Final statement returns jsonb instead of uuid at column 13.
+--
+-- Listing the columns is the root-cause fix rather than a patch, because the two supported install
+-- paths do not even agree on that physical order: a fresh install via supabase-add-creative-jobs.sql
+-- declares `intent` third, while an existing table migrated by supabase-add-creative-job-manual-
+-- origin.sql has it appended last. No single `claimed.*` ordering can satisfy both -- naming the
+-- columns satisfies both, and makes any future appended column a no-op here instead of an outage.
+--
+-- DROP first: PostgreSQL rejects CREATE OR REPLACE when the declared return type changes
+-- ("cannot change return type of existing function"). Dropping only this function, by its exact
+-- signature; claim_creative_job(uuid) is untouched (see the note above about it not being dropped).
+drop function if exists claim_creative_job_with_attempt(uuid);
+
+create function claim_creative_job_with_attempt(p_job_id uuid)
 returns table (
   id uuid,
   opportunity_id uuid,
@@ -198,6 +219,7 @@ returns table (
   started_at timestamptz,
   completed_at timestamptz,
   failed_at timestamptz,
+  intent jsonb,
   attempt_id uuid,
   attempt_number integer
 )
@@ -219,7 +241,22 @@ as $$
     from claimed
     returning id as attempt_id, creative_job_id, attempt_number
   )
-  select claimed.*, inserted_attempt.attempt_id, inserted_attempt.attempt_number
+  select
+    claimed.id,
+    claimed.opportunity_id,
+    claimed.status,
+    claimed.worker_type,
+    claimed.attempt_count,
+    claimed.result,
+    claimed.last_error,
+    claimed.created_at,
+    claimed.updated_at,
+    claimed.started_at,
+    claimed.completed_at,
+    claimed.failed_at,
+    claimed.intent,
+    inserted_attempt.attempt_id,
+    inserted_attempt.attempt_number
   from claimed
   join inserted_attempt on inserted_attempt.creative_job_id = claimed.id;
 $$;

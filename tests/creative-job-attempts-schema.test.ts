@@ -99,7 +99,9 @@ test("creative_job_attempts fails loudly instead of silently accepting stale dra
 });
 
 test("claim_creative_job_with_attempt atomically claims a job and inserts its attempt in one statement", () => {
-  const functionMatch = sqlStatementsOnly.match(/create or replace function claim_creative_job_with_attempt\(p_job_id uuid\)[\s\S]*?\$\$;/i)?.[0] ?? "";
+  // H1 recreates the function with DROP + CREATE rather than CREATE OR REPLACE, because PostgreSQL
+  // refuses to change a declared return type in place.
+  const functionMatch = sqlStatementsOnly.match(/create (or replace )?function claim_creative_job_with_attempt\(p_job_id uuid\)[\s\S]*?\$\$;/i)?.[0] ?? "";
   assert.match(functionMatch, /update creative_jobs/i);
   assert.match(functionMatch, /status = 'running'/i);
   assert.match(functionMatch, /started_at = now\(\)/i);
@@ -109,6 +111,19 @@ test("claim_creative_job_with_attempt atomically claims a job and inserts its at
   assert.match(functionMatch, /returning id as attempt_id/i);
   assert.match(functionMatch, /join inserted_attempt on inserted_attempt\.creative_job_id = claimed\.id/i);
   assert.doesNotMatch(functionMatch, /security definer/i);
+
+  // H1 regression guards, at the text level. The executable proof lives in
+  // tests/smoke/postgres/claim-rpc.smoke.test.ts; these two catch the same mistake in review.
+  //
+  // 1. The declared result must expose `intent`, which S1 added to creative_jobs.
+  assert.match(functionMatch, /intent jsonb/i);
+  // 2. The body must NOT use `claimed.*`. Pairing a hand-written RETURNS TABLE with star expansion
+  //    is what coupled the declared shape to physical column order and broke every claim when S1
+  //    added a column. Naming the columns is what makes this function order-independent -- and it
+  //    has to be, because a fresh install declares `intent` third while a migrated table appends it.
+  assert.doesNotMatch(functionMatch, /select\s+claimed\.\*/i);
+  // 3. DROP must precede CREATE, or an existing database cannot receive the corrected return type.
+  assert.match(sqlStatementsOnly, /drop function if exists claim_creative_job_with_attempt\(uuid\);/i);
 });
 
 test("claim_creative_job_with_attempt supersedes claim_creative_job without dropping it in this migration", () => {
