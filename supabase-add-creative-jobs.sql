@@ -18,7 +18,14 @@
 
 create table if not exists creative_jobs (
   id uuid primary key default gen_random_uuid(),
-  opportunity_id uuid not null references opportunities(id),
+  -- Nullable since Content Creation MVP S1: a Creative Job may originate from an Opportunity OR
+  -- from a direct owner request, never both and never neither (creative_jobs_origin_check below).
+  -- A request-backed job genuinely has no Opportunity, and the schema says so rather than pointing
+  -- at a fabricated one. Existing projects get here via supabase-add-creative-job-manual-origin.sql.
+  opportunity_id uuid references opportunities(id),
+  -- The owner's request, for request-backed jobs only: '{}' for Opportunity-backed jobs. Holds the
+  -- typed context (subject/requestText), never a generated creative decision.
+  intent jsonb not null default '{}'::jsonb,
   status text not null default 'queued',
   worker_type text not null default 'mock',
   attempt_count integer not null default 0,
@@ -34,6 +41,13 @@ create table if not exists creative_jobs (
 alter table creative_jobs
   add column if not exists last_error text;
 
+-- Same idempotent-add convention as last_error above, so a project that created this table before
+-- S1 picks up `intent` by re-running this file. Dropping opportunity_id's NOT NULL and installing
+-- the XOR constraint are handled by supabase-add-creative-job-manual-origin.sql, which is the
+-- migration for already-live tables; this file only ever adds.
+alter table creative_jobs
+  add column if not exists intent jsonb not null default '{}'::jsonb;
+
 do $$
 declare
   required_column record;
@@ -45,7 +59,11 @@ begin
     select *
     from (values
       ('id', 'uuid', true),
-      ('opportunity_id', 'uuid', true),
+      -- Nullable as of S1 -- see the column comment above. Asserted as nullable on purpose: a
+      -- project still carrying NOT NULL here has not run
+      -- supabase-add-creative-job-manual-origin.sql, and request-backed jobs would fail at insert.
+      ('opportunity_id', 'uuid', false),
+      ('intent', 'jsonb', true),
       ('status', 'text', true),
       ('worker_type', 'text', true),
       ('attempt_count', 'integer', true),
@@ -143,10 +161,41 @@ begin
   ) then
     raise exception 'creative_jobs table is missing required opportunity_id foreign key to opportunities(id); reconcile the stale draft table before continuing.';
   end if;
+
 end $$;
 
+-- Exactly one origin per job, enforced by the database rather than by application convention.
+-- Both-at-once would make "what caused this job" ambiguous; neither-at-all would make it
+-- unanswerable. Added conditionally rather than dropped-and-re-added, so this file keeps its
+-- "only ever adds, never drops" property (asserted by tests/creative-jobs-schema.test.ts).
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint constraint_record
+    join pg_class table_class on table_class.oid = constraint_record.conrelid
+    join pg_namespace namespace on namespace.oid = table_class.relnamespace
+    where namespace.nspname = 'public'
+      and table_class.relname = 'creative_jobs'
+      and constraint_record.contype = 'c'
+      and constraint_record.conname = 'creative_jobs_origin_check'
+  ) then
+    alter table creative_jobs
+      add constraint creative_jobs_origin_check
+      check (
+        (opportunity_id is not null and intent = '{}'::jsonb)
+        or (opportunity_id is null and intent <> '{}'::jsonb)
+      );
+  end if;
+end $$;
+
+-- Partial: one Creative Job per Opportunity still holds, while request-backed jobs (opportunity_id
+-- null) are deliberately unconstrained -- asking twice for the same thing on the same day is an
+-- ordinary action and must produce two distinct jobs. Postgres already treats NULLs as distinct in
+-- a unique index; the predicate states that intent explicitly and survives a later NULLS NOT DISTINCT.
 create unique index if not exists creative_jobs_opportunity_id_idx
-  on creative_jobs (opportunity_id);
+  on creative_jobs (opportunity_id)
+  where opportunity_id is not null;
 
 create index if not exists creative_jobs_status_created_at_idx
   on creative_jobs (status, created_at desc);
@@ -162,7 +211,10 @@ begin
   where namespace.nspname = 'public'
     and index_class.relname = 'creative_jobs_opportunity_id_idx';
 
-  if index_definition is null or index_definition !~* 'unique index.*\(opportunity_id\)' then
+  -- The WHERE predicate is asserted, not just the uniqueness: a project still carrying the old
+  -- unconditional unique index would reject a second request-backed job under NULLS NOT DISTINCT,
+  -- so "unique on opportunity_id" alone is no longer a sufficient check.
+  if index_definition is null or index_definition !~* 'unique index.*\(opportunity_id\).*where.*opportunity_id is not null' then
     raise exception 'creative_jobs_opportunity_id_idx is missing or incompatible; reconcile the stale draft index before continuing.';
   end if;
 
@@ -175,6 +227,21 @@ begin
 
   if index_definition is null or index_definition !~* '\(status, created_at desc\)' then
     raise exception 'creative_jobs_status_created_at_idx is missing or incompatible; reconcile the stale draft index before continuing.';
+  end if;
+
+  -- Verified here rather than in the preflight block above, because this file adds the constraint
+  -- itself a few statements earlier -- checking before that point would fail every fresh install.
+  if not exists (
+    select 1
+    from pg_constraint constraint_record
+    join pg_class table_class on table_class.oid = constraint_record.conrelid
+    join pg_namespace namespace on namespace.oid = table_class.relnamespace
+    where namespace.nspname = 'public'
+      and table_class.relname = 'creative_jobs'
+      and constraint_record.contype = 'c'
+      and constraint_record.conname = 'creative_jobs_origin_check'
+  ) then
+    raise exception 'creative_jobs_origin_check is missing; a pre-S1 table needs supabase-add-creative-job-manual-origin.sql before request-backed Creative Jobs will work.';
   end if;
 end $$;
 

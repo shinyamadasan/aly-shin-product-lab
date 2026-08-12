@@ -1,4 +1,12 @@
-import { fromOpportunityRow, type OpportunityRecord, type OpportunityRow } from "./opportunities.ts";
+import { fromOpportunityRow, type OpportunityRow } from "./opportunities.ts";
+import {
+  buildCreativeInputFromOpportunity,
+  buildCreativeInputFromRequest,
+  fromIntentJson,
+  toIntentJson,
+  validateCreativeRequest,
+  type CreativeInput,
+} from "./creative-input.ts";
 import {
   finishCreativeJobAttempt,
   type CreativeJobAttemptClient,
@@ -19,7 +27,10 @@ export type CreativeJobResultEnvelope = {
     caption: string;
   };
   metadata: {
-    generatedFromOpportunity: string;
+    // Nullable as of S1: a request-backed job was genuinely not generated from an Opportunity, and
+    // null says so. Widening only -- every envelope written before S1 carries a string and stays
+    // valid. This is NOT the v2 content shape; the output contract is untouched.
+    generatedFromOpportunity: string | null;
     generatorVersion: "1";
   };
   artifacts: [];
@@ -27,7 +38,8 @@ export type CreativeJobResultEnvelope = {
 
 export type CreativeJobRow = {
   id?: string;
-  opportunity_id: string;
+  opportunity_id: string | null;
+  intent?: Record<string, unknown>;
   status: CreativeJobStatus;
   worker_type: string;
   attempt_count: number;
@@ -42,7 +54,10 @@ export type CreativeJobRow = {
 
 export type CreativeJobRecord = {
   id: string;
-  opportunityId: string;
+  // Null for a request-backed job. Exactly one of opportunityId / intent is populated -- the
+  // database enforces that (creative_jobs_origin_check), this type merely reflects it.
+  opportunityId: string | null;
+  intent: Record<string, unknown>;
   status: CreativeJobStatus;
   workerType: string;
   attemptCount: number;
@@ -157,9 +172,12 @@ export type CreativeJobResultValidation =
 // The signal is threaded through now, ahead of any real provider, so a future network-calling
 // executor can support real cancellation without another signature change. Today's deterministic
 // executors (mock, product_text_worker) ignore it -- there is nothing yet for them to cancel.
+// Takes a CreativeInput, not an OpportunityRecord, as of S1. That single substitution is what
+// decouples generation from the Opportunity domain: an executor is handed the context its source
+// provided and cannot tell -- or care -- which entry path produced it.
 export type CreativeJobExecutor = (
   job: CreativeJobRecord,
-  opportunity: OpportunityRecord,
+  input: CreativeInput,
   context: { signal: AbortSignal },
 ) => unknown | Promise<unknown>;
 export type CreativeJobExecutorMap = Partial<Record<CreativeJobWorkerType, CreativeJobExecutor>>;
@@ -230,8 +248,14 @@ export function validateCreativeJobResultEnvelope(value: unknown): CreativeJobRe
     return { ok: false, reason: "malformed-output", message: "Creative Job result output must include non-empty headline and caption strings." };
   }
 
-  if (!isJsonObject(metadata) || typeof metadata.generatedFromOpportunity !== "string" || metadata.generatedFromOpportunity.trim().length === 0 || /\s/.test(metadata.generatedFromOpportunity) || metadata.generatorVersion !== "1") {
-    return { ok: false, reason: "malformed-metadata", message: "Creative Job result metadata must include a valid generatedFromOpportunity value and generatorVersion 1." };
+  // generatedFromOpportunity is either a well-formed opportunity id or explicitly null (S1: a
+  // request-backed job has no Opportunity). Null is accepted; a present-but-empty or whitespace-
+  // bearing string is still rejected exactly as before -- absence must be stated, never implied.
+  const generatedFrom = isJsonObject(metadata) ? metadata.generatedFromOpportunity : undefined;
+  const generatedFromIsValid =
+    generatedFrom === null || (typeof generatedFrom === "string" && generatedFrom.trim().length > 0 && !/\s/.test(generatedFrom));
+  if (!isJsonObject(metadata) || !generatedFromIsValid || metadata.generatorVersion !== "1") {
+    return { ok: false, reason: "malformed-metadata", message: "Creative Job result metadata must include a valid generatedFromOpportunity value (an opportunity id, or null for a request-backed job) and generatorVersion 1." };
   }
 
   if (!Array.isArray(artifacts) || artifacts.length !== 0) {
@@ -252,7 +276,8 @@ export function fromCreativeJobRow(row: CreativeJobRow): CreativeJobRecord {
 
   return {
     id: row.id,
-    opportunityId: row.opportunity_id,
+    opportunityId: row.opportunity_id ?? null,
+    intent: isJsonObject(row.intent) ? row.intent : {},
     status: parseCreativeJobStatus(row.status),
     workerType: parseWorkerType(row.worker_type),
     attemptCount: Number(row.attempt_count ?? 0),
@@ -266,16 +291,32 @@ export function fromCreativeJobRow(row: CreativeJobRow): CreativeJobRecord {
   };
 }
 
-export function buildMockCreativeJobResult(opportunity: OpportunityRecord): CreativeJobResultEnvelope {
+// Reads from CreativeInput rather than OpportunityRecord as of S1. The v1 output contract is
+// unchanged; only where the strings come from changed, so an Opportunity-backed job produces
+// byte-identical output to before (subject falls back to the Opportunity title, which is what
+// `opportunity.title` was).
+function inputHeadlineSource(input: CreativeInput): string {
+  return input.subject ?? input.requestText ?? "";
+}
+
+function inputCaptionSource(input: CreativeInput): string {
+  return input.evidenceSummary || input.reason || input.requestText || "";
+}
+
+function generatedFromOpportunityOf(input: CreativeInput): string | null {
+  return input.origin.kind === "opportunity" ? input.origin.opportunityId : null;
+}
+
+export function buildMockCreativeJobResult(input: CreativeInput): CreativeJobResultEnvelope {
   return {
     schemaVersion: "v1",
     worker: "mock",
     output: {
-      headline: `MOCK ONLY - ${opportunity.title}`,
-      caption: `MOCK ONLY - ${opportunity.summary || opportunity.reason}`,
+      headline: `MOCK ONLY - ${inputHeadlineSource(input)}`,
+      caption: `MOCK ONLY - ${inputCaptionSource(input)}`,
     },
     metadata: {
-      generatedFromOpportunity: opportunity.id,
+      generatedFromOpportunity: generatedFromOpportunityOf(input),
       generatorVersion: "1",
     },
     artifacts: [],
@@ -288,17 +329,17 @@ export function buildMockCreativeJobResult(opportunity: OpportunityRecord): Crea
 // verbatim field or a deterministic choice between two verbatim fields. Deliberately the opposite
 // of buildMockCreativeJobResult above: no placeholder prefix, because this result is meant to
 // actually reach the owner, not just prove the pipeline executes.
-export function buildOpportunityBriefCreativeJobResult(opportunity: OpportunityRecord): CreativeJobResultEnvelope {
-  const trimmedSummary = opportunity.summary.trim();
+export function buildOpportunityBriefCreativeJobResult(input: CreativeInput): CreativeJobResultEnvelope {
+  const trimmedSummary = (input.evidenceSummary ?? "").trim();
   return {
     schemaVersion: "v1",
     worker: "opportunity_brief",
     output: {
-      headline: opportunity.title,
-      caption: trimmedSummary.length > 0 ? trimmedSummary : opportunity.reason,
+      headline: inputHeadlineSource(input),
+      caption: trimmedSummary.length > 0 ? trimmedSummary : (input.reason ?? input.requestText ?? ""),
     },
     metadata: {
-      generatedFromOpportunity: opportunity.id,
+      generatedFromOpportunity: generatedFromOpportunityOf(input),
       generatorVersion: "1",
     },
     artifacts: [],
@@ -414,6 +455,42 @@ export async function createCreativeJobForAcceptedOpportunity(
       return { ok: true, outcome: "existing", job: reread.job };
     }
     return { ok: false, reason: reread.reason, message: reread.message };
+  }
+
+  return { ok: false, ...dbErrorResult(inserted.error ?? { message: "Creative Job insert returned no row." }) };
+}
+
+// The on-demand entry point, beside createCreativeJobForAcceptedOpportunity rather than replacing
+// it. Deliberately has NO deduplication and NO "existing" outcome: asking twice for the same thing
+// on the same day is an ordinary action, and each ask is its own job. That is exactly why a
+// request is not modelled as a fabricated Opportunity -- the Opportunity domain's unique
+// deduplication_key would collide on the second ask and silently hand back the first job.
+export async function createCreativeJobFromRequest(
+  client: CreativeJobClient,
+  request: unknown,
+  options: { workerType?: CreativeJobWorkerType } = {},
+): Promise<CreativeJobCreateResult> {
+  const validation = validateCreativeRequest(request);
+  if (!validation.ok) {
+    return { ok: false, reason: "failed", message: validation.message };
+  }
+
+  const inserted = await client
+    .from("creative_jobs")
+    .insert({
+      opportunity_id: null,
+      intent: toIntentJson(validation.request),
+      status: "queued",
+      worker_type: options.workerType ?? "mock",
+      attempt_count: 0,
+      result: {},
+      last_error: null,
+    })
+    .select("*")
+    .single();
+
+  if (!inserted.error && inserted.data) {
+    return { ok: true, outcome: "created", job: fromCreativeJobRow(inserted.data) };
   }
 
   return { ok: false, ...dbErrorResult(inserted.error ?? { message: "Creative Job insert returned no row." }) };
@@ -594,9 +671,24 @@ export async function runCreativeJobWithExecutors(
     return failJobAndAttempt(`No executor is registered for worker type: ${job.workerType}.`);
   }
 
-  const opportunity = await readOpportunity(client, job.opportunityId);
-  if (!opportunity.ok || opportunity.opportunity.status !== "accepted") {
-    return failJobAndAttempt("Creative Job could not load an accepted Opportunity.");
+  // The decoupling, in one branch. An Opportunity-backed job still re-reads its Opportunity and
+  // still requires it to be accepted -- that gate is unchanged, deliberately, because an
+  // Opportunity dismissed between creation and execution must not quietly produce content. A
+  // request-backed job has no Opportunity to check; its input is rebuilt from the stored intent,
+  // which is why intent is persisted rather than resolved once and thrown away.
+  let input: CreativeInput;
+  if (job.opportunityId === null) {
+    const request = fromIntentJson(job.intent);
+    if (!request.ok) {
+      return failJobAndAttempt(`Creative Job could not read its stored request: ${request.message}`);
+    }
+    input = buildCreativeInputFromRequest(request.request);
+  } else {
+    const opportunity = await readOpportunity(client, job.opportunityId);
+    if (!opportunity.ok || opportunity.opportunity.status !== "accepted") {
+      return failJobAndAttempt("Creative Job could not load an accepted Opportunity.");
+    }
+    input = buildCreativeInputFromOpportunity(opportunity.opportunity);
   }
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT_MS;
@@ -615,7 +707,7 @@ export async function runCreativeJobWithExecutors(
         reject(new Error(`Creative Job execution exceeded ${timeoutMs}ms timeout.`));
       }, timeoutMs);
 
-      Promise.resolve(executor(job, opportunity.opportunity, { signal: controller.signal })).then(
+      Promise.resolve(executor(job, input, { signal: controller.signal })).then(
         (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -642,7 +734,7 @@ export async function runCreativeJobWithExecutors(
 }
 
 export async function runMockCreativeJob(client: CreativeJobExecutionClient, id: string, options: CreativeJobRunnerOptions = {}): Promise<CreativeJobRunnerResult> {
-  return runCreativeJobWithExecutors(client, id, { mock: (_job, opportunity) => buildMockCreativeJobResult(opportunity) }, options);
+  return runCreativeJobWithExecutors(client, id, { mock: (_job, input) => buildMockCreativeJobResult(input) }, options);
 }
 
 export async function runQueuedMockCreativeJobs(client: CreativeJobExecutionClient, limit = 1, options: CreativeJobRunnerOptions = {}) {

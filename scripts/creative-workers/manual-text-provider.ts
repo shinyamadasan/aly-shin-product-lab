@@ -1,5 +1,6 @@
 import type { CreativeJobExecutor, CreativeJobRecord } from "../../src/lib/creative-jobs.ts";
 import type { OpportunityRecord } from "../../src/lib/opportunities.ts";
+import { buildCreativeInputFromOpportunity } from "../../src/lib/creative-input.ts";
 import { buildProductTextPrompt } from "./product-text-prompt.ts";
 
 // This file makes no network call of any kind -- no fetch, no API key, no SDK. The whole point of
@@ -47,7 +48,10 @@ export function parseManualProductTextResult(raw: string): ManualResultParseResu
 // Builds the document a human pastes into Claude Code. Read-only with respect to the job --
 // callers must not claim or mutate anything to produce this.
 export function buildManualExportDocument(job: Pick<CreativeJobRecord, "id">, opportunity: OpportunityRecord): string {
-  const prompt = buildProductTextPrompt(opportunity);
+  // Still takes an OpportunityRecord: this is the Opportunity-backed export path, and run.ts
+  // refuses request-backed jobs before reaching here. The adapter is applied at this boundary so
+  // the exported prompt stays byte-identical to the pre-S1 document.
+  const prompt = buildProductTextPrompt(buildCreativeInputFromOpportunity(opportunity));
   return [
     `# Creative Job manual export -- job ${job.id}`,
     "",
@@ -69,7 +73,7 @@ export function buildManualExportDocument(job: Pick<CreativeJobRecord, "id">, op
 // Wraps an already-validated result into the same envelope shape the Anthropic adapter produces.
 // The executor itself does zero I/O -- it just returns the given result synchronously.
 export function buildManualResultExecutor(result: ManualProductTextResult): CreativeJobExecutor {
-  return (_job, opportunity) => ({
+  return (_job, input) => ({
     schemaVersion: "v1",
     worker: "product_text_worker",
     output: {
@@ -77,7 +81,7 @@ export function buildManualResultExecutor(result: ManualProductTextResult): Crea
       caption: result.caption,
     },
     metadata: {
-      generatedFromOpportunity: opportunity.id,
+      generatedFromOpportunity: input.origin.kind === "opportunity" ? input.origin.opportunityId : null,
       generatorVersion: "1",
     },
     artifacts: [],

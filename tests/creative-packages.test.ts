@@ -16,6 +16,7 @@ import {
 import { buildMockCreativeJobResult, fromCreativeJobRow, type CreativeJobRow } from "../src/lib/creative-jobs.ts";
 import { type CreativeJobAttemptRow } from "../src/lib/creative-job-attempts.ts";
 import { toOpportunityRow, type OpportunityDraft, type OpportunityRow } from "../src/lib/opportunities.ts";
+import { buildCreativeInputFromOpportunity } from "../src/lib/creative-input.ts";
 
 type ErrorLike = { code?: string; message: string };
 
@@ -80,7 +81,7 @@ function completedJobRow(overrides: Partial<CreativeJobRow> = {}): CreativeJobRo
     status: "completed",
     worker_type: "mock",
     attempt_count: 1,
-    result: buildMockCreativeJobResult({
+    result: buildMockCreativeJobResult(buildCreativeInputFromOpportunity({
       id: "opportunity-1",
       opportunityType: "product_marketing_content",
       producer: "daily_advisor",
@@ -100,7 +101,7 @@ function completedJobRow(overrides: Partial<CreativeJobRow> = {}): CreativeJobRo
       status: "accepted",
       createdAt: "2026-07-29T09:00:00.000Z",
       updatedAt: "2026-07-29T09:00:00.000Z",
-    }),
+    })),
     last_error: null,
     created_at: job.createdAt,
     updated_at: fixedNow,

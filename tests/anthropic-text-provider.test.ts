@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { createAnthropicProductTextExecutor } from "../scripts/creative-workers/anthropic-text-provider.ts";
 import type { CreativeJobRecord } from "../src/lib/creative-jobs.ts";
 import type { OpportunityRecord } from "../src/lib/opportunities.ts";
+import { buildCreativeInputFromOpportunity } from "../src/lib/creative-input.ts";
 
 function opportunity(overrides: Partial<OpportunityRecord> = {}): OpportunityRecord {
   return {
@@ -68,7 +69,7 @@ test("createAnthropicProductTextExecutor parses a well-formed response into a va
 
   const executor = createAnthropicProductTextExecutor({ apiKey: "test-key", fetchImpl });
   const signal = new AbortController().signal;
-  const envelope = (await executor({ id: "job-1" } as CreativeJobRecord, opportunity(), { signal })) as Record<string, unknown>;
+  const envelope = (await executor({ id: "job-1" } as CreativeJobRecord, buildCreativeInputFromOpportunity(opportunity()), { signal })) as Record<string, unknown>;
 
   assert.deepEqual(envelope, {
     schemaVersion: "v1",
@@ -90,7 +91,7 @@ test("createAnthropicProductTextExecutor parses a well-formed response into a va
 test("createAnthropicProductTextExecutor strips a fenced JSON code block before parsing", async () => {
   const fetchImpl = (async () => fakeOkResponse('```json\n{"headline": "Fresh Brownies Today", "caption": "Warm from the oven."}\n```')) as typeof fetch;
   const executor = createAnthropicProductTextExecutor({ apiKey: "test-key", fetchImpl });
-  const envelope = (await executor({ id: "job-1" } as CreativeJobRecord, opportunity(), { signal: new AbortController().signal })) as Record<string, unknown>;
+  const envelope = (await executor({ id: "job-1" } as CreativeJobRecord, buildCreativeInputFromOpportunity(opportunity()), { signal: new AbortController().signal })) as Record<string, unknown>;
   assert.deepEqual((envelope as { output: unknown }).output, { headline: "Fresh Brownies Today", caption: "Warm from the oven." });
 });
 
@@ -99,7 +100,7 @@ test("createAnthropicProductTextExecutor throws a clear error on a non-2xx respo
   const executor = createAnthropicProductTextExecutor({ apiKey: "test-key", fetchImpl });
   await assert.rejects(
     async () => {
-      await executor({ id: "job-1" } as CreativeJobRecord, opportunity(), { signal: new AbortController().signal });
+      await executor({ id: "job-1" } as CreativeJobRecord, buildCreativeInputFromOpportunity(opportunity()), { signal: new AbortController().signal });
     },
     /status 429.*rate limited/,
   );
@@ -109,7 +110,7 @@ test("createAnthropicProductTextExecutor throws a clear error when the response 
   const fetchImpl = (async () => fakeOkResponse("not json at all")) as typeof fetch;
   const executor = createAnthropicProductTextExecutor({ apiKey: "test-key", fetchImpl });
   await assert.rejects(async () => {
-    await executor({ id: "job-1" } as CreativeJobRecord, opportunity(), { signal: new AbortController().signal });
+    await executor({ id: "job-1" } as CreativeJobRecord, buildCreativeInputFromOpportunity(opportunity()), { signal: new AbortController().signal });
   }, /was not valid JSON/);
 });
 

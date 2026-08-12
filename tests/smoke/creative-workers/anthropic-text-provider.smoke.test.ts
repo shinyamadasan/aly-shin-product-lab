@@ -5,6 +5,7 @@ import { createAnthropicProductTextExecutor } from "../../../scripts/creative-wo
 import type { CreativeJobRecord } from "../../../src/lib/creative-jobs.ts";
 import type { OpportunityRecord } from "../../../src/lib/opportunities.ts";
 import { resolvePaidAnthropicSmokeGate } from "./paid-smoke-gate.ts";
+import { buildCreativeInputFromOpportunity } from "../../../src/lib/creative-input.ts";
 
 // Opt-in only, and doubly so. Not part of `npm test` (excluded from tests/*.test.ts) and not
 // part of `advisor:smoke` (lives in tests/smoke/creative-workers/, a separate glob from
@@ -41,7 +42,7 @@ test("createAnthropicProductTextExecutor produces a real headline and caption fr
   };
 
   const executor = createAnthropicProductTextExecutor({ apiKey: apiKey! });
-  const envelope = (await executor({ id: "smoke-job" } as CreativeJobRecord, opportunity, { signal: new AbortController().signal })) as {
+  const envelope = (await executor({ id: "smoke-job" } as CreativeJobRecord, buildCreativeInputFromOpportunity(opportunity), { signal: new AbortController().signal })) as {
     output: { headline: string; caption: string };
   };
 

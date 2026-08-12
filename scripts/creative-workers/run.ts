@@ -52,6 +52,13 @@ export async function runExportCommand(client: CreativeWorkerCliClient, jobId: s
     return { exitCode: 2, message: `Creative Job ${jobId} has worker type ${jobResult.job.workerType}, not product_text_worker.` };
   }
 
+  // Manual export renders an Opportunity brief, so it only applies to an Opportunity-backed job.
+  // A request-backed job is refused explicitly rather than crashing on a null id -- S1 adds the
+  // job origin, not a manual-export path for requests.
+  if (jobResult.job.opportunityId === null) {
+    return { exitCode: 2, message: `Creative Job ${jobId} is request-backed (no Opportunity). Manual export currently supports Opportunity-backed jobs only.` };
+  }
+
   const opportunityResult = await getOpportunityDetail(client, jobResult.job.opportunityId);
   if (!opportunityResult.ok) {
     return { exitCode: 1, message: opportunityResult.message };
