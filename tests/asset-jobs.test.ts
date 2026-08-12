@@ -963,7 +963,9 @@ test("runAssetJobWithExecutors rejects malformed Creative Package content before
   assert.equal(store.creativePackageSelectCalls, 1);
   assert.equal(executorCalls, 0);
   assert.equal(store.jobs[0].status, "failed");
-  assert.equal(store.jobs[0].last_error, "AssetGenerationSpecV1 requires Creative Package content v1.");
+  // Message widened in S2 when the asset boundary began accepting v2 as well. The behaviour
+  // this test guards -- reject malformed content BEFORE invoking the executor -- is unchanged.
+  assert.equal(store.jobs[0].last_error, "AssetGenerationSpecV1 requires Creative Package content v1 or v2.");
   assert.deepEqual(store.events, ["claim-job", "fail-job", "finish-attempt-failed"]);
 });
 

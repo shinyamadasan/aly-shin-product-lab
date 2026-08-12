@@ -17,6 +17,7 @@ import {
 import {
   getCreativePackageForJob,
   isCreativePackageContentV1,
+  isCreativePackageContentV2,
   type CreativePackageClient,
   type CreativePackageRecord,
 } from "@/lib/creative-packages";
@@ -514,6 +515,15 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
                                 )}
                               </div>
                             </>
+                          ) : isCreativePackageContentV2(selectedPackage.content) ? (
+                            // S2 defines the v2 contract but ships no generator that emits it, so
+                            // this branch is currently unreachable in production. It exists so that
+                            // if a v2 package ever does appear, the page states what it is instead
+                            // of calling a valid package unsupported. The full v2 rendering is a
+                            // later slice's job; the raw JSON view below already shows every field.
+                            <p className="text-sm text-[#6f5a4c]">
+                              This Creative Package uses the v2 format-aware content shape ({selectedPackage.content.format}). Detailed rendering arrives with the Content MVP UI work -- see the raw package JSON below.
+                            </p>
                           ) : (
                             <p className="text-sm text-[#6f5a4c]">This Creative Package uses an unsupported content shape.</p>
                           )}

@@ -42,6 +42,8 @@ const spec: AssetGenerationSpecV1 = {
   sourceCreativePackageId: "package-1",
   generationIntent: { purpose: "marketing-social-feed", outcome: "single-image" },
   copy: { headline: "Headline", caption: "Caption" },
+  // v1 specs carry no visual direction (S2) -- the brief renders exactly as before.
+  visualDirection: null,
   dimensions: ASSET_GENERATION_IMAGE_DIMENSIONS,
   brandStyle: null,
 };
