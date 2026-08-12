@@ -1,6 +1,9 @@
-import { products } from "../../src/lib/sample-data.ts";
+// Aliased so the live catalog read below can bind the plain name `products` without shadowing this
+// fixture import -- the two are different things and should never be one identifier.
+import { products as sampleProducts } from "../../src/lib/sample-data.ts";
 import type { Ingredient, IngredientBaseUnit, IngredientCategory, Product, ContentJournalEntry } from "../../src/lib/product-lab-types.ts";
 import { mapContentJournalRow, type ContentJournalRow } from "../../src/lib/journal.ts";
+import { mapProductRow, type ProductRow } from "../../src/lib/supabase-mappers.ts";
 
 export const MARKETING_ADVISOR_SOURCES = ["sample", "supabase"] as const;
 export type MarketingAdvisorSource = (typeof MARKETING_ADVISOR_SOURCES)[number];
@@ -65,12 +68,18 @@ function mapIngredientRow(row: IngredientRow): Ingredient {
   };
 }
 
-// Product Lab has no Supabase "products" table -- the product catalog is a static, hand-maintained
-// list (src/lib/sample-data.ts), the same one the app itself renders (product-lab.tsx imports it
-// directly). Always used regardless of --source; only ingredients/journal actually vary between
-// sample and live data, since those two do have real Supabase tables.
+// --source sample ONLY. Synthetic fixture data -- the static list in src/lib/sample-data.ts, with
+// no ingredients and no journal. Never reached by --source supabase.
+//
+// An earlier version of this comment claimed "Product Lab has no Supabase products table" and that
+// the static list was "always used regardless of --source". Both statements are false: `products`
+// is a real table (supabase-schema.sql), the app reads and writes it (product-lab.tsx's
+// loadSupabaseData, src/lib/public-catalog-repository.ts), and loadMarketingAdvisorSupabaseInput
+// below now reads it. The claim was true when the catalog really was hand-maintained; it outlived
+// that, and the Marketing Advisor kept recommending against six fixture products while the owner's
+// real catalog sat in the database.
 export function loadMarketingAdvisorSampleInput(): MarketingAdvisorInput {
-  return { products, ingredients: [], journal: [] };
+  return { products: sampleProducts, ingredients: [], journal: [] };
 }
 
 // Read-only: the only methods this ever calls are auth.signInWithPassword and
@@ -84,16 +93,29 @@ export async function loadMarketingAdvisorSupabaseInput(
     return { ok: false, reason: `Supabase sign-in failed: ${signInError.message}` };
   }
 
-  const [ingredientResult, journalResult] = await Promise.all([
+  const [productResult, ingredientResult, journalResult] = await Promise.all([
+    // Ordered by name ascending, matching product-lab.tsx's loadSupabaseData exactly, so the
+    // recommendation engine reads the catalog in the same deterministic order the app displays it.
+    client.from("products").select("*").order("name", { ascending: true }),
     client.from("ingredients").select("*").order("created_at", { ascending: false }),
     client.from("content_journal").select("*").order("created_at", { ascending: false }),
   ]);
 
-  if (ingredientResult.error || journalResult.error) {
-    const message = ingredientResult.error?.message || journalResult.error?.message;
+  // `products` is part of the base schema (supabase-schema.sql), not an optional later migration,
+  // so a read failure here is a genuine failure and is treated exactly like the other two rather
+  // than being softened into an empty catalog. Silently recommending against zero products would
+  // be a worse answer than refusing to run.
+  if (productResult.error || ingredientResult.error || journalResult.error) {
+    const message = productResult.error?.message || ingredientResult.error?.message || journalResult.error?.message;
     return { ok: false, reason: `Supabase read failed: ${message}` };
   }
 
+  // mapProductRow is imported from src/lib/supabase-mappers.ts rather than duplicated here the way
+  // mapIngredientRow above is. That module was extracted for exactly this, already guards the
+  // pre-migration absent-column cases (`decision`, `is_public`), and is already the mapper
+  // src/lib/public-catalog-repository.ts uses. A second product mapping would be a second answer to
+  // "what is a Product," which is the drift that module exists to prevent.
+  const products = (productResult.data ?? []).map((row) => mapProductRow(row as unknown as ProductRow));
   const ingredients = (ingredientResult.data ?? []).map((row) => mapIngredientRow(row as unknown as IngredientRow));
   const journal = (journalResult.data ?? []).map((row) => mapContentJournalRow(row as unknown as ContentJournalRow));
 

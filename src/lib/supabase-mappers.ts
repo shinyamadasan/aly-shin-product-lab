@@ -32,8 +32,11 @@ import type {
 // unrecoverable once flattened. Reading the raw row is the only place that distinction survives,
 // which is why anything that must tell them apart reads *Row, never the mapped type.
 //
-// Nothing imports this module yet. Adding it changes no runtime behaviour; existing consumers
-// (product-lab.tsx, supabase-read.ts, marketing-advisor-read.ts) keep their own copies until a
+// Migration status: src/lib/public-catalog-repository.ts uses mapProductRow/mapProductBatchRow/
+// mapCostingSummaryRow, and scripts/marketing-advisor/marketing-advisor-read.ts uses mapProductRow
+// (Content Creation MVP S0 -- it previously had no product read at all and served a static
+// fixture list). product-lab.tsx and scripts/daily-advisor/supabase-read.ts still keep their own
+// copies, and marketing-advisor-read.ts still keeps its own mapIngredientRow, each awaiting a
 // later, separately-reviewed migration.
 //
 // Every field's nullability below is transcribed from the .sql files, with the source named per

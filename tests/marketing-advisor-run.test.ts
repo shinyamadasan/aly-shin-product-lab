@@ -136,7 +136,10 @@ test("export --source supabase against a fake client asserts only select-shaped 
   });
 
   assert.equal(outcome.exitCode, 0);
-  assert.deepEqual(calls.sort(), ["auth.signInWithPassword", "select:content_journal", "select:ingredients"]);
+  // select:products joined this list in Content Creation MVP S0, when the Marketing Advisor stopped
+  // serving a static fixture catalog and started reading the real `products` table. Still only
+  // select-shaped calls -- that is what this test guards, and adding a read must not weaken it.
+  assert.deepEqual(calls.sort(), ["auth.signInWithPassword", "select:content_journal", "select:ingredients", "select:products"]);
 });
 
 // ---- import: manifest lifecycle ----
