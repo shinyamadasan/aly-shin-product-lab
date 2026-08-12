@@ -32,8 +32,8 @@ export function createAnthropicProductTextExecutor(options: AnthropicProductText
   const model = options.model ?? DEFAULT_MODEL;
   const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
 
-  return async (_job, opportunity, context) => {
-    const prompt = buildProductTextPrompt(opportunity);
+  return async (_job, input, context) => {
+    const prompt = buildProductTextPrompt(input);
 
     const response = await fetchImpl(ANTHROPIC_API_URL, {
       method: "POST",
@@ -81,7 +81,7 @@ export function createAnthropicProductTextExecutor(options: AnthropicProductText
         caption: typeof parsed.caption === "string" ? parsed.caption : "",
       },
       metadata: {
-        generatedFromOpportunity: opportunity.id,
+        generatedFromOpportunity: input.origin.kind === "opportunity" ? input.origin.opportunityId : null,
         generatorVersion: "1",
       },
       artifacts: [],

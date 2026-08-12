@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { buildProductTextPrompt } from "../scripts/creative-workers/product-text-prompt.ts";
 import type { OpportunityRecord } from "../src/lib/opportunities.ts";
+import { buildCreativeInputFromOpportunity } from "../src/lib/creative-input.ts";
 
 function opportunity(overrides: Partial<OpportunityRecord> = {}): OpportunityRecord {
   return {
@@ -31,11 +32,11 @@ function opportunity(overrides: Partial<OpportunityRecord> = {}): OpportunityRec
 
 test("buildProductTextPrompt is deterministic for the same Opportunity", () => {
   const opp = opportunity();
-  assert.deepEqual(buildProductTextPrompt(opp), buildProductTextPrompt(opp));
+  assert.deepEqual(buildProductTextPrompt(buildCreativeInputFromOpportunity(opp)), buildProductTextPrompt(buildCreativeInputFromOpportunity(opp)));
 });
 
 test("buildProductTextPrompt includes the title, summary, reason, and product name", () => {
-  const prompt = buildProductTextPrompt(opportunity());
+  const prompt = buildProductTextPrompt(buildCreativeInputFromOpportunity(opportunity()));
   assert.match(prompt.user, /Create launch-ready product content for Brownies/);
   assert.match(prompt.user, /Brownies has enough proof/);
   assert.match(prompt.user, /Rule Engine evidence supports/);
@@ -43,12 +44,12 @@ test("buildProductTextPrompt includes the title, summary, reason, and product na
 });
 
 test("buildProductTextPrompt omits the product line when evidence has no product name", () => {
-  const prompt = buildProductTextPrompt(opportunity({ evidence: {} }));
+  const prompt = buildProductTextPrompt(buildCreativeInputFromOpportunity(opportunity({ evidence: {} })));
   assert.doesNotMatch(prompt.user, /Product:/);
 });
 
 test("buildProductTextPrompt's system message specifies the exact JSON response contract", () => {
-  const prompt = buildProductTextPrompt(opportunity());
+  const prompt = buildProductTextPrompt(buildCreativeInputFromOpportunity(opportunity()));
   assert.match(prompt.system, /"headline"/);
   assert.match(prompt.system, /"caption"/);
   assert.match(prompt.system, /ONLY a JSON object/);

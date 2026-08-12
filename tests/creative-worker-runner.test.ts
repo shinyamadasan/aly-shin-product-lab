@@ -7,6 +7,7 @@ import { type CreativeJobExecutorMap, type CreativeJobRow } from "../src/lib/cre
 import { type CreativeJobAttemptClient, type CreativeJobAttemptRow } from "../src/lib/creative-job-attempts.ts";
 import { toOpportunityRow, type OpportunityDraft, type OpportunityRecord, type OpportunityRow } from "../src/lib/opportunities.ts";
 import { buildProductTextWorkerReadinessResult, runTrustedCreativeJobAndMaterializePackage } from "../scripts/creative-workers/runner.ts";
+import { buildCreativeInputFromOpportunity } from "../src/lib/creative-input.ts";
 
 type ErrorLike = { code?: string; message: string };
 
@@ -371,9 +372,9 @@ test("product text readiness result is deterministic and marked as non-AI", () =
     updatedAt: "2026-07-29T09:00:00.000Z",
   };
 
-  assert.deepEqual(buildProductTextWorkerReadinessResult(opportunity), buildProductTextWorkerReadinessResult(opportunity));
-  assert.equal(buildProductTextWorkerReadinessResult(opportunity).worker, "product_text_worker");
-  assert.match(buildProductTextWorkerReadinessResult(opportunity).output.headline, /^NON-AI TEST/);
+  assert.deepEqual(buildProductTextWorkerReadinessResult(buildCreativeInputFromOpportunity(opportunity)), buildProductTextWorkerReadinessResult(buildCreativeInputFromOpportunity(opportunity)));
+  assert.equal(buildProductTextWorkerReadinessResult(buildCreativeInputFromOpportunity(opportunity)).worker, "product_text_worker");
+  assert.match(buildProductTextWorkerReadinessResult(buildCreativeInputFromOpportunity(opportunity)).output.headline, /^NON-AI TEST/);
 });
 
 test("trusted runner boundary avoids client execution controls and excluded domains", () => {

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { buildManualExportDocument, buildManualResultExecutor, parseManualProductTextResult } from "../scripts/creative-workers/manual-text-provider.ts";
 import type { CreativeJobRecord } from "../src/lib/creative-jobs.ts";
 import type { OpportunityRecord } from "../src/lib/opportunities.ts";
+import { buildCreativeInputFromOpportunity } from "../src/lib/creative-input.ts";
 
 function opportunity(overrides: Partial<OpportunityRecord> = {}): OpportunityRecord {
   return {
@@ -87,7 +88,7 @@ test("buildManualResultExecutor returns a valid v1 envelope built from the given
   const executor = buildManualResultExecutor({ headline: "Fresh Brownies Today", caption: "Warm from the oven." });
   const envelope = (await executor(
     { id: "job-1" } as CreativeJobRecord,
-    opportunity(),
+    buildCreativeInputFromOpportunity(opportunity()),
     { signal: new AbortController().signal },
   )) as Record<string, unknown>;
 

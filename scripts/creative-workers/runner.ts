@@ -10,18 +10,20 @@ import {
   type CreativePackageMaterializedRunResult,
   type CreativePackageRunnerClient,
 } from "../../src/lib/creative-packages.ts";
-import type { OpportunityRecord } from "../../src/lib/opportunities.ts";
+import type { CreativeInput } from "../../src/lib/creative-input.ts";
 
-export function buildProductTextWorkerReadinessResult(opportunity: OpportunityRecord): CreativeJobResultEnvelope {
+// Reads from CreativeInput as of S1 (the executor contract changed); the produced envelope is
+// otherwise identical, so an Opportunity-backed job still yields the same strings it always did.
+export function buildProductTextWorkerReadinessResult(input: CreativeInput): CreativeJobResultEnvelope {
   return {
     schemaVersion: "v1",
     worker: "product_text_worker",
     output: {
-      headline: `NON-AI TEST - ${opportunity.title}`,
-      caption: `NON-AI TEST - ${opportunity.summary || opportunity.reason}`,
+      headline: `NON-AI TEST - ${input.subject ?? input.requestText ?? ""}`,
+      caption: `NON-AI TEST - ${input.evidenceSummary || input.reason || input.requestText || ""}`,
     },
     metadata: {
-      generatedFromOpportunity: opportunity.id,
+      generatedFromOpportunity: input.origin.kind === "opportunity" ? input.origin.opportunityId : null,
       generatorVersion: "1",
     },
     artifacts: [],
@@ -30,9 +32,9 @@ export function buildProductTextWorkerReadinessResult(opportunity: OpportunityRe
 
 export function trustedCreativeJobExecutors(): CreativeJobExecutorMap {
   return {
-    mock: (_job, opportunity) => buildMockCreativeJobResult(opportunity),
-    product_text_worker: (_job, opportunity) => buildProductTextWorkerReadinessResult(opportunity),
-    opportunity_brief: (_job, opportunity) => buildOpportunityBriefCreativeJobResult(opportunity),
+    mock: (_job, input) => buildMockCreativeJobResult(input),
+    product_text_worker: (_job, input) => buildProductTextWorkerReadinessResult(input),
+    opportunity_brief: (_job, input) => buildOpportunityBriefCreativeJobResult(input),
   };
 }
 

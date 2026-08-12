@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import {
   buildMockCreativeJobResult,
+  createCreativeJobFromRequest,
   buildOpportunityBriefCreativeJobResult,
   claimQueuedCreativeJob,
   claimQueuedCreativeJobWithAttempt,
@@ -26,6 +27,8 @@ import {
 } from "../src/lib/creative-jobs.ts";
 import { finishCreativeJobAttempt, type CreativeJobAttemptRow } from "../src/lib/creative-job-attempts.ts";
 import { fromOpportunityRow, toOpportunityRow, type OpportunityDraft, type OpportunityRecord, type OpportunityRow } from "../src/lib/opportunities.ts";
+import { buildCreativeInputFromOpportunity } from "../src/lib/creative-input.ts";
+import type { CreativeInput } from "../src/lib/creative-input.ts";
 
 type ErrorLike = { code?: string; message: string };
 
@@ -198,7 +201,10 @@ function makeClient(
                     return { data: null, error: options.insertError };
                   }
                   const inserted = {
-                    opportunity_id: row.opportunity_id!,
+                    opportunity_id: row.opportunity_id ?? null,
+                    // S1: request-backed jobs carry their intent here, and the runner reads it back
+                    // to rebuild the CreativeInput, so the fake must round-trip it like the real table.
+                    intent: row.intent ?? {},
                     status: row.status ?? "queued",
                     worker_type: row.worker_type ?? "mock",
                     attempt_count: row.attempt_count ?? 0,
@@ -509,9 +515,9 @@ test("buildMockCreativeJobResult is deterministic for the same Opportunity", () 
     updatedAt: "2026-07-29T09:00:00.000Z",
   };
 
-  assert.deepEqual(buildMockCreativeJobResult(opportunity), buildMockCreativeJobResult(opportunity));
-  assert.deepEqual(buildMockCreativeJobResult(opportunity).artifacts, []);
-  assert.equal(buildMockCreativeJobResult(opportunity).schemaVersion, "v1");
+  assert.deepEqual(buildMockCreativeJobResult(buildCreativeInputFromOpportunity(opportunity)), buildMockCreativeJobResult(buildCreativeInputFromOpportunity(opportunity)));
+  assert.deepEqual(buildMockCreativeJobResult(buildCreativeInputFromOpportunity(opportunity)).artifacts, []);
+  assert.equal(buildMockCreativeJobResult(buildCreativeInputFromOpportunity(opportunity)).schemaVersion, "v1");
 });
 
 test("buildOpportunityBriefCreativeJobResult maps headline verbatim from title and caption from a trimmed summary", () => {
@@ -537,7 +543,7 @@ test("buildOpportunityBriefCreativeJobResult maps headline verbatim from title a
     updatedAt: "2026-07-29T09:00:00.000Z",
   };
 
-  const result = buildOpportunityBriefCreativeJobResult(opportunity);
+  const result = buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity(opportunity));
   assert.equal(result.worker, "opportunity_brief");
   assert.equal(result.schemaVersion, "v1");
   assert.deepEqual(result.artifacts, []);
@@ -570,8 +576,8 @@ test("buildOpportunityBriefCreativeJobResult falls back to reason when summary i
     updatedAt: "2026-07-29T09:00:00.000Z",
   };
 
-  assert.equal(buildOpportunityBriefCreativeJobResult(base).output.caption, base.reason);
-  assert.equal(buildOpportunityBriefCreativeJobResult({ ...base, summary: "" }).output.caption, base.reason);
+  assert.equal(buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity(base)).output.caption, base.reason);
+  assert.equal(buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity({ ...base, summary: "" })).output.caption, base.reason);
 });
 
 test("buildOpportunityBriefCreativeJobResult is deterministic and never contains a placeholder marker", () => {
@@ -597,8 +603,8 @@ test("buildOpportunityBriefCreativeJobResult is deterministic and never contains
     updatedAt: "2026-07-29T09:00:00.000Z",
   };
 
-  const first = buildOpportunityBriefCreativeJobResult(opportunity);
-  const second = buildOpportunityBriefCreativeJobResult(opportunity);
+  const first = buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity(opportunity));
+  const second = buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity(opportunity));
   assert.deepEqual(first, second);
 
   const serialized = JSON.stringify(first);
@@ -619,7 +625,7 @@ test("buildOpportunityBriefCreativeJobResult is deterministic and never contains
 
 test("buildOpportunityBriefCreativeJobResult produces an envelope that passes the existing v1 validator", () => {
   const opportunity = fromOpportunityRow(opportunityRow());
-  const result = buildOpportunityBriefCreativeJobResult(opportunity);
+  const result = buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity(opportunity));
   assert.equal(isCreativeJobResultEnvelope(result), true);
   assert.equal(validateCreativeJobResultEnvelope(result).ok, true);
 });
@@ -628,18 +634,18 @@ test("buildOpportunityBriefCreativeJobResult does not mutate its input Opportuni
   const opportunity = fromOpportunityRow(opportunityRow());
   const snapshot = JSON.parse(JSON.stringify(opportunity));
 
-  buildOpportunityBriefCreativeJobResult(opportunity);
+  buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity(opportunity));
 
   assert.deepEqual(opportunity, snapshot);
 });
 
 test("buildOpportunityBriefCreativeJobResult always returns an empty artifacts array by design", () => {
   const opportunity = fromOpportunityRow(opportunityRow());
-  assert.deepEqual(buildOpportunityBriefCreativeJobResult(opportunity).artifacts, []);
+  assert.deepEqual(buildOpportunityBriefCreativeJobResult(buildCreativeInputFromOpportunity(opportunity)).artifacts, []);
 });
 
 test("isCreativeJobResultEnvelope validates both supported v1 result shapes", () => {
-  const envelope = buildMockCreativeJobResult(fromOpportunityRow(opportunityRow()));
+  const envelope = buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow())));
   const productTextEnvelope: CreativeJobResultEnvelope = { ...envelope, worker: "product_text_worker" };
 
   assert.equal(isCreativeJobResultEnvelope(envelope), true);
@@ -653,7 +659,7 @@ test("isCreativeJobResultEnvelope validates both supported v1 result shapes", ()
 });
 
 test("validateCreativeJobResultEnvelope reports specific rejection reasons", () => {
-  const envelope = buildMockCreativeJobResult(fromOpportunityRow(opportunityRow()));
+  const envelope = buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow())));
 
   assert.equal(validateCreativeJobResultEnvelope(envelope).ok, true);
   assert.deepEqual(validateCreativeJobResultEnvelope({ ...envelope, schemaVersion: "v2" }), {
@@ -730,7 +736,7 @@ test("completeRunningCreativeJob rejects invalid results and persists bounded la
 test("completeRunningCreativeJob validates output and clears old failure diagnostics on success", async () => {
   const running = creativeJobRow({ status: "running", attempt_count: 1, started_at: startedAt, failed_at: fixedNow, last_error: "Previous failure" });
   const store = makeClient({ jobs: [running] });
-  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())));
+  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(running), buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow()))));
 
   assert.equal(result.ok, true);
   assert.equal(store.jobs[0].status, "completed");
@@ -754,7 +760,7 @@ test("sanitizeCreativeJobErrorMessage bounds and redacts operator-facing errors"
 test("completeRunningCreativeJob does not mutate terminal or non-running jobs", async () => {
   const completed = creativeJobRow({ status: "completed", result: { terminal: true }, completed_at: fixedNow });
   const store = makeClient({ jobs: [completed] });
-  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(completed), buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())));
+  const result = await completeRunningCreativeJob(store.client, fromCreativeJobRow(completed), buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow()))));
   assert.equal(result.ok, false);
   assert.equal(result.reason, "conflict");
   assert.deepEqual(store.jobs[0].result, { terminal: true });
@@ -899,7 +905,7 @@ test("runCreativeJobWithExecutors fails the job and marks the attempt timed_out 
   assert.equal(store.attempts[0].error_code, "timeout");
   assert.equal(store.attempts[0].completed_at, finishedAt);
 
-  resolveExecutor(buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())));
+  resolveExecutor(buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow()))));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(store.jobs[0].status, "failed");
   assert.equal(store.attempts[0].status, "timed_out");
@@ -919,7 +925,7 @@ test("finish_creative_job and finish_creative_job_attempt always produce termina
     const job = fromCreativeJobRow(store.jobs[0]);
     const jobResult =
       outcome === "completed"
-        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())))
+        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow()))))
         : await failRunningCreativeJob(store.client, job, "Forced failure for regression test.");
     await finishCreativeJobAttempt(store.client, claim.attemptId, outcome, outcome === "failed" ? { errorCode: "failed", errorMessage: "Forced failure for regression test." } : {});
 
@@ -944,14 +950,14 @@ test("finish_creative_job rejects a second finish on an already-terminal job (do
     const job = fromCreativeJobRow(store.jobs[0]);
     const first =
       outcome === "completed"
-        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())))
+        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow()))))
         : await failRunningCreativeJob(store.client, job, "First failure.");
     assert.equal(first.ok, outcome === "completed");
     const stateAfterFirst = { ...store.jobs[0] };
 
     const second =
       outcome === "completed"
-        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(fromOpportunityRow(opportunityRow())))
+        ? await completeRunningCreativeJob(store.client, job, buildMockCreativeJobResult(buildCreativeInputFromOpportunity(fromOpportunityRow(opportunityRow()))))
         : await failRunningCreativeJob(store.client, job, "Second failure attempt.");
     assert.equal(second.ok, false);
     assert.equal(second.reason, "conflict");
@@ -1010,4 +1016,117 @@ test("creative job code does not call external providers or create future-domain
   ]) {
     assert.doesNotMatch(source, forbidden);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Content Creation MVP S1 -- request-backed Creative Jobs.
+//
+// Opportunities recommend content; they no longer authorize it. These tests cover the half of that
+// statement the schema cannot enforce on its own: creation without an Opportunity, execution from a
+// stored intent, and the guarantee that repeating a request produces a second job rather than
+// silently returning the first.
+// ---------------------------------------------------------------------------
+
+test("createCreativeJobFromRequest creates a job with no Opportunity and the request stored as intent", async () => {
+  const store = makeClient();
+
+  const result = await createCreativeJobFromRequest(store.client, { text: "show today's fresh batch" });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.outcome, "created");
+  assert.equal(result.job.opportunityId, null);
+  assert.equal(result.job.status, "queued");
+  assert.equal(result.job.intent.text, "show today's fresh batch");
+});
+
+test("createCreativeJobFromRequest refuses an empty request instead of creating an unusable job", async () => {
+  const store = makeClient();
+
+  const result = await createCreativeJobFromRequest(store.client, { text: "   " });
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.message, /text is required/i);
+});
+
+test("two identical requests on the same day become two distinct Creative Jobs", async () => {
+  // The precise behaviour a fabricated Opportunity would have broken: the Opportunity domain's
+  // unique deduplication_key would collide on the second ask and hand back the first job.
+  const store = makeClient();
+
+  const first = await createCreativeJobFromRequest(store.client, { text: "promote Biscoff Blondie" });
+  const second = await createCreativeJobFromRequest(store.client, { text: "promote Biscoff Blondie" });
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  if (!first.ok || !second.ok) return;
+  assert.equal(first.outcome, "created");
+  assert.equal(second.outcome, "created", "a repeated request must never resolve to the existing job");
+  assert.notEqual(first.job.id, second.job.id);
+});
+
+test("a request-backed job executes from its stored intent, with no Opportunity read at all", async () => {
+  const store = makeClient({ opportunities: [] });
+  const created = await createCreativeJobFromRequest(store.client, { text: "a Reel about Saturday orders" });
+  assert.equal(created.ok, true);
+  if (!created.ok) return;
+
+  const seen: CreativeInput[] = [];
+  const result = await runCreativeJobWithExecutors(store.client, created.job.id, {
+    mock: (_job, input) => {
+      seen.push(input);
+      return buildMockCreativeJobResult(input);
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].requestText, "a Reel about Saturday orders");
+  assert.deepEqual(seen[0].origin, { kind: "user_request" });
+  // No Opportunity exists in this store at all -- the run could not have consulted one.
+  assert.equal(seen[0].reason, null);
+});
+
+test("an Opportunity-backed job still requires an accepted Opportunity -- that gate is unchanged", async () => {
+  const store = makeClient({
+    opportunities: [opportunityRow({ status: "dismissed" })],
+    jobs: [creativeJobRow()],
+  });
+
+  const result = await runCreativeJobWithExecutors(store.client, "job-1", {
+    mock: (_job, input) => buildMockCreativeJobResult(input),
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.message, /accepted Opportunity/i);
+});
+
+test("an Opportunity-backed job hands the executor Opportunity-derived context, not a request", async () => {
+  const store = makeClient({ jobs: [creativeJobRow()] });
+
+  const seen: CreativeInput[] = [];
+  await runCreativeJobWithExecutors(store.client, "job-1", {
+    mock: (_job, input) => {
+      seen.push(input);
+      return buildMockCreativeJobResult(input);
+    },
+  });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].requestText, null);
+  assert.deepEqual(seen[0].origin, { kind: "opportunity", opportunityId: "opportunity-1" });
+});
+
+test("a request-backed job whose stored intent is unreadable fails loudly rather than inventing one", async () => {
+  const store = makeClient({ opportunities: [], jobs: [creativeJobRow({ id: "broken-job", opportunity_id: null, intent: { schemaVersion: "v1" } })] });
+
+  const result = await runCreativeJobWithExecutors(store.client, "broken-job", {
+    mock: (_job, input) => buildMockCreativeJobResult(input),
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.match(result.message, /stored request/i);
 });

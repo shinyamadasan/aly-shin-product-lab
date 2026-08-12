@@ -10,14 +10,19 @@ const sqlStatementsOnly = sql
 const createTableStatement = sqlStatementsOnly.match(/create table if not exists creative_jobs \(([\s\S]*?)\);/i)?.[0] ?? "";
 const columnBody = createTableStatement.match(/create table if not exists creative_jobs \(([\s\S]*?)\);/i)?.[1] ?? "";
 const guardStatements = Array.from(sqlStatementsOnly.matchAll(/do \$\$[\s\S]*?end \$\$;/gi), (match) => match[0]);
-const staleTableGuardStatement = guardStatements[0] ?? "";
-const indexGuardStatement = guardStatements[1] ?? "";
+// Selected by content, not by position: S1 added a third do-block (the conditional
+// creative_jobs_origin_check add) between these two, and positional indexing silently pointed the
+// index assertions at the wrong block rather than failing honestly.
+const staleTableGuardStatement = guardStatements.find((statement) => /required_column/i.test(statement)) ?? "";
+const indexGuardStatement = guardStatements.find((statement) => /creative_jobs_opportunity_id_idx/i.test(statement)) ?? "";
 
 test("creative_jobs creates the approved foundation table with required columns", () => {
   assert.match(sql, /create table if not exists creative_jobs \(/);
   for (const requiredColumn of [
     "id uuid primary key default gen_random_uuid()",
-    "opportunity_id uuid not null references opportunities(id)",
+    // Nullable as of Content Creation MVP S1 -- a request-backed job has no Opportunity.
+    "opportunity_id uuid references opportunities(id)",
+    "intent jsonb not null default '{}'::jsonb",
     "status text not null default 'queued'",
     "worker_type text not null default 'mock'",
     "attempt_count integer not null default 0",
@@ -42,8 +47,17 @@ test("creative_jobs adds last_error idempotently for existing live tables", () =
   assert.match(sqlStatementsOnly, /alter table creative_jobs\s+add column if not exists last_error text;/i);
 });
 
-test("creative_jobs prevents duplicate jobs for the same Opportunity", () => {
-  assert.match(sql, /create unique index if not exists creative_jobs_opportunity_id_idx\s*\n\s*on creative_jobs \(opportunity_id\);/);
+test("creative_jobs prevents duplicate jobs for the same Opportunity, while leaving request-backed jobs unconstrained", () => {
+  // Partial as of Content Creation MVP S1. The one-job-per-Opportunity rule is unchanged; the
+  // predicate is what lets a second identical manual request become its own job instead of
+  // colliding with the first.
+  assert.match(sql, /create unique index if not exists creative_jobs_opportunity_id_idx\s*\n\s*on creative_jobs \(opportunity_id\)\s*\n\s*where opportunity_id is not null;/);
+});
+
+test("creative_jobs enforces exactly one job origin -- an Opportunity or an intent, never both or neither", () => {
+  assert.match(sqlStatementsOnly, /add constraint creative_jobs_origin_check/i);
+  assert.match(sqlStatementsOnly, /opportunity_id is not null and intent = '\{\}'::jsonb/i);
+  assert.match(sqlStatementsOnly, /opportunity_id is null and intent <> '\{\}'::jsonb/i);
 });
 
 test("creative_jobs has the status lookup index", () => {
@@ -57,6 +71,7 @@ test("creative_jobs fails loudly instead of silently accepting stale draft schem
   for (const requiredColumn of [
     "id",
     "opportunity_id",
+    "intent",
     "status",
     "worker_type",
     "attempt_count",
@@ -77,6 +92,9 @@ test("creative_jobs fails loudly instead of silently accepting stale draft schem
   }
   assert.match(staleTableGuardStatement, /raise exception/i);
   assert.match(indexGuardStatement, /creative_jobs_opportunity_id_idx/i);
+  // The guard must assert the PARTIAL predicate, not merely that some unique index exists.
+  assert.match(indexGuardStatement, /where.*opportunity_id is not null/i);
+  assert.match(indexGuardStatement, /creative_jobs_origin_check/i);
   assert.match(indexGuardStatement, /creative_jobs_status_created_at_idx/i);
   assert.match(indexGuardStatement, /raise exception/i);
   assert.doesNotMatch(sqlStatementsOnly, /drop\s+column/i);

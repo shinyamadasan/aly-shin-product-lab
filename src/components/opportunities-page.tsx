@@ -498,7 +498,8 @@ export function OpportunitiesPage({ initialStatusFilter }: { initialStatusFilter
                               {metadataBlock("Caption", selectedPackage.content.output.caption)}
                               {metadataBlock("Source Creative Job ID", selectedPackage.content.metadata.sourceCreativeJobId)}
                               {metadataBlock("Source worker", selectedPackage.content.metadata.sourceWorker)}
-                              {metadataBlock("Generated from Opportunity ID", selectedPackage.content.metadata.generatedFromOpportunity)}
+                              {/* Null for a request-backed job (S1); metadataBlock already renders "Not recorded" for an empty value. */}
+                              {metadataBlock("Generated from Opportunity ID", selectedPackage.content.metadata.generatedFromOpportunity ?? "")}
                               {metadataBlock("Generator version", selectedPackage.content.metadata.generatorVersion)}
                               <div className="text-sm">
                                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Artifacts</p>

@@ -23,7 +23,11 @@ export type CreativePackageContentV1 = {
     caption: string;
   };
   metadata: {
-    generatedFromOpportunity: string;
+    // Nullable as of S1, mirroring CreativeJobResultEnvelope's own metadata: this field is copied
+    // verbatim from the job envelope, so it has to be able to represent the same absence. A
+    // request-backed job was genuinely not generated from an Opportunity. Widening only -- the
+    // output contract and every other field are untouched, and this is NOT the v2 content shape.
+    generatedFromOpportunity: string | null;
     generatorVersion: "1";
     sourceCreativeJobId: string;
     sourceWorker: CreativeJobWorkerType;
@@ -144,8 +148,10 @@ export function isCreativePackageContentV1(value: unknown): value is CreativePac
     typeof output.caption === "string" &&
     output.caption.trim().length > 0 &&
     isJsonObject(metadata) &&
-    typeof metadata.generatedFromOpportunity === "string" &&
-    metadata.generatedFromOpportunity.trim().length > 0 &&
+    // Either a non-empty opportunity id, or explicitly null for a request-backed job. An empty or
+    // whitespace-only string is still rejected: absence must be stated, never implied.
+    (metadata.generatedFromOpportunity === null ||
+      (typeof metadata.generatedFromOpportunity === "string" && metadata.generatedFromOpportunity.trim().length > 0)) &&
     metadata.generatorVersion === "1" &&
     typeof metadata.sourceCreativeJobId === "string" &&
     metadata.sourceCreativeJobId.trim().length > 0 &&
