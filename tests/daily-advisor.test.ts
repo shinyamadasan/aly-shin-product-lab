@@ -518,6 +518,28 @@ test("invokeClaude: a usage-limit style error message is classified as usage-lim
 // fallback is possible from this module -- run.ts's caller decides what to do with a failure)
 // ---------------------------------------------------------------------------
 
+// One live `products` row, in the raw snake_case shape Supabase returns. S0b made the catalog a
+// real read, so any stub that supplies operational rows must supply a catalog too -- a deployment
+// with batches but no products is the RLS signature loadSupabaseContext now refuses to guess at.
+function productRows(): Record<string, unknown>[] {
+  return [
+    {
+      id: "brownies",
+      name: "Brownies",
+      category: "Baked goods",
+      product_role: "Hero candidate",
+      status: "testing",
+      description: null,
+      notes: null,
+      main_photo_url: null,
+      decision: "Needs proof",
+      is_public: false,
+      created_at: "2026-07-01T00:00:00.000Z",
+      updated_at: "2026-07-01T00:00:00.000Z",
+    },
+  ];
+}
+
 function makeStubClient(overrides: { signInError?: { message: string } | null; tableErrors?: Record<string, { message: string }>; rows?: Record<string, Record<string, unknown>[]> } = {}): SupabaseLikeClient {
   return {
     auth: {
@@ -566,6 +588,7 @@ test("loadSupabaseContext: a foundational table read error propagates as an erro
 test("loadSupabaseContext: maps snake_case rows to the camelCase RuleEngineContext shape correctly", async () => {
   const client = makeStubClient({
     rows: {
+      products: productRows(),
       product_batches: [{ id: "b1", product_id: "brownies", batch_version: "V1", date_made: "2026-07-01", ingredients_notes: "{}", prep_time_minutes: 10, bake_time_minutes: 20, cooling_time_minutes: 5, usable_pieces: 8, imperfect_pieces: 0, stress_level: 2, taste_notes: "", texture_notes: "", went_wrong: "", improve_next: "", launch_decision: "retest" }],
       costing_summaries: [],
       tasting_feedback: [],
@@ -588,7 +611,7 @@ test("loadSupabaseContext: a missing supply_entries table degrades to an empty a
     // At least one real row elsewhere -- isolates the supply_entries-missing-table behavior from
     // the separate zero-row validation covered below (both empty AND missing-table at once would
     // trip that check instead of this one).
-    rows: { product_batches: [{ id: "b1", product_id: "brownies", batch_version: "V1", date_made: "2026-07-01", ingredients_notes: "{}", launch_decision: "retest" }], costing_summaries: [], tasting_feedback: [] },
+    rows: { products: productRows(), product_batches: [{ id: "b1", product_id: "brownies", batch_version: "V1", date_made: "2026-07-01", ingredients_notes: "{}", launch_decision: "retest" }], costing_summaries: [], tasting_feedback: [] },
   });
   const result = await loadSupabaseContext(client, { email: "a@b.com", password: "x" }, FIXED_NOW);
   assert.equal(result.ok, true);
@@ -614,6 +637,7 @@ test("loadSupabaseContext: authenticated zero rows across every table fails with
 test("loadSupabaseContext: a single real row anywhere is enough to avoid the zero-row guard", async () => {
   const client = makeStubClient({
     rows: {
+      products: productRows(),
       product_batches: [],
       costing_summaries: [{ id: "c1", product_id: "brownies", batch_id: "b1", ingredient_cost: 10, suggested_price: 50, notes: "Costing yield: 4" }],
       tasting_feedback: [],

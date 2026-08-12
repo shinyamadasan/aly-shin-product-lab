@@ -15,6 +15,7 @@ import { buildPortfolioPrompt } from "./prompt.ts";
 import { getExperimentSignal, rankPortfolio } from "./portfolio-ranking.ts";
 import { loadSupabaseContext } from "./supabase-read.ts";
 import { buildSampleContext, getProductList } from "./sample-fixtures.ts";
+import type { Product } from "../../src/lib/product-lab-types.ts";
 import type { DataSourceMode, ProductEvaluation } from "./types.ts";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -94,6 +95,10 @@ async function main(): Promise<void> {
   }
 
   let context;
+  // The catalog now follows the data source, exactly like every other input. It used to be read
+  // unconditionally from the static fixture list below, which meant --source supabase evaluated
+  // real batches/costings/tastings against fixture product identities (S0b).
+  let products: Product[];
   let opportunityClient: OpportunityPersistenceClient | null = null;
   if (dataSource === "supabase") {
     const credsResult = readSupabaseCredentials();
@@ -110,13 +115,13 @@ async function main(): Promise<void> {
       exitWithCode(1);
     }
     context = result.context;
-    log("info", `Loaded live Supabase data: ${context.batches.length} batches, ${context.costings.length} costings, ${context.tastings.length} tastings, ${context.supplies.length} supplies.`);
+    products = result.products;
+    log("info", `Loaded live Supabase data: ${products.length} products, ${context.batches.length} batches, ${context.costings.length} costings, ${context.tastings.length} tastings, ${context.supplies.length} supplies.`);
   } else {
     context = buildSampleContext(now);
+    products = getProductList();
     log("info", "Using explicit sample-data fixtures (--source sample). This is synthetic data, not real business activity.");
   }
-
-  const products = getProductList();
 
   const orphanReport = detectOrphanedRecords(context, products);
   if (orphanReport.total > 0) {

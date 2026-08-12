@@ -2,11 +2,11 @@ import { products } from "../../src/lib/sample-data.ts";
 import type { CostingSummary, Product, ProductBatch, TastingFeedback } from "../../src/lib/product-lab-types.ts";
 import type { RuleEngineContext } from "../../src/lib/rule-engine/index.ts";
 
-// The product catalog itself comes from sample-data.ts in BOTH --source modes -- this is not a
-// fallback, it faithfully matches how the live app already works today (products are a hardcoded
-// list, not a Supabase table; see DAILY_AI_ADVISOR.md section 1). What actually changes between
-// modes is the TRANSACTIONAL data below (batches/costings/tastings/supplies): real from
-// authenticated Supabase, or these clearly-synthetic fixtures.
+// --source sample ONLY, as of S0b. This used to be called unconditionally by run.ts, on the premise
+// that "products are a hardcoded list, not a Supabase table" -- true when it was written, false
+// now: `products` is a real table (supabase-schema.sql) that the app reads and writes. Supabase
+// mode reads the live catalog through loadSupabaseContext; only sample mode still comes here, so
+// fixture product identities can no longer reach a production briefing or Opportunity.
 export function getProductList(): Product[] {
   return products;
 }
