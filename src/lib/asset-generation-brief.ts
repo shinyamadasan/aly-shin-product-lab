@@ -20,6 +20,14 @@ export function renderAssetGenerationBrief(spec: AssetGenerationSpecV1): string 
     "Do not add text overlays to the image unless explicitly requested.",
   ];
 
+  // Appended only when the source package actually carries visual direction, which today means a v2
+  // package (see asset-generation-spec.ts). A v1 spec has visualDirection === null and therefore
+  // renders byte-identically to every brief produced before S2 -- which is what keeps briefSha256
+  // stable for existing Assets.
+  if (spec.visualDirection) {
+    lines.push("", `Visual direction: ${spec.visualDirection}`);
+  }
+
   if (spec.brandStyle) {
     if (spec.brandStyle.tone.length > 0) {
       lines.push("", "Brand tone:", ...spec.brandStyle.tone.map((entry) => `- ${entry}`));
