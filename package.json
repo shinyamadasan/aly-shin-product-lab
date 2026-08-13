@@ -18,6 +18,7 @@
     "creative-workers": "node scripts/creative-workers/run.ts",
     "creative-workers:smoke": "node --test tests/smoke/creative-workers/*.test.ts",
     "creative-prep": "node scripts/creative-prep/run.ts",
+    "creative-ai:worker": "node scripts/creative-workers/background-worker.ts",
     "marketing-advisor": "node scripts/marketing-advisor/run.ts",
     "postgres:smoke": "node --test tests/smoke/postgres/*.test.ts"
   },

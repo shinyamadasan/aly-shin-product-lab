@@ -62,6 +62,10 @@ daily-advisor-session.log
 /creative-prep/output/
 /creative-prep/.run.lock
 
+# Creative AI background worker (S3D) -- the single-instance lock file the scheduled one-shot
+# process takes each run. Purely a local operational artifact, like the two above.
+/creative-ai-worker/.run.lock
+
 # Marketing Advisor manual export/import sessions (PROP-021) -- local working artifacts (Brief
 # snapshots, prompts, manifests, AI replies, lifted drafts), never committed. Mirrors the Daily
 # Advisor output/ convention above.

@@ -8,6 +8,11 @@ export type AcquireLockResult = { ok: true; release: () => void } | { ok: false;
 // Comfortably above worst-case runtime (Claude's own timeout is 45s, Supabase reads take
 // seconds, git retries take at most a few seconds each) while still recovering promptly from a
 // genuinely abandoned lock (a crashed prior run) rather than blocking every future run forever.
+//
+// The DEFAULT, kept exactly as it was for the daily-advisor and creative-prep callers that have
+// always relied on it. A caller whose worst case is materially different may pass its own
+// threshold to acquireLock -- see the Creative AI background worker, which runs on a one-minute
+// cadence and so wants a dead lock recovered sooner than an hour.
 const STALE_AFTER_MS = 60 * 60 * 1000;
 
 function isProcessAlive(pid: number): boolean {
@@ -31,12 +36,12 @@ function readLockInfo(lockPath: string): LockInfo | null {
   }
 }
 
-function isStale(info: LockInfo | null): boolean {
+function isStale(info: LockInfo | null, staleAfterMs: number): boolean {
   if (!info) {
     return true; // missing or malformed lock file -- never block forever on a file we can't read
   }
   const age = Date.now() - Date.parse(info.startedAt);
-  if (!Number.isFinite(age) || age > STALE_AFTER_MS) {
+  if (!Number.isFinite(age) || age > staleAfterMs) {
     return true;
   }
   return !isProcessAlive(info.pid);
@@ -47,7 +52,8 @@ function isStale(info: LockInfo | null): boolean {
 // checks this unconditionally before ever consulting the --force flag, which only ever affects
 // the separate same-day idempotency check. Stale locks (dead PID, or older than STALE_AFTER_MS)
 // are recovered automatically rather than requiring manual cleanup after a crash.
-export function acquireLock(lockPath: string): AcquireLockResult {
+export function acquireLock(lockPath: string, options: { staleAfterMs?: number } = {}): AcquireLockResult {
+  const staleAfterMs = options.staleAfterMs ?? STALE_AFTER_MS;
   // The lock file's directory may not exist yet on a fresh checkout or a brand-new scheduled
   // script's first-ever run (found while verifying creative-prep against real Supabase: its
   // parent directory had never been created, and the wx-flag ENOENT below was misreported as
@@ -57,7 +63,7 @@ export function acquireLock(lockPath: string): AcquireLockResult {
 
   if (existsSync(lockPath)) {
     const info = readLockInfo(lockPath);
-    if (!isStale(info)) {
+    if (!isStale(info, staleAfterMs)) {
       return { ok: false, reason: `Another instance is already running (pid ${info?.pid}, started ${info?.startedAt}).` };
     }
     try {
