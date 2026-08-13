@@ -2,6 +2,7 @@ import {
   buildMockCreativeJobResult,
   buildOpportunityBriefCreativeJobResult,
   runCreativeJobWithExecutors,
+  type CreativeJobExecutor,
   type CreativeJobExecutorMap,
   type CreativeJobResultEnvelope,
 } from "../../src/lib/creative-jobs.ts";
@@ -30,11 +31,16 @@ export function buildProductTextWorkerReadinessResult(input: CreativeInput): Cre
   };
 }
 
-export function trustedCreativeJobExecutors(): CreativeJobExecutorMap {
+// The creative_ai executor is OPTIONAL and absent by default (S3E-A2). It needs a Supabase client
+// and real CLI providers, which the three deterministic executors below do not -- so a caller that
+// has not configured AI gets exactly the map it always got, and a creative_ai job fails with the
+// existing "No executor is registered for worker type" message rather than half-working.
+export function trustedCreativeJobExecutors(options: { creativeAi?: CreativeJobExecutor } = {}): CreativeJobExecutorMap {
   return {
     mock: (_job, input) => buildMockCreativeJobResult(input),
     product_text_worker: (_job, input) => buildProductTextWorkerReadinessResult(input),
     opportunity_brief: (_job, input) => buildOpportunityBriefCreativeJobResult(input),
+    ...(options.creativeAi ? { creative_ai: options.creativeAi } : {}),
   };
 }
 

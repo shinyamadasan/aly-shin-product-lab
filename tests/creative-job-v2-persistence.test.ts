@@ -337,7 +337,9 @@ test("D. invalid v2 package content is rejected, carrying the S2 validator's own
   // A v2 envelope with no content at all is not a v2 envelope.
   assert.equal(validateCreativeJobResultEnvelopeV2({ schemaVersion: "v2", worker: "mock", executionTrace: [] }).ok, false);
   // ...nor is one whose worker is unsupported.
-  assert.equal(validateCreativeJobResultEnvelopeV2(v2Envelope({ worker: "creative_ai" as never })).ok, false);
+  // `creative_ai` was the unsupported example here until S3E-A2 added it as a real worker; the
+  // check is about rejecting workers that do not exist, so it now uses one that genuinely doesn't.
+  assert.equal(validateCreativeJobResultEnvelopeV2(v2Envelope({ worker: "definitely_not_a_worker" as never })).ok, false);
 });
 
 test("E. a v1 envelope is never silently parsed as v2", () => {

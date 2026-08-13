@@ -239,11 +239,78 @@ export type CreativeJobExecutor = (
 ) => unknown | Promise<unknown>;
 export type CreativeJobExecutorMap = Partial<Record<CreativeJobWorkerType, CreativeJobExecutor>>;
 
+// --- expected executor failure (S3E-A2) ---------------------------------------------------------
+//
+// Closes the gap S3E-A1 left open: a throwing executor cannot hand back the AI execution trace it
+// accumulated, so an ordinary provider exhaustion (first provider hits its usage limit, the fallback
+// hits its own) lost the very history that explains it.
+//
+// Provider-neutral by construction, like the rest of this module: nothing here names a provider, a
+// model or a vendor. This is the shape a failing executor reports in; which providers were tried is
+// the trace's business, and choosing them is S3C-D's.
+//
+// The mechanism is deliberately the smallest thing that works at the EXISTING executor boundary: an
+// executor already returns `unknown`, so returning this shape needs no signature change, no Result
+// framework, and no second runner. Three outcomes are now distinguishable:
+//
+//   success            -- a v1 or v2 result envelope
+//   expected failure   -- this shape: the run reached a normal, understood dead end, WITH its trace
+//   unexpected failure -- a thrown exception, exactly as before
+//
+// A genuine programming or infrastructure bug must keep throwing. Converting every exception into an
+// "expected failure" would turn real defects into routine operational noise, which is the opposite
+// of what this exists for.
+export type CreativeJobExecutorFailure = {
+  // A brand-specific discriminant, not a generic `ok: false`. A result envelope is identified by
+  // `schemaVersion`, so these two can never be confused for one another by accident.
+  creativeJobExecutorFailure: true;
+  // Bounded, operator-safe. Sanitized again by the runner before it reaches last_error.
+  code: string;
+  message: string;
+  // "timed_out" only where that is semantically true (the AI itself reported a timeout), never as a
+  // general-purpose failure label.
+  attemptOutcome: "failed" | "timed_out";
+  executionTrace: CreativeAiInvocationTraceEntry[];
+};
+
+export function isCreativeJobExecutorFailure(value: unknown): value is CreativeJobExecutorFailure {
+  if (!isJsonObject(value) || value.creativeJobExecutorFailure !== true) {
+    return false;
+  }
+  return (
+    typeof value.code === "string" &&
+    typeof value.message === "string" &&
+    (value.attemptOutcome === "failed" || value.attemptOutcome === "timed_out") &&
+    Array.isArray(value.executionTrace)
+  );
+}
+
 const TERMINAL_JOB_STATUSES = new Set<CreativeJobStatus>(["completed", "failed"]);
 
 // Provisional default pending real-provider latency data; only the trusted runner (never browser
 // code) can override it via options.timeoutMs.
 const DEFAULT_EXECUTOR_TIMEOUT_MS = 30000;
+
+// The OUTER safety ceiling for a creative_ai job -- not an expected latency, and not a replacement
+// for the per-invocation timeout each text provider already owns (120s apiece today). This one
+// exists so a wedged executor cannot occupy a job forever.
+//
+// 30s could not survive a legitimate run: format decision + creative body is already two provider
+// invocations, each allowed 120s, and a fallback provider can add two more. The generic ceiling
+// would kill a healthy job mid-fallback and report it as a timeout. 15 minutes clears the worst
+// case (S3C-D caps invocations at 6) with wide headroom. A normal run still finishes in tens of
+// seconds; nothing here sleeps, backs off, or waits on purpose.
+export const CREATIVE_AI_EXECUTOR_TIMEOUT_MS = 15 * 60 * 1000;
+
+// Per-worker overrides, so raising the AI ceiling cannot silently raise it for mock,
+// product_text_worker or opportunity_brief -- those keep the generic 30s exactly as before.
+const EXECUTOR_TIMEOUT_MS_BY_WORKER: Partial<Record<CreativeJobWorkerType, number>> = {
+  creative_ai: CREATIVE_AI_EXECUTOR_TIMEOUT_MS,
+};
+
+export function executorTimeoutMsFor(workerType: CreativeJobWorkerType): number {
+  return EXECUTOR_TIMEOUT_MS_BY_WORKER[workerType] ?? DEFAULT_EXECUTOR_TIMEOUT_MS;
+}
 
 function isMissingTableError(error: SupabaseErrorLike): boolean {
   return error.code === "PGRST205" || error.code === "42P01";
@@ -815,7 +882,15 @@ export async function runCreativeJobWithExecutors(
   // stale-recovered later -- a direct contradiction. finishCreativeJobAttempt's own failure is
   // deliberately non-fatal here: it's merged onto the result as `attempt`, never used to flip
   // `ok`/`reason`/`message`.
-  async function failJobAndAttempt(message: string, attemptOutcome: "failed" | "timed_out" = "failed"): Promise<CreativeJobRunnerResult> {
+  //
+  // `failure.executionTrace` (S3E-A2) is threaded through so an EXPECTED AI failure persists the
+  // history that explains it. It stays optional: a failure with no trace -- every non-AI worker, and
+  // any unexpected exception -- still calls the original untraced RPC and leaves the column NULL.
+  async function failJobAndAttempt(
+    message: string,
+    attemptOutcome: "failed" | "timed_out" = "failed",
+    failure: { errorCode?: string; executionTrace?: CreativeAiInvocationTraceEntry[] } = {},
+  ): Promise<CreativeJobRunnerResult> {
     const jobResult = await failRunningCreativeJob(client, job, message);
     if (jobResult.ok) {
       // failRunningCreativeJob never actually resolves ok:true; this satisfies the type checker
@@ -824,8 +899,9 @@ export async function runCreativeJobWithExecutors(
     }
     const reason = attemptOutcome === "timed_out" && jobResult.reason === "failed" ? ("timeout" as const) : jobResult.reason;
     const attempt = await finishCreativeJobAttempt(client, attemptId, attemptOutcome, {
-      errorCode: attemptOutcome === "timed_out" ? "timeout" : "failed",
+      errorCode: failure.errorCode ?? (attemptOutcome === "timed_out" ? "timeout" : "failed"),
       errorMessage: jobResult.message,
+      ...(failure.executionTrace === undefined ? {} : { executionTrace: failure.executionTrace }),
     });
     return { ...jobResult, reason, attempt };
   }
@@ -859,7 +935,10 @@ export async function runCreativeJobWithExecutors(
     input = buildCreativeInputFromOpportunity(opportunity.opportunity);
   }
 
-  const timeoutMs = options.timeoutMs ?? DEFAULT_EXECUTOR_TIMEOUT_MS;
+  // Per-worker as of S3E-A2: creative_ai gets its own outer ceiling, every other worker keeps the
+  // generic 30s it always had. An explicit options.timeoutMs still wins over both, so existing
+  // callers that set one are unaffected.
+  const timeoutMs = options.timeoutMs ?? executorTimeoutMsFor(job.workerType);
   const controller = new AbortController();
   let timedOut = false;
 
@@ -888,22 +967,30 @@ export async function runCreativeJobWithExecutors(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // S3E-A2 REQUIRED DECISION -- known failure-trace gap, deliberately NOT solved in S3E-A1.
+    // The UNEXPECTED path, and deliberately still trace-less (S3E-A2).
     //
-    // An executor that throws or times out has no return value, and the return value is the only
-    // channel a trace crosses the executor boundary on. So the attempt below is finished with no
-    // trace even when the executor accumulated one -- precisely the case where the execution
-    // history is most worth having. Nothing here fabricates a partial trace to paper over that:
-    // an absent trace stays NULL, which is the truth about what this runner can currently observe.
+    // S3E-A1 flagged that a throwing executor cannot hand back its trace. S3E-A2 closes that for
+    // EXPECTED AI failure by returning CreativeJobExecutorFailure (handled below) -- ordinary
+    // provider exhaustion no longer arrives here at all. What is left in this branch is what should
+    // be here: genuine programmer and infrastructure exceptions, plus the OUTER safety-ceiling
+    // timeout, which by definition fires while the executor is still running and therefore has no
+    // trace to hand over.
     //
-    // The decision S3E-A2 must make: the real creative_ai executor should return a STRUCTURED AI
-    // failure result carrying its trace, rather than relying on `throw` for ordinary provider
-    // exhaustion (all providers failed, usage limit, malformed response after retries). Unexpected
-    // programmer and infrastructure exceptions may still use this exception path, which stays as-is.
-    //
-    // This is an executor-contract decision, not a runner bug, so the executor interface is left
-    // untouched here.
+    // Nothing fabricates a partial trace to paper over that. Recovering one would mean sharing
+    // mutable trace state between executor and runner, and a trace assembled from a half-finished
+    // run is a worse artifact than an honest NULL. An absent trace stays NULL.
     return failJobAndAttempt(timedOut ? message : `Worker execution failed: ${message}`, timedOut ? "timed_out" : "failed");
+  }
+
+  // EXPECTED executor failure (S3E-A2): the run reached a normal, understood dead end and returned
+  // its accumulated trace rather than throwing. The job fails, the attempt records the outcome the
+  // executor reported, the trace is persisted, and NO Creative Package is created -- placeholder
+  // content is never fabricated to make a failure look like a success.
+  if (isCreativeJobExecutorFailure(resultEnvelope)) {
+    return failJobAndAttempt(resultEnvelope.message, resultEnvelope.attemptOutcome, {
+      errorCode: resultEnvelope.code,
+      executionTrace: resultEnvelope.executionTrace,
+    });
   }
 
   // The execution-trace handoff (S3E-A1). The executor's return value is its only channel out of

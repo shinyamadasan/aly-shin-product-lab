@@ -8,10 +8,16 @@
 // creative-jobs.ts would close a runtime import cycle (creative-jobs -> v2 content -> creative-jobs).
 // Same reasoning, and same shape of fix, as the S3B extraction of ./creative-formats.ts.
 //
-// No worker type is added here. `creative_ai` belongs to S3E-A2, which is the slice that actually
-// builds the executor -- listing a worker with nothing behind it would be a promise, not a fact.
+// `creative_ai` is added by S3E-A2, the slice that actually builds the executor behind it -- it was
+// deliberately absent in S3E-A1 because listing a worker with nothing behind it would be a promise,
+// not a fact.
+//
+// No SQL migration accompanies it: creative_jobs.worker_type and creative_job_attempts.worker_type
+// are plain `text` with no CHECK constraint and no enum (worker validity is application-owned by
+// design -- see supabase-add-creative-job-attempts.sql's "keeps status app-validated" note), so
+// this list is the only place a worker type is declared.
 
-export const CREATIVE_JOB_WORKER_TYPES = ["mock", "product_text_worker", "opportunity_brief"] as const;
+export const CREATIVE_JOB_WORKER_TYPES = ["mock", "product_text_worker", "opportunity_brief", "creative_ai"] as const;
 export type CreativeJobWorkerType = (typeof CREATIVE_JOB_WORKER_TYPES)[number];
 
 export function isCreativeJobWorkerType(value: string): value is CreativeJobWorkerType {
