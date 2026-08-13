@@ -22,6 +22,13 @@
 -- columns exist now (nullable) for the first-provider milestone to populate; provider_request_id,
 -- input_tokens, output_tokens, and estimated_cost are deliberately deferred until then.
 --
+-- S3E-A1 adds ai_execution_trace and, with it, the frozen division of labour between the three:
+-- ai_execution_trace is the AUTHORITATIVE multi-provider execution history for an AI attempt, and
+-- provider/model are compatibility summary metadata only. A multi-provider run must never be
+-- collapsed into a single provider/model pair -- the trace is what carries the truth. This slice
+-- forces no new value onto historical or non-AI callers; which compatibility values a real AI run
+-- supplies is decided by the milestone that builds the AI executor.
+--
 -- Stale draft safety: this file intentionally does not drop columns or rewrite previously
 -- applied draft tables. Guarded preflight blocks verify that the live creative_job_attempts
 -- table, index, and claim function have the approved shape. If an older draft table exists with
@@ -40,8 +47,28 @@ create table if not exists creative_job_attempts (
   error_message text,
   provider text,
   model text,
+  -- S3E-A1: the S3C-D orchestration trace for an AI-executed attempt, stored as JSONB exactly as
+  -- the application produced it. NULL -- never '[]' -- for every attempt that ran no AI, which is
+  -- every historical attempt and every non-AI worker. An empty array would claim AI ran and did
+  -- nothing; NULL states the absence honestly. The application type remains authoritative: this
+  -- column deliberately does not restate the S3C-D routing validator in PostgreSQL, and holds no
+  -- stdout, stderr, prompt, raw model response, CLI log, credential or environment dump.
+  --
+  -- Deliberately a column on the attempt, not an execution_history_id pointing at a new table: the
+  -- trace is already bounded per attempt by S3C-D (max 6 invocations without a format hint, 4 with
+  -- one), so one row per invocation would be a generalized AI-telemetry system this milestone does
+  -- not need. execution_history_id remains a disallowed column below for exactly that reason.
+  ai_execution_trace jsonb,
   created_at timestamptz not null default now()
 );
+
+-- Same idempotent-add convention as supabase-add-creative-jobs.sql uses for last_error and intent,
+-- so a project that created this table before S3E-A1 picks up ai_execution_trace by re-running this
+-- file. The trace-aware finish RPC that writes it lives in
+-- supabase-add-creative-job-ai-execution-trace.sql, alongside the other finish functions' own file
+-- -- both install paths converge on the same logical schema once that file has been run.
+alter table creative_job_attempts
+  add column if not exists ai_execution_trace jsonb;
 
 do $$
 declare
@@ -65,6 +92,9 @@ begin
       ('error_message', 'text', false),
       ('provider', 'text', false),
       ('model', 'text', false),
+      -- Asserted nullable on purpose (S3E-A1): a historical attempt legitimately has no AI
+      -- execution trace, and NOT NULL here would force a fabricated empty array onto every one.
+      ('ai_execution_trace', 'jsonb', false),
       ('created_at', 'timestamp with time zone', true)
     ) as expected(column_name, data_type, is_required)
   loop
