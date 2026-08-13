@@ -106,9 +106,22 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $repoRoot
 
 # Every minute, indefinitely, starting now.
+#
+# -RepetitionDuration is OMITTED ON PURPOSE (S3D-H1). Task Scheduler treats a repetition with no
+# Duration element as repeating indefinitely, which is exactly the intent -- so the correct way to
+# say "forever" is to say nothing at all.
+#
+# The original passed [TimeSpan]::MaxValue, which failed at real activation with:
+#   "The task XML contains a value which is incorrectly formatted or out of range.
+#    Duration:P99999999DT23H59M59S"
+# New-ScheduledTaskTrigger clamps MaxValue to P99999999DT23H59M59S when it builds the XML, and that
+# clamped value is itself out of the range Task Scheduler accepts. Registration never succeeded.
+#
+# Do NOT "fix" this by substituting a large finite duration (9999 days, 10 years, a century). Any
+# finite value is a lie with an expiry date: the task would silently stop repeating on some far-off
+# afternoon with nothing to explain why. Omission is the supported way to mean forever.
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-    -RepetitionInterval (New-TimeSpan -Minutes 1) `
-    -RepetitionDuration ([TimeSpan]::MaxValue)
+    -RepetitionInterval (New-TimeSpan -Minutes 1)
 
 # IgnoreNew: Task Scheduler itself refuses to start a second copy while one is running. The worker's
 # own file lock still exists as the real guarantee, because a scheduler restart or a crashed run can

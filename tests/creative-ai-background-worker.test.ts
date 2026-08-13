@@ -555,6 +555,56 @@ test("the Task Scheduler setup script points at this repo, sets the working dire
   assert.ok(ps1.includes(CREATIVE_AI_WORKER_TASK_NAME));
 });
 
+// S3D-H1 regression. The reviewed installer passed -RepetitionDuration ([TimeSpan]::MaxValue),
+// which New-ScheduledTaskTrigger clamps to P99999999DT23H59M59S -- a value Task Scheduler itself
+// rejects as out of range, so Register-ScheduledTask failed at real owner activation and the task
+// was never created. Task Scheduler treats a repetition with NO Duration element as indefinite,
+// so the correct way to say "forever" is to omit it entirely.
+test("H1: the repetition is indefinite by omission, never a giant or finite Duration", () => {
+  const raw = readFileSync(new URL("../scripts/creative-workers/install-background-worker.ps1", import.meta.url), "utf8");
+  // Comments are stripped first: the script deliberately EXPLAINS the MaxValue defect in prose, so
+  // a naive search would match the very comment warning against it. This must assert on CODE.
+  const ps1 = raw
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+
+  // A. the one-minute cadence is unchanged.
+  assert.match(ps1, /-RepetitionInterval \(New-TimeSpan -Minutes 1\)/);
+
+  // B. the out-of-range value is gone from the executable script.
+  assert.doesNotMatch(ps1, /TimeSpan\]::MaxValue/);
+  assert.doesNotMatch(ps1, /P99999999DT23H59M59S/);
+
+  // C. and it was not "fixed" by substituting a large finite duration, which would be a lie with an
+  //    expiry date -- the task would silently stop repeating on some far-off afternoon. No
+  //    -RepetitionDuration argument may be passed at all.
+  assert.doesNotMatch(ps1, /-RepetitionDuration/);
+});
+
+test("H1: every other reviewed scheduler setting is preserved exactly", () => {
+  const raw = readFileSync(new URL("../scripts/creative-workers/install-background-worker.ps1", import.meta.url), "utf8");
+  const ps1 = raw
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+
+  // E. Task Scheduler refuses to stack overlapping instances.
+  assert.match(ps1, /-MultipleInstances IgnoreNew/);
+  // F. the 20-minute ceiling, above the worker's own 15-minute creative_ai ceiling.
+  assert.match(ps1, /-ExecutionTimeLimit \(New-TimeSpan -Minutes 20\)/);
+  // G. WakeToRun stays OFF -- a one-minute trigger must never wake the machine ~1440x a day.
+  assert.doesNotMatch(ps1, /-WakeToRun/);
+  // D. working-directory protection survives the hotfix.
+  assert.match(ps1, /-WorkingDirectory \$repoRoot/);
+  // The task identity is untouched.
+  assert.ok(ps1.includes(CREATIVE_AI_WORKER_TASK_NAME));
+  // Still the one-shot worker, still run as the logged-on user (no -User/-Principal override).
+  assert.match(ps1, /background-worker\.ts/);
+  assert.doesNotMatch(ps1, /-Principal /);
+  assert.doesNotMatch(ps1, /RunLevel Highest/);
+});
+
 test("the setup script preflights the three executables a scheduled process must resolve", () => {
   const ps1 = readFileSync(new URL("../scripts/creative-workers/install-background-worker.ps1", import.meta.url), "utf8");
   assert.match(ps1, /foreach \(\$tool in 'node', 'claude', 'codex'\)/);
