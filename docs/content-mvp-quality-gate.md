@@ -75,3 +75,34 @@ Confirmed against the real CLI rather than assumed:
   provider therefore never reads "the first key" blindly.
 - A run can exit non-zero with an EMPTY stderr while stdout still holds a valid JSON error
   envelope. Classification reads the envelope first, regardless of exit code.
+
+## S3C-Q / S3C-C: Codex CLI qualification and provider notes
+
+S3C-Q qualified Codex CLI as an automatic fallback candidate for a later routing slice, without
+implementing routing or fallback. The qualification harness produced 5/5 PASS, 9/9 structured calls
+schema-valid on the first attempt, zero retries, 5/5 assembly success, 5/5 S2 validation, no serious
+factuality failures, and commercial CTA discipline held. The explicit Reel production case passed.
+No Skill was required.
+
+The harness did not pass an explicit model flag. All nine retained qualification-stage stderr
+captures reported `model: gpt-5.6-sol`, so the exact model that produced the successful 5/5
+qualification is proven as `gpt-5.6-sol` via the Codex CLI default at that time. S3C-C still does
+not hardcode or inherit Opus. `CodexCliProvider` preserves the Codex CLI default runtime when no
+`AiTextRequest.model` or provider-configured model is supplied, and only passes `--model` for an
+explicit request/provider override.
+
+S3C-Q also found that Codex needed cwd isolation to avoid repository-specific context. S3C-C runs
+each invocation from a fresh temp cwd with `-C`, `-s read-only`, `-a never`,
+`--skip-git-repo-check`, `--ephemeral`, `--ignore-user-config`, and `--ignore-rules`. It writes the
+schema and final-message file only inside that temp cwd and cleans the cwd on success and failure.
+
+Codex CLI does not receive separate native system/user channels in this provider. S3C-C therefore
+uses a deterministic transport envelope with explicitly labeled `SYSTEM INSTRUCTIONS` and
+`USER REQUEST` sections. The original `AiTextRequest.systemPrompt` and `AiTextRequest.userPrompt`
+strings are inserted unchanged and in stable order; the envelope adds no Codex-specific creative
+instructions and clean-cwd isolation prevents repository instructions from joining the request.
+
+Live S3C-C smoke checks against the installed `codex-cli 0.147.0` passed for both text and
+structured output through the provider. Both calls reported `model: gpt-5.6-sol`; usage is omitted
+rather than fabricated because the CLI path did not expose trustworthy token counts in the final
+message contract.
