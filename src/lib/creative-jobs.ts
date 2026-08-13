@@ -12,14 +12,23 @@ import {
   type CreativeJobAttemptClient,
   type CreativeJobAttemptFinishResult,
 } from "./creative-job-attempts.ts";
+import { isCreativeJobWorkerType, type CreativeJobWorkerType } from "./creative-worker-types.ts";
+import { validateCreativePackageContentV2, type CreativePackageContentV2 } from "./creative-package-content-v2.ts";
+import type { CreativeAiInvocationTraceEntry } from "./creative-generation/ai-orchestrator.ts";
 
 export const CREATIVE_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type CreativeJobStatus = (typeof CREATIVE_JOB_STATUSES)[number];
 
-export const CREATIVE_JOB_WORKER_TYPES = ["mock", "product_text_worker", "opportunity_brief"] as const;
-export type CreativeJobWorkerType = (typeof CREATIVE_JOB_WORKER_TYPES)[number];
+// Moved to the leaf module ./creative-worker-types.ts in S3E-A1 and re-exported here unchanged, so
+// every existing importer keeps working against this module exactly as before. The move exists only
+// so the v2 content validator (which checks metadata.sourceWorker against this list) can be
+// imported here without closing a runtime import cycle -- see creative-worker-types.ts.
+export { CREATIVE_JOB_WORKER_TYPES, isCreativeJobWorkerType, type CreativeJobWorkerType } from "./creative-worker-types.ts";
 
-export type CreativeJobResultEnvelope = {
+// v1, byte-for-byte as it has always been. Named explicitly as of S3E-A1 so the two versions can be
+// discussed without ambiguity; CreativeJobResultEnvelope below remains an alias for it, so no
+// existing importer, type annotation or stored envelope changes in any way.
+export type CreativeJobResultEnvelopeV1 = {
   schemaVersion: "v1";
   worker: CreativeJobWorkerType;
   output: {
@@ -36,6 +45,31 @@ export type CreativeJobResultEnvelope = {
   artifacts: [];
 };
 
+// Deliberately still means "v1" rather than becoming the union. Every existing producer
+// (buildMockCreativeJobResult, buildOpportunityBriefCreativeJobResult,
+// buildProductTextWorkerReadinessResult) and every existing consumer
+// (buildCreativePackageContentFromCompletedJob) is v1-only and must stay that way; silently
+// widening this name would make each of them accept a v2 envelope they cannot handle. Code that
+// genuinely handles both asks for AnyCreativeJobResultEnvelope by name.
+export type CreativeJobResultEnvelope = CreativeJobResultEnvelopeV1;
+
+// v2 (S3E-A1). A carrier, not a second content contract: `content` IS the validated S2
+// CreativePackageContentV2 that will be persisted as the Creative Package, never a raw provider
+// response, prompt, CLI envelope or transport payload.
+//
+// executionTrace is the S3C-D orchestration trace, riding along purely so the runner can hand it to
+// the attempt row (creative_job_attempts.ai_execution_trace, its durable home). It is execution
+// history, not creative content, and the package materializer drops it rather than persisting it as
+// package content.
+export type CreativeJobResultEnvelopeV2 = {
+  schemaVersion: "v2";
+  worker: CreativeJobWorkerType;
+  content: CreativePackageContentV2;
+  executionTrace: CreativeAiInvocationTraceEntry[];
+};
+
+export type AnyCreativeJobResultEnvelope = CreativeJobResultEnvelopeV1 | CreativeJobResultEnvelopeV2;
+
 export type CreativeJobRow = {
   id?: string;
   opportunity_id: string | null;
@@ -43,7 +77,7 @@ export type CreativeJobRow = {
   status: CreativeJobStatus;
   worker_type: string;
   attempt_count: number;
-  result: CreativeJobResultEnvelope | Record<string, unknown>;
+  result: AnyCreativeJobResultEnvelope | Record<string, unknown>;
   last_error?: string | null;
   created_at?: string;
   updated_at?: string;
@@ -61,7 +95,7 @@ export type CreativeJobRecord = {
   status: CreativeJobStatus;
   workerType: string;
   attemptCount: number;
-  result: CreativeJobResultEnvelope | Record<string, unknown>;
+  result: AnyCreativeJobResultEnvelope | Record<string, unknown>;
   lastError: string;
   createdAt: string;
   updatedAt: string;
@@ -169,6 +203,29 @@ export type CreativeJobResultValidation =
       message: string;
     };
 
+export type CreativeJobResultValidationV2 =
+  | { ok: true; result: CreativeJobResultEnvelopeV2 }
+  | {
+      ok: false;
+      reason: "unsupported-schema-version" | "unsupported-worker" | "malformed-content" | "malformed-execution-trace";
+      message: string;
+    };
+
+export type AnyCreativeJobResultValidation =
+  | { ok: true; result: AnyCreativeJobResultEnvelope }
+  | {
+      ok: false;
+      reason:
+        | "unsupported-schema-version"
+        | "unsupported-worker"
+        | "malformed-output"
+        | "malformed-metadata"
+        | "malformed-artifacts"
+        | "malformed-content"
+        | "malformed-execution-trace";
+      message: string;
+    };
+
 // The signal is threaded through now, ahead of any real provider, so a future network-calling
 // executor can support real cancellation without another signature change. Today's deterministic
 // executors (mock, product_text_worker) ignore it -- there is nothing yet for them to cancel.
@@ -223,10 +280,6 @@ export function isCreativeJobStatus(value: string): value is CreativeJobStatus {
   return CREATIVE_JOB_STATUSES.includes(value as CreativeJobStatus);
 }
 
-export function isCreativeJobWorkerType(value: string): value is CreativeJobWorkerType {
-  return CREATIVE_JOB_WORKER_TYPES.includes(value as CreativeJobWorkerType);
-}
-
 export function validateCreativeJobResultEnvelope(value: unknown): CreativeJobResultValidation {
   if (!isJsonObject(value)) {
     return { ok: false, reason: "unsupported-schema-version", message: "Creative Job result must be a v1 object envelope." };
@@ -267,6 +320,118 @@ export function validateCreativeJobResultEnvelope(value: unknown): CreativeJobRe
 
 export function isCreativeJobResultEnvelope(value: unknown): value is CreativeJobResultEnvelope {
   return validateCreativeJobResultEnvelope(value).ok;
+}
+
+// --- v2 result envelope (S3E-A1) ----------------------------------------------------------------
+//
+// Added beside validateCreativeJobResultEnvelope above rather than folded into it. The v1 validator
+// is untouched, so every v1 envelope validates and every invalid v1 fails with exactly the reason
+// and message it always did -- and a v2 envelope is still rejected by it, which is what stops v2
+// from being silently read as v1.
+
+// The exact S3C-D CreativeAiInvocationTraceEntry key set. Unknown keys are REJECTED rather than
+// ignored: an open-ended object is how a raw provider response, a prompt, a CLI log or a credential
+// would end up persisted, and the trace column exists to hold provider-neutral operational metadata
+// only. No size limit is imposed here -- S3C-D already bounds invocation count (6 without a format
+// hint, 4 with one), and a second, differently-derived cap would be a competing bound, not a check.
+const EXECUTION_TRACE_REQUIRED_KEYS = ["stage", "providerId", "model", "invocationNumber", "providerInvocationNumber", "outcome", "durationMs", "action"] as const;
+const EXECUTION_TRACE_OPTIONAL_KEYS = ["failureReason"] as const;
+const EXECUTION_TRACE_STAGES = new Set(["format_decision", "creative_body"]);
+const EXECUTION_TRACE_ACTIONS = new Set(["accepted", "retry_same_provider", "fallback", "stop"]);
+
+function validateExecutionTraceEntry(entry: unknown): { ok: true } | { ok: false; message: string } {
+  if (!isJsonObject(entry)) {
+    return { ok: false, message: "Creative Job v2 executionTrace entries must be objects." };
+  }
+
+  for (const key of Object.keys(entry)) {
+    if (!(EXECUTION_TRACE_REQUIRED_KEYS as readonly string[]).includes(key) && !(EXECUTION_TRACE_OPTIONAL_KEYS as readonly string[]).includes(key)) {
+      return { ok: false, message: `Creative Job v2 executionTrace entries must not carry unrecognized field: ${key}.` };
+    }
+  }
+  for (const key of EXECUTION_TRACE_REQUIRED_KEYS) {
+    if (!(key in entry)) {
+      return { ok: false, message: `Creative Job v2 executionTrace entries require ${key}.` };
+    }
+  }
+
+  if (!EXECUTION_TRACE_STAGES.has(entry.stage as string)) {
+    return { ok: false, message: `Creative Job v2 executionTrace stage is not supported: ${String(entry.stage)}.` };
+  }
+  if (typeof entry.providerId !== "string" || entry.providerId.trim().length === 0) {
+    return { ok: false, message: "Creative Job v2 executionTrace entries require a non-empty providerId." };
+  }
+  if (!(entry.model === null || typeof entry.model === "string")) {
+    return { ok: false, message: "Creative Job v2 executionTrace model must be a string or null." };
+  }
+  for (const key of ["invocationNumber", "providerInvocationNumber"] as const) {
+    if (typeof entry[key] !== "number" || !Number.isInteger(entry[key]) || (entry[key] as number) < 1) {
+      return { ok: false, message: `Creative Job v2 executionTrace ${key} must be a positive integer.` };
+    }
+  }
+  if (entry.outcome !== "success" && entry.outcome !== "failure") {
+    return { ok: false, message: "Creative Job v2 executionTrace outcome must be \"success\" or \"failure\"." };
+  }
+  if (!(entry.durationMs === null || (typeof entry.durationMs === "number" && Number.isFinite(entry.durationMs)))) {
+    return { ok: false, message: "Creative Job v2 executionTrace durationMs must be a finite number or null." };
+  }
+  if (!EXECUTION_TRACE_ACTIONS.has(entry.action as string)) {
+    return { ok: false, message: `Creative Job v2 executionTrace action is not supported: ${String(entry.action)}.` };
+  }
+  if ("failureReason" in entry && typeof entry.failureReason !== "string") {
+    return { ok: false, message: "Creative Job v2 executionTrace failureReason must be a string when present." };
+  }
+
+  return { ok: true };
+}
+
+export function validateCreativeJobResultEnvelopeV2(value: unknown): CreativeJobResultValidationV2 {
+  if (!isJsonObject(value)) {
+    return { ok: false, reason: "unsupported-schema-version", message: "Creative Job result must be a v2 object envelope." };
+  }
+
+  if (value.schemaVersion !== "v2") {
+    return { ok: false, reason: "unsupported-schema-version", message: "Creative Job result schemaVersion must be v2." };
+  }
+
+  if (typeof value.worker !== "string" || !isCreativeJobWorkerType(value.worker)) {
+    return { ok: false, reason: "unsupported-worker", message: "Creative Job result worker is not supported." };
+  }
+
+  // The authoritative S2 validator, not a second opinion written here. A v2 envelope whose content
+  // does not pass S2 is not a v2 envelope.
+  const content = validateCreativePackageContentV2(value.content);
+  if (!content.ok) {
+    return { ok: false, reason: "malformed-content", message: content.message };
+  }
+
+  if (!Array.isArray(value.executionTrace)) {
+    return { ok: false, reason: "malformed-execution-trace", message: "Creative Job result executionTrace must be an array." };
+  }
+  for (const entry of value.executionTrace) {
+    const entryResult = validateExecutionTraceEntry(entry);
+    if (!entryResult.ok) {
+      return { ok: false, reason: "malformed-execution-trace", message: entryResult.message };
+    }
+  }
+
+  return { ok: true, result: value as unknown as CreativeJobResultEnvelopeV2 };
+}
+
+export function isCreativeJobResultEnvelopeV2(value: unknown): value is CreativeJobResultEnvelopeV2 {
+  return validateCreativeJobResultEnvelopeV2(value).ok;
+}
+
+// Dispatches strictly on the stated schemaVersion, never by shape-sniffing: a v1 envelope is only
+// ever read by the v1 validator and a v2 envelope only by the v2 validator, so neither version can
+// be silently reinterpreted as the other. Anything that is not explicitly v2 falls through to the
+// v1 validator, which is what keeps every pre-existing input -- valid or invalid -- producing
+// exactly the reason and message it produced before this function existed.
+export function validateAnyCreativeJobResultEnvelope(value: unknown): AnyCreativeJobResultValidation {
+  if (isJsonObject(value) && value.schemaVersion === "v2") {
+    return validateCreativeJobResultEnvelopeV2(value);
+  }
+  return validateCreativeJobResultEnvelope(value);
 }
 
 export function fromCreativeJobRow(row: CreativeJobRow): CreativeJobRecord {
@@ -576,7 +741,7 @@ async function finishCreativeJobViaRpc(
   client: CreativeJobClient,
   job: CreativeJobRecord,
   outcome: "completed" | "failed",
-  result: CreativeJobResultEnvelope | null,
+  result: AnyCreativeJobResultEnvelope | null,
   lastError: string | null,
 ): Promise<FinishCreativeJobWriteResult> {
   const rpcResult = await client.rpc("finish_creative_job", { p_job_id: job.id, p_outcome: outcome, p_result: result, p_last_error: lastError }).maybeSingle();
@@ -593,8 +758,11 @@ async function finishCreativeJobViaRpc(
     : { written: false, reason: reread.reason === "not-found" ? "not-found" : reread.reason, message: reread.message };
 }
 
+// Accepts v1 or v2 as of S3E-A1, via the strictly version-dispatched validator. A v1 envelope takes
+// exactly the path it always did -- same validator, same messages, same write -- and an invalid
+// envelope of either version still fails the job rather than completing it.
 export async function completeRunningCreativeJob(client: CreativeJobClient, job: CreativeJobRecord, resultEnvelope: unknown): Promise<CreativeJobRunnerResult> {
-  const validation = validateCreativeJobResultEnvelope(resultEnvelope);
+  const validation = validateAnyCreativeJobResultEnvelope(resultEnvelope);
   if (!validation.ok) {
     return failRunningCreativeJob(client, job, validation.message);
   }
@@ -720,15 +888,38 @@ export async function runCreativeJobWithExecutors(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // S3E-A2 REQUIRED DECISION -- known failure-trace gap, deliberately NOT solved in S3E-A1.
+    //
+    // An executor that throws or times out has no return value, and the return value is the only
+    // channel a trace crosses the executor boundary on. So the attempt below is finished with no
+    // trace even when the executor accumulated one -- precisely the case where the execution
+    // history is most worth having. Nothing here fabricates a partial trace to paper over that:
+    // an absent trace stays NULL, which is the truth about what this runner can currently observe.
+    //
+    // The decision S3E-A2 must make: the real creative_ai executor should return a STRUCTURED AI
+    // failure result carrying its trace, rather than relying on `throw` for ordinary provider
+    // exhaustion (all providers failed, usage limit, malformed response after retries). Unexpected
+    // programmer and infrastructure exceptions may still use this exception path, which stays as-is.
+    //
+    // This is an executor-contract decision, not a runner bug, so the executor interface is left
+    // untouched here.
     return failJobAndAttempt(timedOut ? message : `Worker execution failed: ${message}`, timedOut ? "timed_out" : "failed");
   }
+
+  // The execution-trace handoff (S3E-A1). The executor's return value is its only channel out of
+  // the executor boundary, so a v2 envelope carries the S3C-D trace through it; the runner lifts the
+  // trace off here and hands it to the attempt row, which is its durable home. Nothing is
+  // reconstructed or inferred: a v1 envelope, or a v2 envelope that does not validate, yields no
+  // trace and the attempt is finished by the original, unchanged RPC.
+  const traceValidation = validateCreativeJobResultEnvelopeV2(resultEnvelope);
+  const executionTrace = traceValidation.ok ? { executionTrace: traceValidation.result.executionTrace } : {};
 
   const jobResult = await completeRunningCreativeJob(client, job, resultEnvelope);
   const attempt = await finishCreativeJobAttempt(
     client,
     attemptId,
     jobResult.ok ? "completed" : "failed",
-    jobResult.ok ? {} : { errorCode: "failed", errorMessage: jobResult.message },
+    jobResult.ok ? executionTrace : { errorCode: "failed", errorMessage: jobResult.message, ...executionTrace },
   );
   return { ...jobResult, attempt };
 }

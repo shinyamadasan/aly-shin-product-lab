@@ -1,16 +1,18 @@
 import {
   fromCreativeJobRow,
   isCreativeJobResultEnvelope,
-  isCreativeJobWorkerType,
+  isCreativeJobResultEnvelopeV2,
   runMockCreativeJob,
+  validateCreativeJobResultEnvelopeV2,
   type CreativeJobClient,
   type CreativeJobRecord,
   type CreativeJobRow,
   type CreativeJobRunnerResult,
   type CreativeJobWorkerType,
 } from "./creative-jobs.ts";
+import { isCreativeJobWorkerType } from "./creative-worker-types.ts";
 import type { CreativeJobAttemptClient } from "./creative-job-attempts.ts";
-import { isCreativeFormat, isCreativePlatform, type CreativePlatform } from "./creative-formats.ts";
+import { validateCreativePackageContentV2, type CreativePackageContentV2 } from "./creative-package-content-v2.ts";
 
 export const CREATIVE_PACKAGE_STATUSES = ["ready"] as const;
 export type CreativePackageStatus = (typeof CREATIVE_PACKAGE_STATUSES)[number];
@@ -33,84 +35,25 @@ export {
   type CreativePlatform,
 } from "./creative-formats.ts";
 
-// Carries the same provenance v1 does, plus the two decisions a generator makes that would be
-// unreconstructable afterwards: which format it picked and why, and whether the subject was stated
-// by the source or assumed by the system. S2 defines these structurally; S3 populates them.
-export type CreativePackageMetadataV2 = {
-  // Null for a request-backed job, exactly as in v1 since S1. A v2 package produced from a manual
-  // Creative Job is structurally legitimate -- Opportunity is not mandatory anywhere in v2.
-  generatedFromOpportunity: string | null;
-  generatorVersion: "2";
-  sourceCreativeJobId: string;
-  sourceWorker: CreativeJobWorkerType;
-  sourceJobResultSchemaVersion: "v2";
-  formatChosenBy: "ai" | "user";
-  formatRationale: string;
-  subjectSource: "stated" | "assumed";
-  // Required to be non-empty when subjectSource is "assumed": an assumption presented without its
-  // grounding is indistinguishable from a fact, which is the failure this field exists to prevent.
-  subjectGrounding: string | null;
-};
-
-export const CREATIVE_FORMAT_CHOSEN_BY = ["ai", "user"] as const;
-export const CREATIVE_SUBJECT_SOURCES = ["stated", "assumed"] as const;
-
-// A small adaptation of one canonical creative, never a separate creative. Caption and hashtags
-// only -- a per-platform hook or CTA would be fake differentiation, since the hook IS the idea and
-// does not change because the app changed. No scheduling, publishing or platform post identifiers.
-export type PlatformVariantV2 = {
-  platform: CreativePlatform;
-  caption: string;
-  hashtags: string[];
-};
-
-type CreativePackageBaseV2 = {
-  schemaVersion: "v2";
-  subject: string;
-  angle: string;
-  hook: string;
-  // Retained from v1 deliberately, even though `subject` and `hook` overlap it: the asset-generation
-  // path reads headline directly, and keeping it is what lets a v2 package feed the existing Asset
-  // Job pipeline without inventing a second media-generation system. See asset-generation-spec.ts.
-  headline: string;
-  caption: string;
-  cta: string;
-  platformVariants: PlatformVariantV2[];
-  metadata: CreativePackageMetadataV2;
-};
-
-export type CreativePhotoPackageV2 = CreativePackageBaseV2 & {
-  format: "photo";
-  visualDirection: string;
-  overlayText: string | null;
-};
-
-export type CreativeReelPackageV2 = CreativePackageBaseV2 & {
-  format: "reel";
-  shots: Array<{ direction: string; onScreenText: string | null }>;
-  // Nullable because a visual-only Reel is the normal case for a bakery, not an exception.
-  // Requiring speech would produce ignored filler on most Reels.
-  spokenScript: string | null;
-  audioDirection: string;
-  targetDurationSeconds: number;
-};
-
-export type CreativeCarouselPackageV2 = CreativePackageBaseV2 & {
-  format: "carousel";
-  slides: Array<{ heading: string; body: string; visualDirection: string }>;
-};
-
-export type CreativeStoryPackageV2 = CreativePackageBaseV2 & {
-  format: "story";
-  frames: Array<{ visualDirection: string; text: string }>;
-  interaction: string | null;
-};
-
-export type CreativePackageContentV2 =
-  | CreativePhotoPackageV2
-  | CreativeReelPackageV2
-  | CreativeCarouselPackageV2
-  | CreativeStoryPackageV2;
+// Same move, same reasoning, one slice later. The S2 v2 content contract and its authoritative
+// validator moved to the leaf module ./creative-package-content-v2.ts in S3E-A1 and are re-exported
+// here unchanged, so every existing importer keeps working against this module exactly as before.
+// The move exists only so creative-jobs.ts can validate the v2 content carried by a v2 result
+// envelope without closing a runtime import cycle -- see creative-package-content-v2.ts.
+export {
+  CREATIVE_FORMAT_CHOSEN_BY,
+  CREATIVE_SUBJECT_SOURCES,
+  isCreativePackageContentV2,
+  validateCreativePackageContentV2,
+  type CreativeCarouselPackageV2,
+  type CreativePackageContentV2,
+  type CreativePackageContentV2Validation,
+  type CreativePackageMetadataV2,
+  type CreativePhotoPackageV2,
+  type CreativeReelPackageV2,
+  type CreativeStoryPackageV2,
+  type PlatformVariantV2,
+} from "./creative-package-content-v2.ts";
 
 export type CreativePackageContentV1 = {
   output: {
@@ -257,179 +200,6 @@ export function isCreativePackageContentV1(value: unknown): value is CreativePac
   );
 }
 
-// --- v2 validation ------------------------------------------------------------------------------
-//
-// Mirrors validateCreativeJobResultEnvelope's shape (ok/reason/message) rather than introducing a
-// second validation style. Reasons are coarse enough to act on and specific enough to debug.
-export type CreativePackageContentV2Validation =
-  | { ok: true; content: CreativePackageContentV2 }
-  | { ok: false; reason: "unsupported-schema-version" | "unsupported-format" | "malformed-base" | "malformed-metadata" | "malformed-platform-variants" | "malformed-format-fields"; message: string };
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isNullableString(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
-}
-
-function validatePlatformVariants(value: unknown): { ok: true } | { ok: false; message: string } {
-  if (!Array.isArray(value)) {
-    return { ok: false, message: "Creative Package v2 platformVariants must be an array." };
-  }
-  for (const entry of value) {
-    if (!isJsonObject(entry)) {
-      return { ok: false, message: "Creative Package v2 platformVariants entries must be objects." };
-    }
-    if (!isCreativePlatform(entry.platform)) {
-      return { ok: false, message: `Creative Package v2 platformVariants has an unsupported platform: ${String(entry.platform)}.` };
-    }
-    if (!isNonEmptyString(entry.caption)) {
-      return { ok: false, message: "Creative Package v2 platformVariants entries require a non-empty caption." };
-    }
-    if (!Array.isArray(entry.hashtags) || entry.hashtags.some((tag) => typeof tag !== "string")) {
-      return { ok: false, message: "Creative Package v2 platformVariants hashtags must be an array of strings." };
-    }
-  }
-  return { ok: true };
-}
-
-function validateMetadataV2(value: unknown): { ok: true } | { ok: false; message: string } {
-  if (!isJsonObject(value)) {
-    return { ok: false, message: "Creative Package v2 metadata must be an object." };
-  }
-  // Same rule as v1: a non-empty id, or explicitly null. Empty/whitespace is never an absence.
-  if (!(value.generatedFromOpportunity === null || isNonEmptyString(value.generatedFromOpportunity))) {
-    return { ok: false, message: "Creative Package v2 metadata generatedFromOpportunity must be a non-empty id or null." };
-  }
-  if (value.generatorVersion !== "2") {
-    return { ok: false, message: "Creative Package v2 metadata generatorVersion must be \"2\"." };
-  }
-  if (!isNonEmptyString(value.sourceCreativeJobId)) {
-    return { ok: false, message: "Creative Package v2 metadata requires a non-empty sourceCreativeJobId." };
-  }
-  if (typeof value.sourceWorker !== "string" || !isCreativeJobWorkerType(value.sourceWorker)) {
-    return { ok: false, message: "Creative Package v2 metadata sourceWorker is not a supported worker type." };
-  }
-  if (value.sourceJobResultSchemaVersion !== "v2") {
-    return { ok: false, message: "Creative Package v2 metadata sourceJobResultSchemaVersion must be v2." };
-  }
-  if (!(CREATIVE_FORMAT_CHOSEN_BY as readonly unknown[]).includes(value.formatChosenBy)) {
-    return { ok: false, message: "Creative Package v2 metadata formatChosenBy must be \"ai\" or \"user\"." };
-  }
-  if (!isNonEmptyString(value.formatRationale)) {
-    return { ok: false, message: "Creative Package v2 metadata requires a non-empty formatRationale." };
-  }
-  if (!(CREATIVE_SUBJECT_SOURCES as readonly unknown[]).includes(value.subjectSource)) {
-    return { ok: false, message: "Creative Package v2 metadata subjectSource must be \"stated\" or \"assumed\"." };
-  }
-  if (!isNullableString(value.subjectGrounding)) {
-    return { ok: false, message: "Creative Package v2 metadata subjectGrounding must be a string or null." };
-  }
-  // An assumption without its grounding is indistinguishable from a fact.
-  if (value.subjectSource === "assumed" && !isNonEmptyString(value.subjectGrounding)) {
-    return { ok: false, message: "Creative Package v2 metadata requires a non-empty subjectGrounding when subjectSource is \"assumed\"." };
-  }
-  return { ok: true };
-}
-
-function validateFormatFields(value: Record<string, unknown>): { ok: true } | { ok: false; message: string } {
-  if (value.format === "photo") {
-    if (!isNonEmptyString(value.visualDirection)) {
-      return { ok: false, message: "Creative Package v2 photo requires a non-empty visualDirection." };
-    }
-    if (!isNullableString(value.overlayText)) {
-      return { ok: false, message: "Creative Package v2 photo overlayText must be a string or null." };
-    }
-    return { ok: true };
-  }
-
-  if (value.format === "reel") {
-    if (!Array.isArray(value.shots) || value.shots.length === 0) {
-      return { ok: false, message: "Creative Package v2 reel requires at least one shot." };
-    }
-    for (const shot of value.shots) {
-      if (!isJsonObject(shot) || !isNonEmptyString(shot.direction) || !isNullableString(shot.onScreenText)) {
-        return { ok: false, message: "Creative Package v2 reel shots require a non-empty direction and a string-or-null onScreenText." };
-      }
-    }
-    if (!isNullableString(value.spokenScript)) {
-      return { ok: false, message: "Creative Package v2 reel spokenScript must be a string or null." };
-    }
-    if (!isNonEmptyString(value.audioDirection)) {
-      return { ok: false, message: "Creative Package v2 reel requires a non-empty audioDirection." };
-    }
-    if (typeof value.targetDurationSeconds !== "number" || !Number.isFinite(value.targetDurationSeconds) || value.targetDurationSeconds <= 0) {
-      return { ok: false, message: "Creative Package v2 reel targetDurationSeconds must be a positive finite number." };
-    }
-    return { ok: true };
-  }
-
-  if (value.format === "carousel") {
-    if (!Array.isArray(value.slides) || value.slides.length === 0) {
-      return { ok: false, message: "Creative Package v2 carousel requires at least one slide." };
-    }
-    for (const slide of value.slides) {
-      if (!isJsonObject(slide) || !isNonEmptyString(slide.heading) || !isNonEmptyString(slide.body) || !isNonEmptyString(slide.visualDirection)) {
-        return { ok: false, message: "Creative Package v2 carousel slides require non-empty heading, body and visualDirection." };
-      }
-    }
-    return { ok: true };
-  }
-
-  // story -- the only remaining member, already narrowed by the format check in the caller.
-  if (!Array.isArray(value.frames) || value.frames.length === 0) {
-    return { ok: false, message: "Creative Package v2 story requires at least one frame." };
-  }
-  for (const frame of value.frames) {
-    if (!isJsonObject(frame) || !isNonEmptyString(frame.visualDirection) || !isNonEmptyString(frame.text)) {
-      return { ok: false, message: "Creative Package v2 story frames require non-empty visualDirection and text." };
-    }
-  }
-  if (!isNullableString(value.interaction)) {
-    return { ok: false, message: "Creative Package v2 story interaction must be a string or null." };
-  }
-  return { ok: true };
-}
-
-export function validateCreativePackageContentV2(value: unknown): CreativePackageContentV2Validation {
-  if (!isJsonObject(value)) {
-    return { ok: false, reason: "unsupported-schema-version", message: "Creative Package v2 content must be an object." };
-  }
-  if (value.schemaVersion !== "v2") {
-    return { ok: false, reason: "unsupported-schema-version", message: "Creative Package content schemaVersion must be v2." };
-  }
-  if (!isCreativeFormat(value.format)) {
-    return { ok: false, reason: "unsupported-format", message: `Creative Package v2 format is not supported: ${String(value.format)}.` };
-  }
-
-  for (const field of ["subject", "angle", "hook", "headline", "caption", "cta"] as const) {
-    if (!isNonEmptyString(value[field])) {
-      return { ok: false, reason: "malformed-base", message: `Creative Package v2 requires a non-empty ${field}.` };
-    }
-  }
-
-  const metadata = validateMetadataV2(value.metadata);
-  if (!metadata.ok) {
-    return { ok: false, reason: "malformed-metadata", message: metadata.message };
-  }
-
-  const variants = validatePlatformVariants(value.platformVariants);
-  if (!variants.ok) {
-    return { ok: false, reason: "malformed-platform-variants", message: variants.message };
-  }
-
-  const formatFields = validateFormatFields(value);
-  if (!formatFields.ok) {
-    return { ok: false, reason: "malformed-format-fields", message: formatFields.message };
-  }
-
-  return { ok: true, content: value as unknown as CreativePackageContentV2 };
-}
-
-export function isCreativePackageContentV2(value: unknown): value is CreativePackageContentV2 {
-  return validateCreativePackageContentV2(value).ok;
-}
 
 function parseCreativePackageStatus(value: string): CreativePackageStatus {
   return isCreativePackageStatus(value) ? value : "ready";
@@ -500,6 +270,39 @@ export function buildCreativePackageContentFromCompletedJob(job: CreativeJobReco
   };
 }
 
+// The v2 counterpart of buildCreativePackageContentFromCompletedJob above. Deliberately thin: the
+// v2 package content IS the envelope's already-S2-validated `content`, copied through unchanged.
+// Nothing is rebuilt from execution metadata, and the envelope's executionTrace is dropped rather
+// than merged -- execution history is attempt state (creative_job_attempts.ai_execution_trace), not
+// creative content, and a package that carried it would be claiming provider history as authorship.
+export function buildCreativePackageContentV2FromCompletedJob(job: CreativeJobRecord): CreativePackageContentV2 {
+  if (job.status !== "completed") {
+    throw new Error(`Creative Packages can only be materialized from completed Creative Jobs. Current status: ${job.status}.`);
+  }
+
+  const envelope = validateCreativeJobResultEnvelopeV2(job.result);
+  if (!envelope.ok) {
+    throw new Error(`Creative Job result is not a supported v2 package source: ${envelope.message}`);
+  }
+
+  // Re-run the authoritative S2 validator on the content itself, even though the envelope validator
+  // already ran it. Persistence must not accept malformed v2 content on an upstream caller's word.
+  const content = validateCreativePackageContentV2(envelope.result.content);
+  if (!content.ok) {
+    throw new Error(`Creative Package v2 content failed validation: ${content.message}`);
+  }
+
+  // The content states which job produced it. If that disagrees with the job actually being
+  // materialized, one of the two is wrong and persisting either would record a false provenance.
+  if (content.content.metadata.sourceCreativeJobId !== job.id) {
+    throw new Error(
+      `Creative Package v2 content names a different source Creative Job (${content.content.metadata.sourceCreativeJobId}) than the one being materialized (${job.id}).`,
+    );
+  }
+
+  return content.content;
+}
+
 export async function getCreativePackageById(client: CreativePackageClient, id: string): Promise<CreativePackageDetailResult> {
   const result = await client.from("creative_packages").select<CreativePackageRow>("*").eq("id", id).maybeSingle();
   if (result.error) {
@@ -547,11 +350,21 @@ export async function createCreativePackageFromCompletedJob(client: CreativePack
     };
   }
 
-  if (!isCreativeJobResultEnvelope(jobResult.job.result)) {
+  // Version is decided once, here, from the job result's own stated schemaVersion -- never sniffed
+  // from content shape and never defaulted. A v1 result produces a v1 package exactly as it always
+  // did; a v2 result produces a v2 package; anything else is refused rather than coerced into
+  // either. Both land in the same table, through the same insert, under the same unique
+  // creative_job_id -- one materialization system, two versions of content.
+  const isV1 = isCreativeJobResultEnvelope(jobResult.job.result);
+  const isV2 = isCreativeJobResultEnvelopeV2(jobResult.job.result);
+  if (!isV1 && !isV2) {
+    const v2Detail = validateCreativeJobResultEnvelopeV2(jobResult.job.result);
     return {
       ok: false,
       reason: "unsupported-result",
-      message: "Creative Job result is not a supported v1 package source.",
+      message: isJsonObject(jobResult.job.result) && jobResult.job.result.schemaVersion === "v2"
+        ? `Creative Job result is not a supported v2 package source: ${v2Detail.ok ? "unknown reason" : v2Detail.message}`
+        : "Creative Job result is not a supported v1 package source.",
       job: jobResult.job,
     };
   }
@@ -564,10 +377,23 @@ export async function createCreativePackageFromCompletedJob(client: CreativePack
     return { ok: false, reason: existing.reason, message: existing.message, job: jobResult.job };
   }
 
-  const content = buildCreativePackageContentFromCompletedJob(jobResult.job);
+  let schemaVersion: CreativePackageSchemaVersion;
+  let content: CreativePackageContentV1 | CreativePackageContentV2;
+  try {
+    schemaVersion = isV2 ? "v2" : "v1";
+    content = isV2 ? buildCreativePackageContentV2FromCompletedJob(jobResult.job) : buildCreativePackageContentFromCompletedJob(jobResult.job);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: "unsupported-result",
+      message: err instanceof Error ? err.message : String(err),
+      job: jobResult.job,
+    };
+  }
+
   const inserted = await client
     .from("creative_packages")
-    .insert({ creative_job_id: creativeJobId, status: "ready", schema_version: "v1", content })
+    .insert({ creative_job_id: creativeJobId, status: "ready", schema_version: schemaVersion, content })
     .select("*")
     .single();
 

@@ -29,10 +29,24 @@ test("creative_job_attempts creates the approved foundation table with required 
     "error_message text",
     "provider text",
     "model text",
+    "ai_execution_trace jsonb",
     "created_at timestamptz not null default now()",
   ]) {
     assert.ok(sql.includes(requiredColumn), `missing column: ${requiredColumn}`);
   }
+});
+
+test("creative_job_attempts carries ai_execution_trace as a nullable, idempotently-added column", () => {
+  // Nullable with no default, and added via the same `add column if not exists` convention
+  // supabase-add-creative-jobs.sql uses for last_error/intent, so a project created before S3E-A1
+  // picks it up by re-running this file rather than being told to reconcile a "stale draft".
+  assert.match(columnBody, /\n\s*ai_execution_trace jsonb,/);
+  assert.doesNotMatch(columnBody, /ai_execution_trace jsonb[^,\n]*not null/i);
+  assert.doesNotMatch(columnBody, /ai_execution_trace jsonb[^,\n]*default/i);
+  assert.match(sqlStatementsOnly, /alter table creative_job_attempts\s*\n\s*add column if not exists ai_execution_trace jsonb;/i);
+  // The guard must assert it nullable (false), never required -- a historical attempt legitimately
+  // has no AI execution and must not be forced to carry a fabricated empty trace.
+  assert.match(staleTableGuardStatement, /\('ai_execution_trace', 'jsonb', false\)/i);
 });
 
 test("creative_job_attempts keeps worker identity explicit and does not use a generic worker column", () => {
@@ -61,6 +75,7 @@ test("creative_job_attempts fails loudly instead of silently accepting stale dra
     "error_message",
     "provider",
     "model",
+    "ai_execution_trace",
     "created_at",
   ]) {
     assert.match(staleTableGuardStatement, new RegExp(`'${requiredColumn}'`, "i"));
