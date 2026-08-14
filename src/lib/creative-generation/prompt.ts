@@ -46,11 +46,85 @@ const TRUTHFULNESS =
     "Given no ordering, delivery, pickup, or availability facts, 'Coffee or tea with yours?' is an allowed engagement CTA, but 'Message us for delivery' and '#deliveredtoyourdoor' are forbidden commercial-action claims.",
   ].join(" ");
 
+// S6-R3. R2 stopped "no verdict yet" reaching every published surface, and it then appeared in
+// `angle` instead -- a field the model evidently read as describing its own creative approach
+// rather than as making a claim. It is both. `angle` is stored in Creative Package v2 and rendered
+// under Creative details, so an unsupported claim there is simply an unsupported claim in a quieter
+// place.
+//
+// Deliberately a scope rule and not another forbidden-phrase list: the failure was never that the
+// model lacked the phrase "no verdict", it was that the model believed one field was exempt. The
+// enumeration below names fields, not words, so it generalises to whatever wording comes next.
+const FACTUALITY_FIELD_SCOPE =
+  [
+    "All factuality and absence-of-evidence rules apply to EVERY field you output, including angle, hook, headline, caption, CTA, visual and production directions, spoken scripts, on-screen and overlay text, slide, frame and shot content, platform variants, hashtags, and any description of your own creative approach or rationale.",
+    "A field being strategic, explanatory, internal, or not directly published does not permit unsupported factual claims. Field location does not change factuality.",
+  ].join(" ");
+
+// S6-R2 extends this boundary in the opposite direction to the one it was written for. The original
+// half stops an unsupplied outcome becoming a positive result. The second half stops the same
+// unsupplied outcome becoming its own kind of claim -- "no verdict yet", "still figuring it out" --
+// which reads as admirably honest and is not: it asserts the business has reached no conclusion,
+// which is a fact about the business that nobody supplied either. The model knows only that the
+// result was not given to IT. That is not the same as knowing no result exists.
 const EXPERIMENT_OUTCOME_BOUNDARY =
-  "Do not state the result, effect, or causal outcome of a test or experiment unless that result is explicitly supplied. Input describing what was changed is not evidence of what happened because of the change; for example, browner butter and longer rest do not authorize chewier centre, richer flavor, better crust, improved texture, or stronger aroma unless those outcomes are also supplied.";
+  [
+    "Do not state the result, effect, or causal outcome of a test or experiment unless that result is explicitly supplied. Input describing what was changed is not evidence of what happened because of the change; for example, browner butter and longer rest do not authorize chewier centre, richer flavor, better crust, improved texture, or stronger aroma unless those outcomes are also supplied.",
+    "When a test or experiment input supplies what changed but supplies no outcome, do not invent an outcome, and do not convert the missing outcome into a claim of its own.",
+    "Specifically, do not state or imply that no result exists, that there is no verdict yet, that the business is still deciding, that testing or evaluation is ongoing, that the outcome is unknown to the owner, or that no conclusion has been reached. None of that is supplied by an input that simply does not mention a result.",
+    "Unknown to you is not the same as false, absent, unfinished, or unknown to the business.",
+    "The safe behavior is to discuss only the supplied changes, without asserting anything about the existence or absence of a conclusion.",
+    "Example: given 'Third batch with browner butter and a longer rest', 'Batch three. Two changes: browner butter and a longer rest.' is allowed. 'The longer rest made it chewier.' is forbidden. So are 'No verdict yet.', 'We're still figuring out whether it worked.' and 'The results aren't in yet.' unless that evaluation state is explicitly supplied.",
+  ].join(" ");
 
 const ABSENCE_OF_EVIDENCE_BOUNDARY =
   "Absence of recorded history is not positive evidence of newness, launch status, customer unfamiliarity, first-time production, first-time availability, or first-time menu inclusion. A fact such as 'Blondies has never appeared in the Journey' may justify introducing or featuring Blondies in content, but does not prove 'brand new', 'new on the menu', 'our first time making them', or 'our first time sharing them' unless those facts are supplied.";
+
+// S6 boundary A. Production guidance had to become specific enough to execute, and specificity is
+// exactly where a factual claim can hide inside a camera instruction. The line is drawn at the
+// difference between HOW the camera is pointed and WHAT the thing in front of it is: the first is a
+// creative choice, the second is a claim about the product that needs grounding like any other.
+//
+// S6-R1 extends the same line to PROPS. The first live gate produced a carousel directing the owner
+// to photograph "the notebook page with your batch-three notes" from grounding that mentioned only
+// the recipe change -- no notebook, no notes. A plain mug is interchangeable set dressing and
+// asserts nothing; a page of batch notes is a business record, and telling someone to show it
+// asserts that the record exists. Props are creative right up to the point where they become
+// evidence.
+const SCENE_DIRECTION_BOUNDARY =
+  [
+    "Framing, camera movement, arrangement, composition, and shot or slide sequence are creative choices you may make freely.",
+    "Any description of what the PRODUCT IS -- its texture, taste, temperature, ingredients, freshness, physical state, size, availability, or selling state -- is a factual claim and must be supported by the supplied grounding, even when it appears inside a production instruction.",
+    "A shot direction is not exempt from the closed-world rule because it is phrased as a camera instruction.",
+    "Example: 'Close-up of the blondie' is allowed. 'Close-up of the gooey centre' is forbidden unless gooeyness was supplied, because it asserts a texture.",
+    "Generic, interchangeable scene props may be invented as creative composition when they do not imply a business fact.",
+    "But do NOT invent a business record, document, message, label, log, note, order, result, or artifact and direct the owner to show it as though it actually exists. This includes batch or recipe notes, experiment logs, order sheets, receipts, customer messages, calendars containing business events, production checklists, ungrounded labels or packaging, handwritten records, and analytics or report screenshots.",
+    "If such an artifact is not supplied in the grounding, either omit it or substitute a generic prop that does not assert the artifact exists.",
+    "Examples: without grounding, 'Place the blondie beside a plain mug' is allowed but 'Show the notebook page with your batch-three notes' is forbidden. 'Use a blank notebook as a neutral background prop' is allowed; 'Show the notes you wrote after batch three' is forbidden.",
+    "This is not a ban on ordinary props. Mugs, plates, cloths, cutlery, trays, and similar everyday objects remain free creative choices.",
+  ].join(" ");
+
+// S6 boundary B. Grounding is historical by nature -- a Journey entry records what happened -- but
+// the owner reads the result now and has to act on it now. A true fact about the past is still a
+// useless instruction if the thing it describes is over.
+const CURRENT_EXECUTABILITY_BOUNDARY =
+  [
+    "Every production instruction must describe something the owner can actually capture at the moment they read this plan.",
+    "A supplied fact that something happened in the past does NOT authorize instructing the owner to film that past event now.",
+    "Do not direct filming of mixing, baking, an oven in use, pouring batter, cutting a tray that is not currently available, or any other in-progress process merely because supplied grounding says it happened before.",
+    "Example: given 'Tested batch three yesterday with a longer rest', do not instruct 'Film the batter being mixed' -- that process is over. Only direct filming of a process when supplied facts establish it is happening now or is available to capture now.",
+    "This limits what you tell the owner to FILM, not what you may TALK about: you may still refer truthfully to the past event in the angle, hook, caption, on-screen text, or script.",
+  ].join(" ");
+
+// S6 boundary C. Everything above assumes a production capability, and this states the one the
+// business actually has. Without it a plan can be perfectly truthful, perfectly current, and still
+// impossible for one person holding a phone.
+const SOLO_OPERATOR_BOUNDARY =
+  [
+    "Assume the entire plan is executed by ONE person, alone, holding an ordinary phone, in a home kitchen that may not be styled or tidy.",
+    "Assume no second person, no dedicated camera operator, no tripod, no studio lighting, and no special camera equipment unless the supplied context explicitly says those resources exist.",
+    "Every instruction must be realistically executable alone: do not require another person to hold the camera, do not require simultaneous actions that would need a third hand, and do not require complex tracking shots or rigged setups.",
+  ].join(" ");
 
 const SIMPLE_REQUEST_PATTERN = /\b(easy|quick|simple|low[-\s]?effort|something\s+i\s+can\s+post\s+now)\b/i;
 
@@ -118,6 +192,7 @@ export function buildFormatDecisionRequest(context: CreativeGenerationContext): 
     "You are choosing a format only. You are not writing the content.",
     DATA_BOUNDARY,
     TRUTHFULNESS,
+    FACTUALITY_FIELD_SCOPE,
     EXPERIMENT_OUTCOME_BOUNDARY,
     ABSENCE_OF_EVIDENCE_BOUNDARY,
     OUTPUT_CONTRACT,
@@ -170,12 +245,19 @@ export function buildCreativeBodyRequest(
   configuredPlatforms: readonly string[],
 ): CreativeGenerationRequest {
   const system = [
-    "You write short marketing content for a small home-based coffee and bakery business.",
+    "You write short marketing content for a small home-based coffee and bakery business, and you also write the production plan for capturing it.",
     "Keep the tone warm and small-business-authentic, never corporate.",
     DATA_BOUNDARY,
     TRUTHFULNESS,
+    FACTUALITY_FIELD_SCOPE,
     EXPERIMENT_OUTCOME_BOUNDARY,
     ABSENCE_OF_EVIDENCE_BOUNDARY,
+    // The three S6 boundaries sit here, alongside the S3B.1 factuality rules rather than replacing
+    // any of them: production guidance specific enough to execute is also specific enough to smuggle
+    // in a claim, an unfilmable past process, or a two-person shot.
+    SCENE_DIRECTION_BOUNDARY,
+    CURRENT_EXECUTABILITY_BOUNDARY,
+    SOLO_OPERATOR_BOUNDARY,
     OUTPUT_CONTRACT,
   ].join(" ");
 
