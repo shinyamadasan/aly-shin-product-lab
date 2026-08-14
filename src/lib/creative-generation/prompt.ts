@@ -218,23 +218,39 @@ export function buildFormatDecisionRequest(context: CreativeGenerationContext): 
 
 // --- Stage 2: creative body ---------------------------------------------------------------------
 
+// S6 -- the briefs now have to make the new structured fields mean something. The rule running
+// through all four: `framing` says how to point the camera, and the direction/visualDirection prose
+// still says what to actually do. Moving the action into the framing field would leave the owner
+// with a category and no instruction.
+const FRAMING_VOCABULARY =
+  "framing must be exactly one of close_up, medium, wide, or overhead. Choose it deliberately for what the shot needs to show; it describes how to point the phone and never replaces the action described in the direction.";
+
 const FORMAT_BRIEF: Record<CreativeFormat, string[]> = {
   photo: [
     "Describe one photograph someone can take on a phone: what is in frame and how it is arranged.",
+    `Choose the framing for that photograph. ${FRAMING_VOCABULARY}`,
     "overlayText is optional -- use null unless text on the image genuinely helps.",
   ],
   reel: [
-    "Give an ordered shot list someone can film on a phone. Each shot is one direction, plus optional on-screen text.",
+    "Give an ordered shot list someone can film on a phone, alone. Each shot needs a direction, an approximate duration, a framing, and a movement decision, plus optional on-screen text.",
+    "direction is exactly what to record. approxSeconds is roughly how long that shot is useful for, as a whole number from 1 to 10 -- approximate production guidance, not frame-perfect editing.",
+    `Every shot needs a framing. ${FRAMING_VOCABULARY}`,
+    "movement must be null, push_in, pull_back, or pan. Use null unless moving the camera genuinely helps that specific shot -- most shots should NOT need movement, and a still phone is easier to hold steady alone.",
+    "Do not output a total duration. The application adds up the shot durations itself.",
     "spokenScript is optional and should usually be null: a visual-only reel with on-screen text is the normal case for a bakery.",
     "audioDirection describes the sound in words (for example trending upbeat audio, no voiceover). Never name a specific track or artist.",
-    "targetDurationSeconds should be realistic for the shot list.",
   ],
   carousel: [
     "Give ordered slides. The first slide is the cover that earns the swipe; the last carries the call to action.",
-    "Each slide needs a heading, a short body, and a visual direction someone can shoot or design.",
+    "Each slide needs a heading, a short body, a visual direction, and a framing.",
+    "Every slide is a STILL PHOTO. visualDirection is the image to capture or design; heading and body are the text that goes on it. Do not describe video, motion, or duration for any slide.",
+    `How to frame each of those images: ${FRAMING_VOCABULARY}`,
   ],
   story: [
-    "Give a short ordered sequence of casual full-screen frames, each with a visual direction and the text on it.",
+    "Give a short ordered sequence of casual full-screen frames, each with a visual direction, the text on it, a framing, and an approxSeconds decision.",
+    "approxSeconds decides the medium for that frame: null means a still photo, and a whole number from 1 to 10 means a short video of about that many seconds.",
+    "Choose deliberately, frame by frame. Prefer the simplest medium that communicates the idea, and do not choose video merely because video is possible.",
+    `Every frame needs a framing. ${FRAMING_VOCABULARY}`,
     "interaction is optional -- a poll or question sticker prompt, or null.",
   ],
 };

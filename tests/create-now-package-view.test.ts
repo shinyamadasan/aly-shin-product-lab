@@ -234,26 +234,37 @@ test("Z. Reel leads with ordered shots, each separating what to DO from the text
   assert.deepEqual(shots[1].lines, [{ label: "Do", value: "Hands cutting the first corner piece." }]);
 });
 
-test("Z. spoken script, sound and TOTAL target length stay separate from the shots", () => {
+test("Z. spoken script and sound stay separate from the shots, and the TOTAL length is the summary's", () => {
   const view = viewOf(reel());
   const finish = view.production[1].blocks;
   assert.equal(finish.length, 1);
   assert.deepEqual(finish[0].lines, [
     { label: "Say this", value: "We bake these every Saturday morning." },
     { label: "Sound", value: "Quiet kitchen sound, no music." },
-    { label: "Target length", value: "About 12 seconds in total" },
   ]);
 
-  // The length is stated as a whole-video total, because v2 carries no per-shot timing and this
-  // number must never read as if it belonged to the last shot.
-  assert.match(finish[0].lines[2].value, /in total/);
+  // S6 -- the total moved out of this group and into the opening summary, beside the format, so it
+  // is stated once and can never read as if it belonged to the last shot. It is still the package's
+  // own targetDurationSeconds, unmodified.
+  assert.equal(view.durationLabel, "About 12 seconds");
+  assert.equal(
+    view.production.some((section) => section.blocks.some((block) => block.lines.some((line) => line.label === "Target length"))),
+    false,
+    "the total must not also appear as a production line",
+  );
+});
+
+test("Z. only a Reel carries a total length -- the other three formats have none to state", () => {
+  assert.equal(viewOf(photo()).durationLabel, null);
+  assert.equal(viewOf(carousel()).durationLabel, null);
+  assert.equal(viewOf(story()).durationLabel, null);
 });
 
 test("Z. a visual-only Reel (no spoken script) drops the script line entirely -- the normal case, not an exception", () => {
   const view = viewOf(reel({ spokenScript: null }));
   assert.deepEqual(
     view.production[1].blocks[0].lines.map((line) => line.label),
-    ["Sound", "Target length"],
+    ["Sound"],
   );
   assert.equal(view.script, null);
 });
@@ -266,9 +277,11 @@ test("AA. Carousel distinguishes what to SHOW from the text that belongs on the 
     ["Build these slides"],
   );
   const slides = view.production[0].blocks;
+  // S6 states the medium on every slide, including on this pre-S6 fixture that carries no framing:
+  // "a Carousel slide is a still photo" is a format rule, not something the package has to supply.
   assert.deepEqual(
     slides.map((block) => block.title),
-    ["Slide 1", "Slide 2"],
+    ["Slide 1 · Photo", "Slide 2 · Photo"],
   );
 
   // "Show" comes first and carries visualDirection -- the owner asked whether the heading meant
@@ -396,26 +409,35 @@ test("AD. an absent optional field produces NO empty UI -- no empty line, no bla
   }
 });
 
-test("S5-R1. no synthetic per-shot timing is ever produced -- v2 carries no per-shot duration", () => {
-  // targetDurationSeconds is a single whole-video number. Dividing it across shots would render as
-  // precise direction while being pure arithmetic, so no shot may carry a time at all.
+test("S5-R1. no synthetic per-shot timing is ever produced -- a shot's time is authored or absent", () => {
+  // Dividing a whole-video total across the shots would render as precise direction while being
+  // pure arithmetic. S6 gives shots real, authored durations, so the rule sharpens rather than
+  // relaxes: a shot may state a time ONLY when the package stored one for that shot. This fixture
+  // is pre-S6 and stores none, so no shot may show one.
   for (const seconds of [12, 15, 30, 7]) {
     const view = viewOf(reel({ targetDurationSeconds: seconds }));
+    // The shot index is the ONLY thing in the title -- no seconds, and nothing derived from the
+    // total. (The digit in "Shot 1" is the index, which is why this checks the whole string.)
+    assert.deepEqual(
+      view.production[0].blocks.map((block) => block.title),
+      ["Shot 1", "Shot 2"],
+    );
     for (const block of view.production[0].blocks) {
+      assert.doesNotMatch(block.title ?? "", /sec|second/i, "a shot with no stored duration must not display one");
       for (const line of block.lines) {
         assert.doesNotMatch(line.value, /\d+\s*[-–—]\s*\d+\s*(s\b|sec|second)/i, "a shot must never carry a derived time range");
         assert.doesNotMatch(line.label ?? "", /time|timing|duration|seconds/i);
       }
     }
-    // The only place a duration appears is the whole-video group, stated as a total.
-    const totals = view.production[1].blocks[0].lines.filter((line) => line.label === "Target length");
-    assert.equal(totals.length, 1);
-    assert.equal(totals[0].value, `About ${seconds} seconds in total`);
+    // The only place a duration appears is the summary, stated once as the whole-video total.
+    assert.equal(view.durationLabel, `About ${seconds} seconds`);
   }
 
-  // And the arithmetic that would produce fake timings does not exist in the builder.
+  // And the arithmetic that would produce fake timings does not exist in the builder. The sum of the
+  // shot durations lives in the ASSEMBLER, where it is computed once from authored values and
+  // stored; the view only ever reads targetDurationSeconds back out.
   const viewSource = readFileSync(new URL("../src/lib/creative-package-view.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(viewSource, /targetDurationSeconds\s*[/*]|\/\s*shots\.length|Math\.round|Math\.floor|Math\.ceil|toFixed/);
+  assert.doesNotMatch(viewSource, /targetDurationSeconds\s*[/*]|\/\s*shots\.length|Math\.round|Math\.floor|Math\.ceil|toFixed|reduce\(/);
 });
 
 test("AD. an unreadable package is reported as unreadable, never rendered as if it were valid", () => {
@@ -494,7 +516,9 @@ test("AF. copy everything is readable prose containing the whole package, not JS
   });
   const text = formatCreativePackageForClipboard(viewOf(content));
 
-  assert.match(text, /^Reel/);
+  // S6 -- the summary line carries the total, because it is no longer a production line and would
+  // otherwise be silently lost from "copy everything".
+  assert.match(text, /^Reel · About 12 seconds/);
   assert.match(text, /Subject: Biscoff Blondies/);
   assert.match(text, /Call to action: Message us to reserve a tray\./);
   // The caption is no longer part of creativeDetails, so "copy everything" carries it explicitly --
@@ -504,7 +528,6 @@ test("AF. copy everything is readable prose containing the whole package, not JS
   assert.match(text, /Shot 1\nDo: Close on the tray coming out of the oven\./);
   assert.match(text, /Text on screen: Fresh out/);
   assert.match(text, /Say this: We bake these every Saturday morning\./);
-  assert.match(text, /Target length: About 12 seconds in total/);
   assert.match(text, /Instagram/);
   assert.match(text, /#blondies/);
   // Not a serialized object.
@@ -522,7 +545,7 @@ test("AF. the clipboard carries the same labels the screen does, with no danglin
 
   // Carousel copies the Show/Text-on-slide distinction, not a flattened blob.
   const carouselText = formatCreativePackageForClipboard(viewOf(carousel()));
-  assert.match(carouselText, /Slide 1\nShow: Pan of browned butter, close\.\nText on slide: Start with browned butter\nIt is the whole flavour\./);
+  assert.match(carouselText, /Slide 1 · Photo\nShow: Pan of browned butter, close\.\nText on slide: Start with browned butter\nIt is the whole flavour\./);
 
   // Story copies Show/Text per frame and the interaction as its own action.
   const storyText = formatCreativePackageForClipboard(viewOf(story()));

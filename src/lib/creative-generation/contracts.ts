@@ -1,4 +1,15 @@
 import { CREATIVE_FORMATS, CREATIVE_PLATFORMS, isCreativeFormat, isCreativePlatform, type CreativeFormat } from "../creative-formats.ts";
+import {
+  CREATIVE_FRAMINGS,
+  CREATIVE_MOVEMENTS,
+  CREATIVE_SHOT_SECONDS_MAX,
+  CREATIVE_SHOT_SECONDS_MIN,
+  isCreativeFraming,
+  isCreativeMovement,
+  isCreativeShotSeconds,
+  type CreativeFraming,
+  type CreativeMovement,
+} from "../creative-production-guidance.ts";
 import type { PlatformVariantV2 } from "../creative-packages.ts";
 
 // Content Creation MVP S3B -- the two model-independent generation contracts.
@@ -93,15 +104,37 @@ export type CreativeBodyCommon = {
   platformVariants: PlatformVariantV2[];
 };
 
-export type PhotoCreativeBody = CreativeBodyCommon & { visualDirection: string; overlayText: string | null };
+// S6 -- production guidance is REQUIRED on the generation path, the strict half of the asymmetry
+// described in creative-package-content-v2.ts. Anything generated from S6 onward answers how long,
+// how close and whether the camera moves, because the execution-first UI can only show what the
+// package contains.
+export type PhotoCreativeBody = CreativeBodyCommon & { visualDirection: string; overlayText: string | null; framing: CreativeFraming };
 export type ReelCreativeBody = CreativeBodyCommon & {
-  shots: Array<{ direction: string; onScreenText: string | null }>;
+  shots: Array<{
+    direction: string;
+    onScreenText: string | null;
+    approxSeconds: number;
+    framing: CreativeFraming;
+    // Required KEY, nullable VALUE. Requiring the key forces a decision per shot; allowing null lets
+    // that decision be "no movement", which is the right answer most of the time.
+    movement: CreativeMovement | null;
+  }>;
   spokenScript: string | null;
   audioDirection: string;
-  targetDurationSeconds: number;
+  // targetDurationSeconds is deliberately ABSENT from the model body. A model asked for both
+  // per-shot durations and a separate total can return two numbers that disagree, and then something
+  // has to decide which one is true. There is now exactly one authored source of timing -- the
+  // shots -- and the stored total is derived from it in assemble.ts.
 };
-export type CarouselCreativeBody = CreativeBodyCommon & { slides: Array<{ heading: string; body: string; visualDirection: string }> };
-export type StoryCreativeBody = CreativeBodyCommon & { frames: Array<{ visualDirection: string; text: string }>; interaction: string | null };
+export type CarouselCreativeBody = CreativeBodyCommon & {
+  slides: Array<{ heading: string; body: string; visualDirection: string; framing: CreativeFraming }>;
+};
+export type StoryCreativeBody = CreativeBodyCommon & {
+  // approxSeconds carries the photo/video decision itself: null is a still frame, a positive integer
+  // is a video of about that length. Required key, so the generator must actually choose.
+  frames: Array<{ visualDirection: string; text: string; framing: CreativeFraming; approxSeconds: number | null }>;
+  interaction: string | null;
+};
 
 export type CreativeBody = PhotoCreativeBody | ReelCreativeBody | CarouselCreativeBody | StoryCreativeBody;
 
@@ -111,9 +144,12 @@ export type CreativeBodyValidation =
 
 const COMMON_KEYS = ["angle", "hook", "headline", "caption", "cta", "platformVariants"] as const;
 
+// targetDurationSeconds is gone from `reel` on purpose, and because rejectUnexpectedKeys drives off
+// this table, a model that returns it now fails with "unexpected fields" rather than quietly
+// supplying a total that competes with the shot list.
 const FORMAT_KEYS: Record<CreativeFormat, readonly string[]> = {
-  photo: ["visualDirection", "overlayText"],
-  reel: ["shots", "spokenScript", "audioDirection", "targetDurationSeconds"],
+  photo: ["visualDirection", "overlayText", "framing"],
+  reel: ["shots", "spokenScript", "audioDirection"],
   carousel: ["slides"],
   story: ["frames", "interaction"],
 };
@@ -144,10 +180,17 @@ const COMMON_SCHEMA_PROPERTIES = {
   platformVariants: { type: "array", items: PLATFORM_VARIANT_SCHEMA },
 } as const;
 
+const FRAMING_SCHEMA = { type: "string", enum: [...CREATIVE_FRAMINGS] } as const;
+// The null member is spelled into the enum as well as the type, because a movement enum that omits
+// it would make "no movement needed" unrepresentable and push the model towards inventing one.
+const MOVEMENT_SCHEMA = { type: ["string", "null"], enum: [...CREATIVE_MOVEMENTS, null] } as const;
+const SHOT_SECONDS_SCHEMA = { type: "integer", minimum: CREATIVE_SHOT_SECONDS_MIN, maximum: CREATIVE_SHOT_SECONDS_MAX } as const;
+
 const FORMAT_SCHEMA_PROPERTIES: Record<CreativeFormat, Record<string, unknown>> = {
   photo: {
     visualDirection: { type: "string", minLength: 1 },
     overlayText: { type: ["string", "null"] },
+    framing: FRAMING_SCHEMA,
   },
   reel: {
     shots: {
@@ -156,13 +199,18 @@ const FORMAT_SCHEMA_PROPERTIES: Record<CreativeFormat, Record<string, unknown>> 
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["direction", "onScreenText"],
-        properties: { direction: { type: "string", minLength: 1 }, onScreenText: { type: ["string", "null"] } },
+        required: ["direction", "onScreenText", "approxSeconds", "framing", "movement"],
+        properties: {
+          direction: { type: "string", minLength: 1 },
+          onScreenText: { type: ["string", "null"] },
+          approxSeconds: SHOT_SECONDS_SCHEMA,
+          framing: FRAMING_SCHEMA,
+          movement: MOVEMENT_SCHEMA,
+        },
       },
     },
     spokenScript: { type: ["string", "null"] },
     audioDirection: { type: "string", minLength: 1 },
-    targetDurationSeconds: { type: "number", exclusiveMinimum: 0 },
   },
   carousel: {
     slides: {
@@ -171,8 +219,13 @@ const FORMAT_SCHEMA_PROPERTIES: Record<CreativeFormat, Record<string, unknown>> 
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["heading", "body", "visualDirection"],
-        properties: { heading: { type: "string", minLength: 1 }, body: { type: "string", minLength: 1 }, visualDirection: { type: "string", minLength: 1 } },
+        required: ["heading", "body", "visualDirection", "framing"],
+        properties: {
+          heading: { type: "string", minLength: 1 },
+          body: { type: "string", minLength: 1 },
+          visualDirection: { type: "string", minLength: 1 },
+          framing: FRAMING_SCHEMA,
+        },
       },
     },
   },
@@ -183,8 +236,14 @@ const FORMAT_SCHEMA_PROPERTIES: Record<CreativeFormat, Record<string, unknown>> 
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["visualDirection", "text"],
-        properties: { visualDirection: { type: "string", minLength: 1 }, text: { type: "string", minLength: 1 } },
+        required: ["visualDirection", "text", "framing", "approxSeconds"],
+        properties: {
+          visualDirection: { type: "string", minLength: 1 },
+          text: { type: "string", minLength: 1 },
+          framing: FRAMING_SCHEMA,
+          // minimum/maximum constrain only the integer branch; null passes them by definition.
+          approxSeconds: { type: ["integer", "null"], minimum: CREATIVE_SHOT_SECONDS_MIN, maximum: CREATIVE_SHOT_SECONDS_MAX },
+        },
       },
     },
     interaction: { type: ["string", "null"] },
@@ -227,6 +286,9 @@ function validateFormatFields(format: CreativeFormat, value: Record<string, unkn
   if (format === "photo") {
     if (!isNonEmptyString(value.visualDirection)) return "Photo body requires a non-empty visualDirection.";
     if (!isNullableString(value.overlayText)) return "Photo body overlayText must be a string or null.";
+    // Required and non-null on the generation path, unlike the read path where absence means a
+    // pre-S6 package. A generator that skips this has not made the decision the field exists for.
+    if (!isCreativeFraming(value.framing)) return "Photo body framing must be close_up, medium, wide or overhead.";
     return null;
   }
   if (format === "reel") {
@@ -235,12 +297,20 @@ function validateFormatFields(format: CreativeFormat, value: Record<string, unkn
       if (!isJsonObject(shot) || !isNonEmptyString(shot.direction) || !isNullableString(shot.onScreenText)) {
         return "Reel body shots require a non-empty direction and a string-or-null onScreenText.";
       }
+      if (!isCreativeShotSeconds(shot.approxSeconds)) {
+        return "Reel body shots require an approxSeconds integer from 1 to 10.";
+      }
+      if (!isCreativeFraming(shot.framing)) {
+        return "Reel body shots require a framing of close_up, medium, wide or overhead.";
+      }
+      // `in` rather than a truthiness check: the KEY must be present so the generator has actually
+      // decided, but null is a legitimate and expected decision.
+      if (!("movement" in shot) || !(shot.movement === null || isCreativeMovement(shot.movement))) {
+        return "Reel body shots require a movement of push_in, pull_back, pan or null.";
+      }
     }
     if (!isNullableString(value.spokenScript)) return "Reel body spokenScript must be a string or null.";
     if (!isNonEmptyString(value.audioDirection)) return "Reel body requires a non-empty audioDirection.";
-    if (typeof value.targetDurationSeconds !== "number" || !Number.isFinite(value.targetDurationSeconds) || value.targetDurationSeconds <= 0) {
-      return "Reel body targetDurationSeconds must be a positive finite number.";
-    }
     return null;
   }
   if (format === "carousel") {
@@ -249,6 +319,9 @@ function validateFormatFields(format: CreativeFormat, value: Record<string, unkn
       if (!isJsonObject(slide) || !isNonEmptyString(slide.heading) || !isNonEmptyString(slide.body) || !isNonEmptyString(slide.visualDirection)) {
         return "Carousel body slides require non-empty heading, body and visualDirection.";
       }
+      if (!isCreativeFraming(slide.framing)) {
+        return "Carousel body slides require a framing of close_up, medium, wide or overhead.";
+      }
     }
     return null;
   }
@@ -256,6 +329,13 @@ function validateFormatFields(format: CreativeFormat, value: Record<string, unkn
   for (const frame of value.frames) {
     if (!isJsonObject(frame) || !isNonEmptyString(frame.visualDirection) || !isNonEmptyString(frame.text)) {
       return "Story body frames require non-empty visualDirection and text.";
+    }
+    if (!isCreativeFraming(frame.framing)) {
+      return "Story body frames require a framing of close_up, medium, wide or overhead.";
+    }
+    // The photo/video decision. Key required so it is made deliberately; null means a still frame.
+    if (!("approxSeconds" in frame) || !(frame.approxSeconds === null || isCreativeShotSeconds(frame.approxSeconds))) {
+      return "Story body frames require an approxSeconds of null (photo) or an integer from 1 to 10 (video).";
     }
   }
   if (!isNullableString(value.interaction)) return "Story body interaction must be a string or null.";

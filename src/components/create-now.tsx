@@ -79,10 +79,16 @@ function PrimaryAction({ children, onClick }: { children: React.ReactNode; onCli
 function PackageView({ view }: { view: CreativePackageView }) {
   return (
     <div className="space-y-5">
-      {/* 1. What am I making. The package's own subject and format -- no second invented title. */}
+      {/* 1. What am I making. The package's own subject and format -- no second invented title.
+          S6 puts the Reel's whole-video length on this line too: it is a property of the thing being
+          made, so it belongs in the summary rather than buried under the last shot. Absent for every
+          other format, and the row then renders exactly as it did in S5. */}
       <div>
         <h3 className="text-xl font-semibold tracking-tight text-[#211713]">{view.subject}</h3>
-        <p className="mt-1 text-sm text-[#6f5a4c]">{view.formatLabel}</p>
+        <div className="mt-1 flex items-baseline justify-between gap-3">
+          <p className="text-sm text-[#6f5a4c]">{view.formatLabel}</p>
+          {view.durationLabel ? <p className="text-sm text-[#6f5a4c]">{view.durationLabel}</p> : null}
+        </div>
       </div>
 
       {/* 2. What exactly do I do. First, because it is the only part that needs hands.

@@ -1,4 +1,5 @@
 import { isCreativeFormat, isCreativePlatform, type CreativePlatform } from "./creative-formats.ts";
+import { isCreativeFraming, isCreativeMovement, isCreativeShotSeconds, type CreativeFraming, type CreativeMovement } from "./creative-production-guidance.ts";
 import { isCreativeJobWorkerType, type CreativeJobWorkerType } from "./creative-worker-types.ts";
 
 // The S2 Creative Package v2 content contract and its authoritative validator, extracted verbatim
@@ -60,30 +61,61 @@ type CreativePackageBaseV2 = {
   metadata: CreativePackageMetadataV2;
 };
 
+// S6 production guidance is OPTIONAL on every stored type below, and that is the whole
+// backward-compatibility mechanism: packages generated before S6 carry none of these fields, they
+// are still legitimate v2 packages, and no migration or schemaVersion bump is required to keep
+// reading them. Optional means ABSENT, not null -- see validateFormatFields, where a present value
+// is validated exactly as strictly as a generated one.
+//
+// The generation contract is the asymmetric half: creative-generation/contracts.ts REQUIRES these
+// keys, so everything produced from S6 onward carries them.
+
 export type CreativePhotoPackageV2 = CreativePackageBaseV2 & {
   format: "photo";
   visualDirection: string;
   overlayText: string | null;
+  framing?: CreativeFraming;
 };
 
 export type CreativeReelPackageV2 = CreativePackageBaseV2 & {
   format: "reel";
-  shots: Array<{ direction: string; onScreenText: string | null }>;
+  shots: Array<{
+    direction: string;
+    onScreenText: string | null;
+    approxSeconds?: number;
+    framing?: CreativeFraming;
+    // Null is a real, common answer: this shot needs no camera movement. Absent means a pre-S6
+    // package that never had the field at all. The renderer shows nothing for either.
+    movement?: CreativeMovement | null;
+  }>;
   // Nullable because a visual-only Reel is the normal case for a bakery, not an exception.
   // Requiring speech would produce ignored filler on most Reels.
   spokenScript: string | null;
   audioDirection: string;
+  // Still part of the stored package and still required: the UI shows the owner one total. From S6
+  // it is DERIVED in the assembler as the sum of the shots' approxSeconds rather than authored, so
+  // there is exactly one total and it cannot contradict the shot list. See assemble.ts.
   targetDurationSeconds: number;
 };
 
 export type CreativeCarouselPackageV2 = CreativePackageBaseV2 & {
   format: "carousel";
-  slides: Array<{ heading: string; body: string; visualDirection: string }>;
+  // No mediaType, duration or movement: S6 defines Carousel slides as still images, so the medium is
+  // a property of the format and adding a field for it would only create a way to contradict it.
+  slides: Array<{ heading: string; body: string; visualDirection: string; framing?: CreativeFraming }>;
 };
 
 export type CreativeStoryPackageV2 = CreativePackageBaseV2 & {
   format: "story";
-  frames: Array<{ visualDirection: string; text: string }>;
+  frames: Array<{
+    visualDirection: string;
+    text: string;
+    framing?: CreativeFraming;
+    // The photo/video decision itself, with no separate mediaType field: null means a still photo,
+    // a positive integer means a video of about that many seconds. One field cannot contradict
+    // itself the way `mediaType: "video"` alongside `duration: null` could.
+    approxSeconds?: number | null;
+  }>;
   interaction: string | null;
 };
 
@@ -111,6 +143,22 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
+}
+
+// --- S6 production guidance, validated asymmetrically --------------------------------------------
+//
+// ABSENT is valid, because a package stored before S6 has no such key and must stay readable
+// without a migration. PRESENT is validated in full, because a wrong value is a wrong value whatever
+// wrote it -- "framing": "banana" was never a legitimate v2 package, and accepting it to be lenient
+// about old data would only mean the renderer meets it instead.
+//
+// Note the deliberate asymmetry between framing and movement: framing has no null member, so a null
+// framing is malformed, whereas null movement is the ordinary "this shot needs no movement" answer.
+function validateOptionalFraming(value: unknown, where: string): { ok: true } | { ok: false; message: string } {
+  if (value === undefined || isCreativeFraming(value)) {
+    return { ok: true };
+  }
+  return { ok: false, message: `Creative Package v2 ${where} framing must be close_up, medium, wide or overhead when present.` };
 }
 
 function validatePlatformVariants(value: unknown): { ok: true } | { ok: false; message: string } {
@@ -181,7 +229,7 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
     if (!isNullableString(value.overlayText)) {
       return { ok: false, message: "Creative Package v2 photo overlayText must be a string or null." };
     }
-    return { ok: true };
+    return validateOptionalFraming(value.framing, "photo");
   }
 
   if (value.format === "reel") {
@@ -191,6 +239,16 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
     for (const shot of value.shots) {
       if (!isJsonObject(shot) || !isNonEmptyString(shot.direction) || !isNullableString(shot.onScreenText)) {
         return { ok: false, message: "Creative Package v2 reel shots require a non-empty direction and a string-or-null onScreenText." };
+      }
+      const framing = validateOptionalFraming(shot.framing, "reel shot");
+      if (!framing.ok) {
+        return framing;
+      }
+      if (shot.approxSeconds !== undefined && !isCreativeShotSeconds(shot.approxSeconds)) {
+        return { ok: false, message: "Creative Package v2 reel shot approxSeconds must be an integer from 1 to 10 when present." };
+      }
+      if (shot.movement !== undefined && shot.movement !== null && !isCreativeMovement(shot.movement)) {
+        return { ok: false, message: "Creative Package v2 reel shot movement must be push_in, pull_back, pan or null when present." };
       }
     }
     if (!isNullableString(value.spokenScript)) {
@@ -213,6 +271,10 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
       if (!isJsonObject(slide) || !isNonEmptyString(slide.heading) || !isNonEmptyString(slide.body) || !isNonEmptyString(slide.visualDirection)) {
         return { ok: false, message: "Creative Package v2 carousel slides require non-empty heading, body and visualDirection." };
       }
+      const framing = validateOptionalFraming(slide.framing, "carousel slide");
+      if (!framing.ok) {
+        return framing;
+      }
     }
     return { ok: true };
   }
@@ -224,6 +286,14 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
   for (const frame of value.frames) {
     if (!isJsonObject(frame) || !isNonEmptyString(frame.visualDirection) || !isNonEmptyString(frame.text)) {
       return { ok: false, message: "Creative Package v2 story frames require non-empty visualDirection and text." };
+    }
+    const framing = validateOptionalFraming(frame.framing, "story frame");
+    if (!framing.ok) {
+      return framing;
+    }
+    // Null is meaningful here in a way it never is for framing: it is the frame saying "still photo".
+    if (frame.approxSeconds !== undefined && frame.approxSeconds !== null && !isCreativeShotSeconds(frame.approxSeconds)) {
+      return { ok: false, message: "Creative Package v2 story frame approxSeconds must be null or an integer from 1 to 10 when present." };
     }
   }
   if (!isNullableString(value.interaction)) {

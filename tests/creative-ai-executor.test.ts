@@ -76,20 +76,19 @@ function bodyFor(format: CreativeFormat = "photo"): Record<string, unknown> {
     cta: "Save this idea for your next coffee break.",
     platformVariants: [{ platform: "instagram", caption: "Blondies and a coffee pause.", hashtags: ["#blondies"] }],
   };
-  if (format === "photo") return { ...common, visualDirection: "Overhead phone photo on parchment.", overlayText: null };
+  if (format === "photo") return { ...common, visualDirection: "Overhead phone photo on parchment.", overlayText: null, framing: "overhead" };
   if (format === "reel") {
     return {
       ...common,
-      shots: [{ direction: "Pan across Blondies on parchment.", onScreenText: "coffee pause" }],
+      shots: [{ direction: "Pan across Blondies on parchment.", onScreenText: "coffee pause", approxSeconds: 4, framing: "medium", movement: "pan" }],
       spokenScript: null,
       audioDirection: "Soft upbeat audio.",
-      targetDurationSeconds: 12,
     };
   }
   if (format === "carousel") {
-    return { ...common, slides: [{ heading: "Coffee pause", body: "A simple Blondies moment.", visualDirection: "Cover photo on parchment." }] };
+    return { ...common, slides: [{ heading: "Coffee pause", body: "A simple Blondies moment.", visualDirection: "Cover photo on parchment.", framing: "wide" }] };
   }
-  return { ...common, frames: [{ visualDirection: "Blondies beside coffee.", text: "coffee pause" }], interaction: null };
+  return { ...common, frames: [{ visualDirection: "Blondies beside coffee.", text: "coffee pause", framing: "close_up", approxSeconds: null }], interaction: null };
 }
 
 // --- grounding fixtures -------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import type { CreativeFormat } from "../creative-formats.ts";
 import type { ResolvedCreativeGrounding } from "../creative-subject-resolution.ts";
 import type { CreativeJobWorkerType } from "../creative-jobs.ts";
 import { validateCreativePackageContentV2, type CreativePackageContentV2 } from "../creative-packages.ts";
-import { validateCreativeBody, type CreativeFormatDecision } from "./contracts.ts";
+import { validateCreativeBody, type CreativeFormatDecision, type ReelCreativeBody } from "./contracts.ts";
 
 // Content Creation MVP S3B -- deterministic assembly.
 //
@@ -31,16 +31,25 @@ export type AssembleCreativePackageResult =
   | { ok: true; content: CreativePackageContentV2 }
   | { ok: false; reason: "format-mismatch" | "malformed-body" | "invalid-package"; message: string };
 
+// An explicit per-format allowlist, which is exactly why S6's new fields had to be added here by
+// hand: anything not named below never reaches the stored package, however well the model authored
+// it. shots/slides/frames pass through as whole arrays, so the per-item S6 guidance travels with
+// them; Photo's framing is a top-level field and needs its own entry.
 function bodyFieldsFor(format: CreativeFormat, body: Record<string, unknown>): Record<string, unknown> {
   if (format === "photo") {
-    return { visualDirection: body.visualDirection, overlayText: body.overlayText };
+    return { visualDirection: body.visualDirection, overlayText: body.overlayText, framing: body.framing };
   }
   if (format === "reel") {
+    // Already validated, so every shot carries an integer approxSeconds in 1..10.
+    const shots = body.shots as ReelCreativeBody["shots"];
     return {
-      shots: body.shots,
+      shots,
       spokenScript: body.spokenScript,
       audioDirection: body.audioDirection,
-      targetDurationSeconds: body.targetDurationSeconds,
+      // DERIVED, never authored. The stored package still carries one total for the UI to show, but
+      // it is now arithmetic over the shot list rather than a second number the model wrote, so the
+      // total and the shots cannot disagree and there is nothing to tolerance-check.
+      targetDurationSeconds: shots.reduce((total, shot) => total + shot.approxSeconds, 0),
     };
   }
   if (format === "carousel") {
