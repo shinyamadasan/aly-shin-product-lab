@@ -8,6 +8,9 @@ import type { OpportunityListRecord } from "../src/lib/opportunity-review.ts";
 import type { CreativePackageRecord } from "../src/lib/creative-packages.ts";
 
 const source = readFileSync(new URL("../src/components/today-page.tsx", import.meta.url), "utf8");
+// Today's second rendered surface as of S4. It is held to the same language rule as today-page.tsx
+// itself, because from the owner's side it is the same screen.
+const createNowSource = readFileSync(new URL("../src/components/create-now.tsx", import.meta.url), "utf8");
 const productLabSource = readFileSync(new URL("../src/app/product-lab.tsx", import.meta.url), "utf8");
 const labStateSource = readFileSync(new URL("../src/lib/lab-state.ts", import.meta.url), "utf8");
 const appShellSource = readFileSync(new URL("../src/components/app-shell.tsx", import.meta.url), "utf8");
@@ -163,6 +166,14 @@ test("[static] both embedded components are always called with variant=\"ritual\
   }
 });
 
+test("[static] Create Now is held to Today's language rule too -- no banned internal vocabulary in anything it renders", () => {
+  const userFacingPieces = createNowSource.match(/"(?:[^"\\]|\\.)*"|>[^<>{}\n]+</g) ?? [];
+  assert.ok(userFacingPieces.length > 0, "test fixture is stale -- no quoted strings or JSX text found");
+  for (const piece of userFacingPieces) {
+    assert.doesNotMatch(piece, BANNED_VOCABULARY, `banned vocabulary found in user-facing piece: ${piece}`);
+  }
+});
+
 test("[static] no banned internal vocabulary appears in any of Today's user-facing strings or JSX text", () => {
   // Scoped to what the owner could actually see: quoted string literals (JSX attribute values,
   // MessageBox messages) and JSX text nodes (text directly between tags). Deliberately excludes
@@ -177,7 +188,10 @@ test("[static] no banned internal vocabulary appears in any of Today's user-faci
 
 test("[static] product-lab.tsx: Today is the default view, and the today branch is wired before dashboard's", () => {
   assert.match(productLabSource, /view = "today"/);
-  assert.match(productLabSource, /view === "today" \? <TodayPage \/> : null/);
+  // S4 gives Today two things it could not read for itself: the app's already-loaded product
+  // catalog (so Create Now's optional selector has no second source) and the route's resolved
+  // active job id (so a refresh recovers an in-flight creation).
+  assert.match(productLabSource, /view === "today" \? <TodayPage initialCreativeJobId=\{initialCreativeJobId\} products=\{labState\.products\} \/> : null/);
   // DashboardPage's own render branch and props are untouched -- same call as before this slice.
   assert.match(productLabSource, /view === "dashboard" \? <DashboardPage metrics=\{metrics\} labState=\{labState\} message=\{message\} messageTone=\{messageTone\} session=\{session\} signOut=\{signOut\} \/> : null/);
 });

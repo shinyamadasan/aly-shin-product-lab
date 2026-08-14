@@ -156,11 +156,13 @@ export default function ProductLab({
   initialInventoryTab,
   initialOrdersTab,
   initialOpportunityStatusFilter = "new",
+  initialCreativeJobId = null,
 }: {
   view?: LabView;
   initialInventoryTab?: InventoryTab;
   initialOrdersTab?: OrdersTab;
   initialOpportunityStatusFilter?: OpportunityStatusFilter;
+  initialCreativeJobId?: string | null;
 }) {
   const router = useRouter();
   const [labState, setLabState] = useState<LabState>(() => {
@@ -2678,7 +2680,9 @@ export default function ProductLab({
   return (
     <AppShell navigationConfirmationMessage={activeUnsavedForm?.message} shouldConfirmNavigation={Boolean(activeUnsavedForm)} view={view}>
           {message && view !== "dashboard" && view !== "costing" && view !== "today" ? <MessageBox message={message} tone={messageTone} /> : null}
-          {view === "today" ? <TodayPage /> : null}
+          {/* products comes from the app's own already-loaded catalog read -- Create Now's optional
+              product selector reads the real catalog and never opens a second source for it. */}
+          {view === "today" ? <TodayPage initialCreativeJobId={initialCreativeJobId} products={labState.products} /> : null}
           {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
 
           {view === "products" ? (
