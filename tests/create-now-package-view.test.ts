@@ -103,44 +103,118 @@ function viewOf(content: unknown) {
   return result.view;
 }
 
-// --- the six fields every format carries -----------------------------------------------------------
+// --- S5-A: the hierarchy is execution-first -----------------------------------------------------------
+//
+// The S4 view opened with six strategy labels (Subject / Angle / Hook / Headline / Caption / CTA)
+// before anything actionable. These tests pin the inversion: production guidance is the first thing
+// the view offers, and strategy is a separate, secondary collection.
 
-test("every format renders Subject, Angle, Hook, Headline, Caption and CTA, in that order", () => {
+test("S5. strategy metadata is NOT the primary hierarchy -- the view leads with what to make and what to do", () => {
+  for (const content of [photo(), reel(), carousel(), story()]) {
+    const view = viewOf(content);
+
+    // The summary: what am I making, in what form. Both verbatim from the package.
+    assert.equal(view.subject, content.subject);
+    assert.equal(view.formatLabel, { photo: "Photo", reel: "Reel", carousel: "Carousel", story: "Story" }[content.format]);
+
+    // Production is a populated, ordered collection -- the thing that comes next.
+    assert.ok(view.production.length > 0, "every format must contribute production guidance");
+    assert.ok(view.production[0].blocks.length > 0);
+
+    // Angle / Hook / CTA are reachable ONLY through creativeDetails. There is no longer any
+    // top-level field carrying them, so they cannot be rendered ahead of the instructions.
+    assert.equal("essentials" in view, false, "the S4 essentials-first block must be gone");
+    assert.equal("angle" in view, false);
+    assert.equal("hook" in view, false);
+    assert.equal("cta" in view, false);
+  }
+});
+
+test("S5. Creative details still preserves Subject, Angle, Hook, Headline and CTA, in that order", () => {
   for (const content of [photo(), reel(), carousel(), story()]) {
     const view = viewOf(content);
     assert.deepEqual(
-      view.essentials.map((entry) => entry.label),
-      ["Subject", "Angle", "Hook", "Headline", "Caption", "Call to action"],
+      view.creativeDetails.map((entry) => entry.label),
+      ["Subject", "Angle", "Hook", "Headline", "Call to action"],
     );
     assert.deepEqual(
-      view.essentials.map((entry) => entry.value),
-      [content.subject, content.angle, content.hook, content.headline, content.caption, content.cta],
+      view.creativeDetails.map((entry) => entry.value),
+      [content.subject, content.angle, content.hook, content.headline, content.cta],
+    );
+    // Caption is ready-to-post copy, not strategy: it lives with the posting section and the copy
+    // actions instead, so it is deliberately absent from this collection.
+    assert.equal(
+      view.creativeDetails.some((entry) => entry.label === "Caption"),
+      false,
     );
   }
 });
 
-// --- Y/Z/AA/AB: production guidance, by format ------------------------------------------------------
+test("S5. Creative details is rendered as a collapsed section, after the production and posting sections", () => {
+  assert.match(createNowSource, /<details[^>]*>\s*\n?\s*<summary[^>]*>Creative details<\/summary>/);
+  assert.match(createNowSource, /view\.creativeDetails\.map/);
 
-test("Y. Photo renders its visual direction, and overlay text only when the package carries some", () => {
+  // Order in the source is order on the screen: production, then platform copy, then details.
+  const production = createNowSource.indexOf("view.production.map");
+  const platforms = createNowSource.indexOf("view.platformVariants.map");
+  const details = createNowSource.indexOf("view.creativeDetails.map");
+  assert.ok(production > 0 && platforms > 0 && details > 0);
+  assert.ok(production < platforms, "production guidance must render before platform copy");
+  assert.ok(platforms < details, "platform copy must render before Creative details");
+});
+
+// --- Y/Z/AA/AB: production guidance leads, by format ------------------------------------------------
+
+test("Y. Photo leads with its visual direction as the actionable instruction, unlabelled and unsplit", () => {
   const withoutOverlay = viewOf(photo({ overlayText: null }));
   assert.equal(withoutOverlay.formatLabel, "Photo");
   assert.deepEqual(
     withoutOverlay.production.map((section) => section.title),
-    ["How to shoot it"],
+    ["Take this photo"],
   );
-  assert.equal(withoutOverlay.production[0].blocks[0].body, "Overhead on the wooden board, morning window light.");
-  assert.equal(withoutOverlay.production[0].blocks[0].note, null);
+  // One block, one unlabelled line: the direction IS the instruction.
+  assert.equal(withoutOverlay.production[0].blocks.length, 1);
+  assert.equal(withoutOverlay.production[0].blocks[0].title, null);
+  assert.deepEqual(withoutOverlay.production[0].blocks[0].lines, [
+    { label: null, value: "Overhead on the wooden board, morning window light." },
+  ]);
 
-  const withOverlay = viewOf(photo({ overlayText: "Saturdays only" }));
-  assert.equal(withOverlay.production[0].blocks[0].note, "Text on the photo: Saturdays only");
+  // v2 carries ONE visualDirection string for Photo. It is passed through whole -- never split on
+  // sentences or punctuation into steps the generator did not write.
+  assert.equal(withoutOverlay.production[0].blocks[0].lines[0].value, photo().visualDirection);
 });
 
-test("Z. Reel renders its shots IN ORDER, plus script, audio direction and target length", () => {
+test("Y. overlayText is explicitly identified as text to add to the photo, not a bare 'Then add'", () => {
+  const withOverlay = viewOf(photo({ overlayText: "Saturdays only" }));
+  const lines = withOverlay.production[0].blocks[0].lines;
+
+  assert.deepEqual(lines, [
+    { label: null, value: "Overhead on the wooden board, morning window light." },
+    { label: "Add this text to the photo", value: "Saturdays only" },
+  ]);
+
+  // The label must name both the action and the surface -- an owner asked what "Then add" meant.
+  assert.match(lines[1].label ?? "", /text/i);
+  assert.match(lines[1].label ?? "", /photo/i);
+  assert.notEqual(lines[1].label, "Then add");
+});
+
+test("Y. a null overlay produces NO overlay instruction at all -- not an empty line, not 'None'", () => {
+  const lines = viewOf(photo({ overlayText: null })).production[0].blocks[0].lines;
+  assert.equal(lines.length, 1);
+  assert.equal(
+    lines.some((line) => line.label !== null),
+    false,
+  );
+  assert.doesNotMatch(formatCreativePackageForClipboard(viewOf(photo({ overlayText: null }))), /Add this text to the photo/);
+});
+
+test("Z. Reel leads with ordered shots, each separating what to DO from the text on screen", () => {
   const view = viewOf(reel());
   assert.equal(view.formatLabel, "Reel");
   assert.deepEqual(
     view.production.map((section) => section.title),
-    ["Shots, in order", "Sound and length"],
+    ["Record these shots", null],
   );
 
   const shots = view.production[0].blocks;
@@ -148,65 +222,99 @@ test("Z. Reel renders its shots IN ORDER, plus script, audio direction and targe
     shots.map((block) => block.title),
     ["Shot 1", "Shot 2"],
   );
-  assert.equal(shots[0].body, "Close on the tray coming out of the oven.");
-  assert.equal(shots[0].note, "On screen: Fresh out");
-  // A shot with no on-screen text renders no note at all, rather than an empty line or "None".
-  assert.equal(shots[1].note, null);
 
-  const sound = view.production[1].blocks;
-  assert.deepEqual(
-    sound.map((block) => block.title),
-    ["What to say", "Sound", "Length"],
-  );
-  assert.equal(sound[2].body, "About 12 seconds");
+  // direction verbatim under "Do"; onScreenText explicitly labelled as on-screen text.
+  assert.deepEqual(shots[0].lines, [
+    { label: "Do", value: "Close on the tray coming out of the oven." },
+    { label: "Text on screen", value: "Fresh out" },
+  ]);
+  assert.equal(shots[0].lines[0].value, reel().shots[0].direction);
+
+  // A shot with no on-screen text contributes no second line at all.
+  assert.deepEqual(shots[1].lines, [{ label: "Do", value: "Hands cutting the first corner piece." }]);
 });
 
-test("Z. a visual-only Reel (no spoken script) drops the script block entirely -- the normal case, not an exception", () => {
+test("Z. spoken script, sound and TOTAL target length stay separate from the shots", () => {
+  const view = viewOf(reel());
+  const finish = view.production[1].blocks;
+  assert.equal(finish.length, 1);
+  assert.deepEqual(finish[0].lines, [
+    { label: "Say this", value: "We bake these every Saturday morning." },
+    { label: "Sound", value: "Quiet kitchen sound, no music." },
+    { label: "Target length", value: "About 12 seconds in total" },
+  ]);
+
+  // The length is stated as a whole-video total, because v2 carries no per-shot timing and this
+  // number must never read as if it belonged to the last shot.
+  assert.match(finish[0].lines[2].value, /in total/);
+});
+
+test("Z. a visual-only Reel (no spoken script) drops the script line entirely -- the normal case, not an exception", () => {
   const view = viewOf(reel({ spokenScript: null }));
-  const sound = view.production[1].blocks;
   assert.deepEqual(
-    sound.map((block) => block.title),
-    ["Sound", "Length"],
+    view.production[1].blocks[0].lines.map((line) => line.label),
+    ["Sound", "Target length"],
   );
   assert.equal(view.script, null);
 });
 
-test("AA. Carousel renders ordered slides, each with its heading, body and visual direction", () => {
+test("AA. Carousel distinguishes what to SHOW from the text that belongs on the slide", () => {
   const view = viewOf(carousel());
   assert.equal(view.formatLabel, "Carousel");
   assert.deepEqual(
     view.production.map((section) => section.title),
-    ["Slides, in order"],
+    ["Build these slides"],
   );
   const slides = view.production[0].blocks;
   assert.deepEqual(
     slides.map((block) => block.title),
-    ["Slide 1 — Start with browned butter", "Slide 2 — Swirl the Biscoff last"],
+    ["Slide 1", "Slide 2"],
   );
-  assert.equal(slides[0].body, "It is the whole flavour.");
-  assert.equal(slides[0].note, "Visual: Pan of browned butter, close.");
+
+  // "Show" comes first and carries visualDirection -- the owner asked whether the heading meant
+  // they had to photograph it. heading and body are the text that goes ON the slide, verbatim.
+  assert.deepEqual(slides[0].lines, [
+    { label: "Show", value: "Pan of browned butter, close." },
+    { label: "Text on slide", value: "Start with browned butter" },
+    { label: null, value: "It is the whole flavour." },
+  ]);
+
+  const source = carousel().slides[0];
+  assert.equal(slides[0].lines[0].value, source.visualDirection);
+  assert.equal(slides[0].lines[1].value, source.heading);
+  assert.equal(slides[0].lines[2].value, source.body);
+
+  // The visual instruction must precede the slide text, never the other way round.
+  assert.equal(slides[0].lines[0].label, "Show");
 });
 
-test("AB. Story renders ordered frames, and its interaction only when one is present", () => {
+test("AB. Story distinguishes Show from Text per frame, and states interaction as its own action", () => {
   const view = viewOf(story());
   assert.equal(view.formatLabel, "Story");
   assert.deepEqual(
     view.production.map((section) => section.title),
-    ["Frames, in order", "Ask your followers"],
+    ["Post these frames", null],
   );
   const frames = view.production[0].blocks;
   assert.deepEqual(
     frames.map((block) => block.title),
     ["Frame 1", "Frame 2"],
   );
-  assert.equal(frames[0].body, "Baking day");
-  assert.equal(frames[0].note, "Visual: Tray on the counter, phone held above.");
-  assert.equal(view.production[1].blocks[0].body, "Poll: corner piece or middle?");
+
+  assert.deepEqual(frames[0].lines, [
+    { label: "Show", value: "Tray on the counter, phone held above." },
+    { label: "Text", value: "Baking day" },
+  ]);
+  assert.equal(frames[0].lines[0].value, story().frames[0].visualDirection);
+  assert.equal(frames[0].lines[1].value, story().frames[0].text);
+
+  // The poll is something the owner adds, not a frame to shoot -- own group, own verb.
+  assert.deepEqual(view.production[1].blocks[0].lines, [{ label: "Add interaction", value: "Poll: corner piece or middle?" }]);
 
   const withoutInteraction = viewOf(story({ interaction: null }));
   assert.deepEqual(
     withoutInteraction.production.map((section) => section.title),
-    ["Frames, in order"],
+    ["Post these frames"],
   );
 });
 
@@ -247,17 +355,67 @@ test("AC. a variant with no hashtags renders no hashtag line", () => {
 
 test("AD. every optional field being absent renders cleanly rather than crashing", () => {
   const bare = viewOf(photo({ overlayText: null, platformVariants: [] }));
-  assert.equal(bare.production[0].blocks[0].note, null);
+  assert.equal(bare.production[0].blocks[0].lines.length, 1);
   assert.deepEqual(bare.platformVariants, []);
   assert.equal(bare.script, null);
   assert.ok(formatCreativePackageForClipboard(bare).length > 0);
 
   const bareReel = viewOf(reel({ spokenScript: null, shots: [{ direction: "One shot.", onScreenText: null }], platformVariants: [] }));
   assert.equal(bareReel.script, null);
-  assert.equal(bareReel.production[0].blocks[0].note, null);
+  assert.deepEqual(bareReel.production[0].blocks[0].lines, [{ label: "Do", value: "One shot." }]);
 
   const bareStory = viewOf(story({ interaction: null, platformVariants: [] }));
   assert.equal(bareStory.production.length, 1);
+});
+
+test("AD. an absent optional field produces NO empty UI -- no empty line, no blank label, no stray section", () => {
+  // Every line a format emits must carry real content, and every label is either a real question or
+  // null. An empty string in either position would render as blank space or a floating eyebrow.
+  for (const content of [
+    photo({ overlayText: null, platformVariants: [] }),
+    photo({ overlayText: "Saturdays only" }),
+    reel({ spokenScript: null, platformVariants: [] }),
+    reel({ shots: [{ direction: "One shot.", onScreenText: null }] }),
+    carousel({ platformVariants: [] }),
+    story({ interaction: null, platformVariants: [] }),
+    story(),
+  ]) {
+    const view = viewOf(content);
+    for (const section of view.production) {
+      assert.ok(section.blocks.length > 0, "a section with no blocks would render as an empty card");
+      assert.notEqual(section.title, "", "a section title is either a real heading or null, never empty");
+      for (const block of section.blocks) {
+        assert.ok(block.lines.length > 0, "a block with no lines would render as a title over nothing");
+        assert.notEqual(block.title, "", "a block title is either a real label or null, never empty");
+        for (const line of block.lines) {
+          assert.ok(line.value.trim().length > 0, "every line must carry real content");
+          assert.notEqual(line.label, "", "a line label is either a real question or null, never empty");
+        }
+      }
+    }
+  }
+});
+
+test("S5-R1. no synthetic per-shot timing is ever produced -- v2 carries no per-shot duration", () => {
+  // targetDurationSeconds is a single whole-video number. Dividing it across shots would render as
+  // precise direction while being pure arithmetic, so no shot may carry a time at all.
+  for (const seconds of [12, 15, 30, 7]) {
+    const view = viewOf(reel({ targetDurationSeconds: seconds }));
+    for (const block of view.production[0].blocks) {
+      for (const line of block.lines) {
+        assert.doesNotMatch(line.value, /\d+\s*[-–—]\s*\d+\s*(s\b|sec|second)/i, "a shot must never carry a derived time range");
+        assert.doesNotMatch(line.label ?? "", /time|timing|duration|seconds/i);
+      }
+    }
+    // The only place a duration appears is the whole-video group, stated as a total.
+    const totals = view.production[1].blocks[0].lines.filter((line) => line.label === "Target length");
+    assert.equal(totals.length, 1);
+    assert.equal(totals[0].value, `About ${seconds} seconds in total`);
+  }
+
+  // And the arithmetic that would produce fake timings does not exist in the builder.
+  const viewSource = readFileSync(new URL("../src/lib/creative-package-view.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(viewSource, /targetDurationSeconds\s*[/*]|\/\s*shots\.length|Math\.round|Math\.floor|Math\.ceil|toFixed/);
 });
 
 test("AD. an unreadable package is reported as unreadable, never rendered as if it were valid", () => {
@@ -277,7 +435,7 @@ test("AD. the view is built through the authoritative S2 validator, not a second
 test("AE. the result experience is rendered content, not raw JSON -- no stringify and no <pre> dump", () => {
   assert.doesNotMatch(createNowSource, /JSON\.stringify|formatOpportunityRawJson|<pre/);
   // The rendered pieces come from the view model, field by field.
-  assert.match(createNowSource, /view\.essentials\.map/);
+  assert.match(createNowSource, /view\.creativeDetails\.map/);
   assert.match(createNowSource, /view\.production\.map/);
   assert.match(createNowSource, /view\.platformVariants\.map/);
 });
@@ -290,14 +448,33 @@ test("AE. nothing internal leaks into the result: no metadata, provenance or for
 
 // --- AF: copy actions ------------------------------------------------------------------------------------
 
-test("AF. copy caption copies the SAME caption the screen rendered", () => {
+test("AF. copy caption copies the SAME caption the screen rendered, and the base caption stays accessible", () => {
   const content = photo();
   const view = viewOf(content);
   assert.equal(view.caption, content.caption);
-  // The rendered caption and the copied caption are the same value, not two reads of the package.
-  const renderedCaption = view.essentials.find((entry) => entry.label === "Caption");
-  assert.equal(renderedCaption?.value, view.caption);
   assert.match(createNowSource, /<CopyAction label="Copy caption" value=\{view\.caption\} \/>/);
+});
+
+test("S5. with no platform variants, the base caption IS the ready-to-post copy", () => {
+  const view = viewOf(photo({ platformVariants: [] }));
+  assert.deepEqual(view.platformVariants, []);
+  assert.equal(view.caption, photo().caption);
+
+  // The posting section falls back to the base caption rather than rendering an empty heading.
+  const posting = createNowSource.slice(createNowSource.indexOf("Then post this"));
+  assert.match(posting, /view\.platformVariants\.length > 0 \?/);
+  assert.match(posting, /\{view\.caption\}/);
+});
+
+test("S5. with platform variants present, platform copy is the primary ready-to-post copy", () => {
+  const view = viewOf(
+    photo({ platformVariants: [{ platform: "instagram", caption: "Corner pieces only.", hashtags: ["#blondies"] }] }),
+  );
+  assert.equal(view.platformVariants.length, 1);
+  // The base caption is still carried for the quiet copy row, but it is not what the posting
+  // section renders when real platform copy exists.
+  assert.equal(view.caption, photo().caption);
+  assert.notEqual(view.platformVariants[0].caption, view.caption);
 });
 
 test("AF. copy headline and copy script copy their own rendered values, and script is offered only when there is one", () => {
@@ -320,13 +497,37 @@ test("AF. copy everything is readable prose containing the whole package, not JS
   assert.match(text, /^Reel/);
   assert.match(text, /Subject: Biscoff Blondies/);
   assert.match(text, /Call to action: Message us to reserve a tray\./);
-  assert.match(text, /Shots, in order/);
-  assert.match(text, /- Shot 1: Close on the tray coming out of the oven\./);
-  assert.match(text, /On screen: Fresh out/);
+  // The caption is no longer part of creativeDetails, so "copy everything" carries it explicitly --
+  // losing the most-pasted line would be the obvious way this refactor could quietly regress.
+  assert.match(text, /Caption: Chewy middles, crisp edges, and a Biscoff swirl through every tray\./);
+  assert.match(text, /Record these shots/);
+  assert.match(text, /Shot 1\nDo: Close on the tray coming out of the oven\./);
+  assert.match(text, /Text on screen: Fresh out/);
+  assert.match(text, /Say this: We bake these every Saturday morning\./);
+  assert.match(text, /Target length: About 12 seconds in total/);
   assert.match(text, /Instagram/);
   assert.match(text, /#blondies/);
   // Not a serialized object.
   assert.doesNotMatch(text, /[{}[\]]/);
+});
+
+test("AF. the clipboard carries the same labels the screen does, with no dangling colon or 'null'", () => {
+  // Photo's leading line has no label. It must copy as the bare direction, never ": <value>"
+  // or "null: <value>".
+  const photoText = formatCreativePackageForClipboard(viewOf(photo({ overlayText: "Saturdays only" })));
+  assert.match(photoText, /^Overhead on the wooden board, morning window light\.$/m);
+  assert.match(photoText, /^Add this text to the photo: Saturdays only$/m);
+  assert.doesNotMatch(photoText, /null/);
+  assert.doesNotMatch(photoText, /^: /m);
+
+  // Carousel copies the Show/Text-on-slide distinction, not a flattened blob.
+  const carouselText = formatCreativePackageForClipboard(viewOf(carousel()));
+  assert.match(carouselText, /Slide 1\nShow: Pan of browned butter, close\.\nText on slide: Start with browned butter\nIt is the whole flavour\./);
+
+  // Story copies Show/Text per frame and the interaction as its own action.
+  const storyText = formatCreativePackageForClipboard(viewOf(story()));
+  assert.match(storyText, /Frame 1\nShow: Tray on the counter, phone held above\.\nText: Baking day/);
+  assert.match(storyText, /Add interaction: Poll: corner piece or middle\?/);
 });
 
 test("AF. a per-platform caption has its own copy action, so the right text goes to the right app", () => {
@@ -345,8 +546,63 @@ test("the view builder is pure: same package in, identical view out, with no clo
 test("the view rewrites nothing: every rendered value is a verbatim package field", () => {
   const content = story();
   const view = viewOf(content);
-  assert.equal(view.essentials[0].value, content.subject);
-  assert.equal(view.production[0].blocks[0].body, content.frames[0].text);
-  assert.equal(view.production[0].blocks[1].body, content.frames[1].text);
+  assert.equal(view.subject, content.subject);
+  assert.equal(view.creativeDetails[0].value, content.subject);
+  assert.equal(view.production[0].blocks[0].lines[1].value, content.frames[0].text);
+  assert.equal(view.production[0].blocks[1].lines[1].value, content.frames[1].text);
   assert.equal(view.caption, content.caption);
+});
+
+test("S5-R1. every production line value is a verbatim package field -- labels are the only UI-owned copy", () => {
+  // The refinement adds labels ("Show", "Do", "Text on slide"). It must not touch the values those
+  // labels point at. This walks all four formats and requires each line value to appear verbatim in
+  // the source package, with the single allowed exception of the UI-owned target-length sentence.
+  const cases: Array<{ content: unknown; owned: string[] }> = [
+    { content: carousel(), owned: [] },
+    { content: story(), owned: [] },
+    { content: photo({ overlayText: "Saturdays only" }), owned: [] },
+    { content: reel(), owned: ["About 12 seconds in total"] },
+  ];
+
+  for (const { content, owned } of cases) {
+    const view = viewOf(content);
+    const packageStrings = JSON.stringify(content);
+    for (const section of view.production) {
+      for (const block of section.blocks) {
+        for (const line of block.lines) {
+          if (owned.includes(line.value)) continue;
+          assert.ok(
+            packageStrings.includes(JSON.stringify(line.value).slice(1, -1)),
+            `line value was not verbatim from the package: ${line.value}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+// --- S5-B: no new generation path -------------------------------------------------------------------
+//
+// S5 is presentation only. The single most damaging way to "improve" this screen would be to send
+// the package back to a model to be turned into steps -- so the absence of any such path is a test,
+// not a comment.
+
+test("S5. no second AI pass, no new network call, and no prose parsing is introduced by the result view", () => {
+  const viewSource = readFileSync(new URL("../src/lib/creative-package-view.ts", import.meta.url), "utf8");
+
+  for (const source of [createNowSource, viewSource]) {
+    assert.doesNotMatch(source, /anthropic|openai|\bclaude\b|\bcodex\b/i);
+    assert.doesNotMatch(source, /generateCreative|runCreativeJob|creative-generation|ai-text|AiTextProvider/);
+    assert.doesNotMatch(source, /productionSteps/);
+  }
+
+  // The view builder reaches nothing outside itself: no fetch, no supabase, no clock, no randomness.
+  assert.doesNotMatch(viewSource, /fetch\(|supabase|Date\.|Math\.random/);
+
+  // And it does not invent structure by splitting generated prose. A regex over visualDirection is
+  // exactly the heuristic S5 refuses -- Photo's single direction is passed through whole.
+  assert.doesNotMatch(viewSource, /\.split\(|\.match\(|RegExp|replace\(/);
+
+  // The component's only data reads are still the two S4 domain entry points.
+  assert.doesNotMatch(createNowSource, /fetch\(/);
 });
