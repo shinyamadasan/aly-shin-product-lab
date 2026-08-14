@@ -72,14 +72,21 @@ function commonBody() {
   };
 }
 
+// S6 -- every body below carries the production guidance the generation contract now requires, and
+// the Reel deliberately carries NO targetDurationSeconds: the model no longer authors a total.
 function bodyFor(format: CreativeFormat): Record<string, unknown> {
   const base = commonBody();
-  if (format === "photo") return { ...base, visualDirection: "Overhead shot on parchment", overlayText: null };
+  if (format === "photo") return { ...base, visualDirection: "Overhead shot on parchment", overlayText: null, framing: "overhead" };
   if (format === "reel") {
-    return { ...base, shots: [{ direction: "Batter pour", onScreenText: "step one" }], spokenScript: null, audioDirection: "Upbeat trending audio", targetDurationSeconds: 15 };
+    return {
+      ...base,
+      shots: [{ direction: "Batter pour", onScreenText: "step one", approxSeconds: 3, framing: "close_up", movement: null }],
+      spokenScript: null,
+      audioDirection: "Upbeat trending audio",
+    };
   }
-  if (format === "carousel") return { ...base, slides: [{ heading: "What changed", body: "More brown butter.", visualDirection: "Cover shot" }] };
-  return { ...base, frames: [{ visualDirection: "Tray out of the oven", text: "Fresh out" }], interaction: null };
+  if (format === "carousel") return { ...base, slides: [{ heading: "What changed", body: "More brown butter.", visualDirection: "Cover shot", framing: "wide" }] };
+  return { ...base, frames: [{ visualDirection: "Tray out of the oven", text: "Fresh out", framing: "medium", approxSeconds: null }], interaction: null };
 }
 
 function assemble(format: CreativeFormat, overrides: Record<string, unknown> = {}) {
@@ -218,9 +225,11 @@ test("one format's body never validates as another's", () => {
 
 test("missing or malformed format-specific data is rejected", () => {
   const cases: Array<[CreativeFormat, string, Record<string, unknown>]> = [
-    ["photo", "blank visualDirection", { ...commonBody(), visualDirection: " ", overlayText: null }],
+    ["photo", "blank visualDirection", { ...commonBody(), visualDirection: " ", overlayText: null, framing: "overhead" }],
     ["reel", "no shots", { ...bodyFor("reel"), shots: [] }],
-    ["reel", "zero duration", { ...bodyFor("reel"), targetDurationSeconds: 0 }],
+    // S6 -- the model no longer authors a total, so offering one is an unexpected field rather than
+    // a number to range-check. This is the case that used to read "zero duration".
+    ["reel", "an authored total duration", { ...bodyFor("reel"), targetDurationSeconds: 15 }],
     ["reel", "blank audioDirection", { ...bodyFor("reel"), audioDirection: "" }],
     ["carousel", "no slides", { ...bodyFor("carousel"), slides: [] }],
     ["story", "no frames", { ...bodyFor("story"), frames: [] }],

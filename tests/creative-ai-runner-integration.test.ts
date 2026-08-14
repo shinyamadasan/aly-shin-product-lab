@@ -74,9 +74,14 @@ function bodyFor(format: CreativeFormat = "photo"): Record<string, unknown> {
     platformVariants: [{ platform: "instagram", caption: "Blondies and a coffee pause.", hashtags: ["#blondies"] }],
   };
   if (format === "reel") {
-    return { ...common, shots: [{ direction: "Pan across Blondies.", onScreenText: null }], spokenScript: null, audioDirection: "Soft audio.", targetDurationSeconds: 12 };
+    return {
+      ...common,
+      shots: [{ direction: "Pan across Blondies.", onScreenText: null, approxSeconds: 4, framing: "medium", movement: "pan" }],
+      spokenScript: null,
+      audioDirection: "Soft audio.",
+    };
   }
-  return { ...common, visualDirection: "Overhead phone photo on parchment.", overlayText: null };
+  return { ...common, visualDirection: "Overhead phone photo on parchment.", overlayText: null, framing: "overhead" };
 }
 
 function recommendation(): MarketingRecommendation {
