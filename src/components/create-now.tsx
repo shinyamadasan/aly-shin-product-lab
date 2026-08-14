@@ -37,12 +37,14 @@ import type { Product } from "@/lib/product-lab-types";
 // Opportunity is created, read or faked -- a direct request is its own origin, which is exactly why
 // createCreativeJobFromRequest exists separately from createCreativeJobForAcceptedOpportunity.
 
+// h-11 rather than S4's h-9: this is the control the owner taps on a phone, in a kitchen, and 36px
+// was under the comfortable tap target.
 function CopyAction({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
 
   return (
     <button
-      className="inline-flex h-9 items-center rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] hover:bg-[#fffaf3]"
+      className="inline-flex h-11 items-center rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] hover:bg-[#fffaf3]"
       onClick={async () => {
         await navigator.clipboard.writeText(value);
         setCopied(true);
@@ -70,55 +72,99 @@ function PrimaryAction({ children, onClick }: { children: React.ReactNode; onCli
   );
 }
 
+// S5 -- the completed view answers, in this order: what am I making, what exactly do I do, what
+// exactly do I post, and only then why. Strategy vocabulary (Angle, Hook, Headline, CTA) is real and
+// kept, but it is the LAST thing on the screen and it is collapsed, because none of it is something
+// the owner does with their hands. Nothing is generated here; the order is the whole change.
 function PackageView({ view }: { view: CreativePackageView }) {
   return (
     <div className="space-y-5">
-      <div className="space-y-3">
-        {view.essentials.map((essential) => (
-          <div key={essential.label}>
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{essential.label}</p>
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[#4a3c32]">{essential.value}</p>
-          </div>
-        ))}
+      {/* 1. What am I making. The package's own subject and format -- no second invented title. */}
+      <div>
+        <h3 className="text-xl font-semibold tracking-tight text-[#211713]">{view.subject}</h3>
+        <p className="mt-1 text-sm text-[#6f5a4c]">{view.formatLabel}</p>
       </div>
 
-      {view.production.map((section) => (
-        <section className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-4" key={section.title}>
-          <h3 className="text-sm font-semibold text-[#211713]">{section.title}</h3>
-          <div className="mt-3 space-y-3">
-            {section.blocks.map((block) => (
-              <div key={block.title}>
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{block.title}</p>
-                <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[#4a3c32]">{block.body}</p>
-                {block.note ? <p className="mt-1 break-words text-sm leading-6 text-[#6f5a4c]">{block.note}</p> : null}
+      {/* 2. What exactly do I do. First, because it is the only part that needs hands.
+
+          Three levels, each earning its place: the section says what activity this is, the block
+          title names the unit being produced ("Slide 2"), and every line is labelled with the
+          question it answers -- Show / Text on slide / Do / Text on screen. The owner should never
+          have to work out whether a line is something to point a camera at or something to type. */}
+      {view.production.map((section, sectionIndex) => (
+        <section className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-4" key={sectionIndex}>
+          {section.title ? <h4 className="text-base font-semibold text-[#211713]">{section.title}</h4> : null}
+          <div className={section.title ? "mt-3 space-y-4" : "space-y-4"}>
+            {section.blocks.map((block, blockIndex) => (
+              <div key={blockIndex}>
+                {block.title ? <p className="text-sm font-semibold text-[#211713]">{block.title}</p> : null}
+                <div className={block.title ? "mt-1.5 space-y-1.5" : "space-y-1.5"}>
+                  {block.lines.map((line, lineIndex) => (
+                    <div key={lineIndex}>
+                      {line.label ? <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{line.label}</p> : null}
+                      <p
+                        className={`whitespace-pre-wrap break-words leading-6 text-[#4a3c32] ${
+                          line.label === null && block.title === null ? "text-base" : "text-sm"
+                        }`}
+                      >
+                        {line.value}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
         </section>
       ))}
 
-      {view.platformVariants.length > 0 ? (
-        <section className="space-y-3">
-          <h3 className="text-sm font-semibold text-[#211713]">Ready for each app</h3>
-          {view.platformVariants.map((variant) => (
+      {/* 3. What exactly do I post. Platform-ready copy when the generator wrote any; otherwise the
+          base caption IS the ready-to-post copy, so it takes this place rather than competing with it. */}
+      <section className="space-y-3">
+        <h4 className="text-base font-semibold text-[#211713]">Then post this</h4>
+        {view.platformVariants.length > 0 ? (
+          view.platformVariants.map((variant) => (
             <div className="rounded-md border border-[#ead9c8] bg-white p-4" key={variant.platform}>
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{variant.label}</p>
-              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[#4a3c32]">{variant.caption}</p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-base leading-6 text-[#4a3c32]">{variant.caption}</p>
               {variant.hashtags.length > 0 ? <p className="mt-1 break-words text-sm leading-6 text-[#6f5a4c]">{formatHashtags(variant.hashtags)}</p> : null}
               <div className="mt-3">
                 <CopyAction label={`Copy ${variant.label} caption`} value={variant.caption} />
               </div>
             </div>
-          ))}
-        </section>
-      ) : null}
+          ))
+        ) : (
+          <div className="rounded-md border border-[#ead9c8] bg-white p-4">
+            <p className="whitespace-pre-wrap break-words text-base leading-6 text-[#4a3c32]">{view.caption}</p>
+            <div className="mt-3">
+              <CopyAction label="Copy caption" value={view.caption} />
+            </div>
+          </div>
+        )}
+      </section>
 
+      {/* The quieter general-copy row. Keeps the base caption and the rest reachable without letting
+          them compete with the platform-ready copy above. */}
       <div className="flex flex-wrap gap-2">
         <CopyAction label="Copy caption" value={view.caption} />
         <CopyAction label="Copy headline" value={view.headline} />
         {view.script ? <CopyAction label="Copy script" value={view.script} /> : null}
         <CopyAction label="Copy everything" value={formatCreativePackageForClipboard(view)} />
       </div>
+
+      {/* 4. Why the AI chose this. Kept in full, collapsed by default. Native <details> -- no state,
+          no JavaScript, keyboard-operable, and already how this app collapses secondary detail. */}
+      <details className="rounded-md border border-[#ead9c8] bg-white p-4">
+        <summary className="cursor-pointer text-sm font-semibold text-[#5f4a3d]">Creative details</summary>
+        <div className="mt-3 space-y-3">
+          {view.creativeDetails.map((detail) => (
+            <div key={detail.label}>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">{detail.label}</p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-[#4a3c32]">{detail.value}</p>
+            </div>
+          ))}
+        </div>
+      </details>
     </div>
   );
 }
