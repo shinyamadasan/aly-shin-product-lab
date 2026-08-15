@@ -72,6 +72,9 @@ function bodyFor(format: CreativeFormat = "photo"): Record<string, unknown> {
     caption: "A calm kitchen moment with Blondies.",
     cta: "Save this idea for your next coffee break.",
     platformVariants: [{ platform: "instagram", caption: "Blondies and a coffee pause.", hashtags: ["#blondies"] }],
+    // H1-B: the generation contract now requires this on every body. These fixtures are all camera
+    // work, so capture_new keeps their meaning exactly as it was.
+    productionSource: "capture_new",
   };
   if (format === "reel") {
     return {

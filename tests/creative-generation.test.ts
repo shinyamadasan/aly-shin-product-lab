@@ -69,6 +69,9 @@ function commonBody() {
     caption: "Brown butter, Biscoff swirl.",
     cta: "Order for Saturday pickup",
     platformVariants: [{ platform: "instagram", caption: "Baked this morning.", hashtags: ["#blondies"] }],
+    // H1-B -- required on every generated body. These fixtures all describe camera work, so
+    // capture_new preserves exactly what they meant before the field existed.
+    productionSource: "capture_new",
   };
 }
 

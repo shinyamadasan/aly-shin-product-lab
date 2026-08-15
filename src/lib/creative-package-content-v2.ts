@@ -1,5 +1,14 @@
 import { isCreativeFormat, isCreativePlatform, type CreativePlatform } from "./creative-formats.ts";
-import { isCreativeFraming, isCreativeMovement, isCreativeShotSeconds, type CreativeFraming, type CreativeMovement } from "./creative-production-guidance.ts";
+import {
+  isCreativeFraming,
+  isCreativeMovement,
+  isCreativeProductionSource,
+  isCreativeShotSeconds,
+  productionSourceRequiresFraming,
+  type CreativeFraming,
+  type CreativeMovement,
+  type CreativeProductionSource,
+} from "./creative-production-guidance.ts";
 import { isCreativeJobWorkerType, type CreativeJobWorkerType } from "./creative-worker-types.ts";
 
 // The S2 Creative Package v2 content contract and its authoritative validator, extracted verbatim
@@ -59,6 +68,18 @@ type CreativePackageBaseV2 = {
   cta: string;
   platformVariants: PlatformVariantV2[];
   metadata: CreativePackageMetadataV2;
+  // H1-B -- how this visual gets made. It lives in the package BODY, not in metadata, because it is
+  // a creative DECISION and not provenance: metadata records where the package came from and who
+  // chose what, while productionSource is part of the answer the owner receives. "Illustrate two
+  // dessert characters" and "photograph the tray" are different creative work, not different
+  // bookkeeping.
+  //
+  // OPTIONAL here and REQUIRED on the generation path, exactly as S6's fields are, and for exactly
+  // the same reason: every package stored before H1-B has no such key, all of them are still
+  // legitimate v2 packages, and no migration, schemaVersion bump or generatorVersion bump is needed
+  // to keep reading them. Absent means "written before this question was asked", which is not the
+  // same as capture_new and is deliberately not stored as one.
+  productionSource?: CreativeProductionSource;
 };
 
 // S6 production guidance is OPTIONAL on every stored type below, and that is the whole
@@ -154,7 +175,22 @@ function isNullableString(value: unknown): value is string | null {
 //
 // Note the deliberate asymmetry between framing and movement: framing has no null member, so a null
 // framing is malformed, whereas null movement is the ordinary "this shot needs no movement" answer.
-function validateOptionalFraming(value: unknown, where: string): { ok: true } | { ok: false; message: string } {
+//
+// H1-B adds the third state. When the package says it is NOT a fresh capture, framing must be absent
+// rather than merely optional: an illustration has no camera, so any framing on it is a decision
+// nobody made, and accepting one would let a package assert a camera setup for a thing that will
+// never be photographed. A package with no productionSource at all is pre-H1-B and keeps S6's rule
+// exactly -- absent is fine, present is validated in full.
+function validateOptionalFraming(
+  value: unknown,
+  where: string,
+  productionSource: CreativeProductionSource | undefined,
+): { ok: true } | { ok: false; message: string } {
+  if (productionSource !== undefined && !productionSourceRequiresFraming(productionSource)) {
+    return value === undefined
+      ? { ok: true }
+      : { ok: false, message: `Creative Package v2 ${where} must not carry framing when productionSource is ${productionSource}: there is no camera to frame.` };
+  }
   if (value === undefined || isCreativeFraming(value)) {
     return { ok: true };
   }
@@ -221,7 +257,10 @@ function validateMetadataV2(value: unknown): { ok: true } | { ok: false; message
   return { ok: true };
 }
 
-function validateFormatFields(value: Record<string, unknown>): { ok: true } | { ok: false; message: string } {
+function validateFormatFields(
+  value: Record<string, unknown>,
+  productionSource: CreativeProductionSource | undefined,
+): { ok: true } | { ok: false; message: string } {
   if (value.format === "photo") {
     if (!isNonEmptyString(value.visualDirection)) {
       return { ok: false, message: "Creative Package v2 photo requires a non-empty visualDirection." };
@@ -229,10 +268,15 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
     if (!isNullableString(value.overlayText)) {
       return { ok: false, message: "Creative Package v2 photo overlayText must be a string or null." };
     }
-    return validateOptionalFraming(value.framing, "photo");
+    return validateOptionalFraming(value.framing, "photo", productionSource);
   }
 
   if (value.format === "reel") {
+    // H1-B §10 -- the Content MVP has no video generation and no template-video renderer, so a Reel
+    // is a filmed Reel. Storing one that claims otherwise would describe an asset nothing can make.
+    if (productionSource !== undefined && productionSource !== "capture_new") {
+      return { ok: false, message: `Creative Package v2 reel productionSource must be capture_new, not ${productionSource}: a Reel is filmed.` };
+    }
     if (!Array.isArray(value.shots) || value.shots.length === 0) {
       return { ok: false, message: "Creative Package v2 reel requires at least one shot." };
     }
@@ -240,7 +284,7 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
       if (!isJsonObject(shot) || !isNonEmptyString(shot.direction) || !isNullableString(shot.onScreenText)) {
         return { ok: false, message: "Creative Package v2 reel shots require a non-empty direction and a string-or-null onScreenText." };
       }
-      const framing = validateOptionalFraming(shot.framing, "reel shot");
+      const framing = validateOptionalFraming(shot.framing, "reel shot", productionSource);
       if (!framing.ok) {
         return framing;
       }
@@ -271,7 +315,7 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
       if (!isJsonObject(slide) || !isNonEmptyString(slide.heading) || !isNonEmptyString(slide.body) || !isNonEmptyString(slide.visualDirection)) {
         return { ok: false, message: "Creative Package v2 carousel slides require non-empty heading, body and visualDirection." };
       }
-      const framing = validateOptionalFraming(slide.framing, "carousel slide");
+      const framing = validateOptionalFraming(slide.framing, "carousel slide", productionSource);
       if (!framing.ok) {
         return framing;
       }
@@ -287,13 +331,20 @@ function validateFormatFields(value: Record<string, unknown>): { ok: true } | { 
     if (!isJsonObject(frame) || !isNonEmptyString(frame.visualDirection) || !isNonEmptyString(frame.text)) {
       return { ok: false, message: "Creative Package v2 story frames require non-empty visualDirection and text." };
     }
-    const framing = validateOptionalFraming(frame.framing, "story frame");
+    const framing = validateOptionalFraming(frame.framing, "story frame", productionSource);
     if (!framing.ok) {
       return framing;
     }
     // Null is meaningful here in a way it never is for framing: it is the frame saying "still photo".
     if (frame.approxSeconds !== undefined && frame.approxSeconds !== null && !isCreativeShotSeconds(frame.approxSeconds)) {
       return { ok: false, message: "Creative Package v2 story frame approxSeconds must be null or an integer from 1 to 10 when present." };
+    }
+    // H1-B §11 -- Story is the one non-Reel format whose frames can individually be video, and that
+    // is exactly what makes it unsafe to leave open here. A generated or template frame has no
+    // footage behind it and nothing in this MVP can render one, so a zero-capture Story is a
+    // sequence of STILL frames or it is a promise the system cannot keep.
+    if (productionSource !== undefined && productionSource !== "capture_new" && typeof frame.approxSeconds === "number") {
+      return { ok: false, message: `Creative Package v2 story frames must be still (approxSeconds null) when productionSource is ${productionSource}: there is no video generation.` };
     }
   }
   if (!isNullableString(value.interaction)) {
@@ -319,6 +370,17 @@ export function validateCreativePackageContentV2(value: unknown): CreativePackag
     }
   }
 
+  // Absent is a pre-H1-B package and is accepted unchanged. Present is validated in full, and then
+  // travels into the format fields below, where it decides whether framing is required or forbidden.
+  if (value.productionSource !== undefined && !isCreativeProductionSource(value.productionSource)) {
+    return {
+      ok: false,
+      reason: "malformed-base",
+      message: `Creative Package v2 productionSource must be capture_new, generate_visual or template_only when present: ${String(value.productionSource)}.`,
+    };
+  }
+  const productionSource = value.productionSource as CreativeProductionSource | undefined;
+
   const metadata = validateMetadataV2(value.metadata);
   if (!metadata.ok) {
     return { ok: false, reason: "malformed-metadata", message: metadata.message };
@@ -329,7 +391,7 @@ export function validateCreativePackageContentV2(value: unknown): CreativePackag
     return { ok: false, reason: "malformed-platform-variants", message: variants.message };
   }
 
-  const formatFields = validateFormatFields(value);
+  const formatFields = validateFormatFields(value, productionSource);
   if (!formatFields.ok) {
     return { ok: false, reason: "malformed-format-fields", message: formatFields.message };
   }

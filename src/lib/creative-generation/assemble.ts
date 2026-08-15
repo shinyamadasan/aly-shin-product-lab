@@ -3,7 +3,7 @@ import type { CreativeFormat } from "../creative-formats.ts";
 import type { ResolvedCreativeGrounding } from "../creative-subject-resolution.ts";
 import type { CreativeJobWorkerType } from "../creative-jobs.ts";
 import { validateCreativePackageContentV2, type CreativePackageContentV2 } from "../creative-packages.ts";
-import { validateCreativeBody, type CreativeFormatDecision, type ReelCreativeBody } from "./contracts.ts";
+import { resolveCreativeProductionConstraint, validateCreativeBody, type CreativeFormatDecision, type ReelCreativeBody } from "./contracts.ts";
 
 // Content Creation MVP S3B -- deterministic assembly.
 //
@@ -37,7 +37,14 @@ export type AssembleCreativePackageResult =
 // them; Photo's framing is a top-level field and needs its own entry.
 function bodyFieldsFor(format: CreativeFormat, body: Record<string, unknown>): Record<string, unknown> {
   if (format === "photo") {
-    return { visualDirection: body.visualDirection, overlayText: body.overlayText, framing: body.framing };
+    // H1-B -- framing is spread conditionally rather than always written, because a generated or
+    // template photo legitimately has none and the stored validator now rejects one. The arrays
+    // below need no equivalent: their per-item framing travels or does not travel with the item.
+    return {
+      visualDirection: body.visualDirection,
+      overlayText: body.overlayText,
+      ...(body.framing === undefined ? {} : { framing: body.framing }),
+    };
   }
   if (format === "reel") {
     // Already validated, so every shot carries an integer approxSeconds in 1..10.
@@ -74,7 +81,10 @@ export function assembleCreativePackageV2(input: AssembleCreativePackageInput): 
 
   // Strict, format-specific. This is what makes it impossible for a model to override factual
   // metadata: subject, subjectSource, metadata and schemaVersion are all unexpected fields here.
-  const validatedBody = validateCreativeBody(decision.format, body);
+  // The same constraint the generator was given, re-derived from the same CreativeInput rather than
+  // passed in alongside the body. A model that answered a wider question than it was asked is caught
+  // here even if the caller forgot to narrow the request.
+  const validatedBody = validateCreativeBody(decision.format, body, resolveCreativeProductionConstraint(creativeInput));
   if (!validatedBody.ok) {
     return { ok: false, reason: "malformed-body", message: validatedBody.message };
   }
@@ -94,6 +104,9 @@ export function assembleCreativePackageV2(input: AssembleCreativePackageInput): 
     caption: authored.caption,
     cta: authored.cta,
     platformVariants: authored.platformVariants,
+    // H1-B -- a creative decision, so it is carried through from the body like the rest of them,
+    // and stored in the package BODY rather than in metadata.
+    productionSource: authored.productionSource,
     ...bodyFieldsFor(decision.format, authored),
 
     metadata: {

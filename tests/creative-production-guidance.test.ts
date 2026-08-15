@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { buildCreativeInputFromRequest } from "../src/lib/creative-input.ts";
 import { CREATIVE_FORMATS, type CreativeFormat } from "../src/lib/creative-formats.ts";
 import { CREATIVE_FRAMINGS, CREATIVE_MOVEMENTS } from "../src/lib/creative-production-guidance.ts";
-import { buildCreativeBodyJsonSchema, validateCreativeBody } from "../src/lib/creative-generation/contracts.ts";
+import { buildCreativeBodyJsonSchema, validateCreativeBody, type CreativeProductionConstraint } from "../src/lib/creative-generation/contracts.ts";
 import { assembleCreativePackageV2 } from "../src/lib/creative-generation/assemble.ts";
 import {
   validateCreativePackageContentV2,
@@ -47,6 +47,8 @@ function commonBody() {
     caption: "Three batches in.",
     cta: "Tell us which piece you would take.",
     platformVariants: [],
+    // H1-B -- required on every generated body. Every S6 fixture here is camera work.
+    productionSource: "capture_new",
   };
 }
 
@@ -194,10 +196,15 @@ function without(value: Record<string, unknown>, key: string): Record<string, un
 // A. MODEL CONTRACT -- the strict half of the asymmetry
 // =================================================================================================
 
+// H1-B narrowed this from "framing is always required" to "framing is required wherever a camera is
+// certain". The capture constraint below is what S6 implicitly assumed for every request, so
+// asserting against it keeps this test measuring exactly what it always measured.
+const CAPTURE_ONLY: CreativeProductionConstraint = { formats: CREATIVE_FORMATS, productionSources: ["capture_new"] };
+
 test("A. the generation schema requires the new production keys on exactly the formats that have them", () => {
-  const required = (format: CreativeFormat) => buildCreativeBodyJsonSchema(format).required as string[];
-  const itemsOf = (format: CreativeFormat, field: string) => {
-    const properties = buildCreativeBodyJsonSchema(format).properties as Record<string, { items?: Record<string, unknown> }>;
+  const required = (format: CreativeFormat) => buildCreativeBodyJsonSchema(format, CAPTURE_ONLY).required as string[];
+  const itemsOf = (format: CreativeFormat, field: string, constraint = CAPTURE_ONLY) => {
+    const properties = buildCreativeBodyJsonSchema(format, constraint).properties as Record<string, { items?: Record<string, unknown> }>;
     return properties[field].items as { required: string[]; properties: Record<string, unknown> };
   };
 
@@ -206,7 +213,14 @@ test("A. the generation schema requires the new production keys on exactly the f
 
   assert.deepEqual(itemsOf("reel", "shots").required, ["direction", "onScreenText", "approxSeconds", "framing", "movement"]);
   assert.deepEqual(itemsOf("carousel", "slides").required, ["heading", "body", "visualDirection", "framing"]);
-  assert.deepEqual(itemsOf("story", "frames").required, ["visualDirection", "text", "framing", "approxSeconds"]);
+  assert.deepEqual(itemsOf("story", "frames").required, ["visualDirection", "text", "approxSeconds", "framing"]);
+
+  // A Reel is filmed whatever the request says, so its schema is capture-shaped with no constraint
+  // supplied at all -- productionSourcesForFormat narrows it on the format's own account.
+  assert.deepEqual(
+    (buildCreativeBodyJsonSchema("reel").properties as Record<string, { items?: { required: string[] } }>).shots?.items?.required,
+    ["direction", "onScreenText", "approxSeconds", "framing", "movement"],
+  );
 
   // S6 adds nothing to Carousel beyond framing: no mediaType, no duration, no movement.
   for (const forbidden of ["mediaType", "approxSeconds", "movement", "duration"]) {
@@ -722,5 +736,6 @@ test("E-A/R1. the artifact rule is PROMPT-ONLY -- it reaches no schema, validato
   const reelShot = (buildCreativeBodyJsonSchema("reel").properties as Record<string, { items: { required: string[] } }>).shots.items.required;
   assert.deepEqual(reelShot, ["direction", "onScreenText", "approxSeconds", "framing", "movement"]);
   assert.equal((buildCreativeBodyJsonSchema("reel").required as string[]).includes("targetDurationSeconds"), false);
-  assert.ok((buildCreativeBodyJsonSchema("photo").required as string[]).includes("framing"));
+  // Under the capture constraint S6 always assumed, Photo's framing is required exactly as it was.
+  assert.ok((buildCreativeBodyJsonSchema("photo", CAPTURE_ONLY).required as string[]).includes("framing"));
 });
