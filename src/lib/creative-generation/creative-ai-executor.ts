@@ -11,6 +11,7 @@ import {
   type CreativeJobResultEnvelopeV2,
 } from "../creative-jobs.ts";
 import { assembleCreativePackageV2 } from "./assemble.ts";
+import { findImpossibleFormatRequest } from "./contracts.ts";
 import {
   runCreativeGenerationWithProviders,
   type CreativeAiInvocationTraceEntry,
@@ -94,6 +95,21 @@ function expectedFailure(input: {
 export function createCreativeAiExecutor(deps: CreativeAiExecutorDeps): CreativeJobExecutor {
   return async function creativeAiExecutor(job, input): Promise<CreativeJobResultEnvelopeV2 | CreativeJobExecutorFailure> {
     const now = deps.now ?? Date.now;
+
+    // H1-B §19 -- the one request this system cannot honestly answer, refused before anything is
+    // loaded or generated. "Make me a Reel" plus "I can't film anything" is a contradiction in the
+    // request itself, not a generation failure, so no provider is called, no grounding is read, and
+    // the trace is genuinely empty because nothing ran. Both silent resolutions were worse: a Reel
+    // the owner cannot shoot, or a quietly substituted format they did not ask for.
+    const impossible = findImpossibleFormatRequest(input);
+    if (impossible !== null) {
+      return expectedFailure({
+        code: "unsupported_format_for_request",
+        message: impossible.message,
+        executionTrace: [],
+      });
+    }
+
     const loaded = await deps.loadGrounding(input);
 
     // S3A, unmodified. A stated subject still wins outright; only when none is stated does the

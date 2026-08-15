@@ -1,7 +1,13 @@
 import type { AiTextFailureReason, AiTextProvider, AiTextRequest } from "../ai/ai-text-provider.ts";
 import type { CreativeFormat } from "../creative-formats.ts";
 import type { CreativeBody, CreativeFormatDecision } from "./contracts.ts";
-import { buildUserFormatDecision, validateCreativeBody, validateFormatDecision } from "./contracts.ts";
+import {
+  buildUserFormatDecision,
+  resolveCreativeProductionConstraint,
+  validateCreativeBody,
+  validateFormatDecision,
+  type CreativeProductionConstraint,
+} from "./contracts.ts";
 import { buildCreativeBodyRequest, buildFormatDecisionRequest, type CreativeGenerationContext } from "./prompt.ts";
 
 export type CreativeAiStage = "format_decision" | "creative_body";
@@ -88,13 +94,13 @@ function toAiTextRequest(request: { system: string; user: string; jsonSchema: Re
   };
 }
 
-function validateFormatDecisionResult(value: unknown): ValidationResult<CreativeFormatDecision> {
-  const validation = validateFormatDecision(value);
+function validateFormatDecisionResult(value: unknown, constraint: CreativeProductionConstraint): ValidationResult<CreativeFormatDecision> {
+  const validation = validateFormatDecision(value, constraint);
   return validation.ok ? { ok: true, value: validation.decision } : { ok: false, reason: "schema_invalid" };
 }
 
-function validateBodyResult(format: CreativeFormat, value: unknown): ValidationResult<CreativeBody> {
-  const validation = validateCreativeBody(format, value);
+function validateBodyResult(format: CreativeFormat, value: unknown, constraint: CreativeProductionConstraint): ValidationResult<CreativeBody> {
+  const validation = validateCreativeBody(format, value, constraint);
   return validation.ok ? { ok: true, value: validation.body } : { ok: false, reason: "schema_invalid" };
 }
 
@@ -220,6 +226,10 @@ export async function runCreativeGenerationWithProviders(
   const suppressedRouteIndexes = new Set<number>();
   const providerInvocationCounts = new Map<string, number>();
   const now = options.now ?? Date.now;
+  // H1-B -- derived once from the owner's own sentence and used by BOTH stages, so the format the
+  // generator is allowed to choose and the production source it is allowed to author can never
+  // disagree about what the request permits.
+  const constraint = resolveCreativeProductionConstraint(input.context.creativeInput);
   let startRouteIndex = 0;
 
   if (routes.length === 0) {
@@ -240,7 +250,7 @@ export async function runCreativeGenerationWithProviders(
       maxInvocations,
       providerInvocationCounts,
       now,
-      validate: validateFormatDecisionResult,
+      validate: (value) => validateFormatDecisionResult(value, constraint),
     });
     if (!stageResult.ok) {
       return { ok: false, failedStage: "format_decision", reason: stageResult.reason, trace };
@@ -263,7 +273,7 @@ export async function runCreativeGenerationWithProviders(
     maxInvocations,
     providerInvocationCounts,
     now,
-    validate: (value) => validateBodyResult(formatDecision.format, value),
+    validate: (value) => validateBodyResult(formatDecision.format, value, constraint),
   });
   if (!bodyResult.ok) {
     return { ok: false, failedStage: "creative_body", reason: bodyResult.reason, trace };

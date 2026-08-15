@@ -3,7 +3,7 @@ import type { CreativeInput } from "./creative-input.ts";
 import type { MarketingRecommendation } from "./marketing-recommendations.ts";
 import type { ContentJournalEntry, Product } from "./product-lab-types.ts";
 import { BUSINESS_TIMEZONE, resolveBusinessDay } from "./business-day.ts";
-import { wantsImmediateExecution } from "./creative-request-intent.ts";
+import { wantsImmediateExecution, wantsNoFreshCapture } from "./creative-request-intent.ts";
 
 // Content Creation MVP S3A -- deterministic subject and context grounding.
 //
@@ -204,7 +204,14 @@ export function resolveCreativeGrounding(input: ResolveCreativeGroundingInput): 
   // The subject is the PRODUCT, not the entry's prose: what the owner can point a phone at is the
   // blondies, and the entry is the evidence that they are there. That is why this step requires a
   // resolved catalog product and step 3 does not.
-  if (wantsImmediateExecution(creativeInput)) {
+  //
+  // H1-B adds the second half of the condition, and nothing else in this file changes. The whole
+  // argument for this step is capture availability -- "the blondies are physically on hand to
+  // photograph or film". An owner who has just said they will not be photographing or filming
+  // anything has removed the only advantage this override has, so promoting today's bake would be
+  // answering a question they did not ask. Every other resolution step is untouched: a zero-capture
+  // request simply falls through to the ordinary ranking below, exactly as a non-immediate one does.
+  if (wantsImmediateExecution(creativeInput) && !wantsNoFreshCapture(creativeInput)) {
     const capturable = selectCurrentlyCapturableEntry(journal, products, now);
     if (capturable !== null) {
       const { entry, product } = capturable;

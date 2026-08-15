@@ -5,8 +5,13 @@ import { CREATIVE_FORMATS } from "../creative-formats.ts";
 import type { ResolvedCreativeGrounding } from "../creative-subject-resolution.ts";
 // H1 moved this out of this file unchanged, so the resolver and the prompt read the owner's
 // effort/immediacy vocabulary from one definition instead of two regexes that could drift.
-import { wantsSimpleProduction } from "../creative-request-intent.ts";
-import { buildCreativeBodyJsonSchema, buildFormatDecisionJsonSchema } from "./contracts.ts";
+import { wantsNoFreshCapture, wantsSimpleProduction } from "../creative-request-intent.ts";
+import {
+  buildCreativeBodyJsonSchema,
+  buildFormatDecisionJsonSchema,
+  productionSourcesForFormat,
+  resolveCreativeProductionConstraint,
+} from "./contracts.ts";
 
 // Content Creation MVP S3B -- the canonical prompts. Pure string building: no Supabase, no clock,
 // no randomness, no provider, no model name. The same inputs always render the same text, which is
@@ -129,6 +134,60 @@ const SOLO_OPERATOR_BOUNDARY =
     "Every instruction must be realistically executable alone: do not require another person to hold the camera, do not require simultaneous actions that would need a third hand, and do not require complex tracking shots or rigged setups.",
   ].join(" ");
 
+// --- H1-B: how the visual gets made -------------------------------------------------------------
+//
+// S6 assumed one answer to that question and never asked it. This states the three answers and makes
+// the model choose between them explicitly, because the choice determines what the rest of the
+// package can legitimately say: a plan that names a production source and then gives camera
+// directions for an illustration is worse than one that never named it.
+const PRODUCTION_SOURCE_BOUNDARY =
+  [
+    "You must choose a productionSource, which says HOW this visual gets made. It is a separate question from the format.",
+    "capture_new: fresh real-world photography or filming that the owner performs -- photographing the actual product, filming the actual process, capturing the real kitchen, packaging, person or event.",
+    "generate_visual: a stylized or conceptual visual -- an illustration, a pixel or retro treatment, a mini comic, a doodle, a food character, a visual joke. No camera is involved.",
+    "template_only: a visual built from typography, layout and simple graphical elements -- a text card, a graphical comparison, a simple meme-like composition. No camera and no illustration are involved.",
+    "For capture_new, write directions the owner can execute with a phone, and follow every capture rule above.",
+    "For generate_visual and template_only, describe an EXECUTABLE visual concept precisely enough that the owner could hand it to a design tool, an illustrator, or an image generator and get the intended result: say what is depicted, how it is arranged, what style it is in, and what text appears on it.",
+    "For generate_visual and template_only, do NOT instruct the owner to photograph, film, shoot, record, or capture anything, and do not describe the visual as something they will take with a camera.",
+    "No image is generated for you. Never state or imply that an image, illustration or graphic has already been produced, selected, or attached.",
+    "There is no library of the owner's existing photos or files available to you. Never claim that an existing asset, previous photo, old video, or saved file has been chosen or can be reused, even if the request asks for that.",
+  ].join(" ");
+
+// H1-B §16 -- the boundary that lets stylization exist without letting it counterfeit anything.
+//
+// The distinction is between a creative DEVICE and documentary EVIDENCE. An illustrated blondie with
+// a personality is obviously a drawing and asserts nothing about the real product; an illustrated
+// blondie with a visibly gooey centre asserts a texture, and does it in a medium that looks like
+// proof. The medium changes nothing about the closed-world rule -- a claim in a drawing is a claim.
+const STYLIZATION_BOUNDARY =
+  [
+    "Stylized, illustrated, and conceptual visuals are creative devices, not documentary evidence.",
+    "An illustrated or character version of a product may have an invented personality, voice, expression, or fictional situation. Those are obviously fictional and assert nothing about the real business.",
+    "It may NOT invent or imply real product texture, taste, appearance, ingredients, packaging, price, size, freshness, availability, menu status, demand, customer reaction, review, real customer, real event, or real kitchen and process evidence, unless the supplied facts establish them. Drawing an unsupported claim does not make it a creative choice.",
+    "If the concept needs to depict a REAL Aly & Pon product, person, kitchen, or event AS IT ACTUALLY EXISTS, that is capture_new, not generate_visual. Illustration is not a substitute for a photograph of something real.",
+  ].join(" ");
+
+// H1-B §15 -- the difference between content a person made and content a machine defaulted to.
+// Deliberately prompt guidance rather than an enum: taste is not a taxonomy, and encoding it as one
+// would freeze a set of categories the system has no evidence for yet.
+const IDEA_BEFORE_VISUAL =
+  [
+    "The idea must come before the visual. Work in this order: a specific human observation, then a bakery-specific twist on it, then a visual mechanism that lands the twist, then the execution details.",
+    "Prefer concepts that are witty, warm, relatable, specific, and understandable in one or two seconds -- something a person would recognise and want to send to someone else.",
+    "Avoid the defaults that signal machine-made content: a generic pretty bakery product shot, a beige cinematic bakery scene, a random cute mascot with no idea behind it, a vague treat-yourself quote, over-rendered fantasy food, and generic inspirational text.",
+  ].join(" ");
+
+// H1-B §22 -- the quality floor for a request that has ruled capture out. Without this the model can
+// satisfy every rule above and still return something the owner cannot act on, because "no camera"
+// is a constraint and not yet an instruction.
+const ZERO_CAPTURE_DIRECTION =
+  [
+    "The owner has said they will NOT be taking photos or filming for this. Every instruction you write must be executable without a camera.",
+    "Choose generate_visual or template_only, and make the result concrete: the owner should finish reading knowing exactly what needs to be made, by whom or in what tool, without being told to pick anything up and point it at something.",
+    "Human-feeling concepts work best here: couples and friend archetypes, cravings, coffee behaviour, work-from-home and night-shift life, dessert identities, mini comics, visual jokes, double meanings, cozy observations. These are mechanisms to think with, not templates to fill in -- do not reuse a stock idea.",
+    "Describe the visual style in the visual direction prose (illustration, pixel art, comic panels, doodle, typography card, and so on). Say it in words; there is no style field to set.",
+  ].join(" ");
+
 function section(title: string, lines: Array<string | null>): string[] {
   const body = lines.filter((line): line is string => typeof line === "string" && line.trim().length > 0);
   return body.length > 0 ? [`## ${title}`, ...body, ""] : [];
@@ -183,7 +242,21 @@ function sharedContext(context: CreativeGenerationContext): string[] {
 
 // --- Stage 1: format decision -------------------------------------------------------------------
 
+// H1-B -- "photo" keeps its name and widens its meaning: ONE STATIC VISUAL POST rather than
+// specifically a camera photograph. A real photograph, an illustration and a typography card are all
+// one static visual, and renaming the format value would be a migration of every stored package for
+// a distinction productionSource already carries.
+const FORMAT_MENU: Record<CreativeFormat, string> = {
+  photo: "- photo: one still visual with a caption -- a photograph, an illustration, or a designed graphic. Lowest effort.",
+  reel: "- reel: a short vertical video built from a few filmed shots. Highest effort, and the only format that REQUIRES filming.",
+  carousel: "- carousel: several ordered still visuals the reader swipes through. Medium effort.",
+  story: "- story: a short sequence of casual full-screen frames that expire. Low effort.",
+};
+
 export function buildFormatDecisionRequest(context: CreativeGenerationContext): CreativeGenerationRequest {
+  const constraint = resolveCreativeProductionConstraint(context.creativeInput);
+  const noFreshCapture = wantsNoFreshCapture(context.creativeInput);
+
   const system = [
     "You choose the content format for a small home-based coffee and bakery business.",
     "You are choosing a format only. You are not writing the content.",
@@ -197,20 +270,21 @@ export function buildFormatDecisionRequest(context: CreativeGenerationContext): 
 
   const user = [
     ...sharedContext(context),
-    ...section("AVAILABLE FORMATS", [
-      "- photo: one still image with a caption. Lowest effort.",
-      "- reel: a short vertical video built from a few filmed shots. Highest effort.",
-      "- carousel: several ordered slides the reader swipes through. Medium effort.",
-      "- story: a short sequence of casual full-screen frames that expire. Low effort.",
-    ]),
+    // Only the formats this request actually permits are listed. A format offered and then rejected
+    // by the schema would be an invitation to fail; a format the owner has ruled out is simply not
+    // on the menu.
+    ...section("AVAILABLE FORMATS", constraint.formats.map((format) => FORMAT_MENU[format])),
     ...section("OUTPUT REQUIREMENTS", [
       "Choose the one format that best serves this request, weighing what the subject actually supports against the realistic production effort for a one-person kitchen.",
       "If the owner's own words suggest how much effort they want, respect that.",
+      noFreshCapture
+        ? "The owner has said they will not be taking photos or filming. Reel is unavailable because it requires filming; choose a format whose visuals can be illustrated or designed instead of captured."
+        : null,
       "Explain the choice in one sentence, referring only to supplied facts.",
     ]),
   ].join("\n");
 
-  return { system, user, jsonSchema: buildFormatDecisionJsonSchema() };
+  return { system, user, jsonSchema: buildFormatDecisionJsonSchema(constraint) };
 }
 
 // --- Stage 2: creative body ---------------------------------------------------------------------
@@ -222,10 +296,17 @@ export function buildFormatDecisionRequest(context: CreativeGenerationContext): 
 const FRAMING_VOCABULARY =
   "framing must be exactly one of close_up, medium, wide, or overhead. Choose it deliberately for what the shot needs to show; it describes how to point the phone and never replaces the action described in the direction.";
 
+// H1-B §12 -- framing describes how to point a camera, so it is required exactly where a camera
+// exists and must be omitted everywhere else. Stated as one rule rather than repeated per format,
+// and stated as OMIT rather than "leave blank": there is no neutral framing value, and picking
+// close_up for a typography card to satisfy a schema would invent a decision nobody made.
+const FRAMING_CONDITION =
+  "Include framing ONLY when productionSource is capture_new. When productionSource is generate_visual or template_only, omit the framing key entirely -- do not set it to a placeholder value.";
+
 const FORMAT_BRIEF: Record<CreativeFormat, string[]> = {
   photo: [
-    "Describe one photograph someone can take on a phone: what is in frame and how it is arranged.",
-    `Choose the framing for that photograph. ${FRAMING_VOCABULARY}`,
+    "Describe ONE static visual and how it is arranged. If productionSource is capture_new that is a photograph someone takes on a phone; if it is generate_visual it is an illustration or designed image; if it is template_only it is a typographic or graphical composition.",
+    `When it is a photograph, choose the framing for it. ${FRAMING_VOCABULARY}`,
     "overlayText is optional -- use null unless text on the image genuinely helps.",
   ],
   reel: [
@@ -239,15 +320,21 @@ const FORMAT_BRIEF: Record<CreativeFormat, string[]> = {
   ],
   carousel: [
     "Give ordered slides. The first slide is the cover that earns the swipe; the last carries the call to action.",
-    "Each slide needs a heading, a short body, a visual direction, and a framing.",
-    "Every slide is a STILL PHOTO. visualDirection is the image to capture or design; heading and body are the text that goes on it. Do not describe video, motion, or duration for any slide.",
-    `How to frame each of those images: ${FRAMING_VOCABULARY}`,
+    "Each slide needs a heading, a short body, and a visual direction.",
+    // H1-B §9 -- STILL VISUAL, not STILL PHOTO. A slide may be a real photograph, an illustration, a
+    // typography card, or a graphical comparison. The no-video rule is unchanged and is the part of
+    // this sentence that was ever load-bearing: it is what makes the medium a property of the format.
+    "Every slide is a STILL VISUAL -- a photograph, an illustration, a typography card, or another static designed image. visualDirection is the visual to capture or design; heading and body are the text that goes on it. Do not describe video, motion, or duration for any slide.",
+    `When those visuals are photographs, how to frame each one: ${FRAMING_VOCABULARY}`,
   ],
   story: [
-    "Give a short ordered sequence of casual full-screen frames, each with a visual direction, the text on it, a framing, and an approxSeconds decision.",
-    "approxSeconds decides the medium for that frame: null means a still photo, and a whole number from 1 to 10 means a short video of about that many seconds.",
+    "Give a short ordered sequence of casual full-screen frames, each with a visual direction, the text on it, and an approxSeconds decision.",
+    "approxSeconds decides the medium for that frame: null means a still frame, and a whole number from 1 to 10 means a short video of about that many seconds.",
     "Choose deliberately, frame by frame. Prefer the simplest medium that communicates the idea, and do not choose video merely because video is possible.",
-    `Every frame needs a framing. ${FRAMING_VOCABULARY}`,
+    // H1-B §11 -- Story is allowed to serve a zero-capture request, but only as still frames: there
+    // is no video generation in this system, so a generated or template video frame is unmakeable.
+    "When productionSource is generate_visual or template_only, EVERY frame must be still: set approxSeconds to null on all of them. There is no video generation available.",
+    `When the frames are photographs, every frame needs a framing. ${FRAMING_VOCABULARY}`,
     "interaction is optional -- a poll or question sticker prompt, or null.",
   ],
 };
@@ -257,8 +344,15 @@ export function buildCreativeBodyRequest(
   decision: { format: CreativeFormat; formatRationale: string },
   configuredPlatforms: readonly string[],
 ): CreativeGenerationRequest {
+  const constraint = resolveCreativeProductionConstraint(context.creativeInput);
+  const allowedProductionSources = productionSourcesForFormat(decision.format, constraint);
+  // True when the owner ruled capture out. The S6 capture boundaries below are then not merely
+  // unnecessary but actively misleading -- "every production instruction must describe something the
+  // owner can capture" would push the model straight back towards the camera it was told to avoid.
+  const captureRuledOut = !allowedProductionSources.includes("capture_new");
+
   const system = [
-    "You write short marketing content for a small home-based coffee and bakery business, and you also write the production plan for capturing it.",
+    "You write short marketing content for a small home-based coffee and bakery business, and you also write the production plan for making it.",
     "Keep the tone warm and small-business-authentic, never corporate.",
     DATA_BOUNDARY,
     TRUTHFULNESS,
@@ -269,14 +363,30 @@ export function buildCreativeBodyRequest(
     // any of them: production guidance specific enough to execute is also specific enough to smuggle
     // in a claim, an unfilmable past process, or a two-person shot.
     SCENE_DIRECTION_BOUNDARY,
-    CURRENT_EXECUTABILITY_BOUNDARY,
-    SOLO_OPERATOR_BOUNDARY,
+    // Both are about what a CAMERA is pointed at, so they apply exactly when a camera is still
+    // possible. SCENE_DIRECTION_BOUNDARY above is not conditional and must not become so: it is a
+    // factuality rule about invented props and records, and an illustration can invent a business
+    // record just as effectively as a photograph can.
+    ...(captureRuledOut ? [] : [CURRENT_EXECUTABILITY_BOUNDARY, SOLO_OPERATOR_BOUNDARY]),
+    // H1-B. The stylization boundary is unconditional for the same reason: a drawing can counterfeit
+    // reality, and the request that permits capture is the one most likely to mix the two.
+    PRODUCTION_SOURCE_BOUNDARY,
+    STYLIZATION_BOUNDARY,
+    IDEA_BEFORE_VISUAL,
     OUTPUT_CONTRACT,
   ].join(" ");
 
   const user = [
     ...sharedContext(context),
     ...section("CHOSEN FORMAT", [`Format: ${decision.format}`, `Why: ${decision.formatRationale}`]),
+    ...section("PRODUCTION SOURCE", [
+      `Choose productionSource from exactly these values: ${allowedProductionSources.join(", ")}.`,
+      decision.format === "reel" && !captureRuledOut
+        ? "A Reel is filmed, so capture_new is the only possible answer for this format."
+        : null,
+      captureRuledOut ? ZERO_CAPTURE_DIRECTION : null,
+      FRAMING_CONDITION,
+    ]),
     ...section("OUTPUT REQUIREMENTS", [
       "Write the angle (the specific take), the hook (the first line or first two seconds), a headline, a caption, and a call to action.",
       "The call to action remains required. If no supplied fact supports ordering, delivery, pickup, current availability, or message-to-order, make the CTA non-transactional instead of implying fulfillment.",
@@ -291,7 +401,7 @@ export function buildCreativeBodyRequest(
     ]),
   ].join("\n");
 
-  return { system, user, jsonSchema: buildCreativeBodyJsonSchema(decision.format) };
+  return { system, user, jsonSchema: buildCreativeBodyJsonSchema(decision.format, constraint) };
 }
 
 // True when Stage 1 is required. A human-supplied formatHint is already a decision, so the format

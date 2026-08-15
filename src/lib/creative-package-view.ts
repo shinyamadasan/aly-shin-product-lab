@@ -1,6 +1,6 @@
 import { validateCreativePackageContentV2, type CreativePackageContentV2 } from "./creative-package-content-v2.ts";
 import type { CreativeFormat, CreativePlatform } from "./creative-formats.ts";
-import type { CreativeFraming, CreativeMovement } from "./creative-production-guidance.ts";
+import { productionSourceRequiresFraming, type CreativeFraming, type CreativeMovement, type CreativeProductionSource } from "./creative-production-guidance.ts";
 
 // Content Creation MVP S4 -- turns a validated Creative Package v2 into something a person can read
 // and act on, without the component having to know the shape of four different formats.
@@ -129,10 +129,36 @@ function framingLabel(framing: CreativeFraming | undefined): string | null {
 
 // Three states, not two. undefined is a pre-S6 frame that never chose, and claiming either medium
 // for it would be inventing the decision; null is an explicit still; a number is an explicit video.
-function storyMediumParts(approxSeconds: number | null | undefined): string[] {
+//
+// H1-B adds a fourth consideration ahead of all three: when the package is not a fresh capture,
+// "Photo" is simply the wrong word for a still frame -- the frame is an illustration or a graphic,
+// and the format section already says what to do with it. The medium part is dropped rather than
+// renamed, because a zero-capture Story frame can only be still, so the label would carry no
+// information the reader does not already have.
+function storyMediumParts(approxSeconds: number | null | undefined, capturing: boolean): string[] {
+  if (!capturing) return [];
   if (approxSeconds === undefined) return [];
   if (approxSeconds === null) return ["Photo"];
   return ["Video", `about ${approxSeconds} seconds`];
+}
+
+// H1-B §21 -- the execution instruction changes with the production source, because "Take this
+// photo" is an instruction to do something the owner has said they will not do. The distinction the
+// owner needs is which KIND of making this is; the imperative voice is unchanged.
+//
+// Absent productionSource is a pre-H1-B package, and it keeps the exact heading it has always had.
+// Treating absence as capture_new would be a guess, but "Take this photo" is what those packages
+// have always said and what they were generated to mean.
+const PHOTO_SECTION_TITLES: Record<CreativeProductionSource, string> = {
+  capture_new: "Take this photo",
+  generate_visual: "Make this visual",
+  template_only: "Make this graphic",
+};
+
+// The one question the renderer asks about production source. Absent reads as capture, which is
+// what every pre-H1-B package was: S6 packages carry framing and camera directions throughout.
+function isCapturing(productionSource: CreativeProductionSource | undefined): boolean {
+  return productionSource === undefined || productionSourceRequiresFraming(productionSource);
 }
 
 // Every section title below is an instruction in the imperative -- "Take this photo", not "How to
@@ -142,6 +168,8 @@ function storyMediumParts(approxSeconds: number | null | undefined): string[] {
 // The v2 package supplies the structure; this function only names it. No prose is split, joined,
 // summarised or reordered, and no step is invented that the package does not already carry.
 function buildProduction(content: CreativePackageContentV2): CreativePackageViewSection[] {
+  const capturing = isCapturing(content.productionSource);
+
   if (content.format === "photo") {
     // v2 gives Photo exactly ONE visualDirection string -- there is no ordered step structure the
     // way a Reel has shots[]. It is presented whole, unlabelled, rather than regex-split into
@@ -150,15 +178,23 @@ function buildProduction(content: CreativePackageContentV2): CreativePackageView
 
     // "Add this text to the photo" rather than "Then add": overlayText is text that goes ON the
     // image, and an owner asked what "Then add" meant. The label states the action and the surface.
+    // H1-B widens the surface noun with the section: on a generated or template visual there is no
+    // photo to add text to.
     const overlay = present(content.overlayText);
     if (overlay) {
-      lines.push({ label: "Add this text to the photo", value: overlay });
+      lines.push({ label: capturing ? "Add this text to the photo" : "Add this text to the visual", value: overlay });
     }
 
     // Framing sits in the block title rather than becoming another line, so it reads as a property
     // of the shot the way "Shot 1 · Close-up" does, and so a pre-S6 photo package produces a null
-    // title and no empty row at all.
-    return [{ title: "Take this photo", blocks: [{ title: framingLabel(content.framing), lines }] }];
+    // title and no empty row at all. A zero-capture package carries no framing at all, so the same
+    // mechanism gives it a null title for free.
+    return [
+      {
+        title: content.productionSource === undefined ? PHOTO_SECTION_TITLES.capture_new : PHOTO_SECTION_TITLES[content.productionSource],
+        blocks: [{ title: framingLabel(content.framing), lines }],
+      },
+    ];
   }
 
   if (content.format === "reel") {
@@ -213,11 +249,14 @@ function buildProduction(content: CreativePackageContentV2): CreativePackageView
         // "Show" before "Text on slide", because the owner asked whether the heading meant they had
         // to photograph it. visualDirection is the asset to make; heading and body are what gets
         // typed onto it. All three verbatim.
-        // "Photo" is stated on every slide, for every package including pre-S6 ones, because it is
-        // an S6 FORMAT rule rather than package data: a Carousel slide is a still image. Deriving it
-        // from a stored field would make a rule the contract already guarantees look optional.
+        // "Photo" is stated on every CAPTURED slide, for every such package including pre-S6 and
+        // pre-H1-B ones, because it is a FORMAT rule rather than package data: a Carousel slide is a
+        // still image. H1-B keeps the rule and corrects the word -- S6 said every slide is a still
+        // PHOTO, and it is now a still VISUAL, which may be an illustration or a typography card.
+        // On those, "Photo" was never data the package carried and is now simply wrong, so nothing
+        // is printed rather than a second invented label.
         blocks: content.slides.map((slide, index) => ({
-          title: joinTitleParts([`Slide ${index + 1}`, "Photo", framingLabel(slide.framing)]),
+          title: joinTitleParts([`Slide ${index + 1}`, capturing ? "Photo" : null, framingLabel(slide.framing)]),
           lines: [
             { label: "Show", value: slide.visualDirection },
             { label: "Text on slide", value: slide.heading },
@@ -238,7 +277,7 @@ function buildProduction(content: CreativePackageContentV2): CreativePackageView
       blocks: content.frames.map((frame, index) => ({
         title: joinTitleParts([
           `Frame ${index + 1}`,
-          ...storyMediumParts(frame.approxSeconds),
+          ...storyMediumParts(frame.approxSeconds, capturing),
           framingLabel(frame.framing),
         ]),
         lines: [
