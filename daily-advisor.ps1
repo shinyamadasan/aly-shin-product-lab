@@ -16,10 +16,25 @@ param(
     [ValidateSet("supabase", "sample")]
     [string]$Source = "supabase",
     [switch]$Force,
-    [switch]$SkipClaude
+    [switch]$SkipClaude,
+    # The checkout this run operates on. Omit it and the launcher uses its OWN location, which is
+    # what lets one scheduled task point at a dedicated automation checkout while a developer runs
+    # the same script by hand from theirs -- neither editing the file nor affecting the other.
+    [string]$ProjectPath
 )
 
-$projectPath = "C:/Users/Admin/Desktop/Vibe code/Coffee and Bakery business/05_App_And_Tech/aly-shin-product-lab"
+# $PSScriptRoot is the directory containing this script, and this script has always lived at the
+# repository root -- so the default resolves to the repository that owns this copy of the launcher.
+#
+# Deliberately NOT a walk up the tree looking for `.git`. The parent chain on this machine reaches a
+# real, unrelated git repository at the user profile root, and resolving to that would be silently
+# wrong in exactly the way that is hardest to notice. $PSScriptRoot cannot drift: it is wherever
+# this file actually is.
+#
+# The Phase 0 preflight below is unchanged and still does the verifying -- the resolved path must be
+# a git repository AND carry scripts/daily-advisor/run.ts -- so an explicit -ProjectPath pointing
+# somewhere unrelated aborts at exit 2 rather than running against the wrong project.
+$projectPath = if ([string]::IsNullOrWhiteSpace($ProjectPath)) { $PSScriptRoot } else { $ProjectPath }
 $logFile = "$projectPath\daily-advisor-session.log"
 $artifactBranch = "automation/daily-advisor"
 $worktreePath = Join-Path $projectPath ".worktrees\daily-advisor"
