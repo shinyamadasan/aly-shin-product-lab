@@ -2,6 +2,8 @@ import type { BrandBible } from "./marketing-advisor-context.ts";
 import type { CreativeInput } from "./creative-input.ts";
 import type { MarketingRecommendation } from "./marketing-recommendations.ts";
 import type { ContentJournalEntry, Product } from "./product-lab-types.ts";
+import { BUSINESS_TIMEZONE, resolveBusinessDay } from "./business-day.ts";
+import { wantsImmediateExecution } from "./creative-request-intent.ts";
 
 // Content Creation MVP S3A -- deterministic subject and context grounding.
 //
@@ -108,6 +110,53 @@ function selectRecentJourneyEntry(journal: ContentJournalEntry[], now: number): 
   })[0];
 }
 
+// H1. "Currently capturable" means exactly one thing here: a Journey entry the owner wrote TODAY
+// recording something they made, whose product resolves in the real catalog.
+//
+// Why entryDate and nothing else. entryDate is the only STRUCTURED current-vs-historical signal the
+// Journey carries -- every other field is free text. Reading "cooling on the counter" out of prose
+// would be a second, weaker rule that silently fails on any owner who writes "Made blondies", and
+// prose extraction is the reinterpretation this codebase refuses at every other boundary. Same-day
+// is narrower than the phrasings it stands in for, which is the safe direction to be wrong in: it
+// under-claims rather than inventing an availability nobody recorded.
+//
+// Today is resolved in BUSINESS_TIMEZONE rather than UTC. Aly & Pon bakes in Manila, so under UTC
+// the first eight hours of every working day would read this morning's bake as yesterday's -- which
+// is precisely the case this rule exists to catch. This does not change what the rest of the app
+// thinks "today" is; it is a new rule reading the business day for the first time, not a rewrite of
+// selectRecentJourneyEntry's existing window.
+//
+// This is capture availability, and only that. It establishes that a thing is physically on hand to
+// photograph or film. It says nothing about stock, sale status, menu status, freshness or demand,
+// and nothing downstream may read it as saying so (S3B.1 / S6 factuality).
+function selectCurrentlyCapturableEntry(
+  journal: ContentJournalEntry[],
+  products: Product[],
+  now: number,
+): { entry: ContentJournalEntry; product: Product } | null {
+  const today = resolveBusinessDay(now, BUSINESS_TIMEZONE);
+
+  const eligible = journal
+    .filter((entry) => entry.entryDate === today && nonEmpty(entry.whatWasMade) !== null)
+    .map((entry) => {
+      // S3A's product-identity guarantee, kept intact: the association is READ from the entry's own
+      // productId field and matched against the real catalog, never inferred from the prose. An
+      // entry whose product cannot be resolved is not promoted -- being today's is not on its own a
+      // reason to displace a recommendation (H1 §9).
+      const product = products.find((candidate) => candidate.id === entry.productId) ?? null;
+      return product !== null && nonEmpty(product.name) !== null ? { entry, product } : null;
+    })
+    .filter((match): match is { entry: ContentJournalEntry; product: Product } => match !== null);
+
+  if (eligible.length === 0) {
+    return null;
+  }
+
+  // Every candidate shares today's date, so the id tie-break is the entire order -- deterministic,
+  // and independent of the order the journal happened to arrive in.
+  return eligible.sort((a, b) => a.entry.id.localeCompare(b.entry.id))[0];
+}
+
 export function resolveCreativeGrounding(input: ResolveCreativeGroundingInput): ResolvedCreativeGrounding {
   const { creativeInput, recommendations, journal, products, brandBible, now } = input;
 
@@ -138,7 +187,45 @@ export function resolveCreativeGrounding(input: ResolveCreativeGroundingInput): 
     };
   }
 
-  // --- 2. The top-ranked qualifying MarketingRecommendation --------------------------------------
+  // --- 2. An immediate-execution request, when something is capturable right now ------------------
+  //
+  // The narrow correction H1 exists for. "Give me something easy today" is a request to shoot
+  // something NOW, and a recommendation whose whole advantage is marketing opportunity ("Banana
+  // Bread has never appeared in the Journey") can send the owner to photograph a thing that is not
+  // in the kitchen. Excellent production guidance for a subject that may not physically exist is
+  // still unexecutable. When the owner asks for immediate work AND today's Journey records what is
+  // actually on the counter, the thing on the counter wins.
+  //
+  // Deliberately NOT a global reorder of Journey above Recommendation. BOTH conditions are required,
+  // so every non-immediate request -- "give me a content idea", "something for this week" -- falls
+  // straight through to step 3 with the existing ranking untouched. A historical Journey entry never
+  // qualifies here no matter how the request is worded.
+  //
+  // The subject is the PRODUCT, not the entry's prose: what the owner can point a phone at is the
+  // blondies, and the entry is the evidence that they are there. That is why this step requires a
+  // resolved catalog product and step 3 does not.
+  if (wantsImmediateExecution(creativeInput)) {
+    const capturable = selectCurrentlyCapturableEntry(journal, products, now);
+    if (capturable !== null) {
+      const { entry, product } = capturable;
+      const productName = nonEmpty(product.name) ?? "";
+      return {
+        subject: productName,
+        subjectKind: "product",
+        subjectSource: "assumed",
+        // Deterministic templating over real field values, like every other grounding string here.
+        // The closing sentence is load-bearing rather than decorative: this step is the one place
+        // that could be misread as a commercial fact, so the grounding that reaches the generator
+        // states its own limit.
+        subjectGrounding: `Capturable now: the owner asked for something to make immediately, and today's Journey entry (${entry.entryDate}) records "${nonEmpty(entry.whatWasMade)}", so ${productName} is physically on hand to photograph or film. Capture availability only -- this says nothing about stock, sale status or demand.`,
+        productId: product.id,
+        productName,
+        supportingFacts: facts(entry.whatWasMade, entry.mediaCaptured, entry.lessonLearned, entry.postIdeas),
+      };
+    }
+  }
+
+  // --- 3. The top-ranked qualifying MarketingRecommendation --------------------------------------
   //
   // `recommendations` arrives already ordered by the engine's own comparator (priority, then
   // confidence, then id -- a total order). This scans in that order and takes the first entry whose
@@ -161,7 +248,7 @@ export function resolveCreativeGrounding(input: ResolveCreativeGroundingInput): 
     };
   }
 
-  // --- 3. A recent Journey entry, as a behind-the-scenes/process subject -------------------------
+  // --- 4. A recent Journey entry, as a behind-the-scenes/process subject -------------------------
   const entry = selectRecentJourneyEntry(journal, now);
   if (entry !== null) {
     // Journey carries productId as a real field, so the association is read, never inferred from
@@ -179,7 +266,7 @@ export function resolveCreativeGrounding(input: ResolveCreativeGroundingInput): 
     };
   }
 
-  // --- 4. Brand moment ---------------------------------------------------------------------------
+  // --- 5. Brand moment ---------------------------------------------------------------------------
   //
   // Deliberately timeless. It claims no fresh batch, no stock, no demand, no urgency and no event
   // today, because none of those facts are available here -- the only honest thing left to say is
