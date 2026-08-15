@@ -3,6 +3,9 @@ import type { CreativeInput } from "../creative-input.ts";
 import type { CreativeFormat } from "../creative-formats.ts";
 import { CREATIVE_FORMATS } from "../creative-formats.ts";
 import type { ResolvedCreativeGrounding } from "../creative-subject-resolution.ts";
+// H1 moved this out of this file unchanged, so the resolver and the prompt read the owner's
+// effort/immediacy vocabulary from one definition instead of two regexes that could drift.
+import { wantsSimpleProduction } from "../creative-request-intent.ts";
 import { buildCreativeBodyJsonSchema, buildFormatDecisionJsonSchema } from "./contracts.ts";
 
 // Content Creation MVP S3B -- the canonical prompts. Pure string building: no Supabase, no clock,
@@ -125,12 +128,6 @@ const SOLO_OPERATOR_BOUNDARY =
     "Assume no second person, no dedicated camera operator, no tripod, no studio lighting, and no special camera equipment unless the supplied context explicitly says those resources exist.",
     "Every instruction must be realistically executable alone: do not require another person to hold the camera, do not require simultaneous actions that would need a third hand, and do not require complex tracking shots or rigged setups.",
   ].join(" ");
-
-const SIMPLE_REQUEST_PATTERN = /\b(easy|quick|simple|low[-\s]?effort|something\s+i\s+can\s+post\s+now)\b/i;
-
-function wantsSimpleProduction(input: CreativeInput): boolean {
-  return SIMPLE_REQUEST_PATTERN.test(input.requestText ?? "");
-}
 
 function section(title: string, lines: Array<string | null>): string[] {
   const body = lines.filter((line): line is string => typeof line === "string" && line.trim().length > 0);
