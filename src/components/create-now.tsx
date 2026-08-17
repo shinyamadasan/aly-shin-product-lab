@@ -89,6 +89,20 @@ function PackageView({ view }: { view: CreativePackageView }) {
           <p className="text-sm text-[#6f5a4c]">{view.formatLabel}</p>
           {view.durationLabel ? <p className="text-sm text-[#6f5a4c]">{view.durationLabel}</p> : null}
         </div>
+        {/* P1 §6 -- how it gets made, on its own labelled row directly under the format. A row and
+            not a card: the production route is one short phrase, and giving it a bordered panel
+            would make the quietest fact on the screen the loudest thing on it.
+
+            The PRODUCTION label reuses the same small-caps treatment every other "which question is
+            this the answer to" label already uses, so it reads as a peer of Show / Do / Text on
+            screen rather than as new furniture. Absent on pre-H1-B packages, which renders nothing
+            at all rather than an empty row. */}
+        {view.productionLabel ? (
+          <div className="mt-2 flex items-baseline gap-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Production</p>
+            <p className="text-sm text-[#4a3c32]">{view.productionLabel}</p>
+          </div>
+        ) : null}
       </div>
 
       {/* 2. What exactly do I do. First, because it is the only part that needs hands.

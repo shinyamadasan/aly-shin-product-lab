@@ -52,6 +52,7 @@ export {
   type CreativePhotoPackageV2,
   type CreativeReelPackageV2,
   type CreativeStoryPackageV2,
+  type CreativeVisualBrief,
   type PlatformVariantV2,
 } from "./creative-package-content-v2.ts";
 

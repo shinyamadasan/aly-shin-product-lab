@@ -9,6 +9,7 @@ import { CodexCliProvider } from "../../../src/lib/ai/providers/codex-cli-provid
 import { resolveCreativeGrounding } from "../../../src/lib/creative-subject-resolution.ts";
 import { buildCreativeInputFromRequest } from "../../../src/lib/creative-input.ts";
 import { buildCreativePackageView, formatCreativePackageForClipboard } from "../../../src/lib/creative-package-view.ts";
+import { flattenVisualBrief } from "../../../src/lib/creative-generation/assemble.ts";
 import { BUSINESS_TIMEZONE, resolveBusinessDay } from "../../../src/lib/business-day.ts";
 import type { CreativeJobRecord, CreativeJobResultEnvelopeV2 } from "../../../src/lib/creative-jobs.ts";
 
@@ -248,5 +249,89 @@ test("one real generation on a zero-capture request produces an executable, came
   // this application owns, so their absence is a hard property rather than a judgement about prose.
   for (const heading of ["Take this photo", "Record these shots"]) {
     assert.equal(rendered.includes(heading), false, `rendered output must not use the capture heading "${heading}"`);
+  }
+
+  // ---- P1 §16: the two owner-test defects this wave exists to fix ------------------------------
+  //
+  // Asserted against the PUBLIC copy fields specifically, assembled from the package rather than
+  // from `rendered`: the clipboard also carries Creative details and the production route, and the
+  // grounding legitimately survives in metadata. Checking the wrong string here would either miss
+  // the defect or ban a sentence that is allowed to exist.
+  const publicCopy = [
+    content.angle,
+    content.hook,
+    content.headline,
+    content.caption,
+    content.cta,
+    ...content.platformVariants.flatMap((variant) => [variant.caption, ...variant.hashtags]),
+    ...(content.format === "photo" ? [content.visualDirection, content.overlayText ?? ""] : []),
+    ...(content.format === "carousel" ? content.slides.flatMap((slide) => [slide.heading, slide.body, slide.visualDirection]) : []),
+    ...(content.format === "story" ? content.frames.flatMap((frame) => [frame.visualDirection, frame.text]) : []),
+  ].join("\n");
+
+  // §3 -- internal vocabulary must not reach a follower. "Journey" is the term the owner test
+  // actually leaked ("First time they've turned up here in the Journey...").
+  for (const internalTerm of [/\bjourney\b/i, /\bgrounding\b/i, /marketing recommendation/i, /content journal/i, /product lab/i, /content engine/i]) {
+    assert.doesNotMatch(publicCopy, internalTerm, `public copy must not name internal machinery: ${internalTerm}`);
+  }
+
+  // §2 -- absence from the Journey may justify INTRODUCING the subject, and may not be generalised
+  // into real-world history. The subject here is selected precisely because it is absent, so this is
+  // the exact condition that produced the defect rather than a hypothetical one.
+  for (const absenceClaim of [
+    /never (once )?(shown|showed) up/i,
+    /never (been )?(posted|shared|published|featured|photographed|pictured|filmed)/i,
+    /never made it into a (photo|picture|post)/i,
+    /never appeared/i,
+    /first time (we|they|it|I)/i,
+    /for the first time/i,
+    /\bfirst[- ]ever\b/i,
+    /\buntil now\b/i,
+    /\bnever before\b/i,
+    /brand[- ]new/i,
+    /new on (the|our) menu/i,
+  ]) {
+    assert.doesNotMatch(publicCopy, absenceClaim, `public copy must not generalise an absent Journey row into history: ${absenceClaim}`);
+  }
+
+  // The permission half, verified as a live property rather than only as a prompt fragment: the
+  // subject was chosen BECAUSE it is absent, so it must still be legitimately present in the copy.
+  // A wave that hardened absence into "never mention the subject" would pass every ban above and
+  // still be a regression.
+  assert.match(publicCopy, new RegExp(content.subject.split(" ")[0], "i"), "the chosen subject must still appear in the public copy");
+
+  // ---- P1 §7: the structured zero-capture visual brief ------------------------------------------
+  //
+  // Conditional on format, because the generator still chooses it: visualBrief is a Photo contract,
+  // and a Carousel or Story answer to this request remains legitimate. Asserting it unconditionally
+  // would make this smoke fail on a valid package.
+  if (content.format === "photo") {
+    assert.ok(content.visualBrief !== undefined, "a non-capture Photo must carry a structured visualBrief");
+    const brief = content.visualBrief;
+
+    assert.ok(brief.concept.trim().length > 0, "concept must be non-empty");
+    assert.ok(brief.style.trim().length > 0, "style must be non-empty");
+    assert.ok(brief.scene.length >= 1, "scene must carry at least one instruction");
+    assert.ok(brief.executionNotes.length >= 1, "executionNotes must carry at least one note");
+
+    // The compatibility form is DERIVED, not authored: it must be exactly the flattener's output, so
+    // the structured brief and the flat string cannot have drifted apart.
+    assert.equal(content.visualDirection, flattenVisualBrief(brief), "visualDirection must be the deterministic flattening of visualBrief");
+
+    // And the rendered brief is the structured one -- the readability outcome this wave exists for.
+    const photoLines = view.view.production[0].blocks[0].lines;
+    assert.deepEqual(
+      photoLines.filter((line) => line.label !== null).map((line) => line.label),
+      ["Concept", "Style", "Scene", ...(content.overlayText === null ? [] : ["Add this text to the visual"]), "Execution notes"],
+      "the owner must read a labelled structured brief, not one paragraph",
+    );
+
+    // overlayText stays the single source for the text on the visual.
+    if (content.overlayText !== null && content.overlayText.trim().length > 0) {
+      const overlay = content.overlayText.trim().toLowerCase();
+      for (const entry of [brief.concept, brief.style, ...brief.scene, ...brief.executionNotes]) {
+        assert.notEqual(entry.trim().toLowerCase(), overlay, "visualBrief must not restate overlayText");
+      }
+    }
   }
 });

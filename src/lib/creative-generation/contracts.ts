@@ -16,7 +16,7 @@ import {
 } from "../creative-production-guidance.ts";
 import type { CreativeInput } from "../creative-input.ts";
 import { wantsNoFreshCapture } from "../creative-request-intent.ts";
-import type { PlatformVariantV2 } from "../creative-packages.ts";
+import type { CreativeVisualBrief, PlatformVariantV2 } from "../creative-packages.ts";
 
 // Content Creation MVP S3B -- the two model-independent generation contracts.
 //
@@ -144,6 +144,10 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
+function isNonEmptyStringArray(value: unknown, min: number): value is string[] {
+  return Array.isArray(value) && value.length >= min && value.every((entry) => isNonEmptyString(entry));
+}
+
 // Rejects unexpected keys rather than ignoring them. A model that returns a `caption` alongside its
 // format decision has misunderstood the request, and silently dropping the extra field would hide
 // that -- the same reasoning that makes the body validators strict below.
@@ -213,7 +217,24 @@ export type CreativeBodyCommon = {
 // required when productionSource is capture_new and ABSENT otherwise. The optional marker below is
 // therefore not a relaxation -- validateCreativeBody enforces both directions, so a capture_new body
 // without framing and a template_only body with one are each rejected.
-export type PhotoCreativeBody = CreativeBodyCommon & { visualDirection: string; overlayText: string | null; framing?: CreativeFraming };
+// P1 §7 -- Photo's body splits along productionSource, because the two production routes need
+// genuinely different instructions and always did.
+//
+//   capture_new                    -- visualDirection (authored), framing, NO visualBrief.
+//   generate_visual/template_only  -- visualBrief (authored), NO framing, NO visualDirection.
+//
+// visualDirection is absent from the non-capture body on purpose, and this is the §3 one-source-of-
+// truth rule made structural. A model asked for both a structured brief AND a prose direction for
+// the same image will write two descriptions that drift, and then something downstream has to decide
+// which one is true. The stored package still carries visualDirection because every existing
+// consumer reads it -- but it is DERIVED from the brief in assemble.ts, exactly as
+// targetDurationSeconds is derived from the shot list, so the two cannot disagree.
+export type PhotoCreativeBody = CreativeBodyCommon & {
+  visualDirection?: string;
+  overlayText: string | null;
+  framing?: CreativeFraming;
+  visualBrief?: CreativeVisualBrief;
+};
 export type ReelCreativeBody = CreativeBodyCommon & {
   shots: Array<{
     direction: string;
@@ -254,7 +275,7 @@ const COMMON_KEYS = ["angle", "hook", "headline", "caption", "cta", "platformVar
 // this table, a model that returns it now fails with "unexpected fields" rather than quietly
 // supplying a total that competes with the shot list.
 const FORMAT_KEYS: Record<CreativeFormat, readonly string[]> = {
-  photo: ["visualDirection", "overlayText", "framing"],
+  photo: ["visualDirection", "overlayText", "framing", "visualBrief"],
   reel: ["shots", "spokenScript", "audioDirection"],
   carousel: ["slides"],
   story: ["frames", "interaction"],
@@ -298,6 +319,21 @@ const FRAMING_SCHEMA = { type: "string", enum: [...CREATIVE_FRAMINGS] } as const
 const MOVEMENT_SCHEMA = { type: ["string", "null"], enum: [...CREATIVE_MOVEMENTS, null] } as const;
 const SHOT_SECONDS_SCHEMA = { type: "integer", minimum: CREATIVE_SHOT_SECONDS_MIN, maximum: CREATIVE_SHOT_SECONDS_MAX } as const;
 
+// P1 §7 -- minItems 1 on both arrays, matching shots/slides/frames. An empty array is a decision the
+// generator skipped rather than one it made, and permitting it would put an omit-branch in the
+// renderer for a state nothing legitimately produces.
+const VISUAL_BRIEF_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["concept", "style", "scene", "executionNotes"],
+  properties: {
+    concept: { type: "string", minLength: 1 },
+    style: { type: "string", minLength: 1 },
+    scene: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+    executionNotes: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+  },
+} as const;
+
 // H1-B -- framing's place in the schema now depends on what production sources are still on the
 // table, and there are exactly three cases:
 //
@@ -332,9 +368,19 @@ function formatSchemaProperties(allowed: readonly CreativeProductionSource[]): R
       : { type: ["integer", "null"], minimum: CREATIVE_SHOT_SECONDS_MIN, maximum: CREATIVE_SHOT_SECONDS_MAX };
 
   return {
+  // P1 §7 -- Photo's properties follow the same three-case shape framing already uses, because the
+  // question is the same one: is capture still on the table?
+  //
+  //   "forbidden" (capture ruled out)  -- visualBrief only. visualDirection is dropped from
+  //                                       properties entirely, so additionalProperties:false rejects
+  //                                       it and the model cannot author a competing description.
+  //   "required"  (capture is certain) -- visualDirection only, exactly as before P1.
+  //   "optional"  (not yet chosen)     -- both offered, neither required by the schema, and
+  //                                       validateFormatFields decides once productionSource is read.
   photo: withFraming(
     {
-      visualDirection: { type: "string", minLength: 1 },
+      ...(mode === "forbidden" ? {} : { visualDirection: { type: "string", minLength: 1 } }),
+      ...(mode === "required" ? {} : { visualBrief: VISUAL_BRIEF_SCHEMA }),
       overlayText: { type: ["string", "null"] },
     },
     mode,
@@ -403,9 +449,20 @@ function formatSchemaProperties(allowed: readonly CreativeProductionSource[]): R
 }
 
 // The keys a format's schema REQUIRES, which is no longer simply FORMAT_KEYS: Photo's framing moved
-// from unconditionally required to conditional, so it is listed here only in the "required" mode.
+// from unconditionally required to conditional in H1-B, and P1 made visualDirection and visualBrief
+// conditional in the same way. overlayText is the only Photo key required in every mode.
+//
+// In "optional" mode neither visualDirection nor visualBrief is required, because the schema cannot
+// make one key's presence depend on another key's value. validateFormatFields enforces the pairing
+// once productionSource has actually been read.
+function photoRequiredKeys(mode: FramingMode): readonly string[] {
+  if (mode === "forbidden") return ["visualBrief", "overlayText"];
+  if (mode === "required") return ["visualDirection", "overlayText", "framing"];
+  return ["overlayText"];
+}
+
 function formatRequiredKeys(format: CreativeFormat, mode: FramingMode): readonly string[] {
-  return format === "photo" ? [...FORMAT_KEYS.photo.filter((key) => key !== "framing"), ...framingRequiredKeys(mode)] : FORMAT_KEYS[format];
+  return format === "photo" ? photoRequiredKeys(mode) : FORMAT_KEYS[format];
 }
 
 // One strict schema per format rather than a single four-way body schema. Smaller schemas constrain
@@ -465,10 +522,59 @@ function framingError(value: unknown, productionSource: CreativeProductionSource
   return value === undefined ? null : `${where} must omit framing when productionSource is ${productionSource}: there is no camera to frame.`;
 }
 
+// P1 §7 -- the Photo pairing rule, enforcing in both directions what the schema can only request.
+//
+// Both directions matter, and for the same reason framing's do. A non-capture body with no
+// visualBrief has skipped the decision the field exists for; a non-capture body WITH a
+// visualDirection has authored a second, competing description of the same image, which is the
+// divergence the derived field exists to prevent. A capture body is the mirror image of both.
+function visualBriefError(value: Record<string, unknown>, productionSource: CreativeProductionSource): string | null {
+  if (productionSourceRequiresFraming(productionSource)) {
+    if (!isNonEmptyString(value.visualDirection)) return "Photo body requires a non-empty visualDirection.";
+    return value.visualBrief === undefined
+      ? null
+      : `Photo body must omit visualBrief when productionSource is ${productionSource}: a capture is directed, not briefed.`;
+  }
+
+  if (value.visualDirection !== undefined) {
+    return `Photo body must omit visualDirection when productionSource is ${productionSource}: it is derived from visualBrief so the two cannot disagree.`;
+  }
+  if (!isJsonObject(value.visualBrief)) {
+    return `Photo body requires a visualBrief object when productionSource is ${productionSource}.`;
+  }
+
+  const brief = value.visualBrief;
+  if (!isNonEmptyString(brief.concept)) return "Photo body visualBrief requires a non-empty concept.";
+  if (!isNonEmptyString(brief.style)) return "Photo body visualBrief requires a non-empty style.";
+  if (!isNonEmptyStringArray(brief.scene, 1)) return "Photo body visualBrief requires a scene array of at least one non-empty string.";
+  if (!isNonEmptyStringArray(brief.executionNotes, 1)) {
+    return "Photo body visualBrief requires an executionNotes array of at least one non-empty string.";
+  }
+  const unexpected = rejectUnexpectedKeys(brief, ["concept", "style", "scene", "executionNotes"]);
+  if (unexpected !== null) return `Photo body visualBrief has unexpected fields: ${unexpected}.`;
+
+  // §10G -- overlayText stays the one place the visual's text lives. Exact-match only, deliberately:
+  // a scene item that says WHERE the line sits ("the line runs across the top") is useful placement
+  // guidance and must stay legal, while restating the line itself creates a second copy that can
+  // drift from the one the owner actually types onto the image.
+  if (isNonEmptyString(value.overlayText)) {
+    const overlay = value.overlayText.trim().toLowerCase();
+    const restated = [brief.concept, brief.style, ...brief.scene, ...brief.executionNotes].some(
+      (entry) => entry.trim().toLowerCase() === overlay,
+    );
+    if (restated) {
+      return "Photo body visualBrief must not restate overlayText: overlayText is the only source for the text on the visual.";
+    }
+  }
+
+  return null;
+}
+
 function validateFormatFields(format: CreativeFormat, value: Record<string, unknown>, productionSource: CreativeProductionSource): string | null {
   if (format === "photo") {
-    if (!isNonEmptyString(value.visualDirection)) return "Photo body requires a non-empty visualDirection.";
     if (!isNullableString(value.overlayText)) return "Photo body overlayText must be a string or null.";
+    const briefMessage = visualBriefError(value, productionSource);
+    if (briefMessage !== null) return briefMessage;
     // Required and non-null on the capture path, unlike the read path where absence means a pre-S6
     // package. A generator that skips it there has not made the decision the field exists for.
     return framingError(value.framing, productionSource, "Photo body");

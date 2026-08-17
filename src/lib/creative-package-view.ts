@@ -51,7 +51,18 @@ export type CreativePackageView = {
   format: CreativeFormat;
   // Both rendered, as the screen's opening summary: what am I making, and in what form. S4 computed
   // formatLabel but never showed it, so the owner was never told whether this was a Reel or a Photo.
+  //
+  // P1 §5 -- production-aware for `photo` only, because `photo` is the only format whose LABEL went
+  // wrong. H1-B widened the stored enum value to mean ONE STATIC VISUAL POST without widening the
+  // word the owner reads, so a generated illustration was announced as "Photo" directly above a
+  // "Make this visual" instruction. Reel, Carousel and Story never had that mismatch and are
+  // untouched.
   formatLabel: string;
+  // P1 §6 -- HOW this gets made, as the owner's words rather than the enum's. Null for a pre-H1-B
+  // package, which never recorded the decision: a package that did not answer the question must not
+  // be shown an answer, and "Photo capture" would be exactly the guess the absent value refuses to
+  // make elsewhere in this codebase.
+  productionLabel: string | null;
   // S6 -- the whole-video length, shown once beside the format in the opening summary. Null for
   // every format except Reel, which is the only one v2 stores a total for. The number is the
   // package's own derived targetDurationSeconds: this module does no timing arithmetic of its own,
@@ -87,6 +98,44 @@ const FORMAT_LABELS: Record<CreativeFormat, string> = {
   carousel: "Carousel",
   story: "Story",
 };
+
+// P1 §5 -- what `photo` is called once the package has answered how it gets made.
+//
+// "Static post" rather than "Photo", because H1-B's widened meaning is exactly that: one still
+// visual, whatever produced it. The word is the same for all three sources, since the FORMAT did not
+// change between them -- only the production route did, and that is productionLabel's job below.
+// Splitting the two apart is what stops the summary from saying "Illustrated visual" twice.
+const PHOTO_FORMAT_LABEL = "Static post";
+
+// P1 §6 -- the production route in owner vocabulary. Fixed strings resolved by key, exactly like
+// FORMAT_LABELS and FRAMING_LABELS above: no enum value ever reaches the screen, and no wording
+// drifts between two runs of the same package.
+//
+// The "No shooting required" half is the part the owner actually acts on. It is attached only to the
+// two sources where it is news -- it answers "do I need to pick up my phone?" before they have read
+// a single instruction, which is the question the zero-capture owner test was really about.
+const PRODUCTION_LABELS: Record<CreativeProductionSource, string> = {
+  capture_new: "Photo capture",
+  generate_visual: "Illustrated visual · No shooting required",
+  template_only: "Graphic · No shooting required",
+};
+
+// Reel is the one format where capture_new does not mean photography, so it is the one format that
+// needs its own word. Everything else that captures is a still, and "Photo capture" is accurate for
+// a Carousel of photographs and a Story of photographs alike.
+const REEL_CAPTURE_LABEL = "Filmed on your phone";
+
+function productionLabel(format: CreativeFormat, productionSource: CreativeProductionSource | undefined): string | null {
+  if (productionSource === undefined) return null;
+  if (format === "reel" && productionSource === "capture_new") return REEL_CAPTURE_LABEL;
+  return PRODUCTION_LABELS[productionSource];
+}
+
+// Absent productionSource keeps the label the owner has always seen. Treating absence as capture_new
+// would be a guess; keeping "Photo" is simply not answering a question the package never answered.
+function formatLabel(format: CreativeFormat, productionSource: CreativeProductionSource | undefined): string {
+  return format === "photo" && productionSource !== undefined ? PHOTO_FORMAT_LABEL : FORMAT_LABELS[format];
+}
 
 const PLATFORM_LABELS: Record<CreativePlatform, string> = {
   instagram: "Instagram",
@@ -171,10 +220,23 @@ function buildProduction(content: CreativePackageContentV2): CreativePackageView
   const capturing = isCapturing(content.productionSource);
 
   if (content.format === "photo") {
-    // v2 gives Photo exactly ONE visualDirection string -- there is no ordered step structure the
-    // way a Reel has shots[]. It is presented whole, unlabelled, rather than regex-split into
-    // invented steps, which would fabricate an order the generator never wrote.
-    const lines: CreativePackageViewLine[] = [{ label: null, value: content.visualDirection }];
+    // P1 §7 -- when the package carries a structured brief, the brief IS the instruction and the
+    // flat visualDirection is only its compatibility form. Rendering both would show the owner the
+    // same visual described twice, so the flat string is skipped entirely here rather than appended.
+    //
+    // Every line below is a whole brief field, labelled. Nothing is parsed, split, joined or
+    // summarised -- the structure is the generator's own, which is exactly what the additive
+    // contract bought and what a prose parser could never have given honestly.
+    const lines: CreativePackageViewLine[] =
+      content.visualBrief === undefined
+        ? // No brief: a pre-P1 package, or a capture. Unchanged from S4 -- one whole unlabelled
+          // string, never regex-split into invented steps.
+          [{ label: null, value: content.visualDirection }]
+        : [
+            { label: "Concept", value: content.visualBrief.concept },
+            { label: "Style", value: content.visualBrief.style },
+            ...content.visualBrief.scene.map((item, index) => ({ label: index === 0 ? "Scene" : null, value: item })),
+          ];
 
     // "Add this text to the photo" rather than "Then add": overlayText is text that goes ON the
     // image, and an owner asked what "Then add" meant. The label states the action and the surface.
@@ -183,6 +245,15 @@ function buildProduction(content: CreativePackageContentV2): CreativePackageView
     const overlay = present(content.overlayText);
     if (overlay) {
       lines.push({ label: capturing ? "Add this text to the photo" : "Add this text to the visual", value: overlay });
+    }
+
+    // Last, and after the text, exactly as §7's hierarchy orders it: these are the constraints that
+    // keep the visual buildable, and they are read once the owner knows what they are building.
+    // The contract requires at least one, so there is no empty-section branch to carry here.
+    if (content.visualBrief !== undefined) {
+      lines.push(
+        ...content.visualBrief.executionNotes.map((note, index) => ({ label: index === 0 ? "Execution notes" : null, value: note })),
+      );
     }
 
     // Framing sits in the block title rather than becoming another line, so it reads as a property
@@ -313,7 +384,8 @@ export function buildCreativePackageView(content: unknown): CreativePackageViewR
     ok: true,
     view: {
       format: validated.format,
-      formatLabel: FORMAT_LABELS[validated.format],
+      formatLabel: formatLabel(validated.format, validated.productionSource),
+      productionLabel: productionLabel(validated.format, validated.productionSource),
       durationLabel: validated.format === "reel" ? `About ${validated.targetDurationSeconds} seconds` : null,
       // The package's own subject, verbatim. No second title is generated for the summary line --
       // inventing one would be new creative content, and this module writes none.
@@ -349,6 +421,13 @@ export function formatCreativePackageForClipboard(view: CreativePackageView): st
   // The total moved out of the production section and into the summary, so it has to be carried
   // here explicitly or "copy everything" would silently stop telling the owner how long the Reel is.
   const lines: string[] = [view.durationLabel === null ? view.formatLabel : `${view.formatLabel} · ${view.durationLabel}`];
+
+  // Carried explicitly for the same reason the Reel total is: "copy everything" is the artifact the
+  // owner pastes into their notes and works from later, so a production route that exists on screen
+  // and not in the clipboard would quietly become the one instruction they lose.
+  if (view.productionLabel !== null) {
+    lines.push(view.productionLabel);
+  }
 
   for (const detail of view.creativeDetails) {
     lines.push("", `${detail.label}: ${detail.value}`);

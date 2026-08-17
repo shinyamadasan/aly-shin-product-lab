@@ -2,7 +2,7 @@ import type { CreativeInput } from "../creative-input.ts";
 import type { CreativeFormat } from "../creative-formats.ts";
 import type { ResolvedCreativeGrounding } from "../creative-subject-resolution.ts";
 import type { CreativeJobWorkerType } from "../creative-jobs.ts";
-import { validateCreativePackageContentV2, type CreativePackageContentV2 } from "../creative-packages.ts";
+import { validateCreativePackageContentV2, type CreativePackageContentV2, type CreativeVisualBrief } from "../creative-packages.ts";
 import { resolveCreativeProductionConstraint, validateCreativeBody, type CreativeFormatDecision, type ReelCreativeBody } from "./contracts.ts";
 
 // Content Creation MVP S3B -- deterministic assembly.
@@ -35,15 +35,43 @@ export type AssembleCreativePackageResult =
 // hand: anything not named below never reaches the stored package, however well the model authored
 // it. shots/slides/frames pass through as whole arrays, so the per-item S6 guidance travels with
 // them; Photo's framing is a top-level field and needs its own entry.
+// P1 §7 -- the compatibility flattening. visualDirection stays REQUIRED on the stored package and
+// every existing consumer keeps reading it, but for a non-capture photo it is now DERIVED here from
+// the structured brief instead of being authored a second time by the model.
+//
+// Exactly the same move as targetDurationSeconds below, and for the same reason: there is one
+// authored source, so the structured field and the flat field cannot contradict each other, and
+// there is nothing to tolerance-check between them.
+//
+// Adds no facts. Every string is a verbatim brief field; the only text this function contributes is
+// its own four fixed labels and the bullet characters. Deliberately plain-text rather than JSON --
+// this is the field a pre-P1 consumer reads and shows to a person.
+export function flattenVisualBrief(brief: CreativeVisualBrief): string {
+  return [
+    `Concept: ${brief.concept}`,
+    `Style: ${brief.style}`,
+    "Scene:",
+    ...brief.scene.map((item) => `- ${item}`),
+    "Execution:",
+    ...brief.executionNotes.map((note) => `- ${note}`),
+  ].join("\n");
+}
+
 function bodyFieldsFor(format: CreativeFormat, body: Record<string, unknown>): Record<string, unknown> {
   if (format === "photo") {
     // H1-B -- framing is spread conditionally rather than always written, because a generated or
     // template photo legitimately has none and the stored validator now rejects one. The arrays
     // below need no equivalent: their per-item framing travels or does not travel with the item.
+    //
+    // P1 -- the body carries exactly one of visualDirection and visualBrief, enforced by
+    // validateCreativeBody before this runs. A capture body passes its authored direction straight
+    // through unchanged; a briefed body has its direction derived and carries the brief too.
+    const brief = body.visualBrief as CreativeVisualBrief | undefined;
     return {
-      visualDirection: body.visualDirection,
+      visualDirection: brief === undefined ? body.visualDirection : flattenVisualBrief(brief),
       overlayText: body.overlayText,
       ...(body.framing === undefined ? {} : { framing: body.framing }),
+      ...(brief === undefined ? {} : { visualBrief: brief }),
     };
   }
   if (format === "reel") {
