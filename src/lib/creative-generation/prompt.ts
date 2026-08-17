@@ -186,6 +186,60 @@ const SOLO_OPERATOR_BOUNDARY =
     "Every instruction must be realistically executable alone: do not require another person to hold the camera, do not require simultaneous actions that would need a third hand, and do not require complex tracking shots or rigged setups.",
   ].join(" ");
 
+// AH1 boundary A -- resource roles. The first live capture plan told the owner to photograph the
+// table from overhead WITH THEIR PHONE and, in the same plan, to lay THAT PHONE face-down beside the
+// brownie as an in-frame prop. Every sentence was individually executable. The SET was not, because
+// one object had been cast in two roles at the same moment.
+//
+// SOLO_OPERATOR_BOUNDARY above already says "one person, one ordinary phone", and it did not prevent
+// this: it constrains the INVENTORY, and this failure is about ALLOCATION. The plan respected the
+// one-phone budget and then spent it twice. So this is deliberately not another equipment list.
+//
+// It is also deliberately not a ban on the sentence "put your phone face-down". That sentence is
+// perfectly fine in a plan where the phone is not the camera, and banning it would leave the actual
+// error -- double-casting a committed resource -- free to reappear as a mug, a hand, or the owner
+// themselves. The load-bearing idea is that a role assignment is EXCLUSIVE for as long as it lasts,
+// which is why the rule is stated about roles and closes with a cross-check against the whole plan.
+const RESOURCE_ROLE_BOUNDARY =
+  [
+    "A production plan must never require the same person, device, prop, or piece of equipment to perform two incompatible roles at the same time.",
+    "The baseline resources are exactly one ordinary phone, used as the camera, and one person, working alone. Treat both as already fully committed to those roles.",
+    "Therefore, if the phone is the capture device, it cannot also appear in the frame, be laid down inside the shot, be held by anyone else, or serve as a prop. Do not assume a second phone or a second camera exists.",
+    "Do not require the solo operator to be behind the camera and visibly performing in the frame at the same moment, unless the supplied context establishes a self-capture mechanism that makes it genuinely possible.",
+    "Never silently assume a second phone, a second camera, a tripod, a stand, a remote shutter, an assistant, another pair of hands, or a professional setup. If an instruction only works because one of those exists, rewrite the instruction rather than assume the resource.",
+    "Before finalising a capture plan, check every instruction against the others: an instruction that is executable on its own may still be impossible alongside the instruction next to it.",
+    "Examples: 'Hold your phone overhead and photograph the table while your phone lies face-down beside the brownie' is forbidden -- one phone, two roles at once. 'Film yourself plating the brownie while holding the only phone as the camera' is forbidden for the same reason about the person. 'Use the phone overhead to photograph the brownie beside a closed notebook' is allowed, because the phone holds one role and the prop is a different object.",
+  ].join(" ");
+
+// AH1 boundary B -- provenance. The zero-capture owner test published "We drew this one because it
+// made us laugh." Nothing in this system knows that anybody drew anything, or that anybody laughed.
+//
+// The mistake is worth naming precisely, because it is invisible from inside the model:
+// productionSource had been read as HISTORY. It is not. It is an INSTRUCTION -- a decision about how
+// the visual should be made, issued before anything has been made at all. generate_visual means
+// "this should be illustrated", never "we illustrated this"; capture_new means "photograph this",
+// never "we photographed this". At the moment this copy is written, the asset does not exist yet.
+//
+// Two claim families, not one, because the owner test produced both inside a single sentence: an
+// AUTHORSHIP claim ("we drew this") and a REACTION claim ("because it made us laugh"). The second is
+// a fact about what people in this business felt, and it is exactly as unsupplied as the first. A
+// rule covering only authorship would have passed half of that sentence.
+//
+// The permission half is load-bearing and must survive intact, for the same reason it is in
+// ABSENCE_OF_EVIDENCE_BOUNDARY: a rule that turned the brand voice into a disclaimer would trade one
+// failure for a worse one. Invented history is the problem; personality is not.
+const PROVENANCE_BOUNDARY =
+  [
+    "Who made this content, how they made it, and how they felt about it are all factual claims. Statements about who created, drew, illustrated, sketched, designed, photographed, shot, filmed, edited, rendered, generated, produced, chose, or reacted to this content require explicit supporting facts, exactly like any other factual claim.",
+    "productionSource is an INSTRUCTION for how this content should be produced. It is never evidence that the production already happened, and it never tells you who performed it.",
+    "generate_visual does not authorize 'we drew this', 'I drew this', 'we illustrated this', 'we sketched this', 'we designed this', 'we made this graphic', or 'we generated this'.",
+    "capture_new does not authorize 'we photographed this', 'we shot this', 'we filmed this', or 'we edited this'. It is an instruction to capture something that has NOT been captured yet.",
+    "Do not invent this business's own actions, creative process, history, motivation, or internal mental state. 'It made us laugh', 'we couldn't stop laughing', 'we've been wanting to make this', 'we had to draw it', and 'this started as a joke in our kitchen' are all unsupplied claims about real people.",
+    "Nothing has been drawn, photographed, filmed, designed or built at the time you write this. The copy is written BEFORE the asset exists.",
+    "This is not an instruction to write flat, cautious, or sterile copy. Observations, jokes, warmth, and feelings offered to the READER remain fully allowed, as do remarks about the subject itself.",
+    "Examples: 'This one is painfully relatable.', 'Meet Blondies.', 'Somebody has to say hi first.', and 'This scenario made for a good awkward hello.' are all allowed -- none of them claims an Aly & Pon action, process, or feeling. 'We drew this one because it made us laugh.' is forbidden twice over: nobody supplied who drew it, and nobody supplied that anyone laughed.",
+  ].join(" ");
+
 // --- H1-B: how the visual gets made -------------------------------------------------------------
 //
 // S6 assumed one answer to that question and never asked it. This states the three answers and makes
@@ -459,11 +513,22 @@ export function buildCreativeBodyRequest(
     // possible. SCENE_DIRECTION_BOUNDARY above is not conditional and must not become so: it is a
     // factuality rule about invented props and records, and an illustration can invent a business
     // record just as effectively as a photograph can.
-    ...(captureRuledOut ? [] : [CURRENT_EXECUTABILITY_BOUNDARY, SOLO_OPERATOR_BOUNDARY]),
+    // AH1 §2 joins this conditional group rather than standing outside it. Every clause it contains
+    // is about allocating a camera and a pair of hands, so it is meaningful exactly when a capture is
+    // still on the table -- and actively misleading when it is not, in the same way and for the same
+    // reason CURRENT_EXECUTABILITY_BOUNDARY is. A zero-capture plan commits no physical resources,
+    // so it cannot double-commit one.
+    ...(captureRuledOut ? [] : [CURRENT_EXECUTABILITY_BOUNDARY, SOLO_OPERATOR_BOUNDARY, RESOURCE_ROLE_BOUNDARY]),
     // H1-B. The stylization boundary is unconditional for the same reason: a drawing can counterfeit
     // reality, and the request that permits capture is the one most likely to mix the two.
     PRODUCTION_SOURCE_BOUNDARY,
     STYLIZATION_BOUNDARY,
+    // AH1 §5-7. Unconditional, and deliberately placed immediately after the two boundaries that
+    // define productionSource: the observed failure was the model reading its own production
+    // INSTRUCTION as production HISTORY, so the correction belongs next to the instruction that was
+    // misread. It applies to both branches because both can make the mistake -- generate_visual
+    // produced "we drew this", and capture_new authorizes "we photographed this" no better.
+    PROVENANCE_BOUNDARY,
     IDEA_BEFORE_VISUAL,
     OUTPUT_CONTRACT,
   ].join(" ");
