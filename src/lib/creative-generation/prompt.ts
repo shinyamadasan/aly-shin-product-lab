@@ -85,8 +85,60 @@ const EXPERIMENT_OUTCOME_BOUNDARY =
     "Example: given 'Third batch with browner butter and a longer rest', 'Batch three. Two changes: browner butter and a longer rest.' is allowed. 'The longer rest made it chewier.' is forbidden. So are 'No verdict yet.', 'We're still figuring out whether it worked.' and 'The results aren't in yet.' unless that evaluation state is explicitly supplied.",
   ].join(" ");
 
+// S3B.1, hardened by P1 after the zero-capture owner test.
+//
+// The original rule named the three conclusions it had actually seen go wrong -- newness, launch,
+// menu inclusion -- and the owner test found the next ones: "Blondies has never once shown up on
+// this page", "Never made it into a photo", "Until now", "Brownies and Cookies have been posing for
+// us this whole time". Those are not four new phrases to ban. They are the same single error about a
+// different predicate, and a list that grows one sentence at a time will always be one sentence
+// behind the model.
+//
+// So the hardening leads with the SHAPE of the mistake rather than its wording: an internal record
+// is one source, and its silence is evidence about that source and about nothing else. The last of
+// those four sentences is the one that shows why a blacklist could never have worked -- it makes the
+// claim about OTHER products, by contrast, without saying anything forbidden about the subject.
+//
+// The permission half is load-bearing and must survive intact. Absence is exactly why the
+// recommendation path selects a subject at all, so a rule that made absence unusable would break
+// subject selection rather than harden it: the compliant move would become "avoid this subject".
+//
+// The two original sentences are kept VERBATIM as the opening, rather than folded into the new
+// prose, so the S3B.1 menu/newness protection this wave must not weaken is provably the same string
+// it has always been.
 const ABSENCE_OF_EVIDENCE_BOUNDARY =
-  "Absence of recorded history is not positive evidence of newness, launch status, customer unfamiliarity, first-time production, first-time availability, or first-time menu inclusion. A fact such as 'Blondies has never appeared in the Journey' may justify introducing or featuring Blondies in content, but does not prove 'brand new', 'new on the menu', 'our first time making them', or 'our first time sharing them' unless those facts are supplied.";
+  [
+    "Absence of recorded history is not positive evidence of newness, launch status, customer unfamiliarity, first-time production, first-time availability, or first-time menu inclusion.",
+    "A fact such as 'Blondies has never appeared in the Journey' may justify introducing or featuring Blondies in content, but does not prove 'brand new', 'new on the menu', 'our first time making them', or 'our first time sharing them' unless those facts are supplied.",
+    "More generally: a supplied fact that something is absent from an internal record -- a Journey, a content journal, a marketing history, a recommendation feed, or any other record this business keeps -- is evidence about THAT RECORD ONLY, and never evidence about the real world beyond it.",
+    "Absence from one internal source therefore does not prove that the subject was never posted, never published, never shared, never shown, never photographed, never pictured, never filmed, never featured, never mentioned, never produced, never made, never sold, or never offered.",
+    "It does not prove a first, debut, premiere, or maiden appearance anywhere -- including on this page, on this account, in this feed, or in front of these customers.",
+    "Do not turn an absence into 'until now', 'finally', 'at last', 'the first time', 'never before', or 'about time', and do not imply the same claim by contrast: stating or hinting that OTHER products have been photographed, posted, featured, or shared 'all this time' asserts exactly the same unsupplied history about a different subject.",
+    "Unknown to you is not the same as never happened. You are told what one record contains; you are not told what this business has actually posted, photographed, shared, or sold.",
+    "What absence DOES support is unchanged and remains allowed: choosing this subject, introducing it, featuring it, or giving it attention now. That is a decision about what to make next, not a claim about the past.",
+    "Example: given only 'Blondies has never appeared in the Journey', 'Giving Blondies the spotlight today' and 'Introducing Blondies' are allowed. 'Blondies has never once shown up on this page', 'Never made it into a photo', 'First time we've shared Blondies', 'Until now', and 'Brownies and Cookies have been posing for us this whole time' are all forbidden, because none of that history was supplied.",
+  ].join(" ");
+
+// P1 §3 -- the boundary between the words this system thinks in and the words the owner posts.
+//
+// Owner test #2 published "First time they've turned up here in the Journey...". Two independent
+// mistakes are stacked in that one sentence: the absence-of-evidence error the rule above now covers,
+// and a NAMING error, which is what this rule covers. "The Journey" is a screen in this application.
+// Aly & Pon's followers have never heard of it, and copy that mentions it reads as an explanation of
+// the Content Engine rather than as content from a bakery.
+//
+// Scoped to PUBLISHED copy, and deliberately NOT to metadata, formatRationale, or the Creative
+// details panel: those surfaces are read by the owner, where naming the Journey is both useful and
+// true. This is a rule about audience, not a ban on the vocabulary inside the system -- which is also
+// why it lives only in Stage 2, the stage that writes copy a reader will see.
+const PUBLIC_COPY_VOCABULARY_BOUNDARY =
+  [
+    "Everything a reader will see -- angle, hook, headline, caption, CTA, overlay and on-screen text, slide headings and bodies, story frame text, spoken script, platform variants, and hashtags -- is public content written for a small bakery's followers.",
+    "Never name this system's internal machinery in that copy. Do not write Journey, the Journey, content journal, grounding, grounded facts, evidence summary, marketing recommendation, recommendation feed, subject kind, stated or assumed subject, resolver, creative package, generator, Product Lab, or Content Engine as terms for where this content or its facts came from.",
+    "Those are names for how this business records and plans its own work internally. A follower does not know them, and public copy must never read as an explanation of them.",
+    "Write about the bakery, the product, the moment, or the reader instead. If a supplied fact is only interesting because of WHERE it is recorded, it is not interesting to a follower: use it to decide what to make, and leave it out of the copy.",
+    "Example: 'First time they've turned up here in the Journey' is forbidden twice over -- it names the Journey, and it claims a first appearance nobody supplied. 'Blondies, front and centre today' keeps the publishable part and makes neither mistake.",
+  ].join(" ");
 
 // S6 boundary A. Production guidance had to become specific enough to execute, and specificity is
 // exactly where a factual claim can hide inside a camera instruction. The line is drawn at the
@@ -185,8 +237,21 @@ const ZERO_CAPTURE_DIRECTION =
     "The owner has said they will NOT be taking photos or filming for this. Every instruction you write must be executable without a camera.",
     "Choose generate_visual or template_only, and make the result concrete: the owner should finish reading knowing exactly what needs to be made, by whom or in what tool, without being told to pick anything up and point it at something.",
     "Human-feeling concepts work best here: couples and friend archetypes, cravings, coffee behaviour, work-from-home and night-shift life, dessert identities, mini comics, visual jokes, double meanings, cozy observations. These are mechanisms to think with, not templates to fill in -- do not reuse a stock idea.",
-    "Describe the visual style in the visual direction prose (illustration, pixel art, comic panels, doodle, typography card, and so on). Say it in words; there is no style field to set.",
   ].join(" ");
+
+// Split out of ZERO_CAPTURE_DIRECTION by P1 §7, because it stopped being true for exactly one format.
+//
+// Carousel and Story still author their own visualDirection prose, per slide and per frame, and
+// neither carries a style field -- so for them the style has to go into that prose or be lost, and
+// this sentence remains correct and load-bearing.
+//
+// Photo no longer does. Its non-capture body authors visualBrief.style, and its schema drops
+// visualDirection entirely. Telling that model to "describe the style in the visual direction prose"
+// and that "there is no style field to set" contradicts both the schema it was handed and the brief
+// printed a few lines below it -- an instruction to fill in a field that does not exist, and to skip
+// one that is required.
+const ZERO_CAPTURE_STYLE_IN_PROSE =
+  "Describe the visual style in the visual direction prose (illustration, pixel art, comic panels, doodle, typography card, and so on). Say it in words; there is no style field to set.";
 
 function section(title: string, lines: Array<string | null>): string[] {
   const body = lines.filter((line): line is string => typeof line === "string" && line.trim().length > 0);
@@ -303,10 +368,34 @@ const FRAMING_VOCABULARY =
 const FRAMING_CONDITION =
   "Include framing ONLY when productionSource is capture_new. When productionSource is generate_visual or template_only, omit the framing key entirely -- do not set it to a placeholder value.";
 
+// P1 §7 -- the structured brief a non-capture Photo is written as instead of one prose paragraph.
+//
+// Stated as field MEANINGS rather than as a formatting instruction, because the split has to be
+// semantic to be worth anything: four labelled fields filled with the same undifferentiated prose
+// would read exactly as badly as the paragraph they replaced, and would additionally be a lie about
+// what each field contains.
+//
+// The last line is the §3 one-source-of-truth rule said out loud. The schema already omits
+// visualDirection for these production sources, so a model that writes one fails validation -- but a
+// model that understands WHY writes a better brief, rather than a brief plus an apology.
+const VISUAL_BRIEF_DIRECTION =
+  [
+    "Write the visual as a structured visualBrief with four parts, not as one paragraph.",
+    "concept: the concrete visual idea being executed, in a sentence or two. This is what the image DEPICTS -- for example 'an awkward family photo where the blondie runs into frame late'. It is not a restatement of the marketing angle.",
+    "style: how it is drawn or designed, in your own words -- for example 'warm flat-colour hand-drawn doodle' or 'simple editorial typography graphic'. There is no list to choose from; describe what you actually mean.",
+    "scene: an ordered list of the concrete elements and how they are arranged, one instruction per item. For template_only these describe the layout and typographic composition rather than a literal physical scene.",
+    "executionNotes: a few short practical constraints that keep the visual buildable -- for example 'use minimal detail' or 'keep the product obviously illustrated rather than photorealistic'. Keep them concise and practical; this is not a place to restate the factuality rules.",
+    "Do NOT write a visualDirection. The application builds it from your visualBrief. Writing both would describe the same image twice, and the two descriptions would disagree.",
+    "overlayText remains the ONLY place for the text that appears on the visual. Say in scene WHERE that text sits if it matters, but never restate the text itself inside visualBrief.",
+    "Every factuality rule above applies inside visualBrief exactly as it does to the caption. concept, style, scene and executionNotes may invent composition, metaphor, fictional illustrated behavior, pose, expression and graphic treatment. They may NOT invent real product appearance, texture, ingredients, freshness, packaging, price, availability, menu status, customer events, or business history unless those facts were supplied.",
+  ].join(" ");
+
 const FORMAT_BRIEF: Record<CreativeFormat, string[]> = {
   photo: [
     "Describe ONE static visual and how it is arranged. If productionSource is capture_new that is a photograph someone takes on a phone; if it is generate_visual it is an illustration or designed image; if it is template_only it is a typographic or graphical composition.",
     `When it is a photograph, choose the framing for it. ${FRAMING_VOCABULARY}`,
+    "When productionSource is capture_new, write the single visualDirection prose string as before, and do not write a visualBrief: a capture is directed, not briefed.",
+    VISUAL_BRIEF_DIRECTION,
     "overlayText is optional -- use null unless text on the image genuinely helps.",
   ],
   reel: [
@@ -359,6 +448,9 @@ export function buildCreativeBodyRequest(
     FACTUALITY_FIELD_SCOPE,
     EXPERIMENT_OUTCOME_BOUNDARY,
     ABSENCE_OF_EVIDENCE_BOUNDARY,
+    // P1 §3. Stage 2 only: this is the stage that writes copy a follower will read, and the only
+    // stage whose output has a public surface at all. Stage 1 writes a formatRationale for the owner.
+    PUBLIC_COPY_VOCABULARY_BOUNDARY,
     // The three S6 boundaries sit here, alongside the S3B.1 factuality rules rather than replacing
     // any of them: production guidance specific enough to execute is also specific enough to smuggle
     // in a claim, an unfilmable past process, or a two-person shot.
@@ -385,6 +477,9 @@ export function buildCreativeBodyRequest(
         ? "A Reel is filmed, so capture_new is the only possible answer for this format."
         : null,
       captureRuledOut ? ZERO_CAPTURE_DIRECTION : null,
+      // P1 §7 -- only for the formats that still write their own visual prose. A zero-capture Photo
+      // authors visualBrief.style instead, so this sentence would contradict its schema and its brief.
+      captureRuledOut && decision.format !== "photo" ? ZERO_CAPTURE_STYLE_IN_PROSE : null,
       FRAMING_CONDITION,
     ]),
     ...section("OUTPUT REQUIREMENTS", [

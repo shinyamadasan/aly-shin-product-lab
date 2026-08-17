@@ -91,11 +91,53 @@ type CreativePackageBaseV2 = {
 // The generation contract is the asymmetric half: creative-generation/contracts.ts REQUIRES these
 // keys, so everything produced from S6 onward carries them.
 
+// Content Creation MVP P1 §7 -- the structured zero-capture visual brief.
+//
+// The problem it solves is narrow and was measured, not guessed: a `photo` package carries exactly
+// ONE visualDirection string, and a zero-capture brief has far more to say than a capture brief
+// does. A photograph's direction is "overhead on the board, morning light"; an illustration's has to
+// carry the concept, the drawing style, the composition, and the constraints that keep it buildable.
+// That is four kinds of instruction in one paragraph, and the owner reads it as a wall.
+//
+// The alternative was renderer-side prose parsing, which this codebase refuses everywhere: splitting
+// generated prose on invented delimiters fabricates a structure the generator never authored, and
+// fails silently the first time the model writes a sentence differently.
+//
+// Deliberately four fields and no more. There is no keepItSimple, no visual-style enum, no archetype,
+// no asset reference, and no text field -- overlayText remains the single canonical home for text
+// placed ON the visual, so the two cannot disagree about what the image says.
+export type CreativeVisualBrief = {
+  // The concrete visual idea, as execution rather than as marketing. "An awkward family photo where
+  // Blondie runs into frame late" -- not a second angle field.
+  concept: string;
+  // Freeform, on purpose. A taxonomy here would freeze a set of styles the system has no evidence
+  // for and would push the generator to pick the nearest enum member instead of describing what it
+  // actually means.
+  style: string;
+  // Ordered composition instructions. For template_only these describe layout rather than a literal
+  // physical scene; that is why there is no separate `layout` field to contradict this one.
+  scene: string[];
+  // Short practical constraints that keep the visual executable -- "use minimal detail", "keep the
+  // product obviously illustrated". Deliberately not a place to restate the generation rules: those
+  // are a prompt concern, and this module stays a structural contract that knows nothing about them.
+  executionNotes: string[];
+};
+
 export type CreativePhotoPackageV2 = CreativePackageBaseV2 & {
   format: "photo";
+  // Still REQUIRED, and still the field every existing consumer reads. From P1 it is DERIVED from
+  // visualBrief for non-capture packages rather than separately authored -- see assemble.ts. Keeping
+  // it required is what makes visualBrief purely additive: nothing downstream has to learn about the
+  // new field to keep working.
   visualDirection: string;
   overlayText: string | null;
   framing?: CreativeFraming;
+  // OPTIONAL on the stored contract, exactly like framing and productionSource before it, and for
+  // exactly the same reason: every package written before P1 has no such key, all of them remain
+  // legitimate v2 packages, and no migration, schemaVersion bump or generatorVersion bump is needed
+  // to keep reading them. The generation contract is the asymmetric half -- see contracts.ts, where
+  // it is REQUIRED for a non-capture photo and FORBIDDEN for a capture one.
+  visualBrief?: CreativeVisualBrief;
 };
 
 export type CreativeReelPackageV2 = CreativePackageBaseV2 & {
@@ -197,6 +239,48 @@ function validateOptionalFraming(
   return { ok: false, message: `Creative Package v2 ${where} framing must be close_up, medium, wide or overhead when present.` };
 }
 
+// P1 §7 -- ABSENT is valid (a pre-P1 package), PRESENT is validated in full. The same asymmetry as
+// framing above, and the same reason: a malformed brief was never a legitimate package, whoever
+// wrote it, and accepting one to be lenient about old data would only mean the renderer meets it.
+//
+// Note what is NOT checked here: this validator does not forbid a visualBrief on a capture_new
+// package. Framing is forbidden on a non-capture package because there is no camera to frame, which
+// makes the field meaningless; a brief on a capture package is merely unnecessary, which is a
+// different thing. The generation contract is where "preferably absent" is enforced, because that
+// is where authoring it would create a second source of truth.
+function isNonEmptyStringArray(value: unknown, min: number): value is string[] {
+  return Array.isArray(value) && value.length >= min && value.every((entry) => isNonEmptyString(entry));
+}
+
+function validateOptionalVisualBrief(value: unknown): { ok: true } | { ok: false; message: string } {
+  if (value === undefined) {
+    return { ok: true };
+  }
+  if (!isJsonObject(value)) {
+    return { ok: false, message: "Creative Package v2 photo visualBrief must be an object when present." };
+  }
+  if (!isNonEmptyString(value.concept)) {
+    return { ok: false, message: "Creative Package v2 photo visualBrief requires a non-empty concept." };
+  }
+  if (!isNonEmptyString(value.style)) {
+    return { ok: false, message: "Creative Package v2 photo visualBrief requires a non-empty style." };
+  }
+  // At least one of each, matching how shots, slides and frames are validated: an empty array is not
+  // a decision the generator made, it is a decision it skipped, and the renderer would then have to
+  // carry an omit-branch for a state nothing legitimately produces.
+  if (!isNonEmptyStringArray(value.scene, 1)) {
+    return { ok: false, message: "Creative Package v2 photo visualBrief requires a scene array of at least one non-empty string." };
+  }
+  if (!isNonEmptyStringArray(value.executionNotes, 1)) {
+    return { ok: false, message: "Creative Package v2 photo visualBrief requires an executionNotes array of at least one non-empty string." };
+  }
+  const unexpected = Object.keys(value).filter((key) => !["concept", "style", "scene", "executionNotes"].includes(key));
+  if (unexpected.length > 0) {
+    return { ok: false, message: `Creative Package v2 photo visualBrief has unexpected fields: ${unexpected.join(", ")}.` };
+  }
+  return { ok: true };
+}
+
 function validatePlatformVariants(value: unknown): { ok: true } | { ok: false; message: string } {
   if (!Array.isArray(value)) {
     return { ok: false, message: "Creative Package v2 platformVariants must be an array." };
@@ -267,6 +351,10 @@ function validateFormatFields(
     }
     if (!isNullableString(value.overlayText)) {
       return { ok: false, message: "Creative Package v2 photo overlayText must be a string or null." };
+    }
+    const brief = validateOptionalVisualBrief(value.visualBrief);
+    if (!brief.ok) {
+      return brief;
     }
     return validateOptionalFraming(value.framing, "photo", productionSource);
   }

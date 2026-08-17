@@ -306,7 +306,23 @@ function bodyFor(format: CreativeFormat, productionSource: CreativeProductionSou
   const capturing = productionSource === "capture_new";
   const framing = capturing ? { framing: "close_up" } : {};
 
-  if (format === "photo") return { ...base, visualDirection: "Two illustrated blondie characters side by side.", overlayText: null, ...framing };
+  // P1 §7 -- a Photo body now carries EITHER an authored visualDirection (capture) or a structured
+  // visualBrief (non-capture), never both: the stored visualDirection is derived from the brief, so
+  // authoring both would be the divergence the derivation exists to prevent.
+  if (format === "photo") {
+    return capturing
+      ? { ...base, visualDirection: "Two illustrated blondie characters side by side.", overlayText: null, ...framing }
+      : {
+          ...base,
+          overlayText: null,
+          visualBrief: {
+            concept: "Two illustrated blondie characters side by side.",
+            style: "Warm flat-colour hand-drawn doodle.",
+            scene: ["Both characters face the reader.", "Keep the background plain."],
+            executionNotes: ["Use minimal detail."],
+          },
+        };
+  }
   if (format === "reel") {
     return {
       ...base,
@@ -909,17 +925,41 @@ test("S. no creativeArchetype and no visual-style taxonomy was added", () => {
     }
   }
 
-  // Visual style stays in prose, where the existing contract already puts it. The zero-capture brief
-  // says so explicitly rather than leaving the model to look for a field.
-  assert.match(bodyPrompt(ZERO_CAPTURE_REQUEST).user, /there is no style field to set/i);
+  // Carousel and Story still author their own visualDirection prose and carry no style field, so for
+  // them the style genuinely has to go into that prose. The zero-capture brief still says so.
+  for (const format of ["carousel", "story"] as const) {
+    assert.match(
+      bodyPrompt(ZERO_CAPTURE_REQUEST, format).user,
+      /there is no style field to set/i,
+      `${format} still authors its own visual prose and must keep the style-in-prose instruction`,
+    );
+  }
 
-  // And no schema anywhere offers a style or archetype key to fill in.
+  // P1 §7 -- Photo must NOT get that sentence any more. Its non-capture body authors
+  // visualBrief.style and its schema drops visualDirection, so the old instruction would tell the
+  // model to fill in a field that no longer exists and skip one that is now required.
+  const photoUser = bodyPrompt(ZERO_CAPTURE_REQUEST).user;
+  assert.doesNotMatch(photoUser, /there is no style field to set/i);
+  assert.doesNotMatch(photoUser, /Describe the visual style in the visual direction prose/i);
+
+  // What it says instead, so this is a correction rather than a deletion.
+  assert.match(photoUser, /style: how it is drawn or designed, in your own words/);
+  assert.match(photoUser, /Do NOT write a visualDirection\. The application builds it from your visualBrief/);
+
+  // And no schema anywhere offers a style or archetype key to fill in at the top level.
   for (const format of CREATIVE_FORMATS) {
     const properties = Object.keys(buildCreativeBodyJsonSchema(format).properties as Record<string, unknown>);
     for (const key of properties) {
       assert.doesNotMatch(key, /style|archetype|tag/i, `${format} schema must not offer a ${key} key`);
     }
   }
+
+  // visualBrief.style is a freeform string and NOT a taxonomy -- which is the thing this test has
+  // always been protecting. A style field is fine; a style ENUM is what was refused.
+  const photoProperties = buildCreativeBodyJsonSchema("photo", ZERO_CAPTURE_CONSTRAINT).properties as Record<string, { properties: Record<string, Record<string, unknown>> }>;
+  const styleSchema = photoProperties.visualBrief.properties.style;
+  assert.equal(styleSchema.type, "string");
+  assert.equal("enum" in styleSchema, false, "visualBrief.style must stay freeform, never a taxonomy");
 
   // CreativeInput gains nothing: the constraint is derived from the owner's words, never stored.
   const input = request(ZERO_CAPTURE_REQUEST);
