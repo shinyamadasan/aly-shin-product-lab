@@ -220,6 +220,14 @@ export function CreateNow({
   // shouldRefreshCreateNowJob, so waiting for a late package can never become an endless poll.
   const [packageMissCount, setPackageMissCount] = useState(0);
   const [pollTick, setPollTick] = useState(0);
+  // AH1 §16. The clock is READ where the job is read, never during render: Date.now() in a render
+  // body is an impure call, and the elapsed value has nothing to say until there is a job to measure.
+  // It therefore moves in the same ~4.5s steps the status already moves in, which adds no timer of
+  // its own and is exactly the resolution the question "has this been sitting here?" needs.
+  //
+  // 0 until the first read lands, which createNowElapsedMs reads as a negative duration and reports
+  // as "no elapsed time" -- the same honest answer it gives for a missing or skewed timestamp.
+  const [nowMs, setNowMs] = useState(0);
 
   const selectable = selectableCreateNowProducts(products);
 
@@ -243,6 +251,7 @@ export function CreateNow({
 
       setJobError("");
       setJob(jobResult.job);
+      setNowMs(Date.now());
 
       if (jobResult.job.status !== "completed" || !packageClient) {
         return;
@@ -360,6 +369,7 @@ export function CreateNow({
     // wait on generation. The submit button's busy state ends here, a second or so in, rather than
     // pretending to load for as long as the AI takes.
     setJob(created.job);
+    setNowMs(Date.now());
     setActiveJob(created.job.id);
   }
 
@@ -378,12 +388,22 @@ export function CreateNow({
   }
 
   if (jobId !== null) {
-    const progress = job === null ? null : describeCreateNowScreenProgress(job.status, refreshState);
+    const progress =
+      job === null
+        ? null
+        : describeCreateNowScreenProgress(job.status, refreshState, { createdAt: job.createdAt, startedAt: job.startedAt, nowMs });
 
     return (
       <section className="mx-auto max-w-xl space-y-5">
         <div aria-live="polite" className="space-y-2">
-          {progress ? <h2 className="text-2xl font-semibold tracking-tight">{progress.headline}</h2> : null}
+          {progress ? (
+            <h2 className="text-2xl font-semibold tracking-tight">
+              {progress.headline}
+              {progress.elapsedLabel ? (
+                <span className="ml-2 font-normal tabular-nums text-[#6f5a4c]">{progress.elapsedLabel}</span>
+              ) : null}
+            </h2>
+          ) : null}
           {progress && progress.detail ? <p className="text-sm leading-6 text-[#6f5a4c]">{progress.detail}</p> : null}
         </div>
 

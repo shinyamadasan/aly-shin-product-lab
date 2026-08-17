@@ -46,6 +46,43 @@ export const CREATIVE_AI_WORKER_STALE_LOCK_MS = 30 * 60 * 1000;
 // package.json with a different name).
 export const CREATIVE_AI_WORKER_EXPECTED_PACKAGE_NAME = "aly-shin-product-lab";
 
+// AH1 -- the bound the network never had, and the demonstrated cause of the 11:06 worker hang.
+//
+// Every Supabase call this worker makes is an unguarded fetch. @supabase/auth-js sends
+// signInWithPassword through `_request` with no signal and no timeout, and postgrest-js does the
+// same for the queue read. Node's own defaults do not rescue either one: a process-level
+// reproduction against a socket that ACCEPTS the connection and then never answers kept this
+// entrypoint alive indefinitely -- past undici's 300s headersTimeout, still logging nothing after
+// "lock acquired", still idle -- which is precisely what the production incident looked like.
+//
+// What turned a stalled request into a STUCK WORKER is that the await sits inside the run lock. The
+// process stayed alive and idle while holding it, so every following minute-cadence run skipped
+// correctly (a live PID is not a stale lock), and a job the owner queued ten minutes later was never
+// claimed. Nothing was wrong with the job, the AI, the queue, or the scheduler.
+//
+// 30s is roughly ten times the whole documented empty-queue run (~2-3s including Node startup), so
+// it cannot fire on a healthy request, while still ending a dead one inside a single scheduler
+// cycle. It is a per-REQUEST bound, not a run budget: it never shortens a legitimate generation,
+// whose own 15-minute executor ceiling is untouched by this and must stay that way.
+export const CREATIVE_AI_WORKER_SUPABASE_REQUEST_TIMEOUT_MS = 30_000;
+
+// Aborting rather than merely racing a timer is the point. A raced timer would settle the await and
+// leave the socket open behind it; aborting settles the await AND releases the resource, so nothing
+// is left holding the process up when main() reaches its exit.
+//
+// Any signal the caller already supplied is preserved rather than replaced -- postgrest exposes
+// .abortSignal(), and silently dropping a caller's cancellation to install our own would trade one
+// lifecycle bug for another.
+export function createTimeoutFetch(
+  timeoutMs = CREATIVE_AI_WORKER_SUPABASE_REQUEST_TIMEOUT_MS,
+  baseFetch: typeof fetch = fetch,
+): typeof fetch {
+  return (input, init) => {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    return baseFetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+  };
+}
+
 export type CreativeAiWorkerClient = CreativePackageRunnerClient;
 
 export type ProcessedJob = {
@@ -234,7 +271,13 @@ async function createRealClient(): Promise<{ ok: true; client: CreativeAiWorkerC
   if (!credsResult.ok) {
     return { ok: false, exitCode: 2, message: `Missing required Supabase credentials in .env.advisor.local: ${credsResult.missing.join(", ")}` };
   }
-  const client = createClient(credsResult.credentials.url, credsResult.credentials.anonKey);
+  // The bounded fetch is installed at client construction so it covers EVERY request this worker
+  // makes -- the sign-in, the queue read, the claim, and the runner's own persistence writes -- from
+  // the single place they all pass through. Wrapping only the two calls on the empty-queue path would
+  // fix the reproduction and leave the same hang available one step further in.
+  const client = createClient(credsResult.credentials.url, credsResult.credentials.anonKey, {
+    global: { fetch: createTimeoutFetch() },
+  });
   const signIn = await client.auth.signInWithPassword({ email: credsResult.credentials.email, password: credsResult.credentials.password });
   if (signIn.error) {
     return { ok: false, exitCode: 1, message: `Supabase sign-in failed: ${signIn.error.message}` };

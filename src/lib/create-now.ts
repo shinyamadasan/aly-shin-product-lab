@@ -118,13 +118,98 @@ export type CreateNowProgress = {
   detail: string;
   tone: "info" | "good" | "bad";
   isSettled: boolean;
+  // AH1 §16. Null whenever there is nothing honest to show: a settled job, a missing timestamp, or a
+  // clock disagreement that would render as a negative or nonsense duration. Showing no timer is
+  // always better than showing a wrong one.
+  elapsedLabel: string | null;
 };
 
 export const CREATE_NOW_WAITING_DETAIL = "This can take a minute or two. You can leave this page while it finishes.";
 
-export function describeCreateNowProgress(status: CreativeJobStatus): CreateNowProgress {
+// AH1 §14-17 -- the timing the waiting states are read against.
+//
+// The incident this comes from: a job sat queued for roughly fifteen minutes while the local worker
+// was wedged, and the screen said "We've got your request. Starting shortly." for every one of those
+// minutes. The copy was never wrong about the STATUS -- the job really was queued -- it was just
+// silent about the only thing the owner needed, which was that nothing had picked it up and nothing
+// was going to. The owner waited because the screen gave them no reason not to.
+//
+// Both timestamps are already persisted and already read: created_at is written when the row is
+// inserted and started_at when the claim RPC takes the job. Nothing here needed a migration, and
+// nothing here writes.
+export type CreateNowJobTiming = {
+  createdAt: string;
+  // "" when the job has not been claimed yet -- fromCreativeJobRow already normalises the null.
+  startedAt: string;
+  // Injected rather than read from a module-level clock, so every threshold below is provable
+  // without waiting in real time.
+  nowMs: number;
+};
+
+// Conservative on purpose, and deliberately NOT failure semantics. Crossing either line changes what
+// the screen SAYS and nothing else: no job is failed, cancelled, retried, or otherwise touched. The
+// worker owns the job's state and this module never writes to it.
+//
+// Two minutes for a queue whose worker wakes every minute means a healthy pickup never trips it, and
+// a worker that is genuinely absent is reported inside the second cycle. Three minutes for a running
+// job sits well above the twenty-to-forty seconds a normal generation takes, and well below the
+// fifteen-minute ceiling a legitimately long one is still allowed.
+export const CREATE_NOW_QUEUED_SLOW_MS = 2 * 60 * 1000;
+export const CREATE_NOW_RUNNING_SLOW_MS = 3 * 60 * 1000;
+
+// m:ss. Null rather than a fallback string for anything that is not a sane forward duration --
+// including a negative one, which is what a browser clock running behind the database clock produces
+// and which must never render as "-0:03" or wrap around to something reassuring.
+export function formatCreateNowElapsed(elapsedMs: number): string | null {
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+    return null;
+  }
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, "0")}`;
+}
+
+// Which timestamp a state is measured from -- and it is a different one per state, which is the
+// whole point. Queued time is time since the owner ASKED (created_at); running time is time since
+// the worker STARTED (started_at). Measuring both from created_at would report a fast generation
+// that waited a while in the queue as a slow generation.
+//
+// A running job with no started_at is a contradiction the database should never produce, and it is
+// reported as "no elapsed time" rather than silently measured from created_at instead.
+export function createNowElapsedMs(status: CreativeJobStatus, timing: CreateNowJobTiming): number | null {
+  const since = status === "queued" ? timing.createdAt : status === "running" ? timing.startedAt : "";
+  if (since === "") {
+    return null;
+  }
+  const startedMs = Date.parse(since);
+  if (!Number.isFinite(startedMs)) {
+    return null;
+  }
+  const elapsedMs = timing.nowMs - startedMs;
+  return elapsedMs >= 0 ? elapsedMs : null;
+}
+
+// AH1 §15 -- queued and running are two different sentences, and the queued one never claims that
+// anything is being made. "Starting shortly" is a promise about the future; "Creating your content"
+// is a claim about the present, and saying the second one over a job with started_at = null is the
+// precise lie owner testing caught.
+export const CREATE_NOW_QUEUED_SLOW_HEADLINE = "Still waiting to start.";
+// Elapsed time, and nothing beyond it. The only evidence behind this state is
+// now - createdAt >= CREATE_NOW_QUEUED_SLOW_MS, which proves the wait is longer than usual and
+// proves nothing whatsoever about the machine: a queued job legitimately waits while ANOTHER job is
+// generating, because the worker takes one job per run and holds the run lock for the whole
+// generation. An earlier draft of this string inferred "content can't be made on this computer right
+// now" from queue age alone -- a diagnosis of worker, scheduler or machine health that this module
+// has no evidence for, and one that would read as broken every time the owner simply asked for two
+// things in a row. Reporting the wait is honest; explaining it is not this screen's to do.
+export const CREATE_NOW_QUEUED_SLOW_DETAIL =
+  "This is taking longer than usual to start. Nothing is lost — it will start as soon as it can.";
+export const CREATE_NOW_RUNNING_SLOW_HEADLINE = "Still creating your content.";
+export const CREATE_NOW_RUNNING_SLOW_DETAIL =
+  "This one is taking longer than usual. Nothing has gone wrong — you can leave this page while it finishes.";
+
+export function describeCreateNowProgress(status: CreativeJobStatus, timing: CreateNowJobTiming): CreateNowProgress {
   if (status === "completed") {
-    return { headline: "Your content is ready.", detail: "", tone: "good", isSettled: true };
+    return { headline: "Your content is ready.", detail: "", tone: "good", isSettled: true, elapsedLabel: null };
   }
   if (status === "failed") {
     return {
@@ -132,12 +217,32 @@ export function describeCreateNowProgress(status: CreativeJobStatus): CreateNowP
       detail: "Nothing else is needed from you. Ask again and it will start fresh.",
       tone: "bad",
       isSettled: true,
+      elapsedLabel: null,
     };
   }
+
+  const elapsedMs = createNowElapsedMs(status, timing);
+  const elapsedLabel = elapsedMs === null ? null : formatCreateNowElapsed(elapsedMs);
+
   if (status === "running") {
-    return { headline: "Creating your content...", detail: CREATE_NOW_WAITING_DETAIL, tone: "info", isSettled: false };
+    const isSlow = elapsedMs !== null && elapsedMs >= CREATE_NOW_RUNNING_SLOW_MS;
+    return {
+      headline: isSlow ? CREATE_NOW_RUNNING_SLOW_HEADLINE : "Creating your content...",
+      detail: isSlow ? CREATE_NOW_RUNNING_SLOW_DETAIL : CREATE_NOW_WAITING_DETAIL,
+      tone: "info",
+      isSettled: false,
+      elapsedLabel,
+    };
   }
-  return { headline: "We've got your request. Starting shortly.", detail: CREATE_NOW_WAITING_DETAIL, tone: "info", isSettled: false };
+
+  const isSlow = elapsedMs !== null && elapsedMs >= CREATE_NOW_QUEUED_SLOW_MS;
+  return {
+    headline: isSlow ? CREATE_NOW_QUEUED_SLOW_HEADLINE : "We've got your request. Starting shortly.",
+    detail: isSlow ? CREATE_NOW_QUEUED_SLOW_DETAIL : CREATE_NOW_WAITING_DETAIL,
+    tone: "info",
+    isSettled: false,
+    elapsedLabel,
+  };
 }
 
 // --- status refresh ----------------------------------------------------------------------------
@@ -223,11 +328,24 @@ export function hasCreateNowPackageGraceExpired(state: CreateNowRefreshState): b
 // other waiting states -- tone stays "info", because nothing failed. It is settled, though: there is
 // nothing left to look for, so "Create another" is offered rather than leaving the owner watching a
 // screen that has stopped changing.
-export function describeCreateNowScreenProgress(status: CreativeJobStatus, refresh: CreateNowRefreshState): CreateNowProgress {
+export function describeCreateNowScreenProgress(
+  status: CreativeJobStatus,
+  refresh: CreateNowRefreshState,
+  timing: CreateNowJobTiming,
+): CreateNowProgress {
   if (hasCreateNowPackageGraceExpired(refresh)) {
-    return { headline: CREATE_NOW_PACKAGE_PENDING_HEADLINE, detail: CREATE_NOW_PACKAGE_PENDING_MESSAGE, tone: "info", isSettled: true };
+    // No elapsed time here on purpose. The job itself finished; what is outstanding is a package
+    // write, so a timer counting since created_at or started_at would be measuring the wrong thing
+    // and would read as "still generating" next to copy that says the opposite.
+    return {
+      headline: CREATE_NOW_PACKAGE_PENDING_HEADLINE,
+      detail: CREATE_NOW_PACKAGE_PENDING_MESSAGE,
+      tone: "info",
+      isSettled: true,
+      elapsedLabel: null,
+    };
   }
-  return describeCreateNowProgress(status);
+  return describeCreateNowProgress(status, timing);
 }
 
 // --- current-job recovery ----------------------------------------------------------------------

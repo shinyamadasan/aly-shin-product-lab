@@ -11,6 +11,7 @@ import {
   CREATE_NOW_PACKAGE_PENDING_HEADLINE,
   CREATE_NOW_PACKAGE_PENDING_MESSAGE,
   CREATE_NOW_POLL_INTERVAL_MS,
+  CREATE_NOW_WAITING_DETAIL,
   buildCreateNowRequest,
   describeCreateNowProgress,
   describeCreateNowScreenProgress,
@@ -21,7 +22,16 @@ import {
   shouldPollCreativeJobStatus,
   shouldRefreshCreateNowJob,
   toCreativeFormatHint,
+  CREATE_NOW_QUEUED_SLOW_DETAIL,
+  CREATE_NOW_QUEUED_SLOW_HEADLINE,
+  CREATE_NOW_QUEUED_SLOW_MS,
+  CREATE_NOW_RUNNING_SLOW_DETAIL,
+  CREATE_NOW_RUNNING_SLOW_HEADLINE,
+  CREATE_NOW_RUNNING_SLOW_MS,
+  createNowElapsedMs,
+  formatCreateNowElapsed,
   type CreateNowFormatChoice,
+  type CreateNowJobTiming,
 } from "../src/lib/create-now.ts";
 import { CREATIVE_FORMATS, type CreativeFormat } from "../src/lib/creative-formats.ts";
 import { validateCreativeRequest, buildCreativeInputFromRequest, toIntentJson, fromIntentJson } from "../src/lib/creative-input.ts";
@@ -396,15 +406,27 @@ test("Q. the browser never runs, imports or waits on AI -- it only writes a row 
   assert.doesNotMatch(createNowCode, /creative-ai-executor|ai-orchestrator|runCreativeJobWithExecutors|runMockCreativeJob|claimQueuedCreativeJob|background-worker/);
   assert.doesNotMatch(createNowCode, /anthropic|claude|codex|openai|\bCLI\b/i);
   // The waiting state is entered from the row the insert returned, with no second read and no wait.
-  assert.match(createNowSource, /setJob\(created\.job\);\s*\n\s*setActiveJob\(created\.job\.id\);/);
+  // AH1 adds the clock read between these two, so the waiting state starts counting from the moment
+  // the row exists. The shape asserted is still the same one: straight into waiting, no second read.
+  assert.match(createNowSource, /setJob\(created\.job\);\s*\n\s*setNowMs\(Date\.now\(\)\);\s*\n\s*setActiveJob\(created\.job\.id\);/);
   assert.match(createNowSource, /setIsSubmitting\(false\);\s*\n\s*\n\s*if \(!created\.ok\)/);
 });
 
+// AH1 -- the timing every pre-existing progress test is now read against. Pinned a few seconds in,
+// which is comfortably inside both thresholds, so these tests keep asserting exactly what they always
+// asserted: the copy for each status on a healthy run. The slow paths are owned by the AH1 timing
+// tests further down, where the elapsed time is the subject rather than a fixture detail.
+const AH1_REQUESTED_AT = "2026-08-13T09:00:00.000Z";
+
+function freshTiming(elapsedMs = 5_000): CreateNowJobTiming {
+  return { createdAt: AH1_REQUESTED_AT, startedAt: AH1_REQUESTED_AT, nowMs: Date.parse(AH1_REQUESTED_AT) + elapsedMs };
+}
+
 test("R/S/T/U. every persisted job status has owner-facing copy, and only the terminal two are settled", () => {
-  const queued = describeCreateNowProgress("queued");
-  const running = describeCreateNowProgress("running");
-  const completed = describeCreateNowProgress("completed");
-  const failed = describeCreateNowProgress("failed");
+  const queued = describeCreateNowProgress("queued", freshTiming());
+  const running = describeCreateNowProgress("running", freshTiming());
+  const completed = describeCreateNowProgress("completed", freshTiming());
+  const failed = describeCreateNowProgress("failed", freshTiming());
 
   assert.equal(queued.isSettled, false);
   assert.equal(running.isSettled, false);
@@ -418,13 +440,13 @@ test("R/S/T/U. every persisted job status has owner-facing copy, and only the te
 
   // Every one of the four is covered -- adding a fifth status must not silently fall through.
   for (const status of CREATIVE_JOB_STATUSES) {
-    assert.ok(describeCreateNowProgress(status).headline.length > 0, `${status} has no copy`);
+    assert.ok(describeCreateNowProgress(status, freshTiming()).headline.length > 0, `${status} has no copy`);
   }
 });
 
 test("R/S. the waiting copy is honest about timing and never promises a number of seconds", () => {
   for (const status of ["queued", "running"] as const) {
-    const detail = describeCreateNowProgress(status).detail;
+    const detail = describeCreateNowProgress(status, freshTiming()).detail;
     assert.match(detail, /a minute or two/);
     assert.match(detail, /You can leave this page/);
     assert.doesNotMatch(detail, /\b\d+\s*(seconds|minutes)\b/);
@@ -433,12 +455,181 @@ test("R/S. the waiting copy is honest about timing and never promises a number o
 });
 
 test("R/S/T/U. no internal implementation vocabulary appears in any owner-facing status string", () => {
-  const banned = /creative_ai|creative_job|S3[A-E]|Claude|Codex|schema_invalid|attempt trace|\bRPC\b|worker/i;
+  const banned = /creative_ai|creative_job|S3[A-E]|Claude|Codex|schema_invalid|attempt trace|\bRPC\b|worker|queue|\bjob\b/i;
+  // AH1 adds two more strings to this surface, and they are the ones most tempted to name the
+  // machinery -- "the Creative Worker may be unavailable" is the obvious way to write the slow-queued
+  // case and is exactly what today-product-spec.md §10 forbids. Both timings are checked so the new
+  // copy is held to the same rule as the copy it sits beside.
   for (const status of CREATIVE_JOB_STATUSES) {
-    const progress = describeCreateNowProgress(status);
-    assert.doesNotMatch(progress.headline, banned);
-    assert.doesNotMatch(progress.detail, banned);
+    for (const timing of [freshTiming(), freshTiming(20 * 60 * 1000)]) {
+      const progress = describeCreateNowProgress(status, timing);
+      assert.doesNotMatch(progress.headline, banned);
+      assert.doesNotMatch(progress.detail, banned);
+    }
   }
+});
+
+// --- AH1 §14-17: the owner can tell waiting from generating, and slow from stuck -----------------
+//
+// The incident: a job sat queued for roughly fifteen minutes while the local worker was wedged, and
+// this screen said the same calm sentence for every one of those minutes. Nothing it said was FALSE
+// -- the job really was queued -- but it was silent about the only thing that mattered, which was
+// that nothing had picked the job up and nothing was going to. The owner waited because the screen
+// gave them no reason to stop.
+//
+// Every test below injects its clock. Nothing here waits in real time.
+
+function timingAt(elapsedMs: number, overrides: Partial<CreateNowJobTiming> = {}): CreateNowJobTiming {
+  return { createdAt: AH1_REQUESTED_AT, startedAt: AH1_REQUESTED_AT, nowMs: Date.parse(AH1_REQUESTED_AT) + elapsedMs, ...overrides };
+}
+
+test("AH1-D. queued is NEVER labelled as generating -- the precise lie owner testing caught", () => {
+  // A queued job has started_at = null: no worker has claimed it and nothing is being made. Saying
+  // "Creating your content" over that state is the failure this whole section exists to prevent,
+  // and it must hold at every elapsed time, including long past the slow threshold.
+  for (const elapsed of [0, 30_000, CREATE_NOW_QUEUED_SLOW_MS, 15 * 60 * 1000]) {
+    const queued = describeCreateNowProgress("queued", { createdAt: AH1_REQUESTED_AT, startedAt: "", nowMs: Date.parse(AH1_REQUESTED_AT) + elapsed });
+    assert.doesNotMatch(queued.headline, /creating|generating/i, `queued at ${elapsed}ms claims work is happening`);
+    assert.equal(queued.isSettled, false);
+  }
+
+  // And the two states are genuinely different sentences, not one string reused.
+  assert.notEqual(describeCreateNowProgress("queued", timingAt(0)).headline, describeCreateNowProgress("running", timingAt(0)).headline);
+});
+
+test("AH1-D. a fresh queued job waits calmly; past the threshold it says so", () => {
+  const fresh = describeCreateNowProgress("queued", timingAt(CREATE_NOW_QUEUED_SLOW_MS - 1));
+  assert.equal(fresh.headline, "We've got your request. Starting shortly.");
+  assert.equal(fresh.detail, CREATE_NOW_WAITING_DETAIL);
+
+  // The boundary is inclusive, and it is crossed exactly once.
+  const slow = describeCreateNowProgress("queued", timingAt(CREATE_NOW_QUEUED_SLOW_MS));
+  assert.equal(slow.headline, CREATE_NOW_QUEUED_SLOW_HEADLINE);
+  assert.equal(slow.detail, CREATE_NOW_QUEUED_SLOW_DETAIL);
+
+  // Visibility only (§17): crossing a threshold changes what is SAID and nothing else. The job is
+  // not failed, not cancelled, and still not settled -- this module never writes to job state.
+  assert.equal(slow.tone, "info", "a slow queue is not an error");
+  assert.equal(slow.isSettled, false, "a slow queue must not look finished");
+
+  // P1-1. The only evidence behind this state is elapsed time, so the copy may report elapsed time
+  // and must diagnose nothing else. A queued job waits legitimately while another job generates --
+  // the worker takes one job per run and holds the lock throughout -- so inferring a dead worker,
+  // an unavailable scheduler, or a machine that "can't make content" from queue age would call a
+  // perfectly healthy second request broken.
+  assert.doesNotMatch(slow.detail, /computer|machine|offline|unavailable|not running|asleep|can't be made|cannot be made|check/i);
+  // And it still tells the owner the two things that ARE true and useful.
+  assert.match(slow.detail, /taking longer than usual/i);
+  assert.match(slow.detail, /Nothing is lost/i);
+});
+
+test("AH1-D. a fresh running job generates calmly; past its own, longer threshold it says so", () => {
+  const fresh = describeCreateNowProgress("running", timingAt(CREATE_NOW_RUNNING_SLOW_MS - 1));
+  assert.equal(fresh.headline, "Creating your content...");
+  assert.equal(fresh.detail, CREATE_NOW_WAITING_DETAIL);
+
+  const slow = describeCreateNowProgress("running", timingAt(CREATE_NOW_RUNNING_SLOW_MS));
+  assert.equal(slow.headline, CREATE_NOW_RUNNING_SLOW_HEADLINE);
+  assert.equal(slow.detail, CREATE_NOW_RUNNING_SLOW_DETAIL);
+  assert.equal(slow.tone, "info", "a long generation is not a failure");
+  assert.equal(slow.isSettled, false);
+
+  // A running job is still running: the slow copy must not imply the owner has to do something.
+  assert.doesNotMatch(slow.detail, /try again|refresh|start over/i);
+});
+
+test("AH1-D. the two thresholds are different, and each is measured from its own timestamp", () => {
+  // Queued time runs from when the owner ASKED; running time from when the work STARTED. Measuring
+  // both from created_at would report a fast generation that merely waited in the queue as slow.
+  assert.notEqual(CREATE_NOW_QUEUED_SLOW_MS, CREATE_NOW_RUNNING_SLOW_MS);
+  assert.ok(CREATE_NOW_RUNNING_SLOW_MS > CREATE_NOW_QUEUED_SLOW_MS, "generation is allowed to take longer than pickup");
+
+  const askedAt = "2026-08-13T09:00:00.000Z";
+  const startedAt = "2026-08-13T09:09:00.000Z"; // claimed nine minutes later
+  const nowMs = Date.parse(startedAt) + 10_000; // ten seconds into generation
+
+  // Ten seconds in, this is a healthy fast generation -- even though the row is nine minutes old.
+  const running = describeCreateNowProgress("running", { createdAt: askedAt, startedAt, nowMs });
+  assert.equal(running.headline, "Creating your content...");
+  assert.equal(running.elapsedLabel, "0:10");
+  assert.equal(createNowElapsedMs("running", { createdAt: askedAt, startedAt, nowMs }), 10_000);
+
+  // The same row read while still queued is measured from created_at instead.
+  assert.equal(createNowElapsedMs("queued", { createdAt: askedAt, startedAt: "", nowMs: Date.parse(askedAt) + 42_000 }), 42_000);
+});
+
+test("AH1-D. elapsed time is derived from the persisted timestamps and formatted as m:ss", () => {
+  assert.equal(formatCreateNowElapsed(0), "0:00");
+  assert.equal(formatCreateNowElapsed(9_000), "0:09");
+  assert.equal(formatCreateNowElapsed(42_000), "0:42");
+  assert.equal(formatCreateNowElapsed(78_000), "1:18");
+  assert.equal(formatCreateNowElapsed(600_000), "10:00");
+  // Seconds are floored, never rounded up past the value the timestamps actually support.
+  assert.equal(formatCreateNowElapsed(41_999), "0:41");
+
+  assert.equal(describeCreateNowProgress("queued", timingAt(42_000)).elapsedLabel, "0:42");
+  assert.equal(describeCreateNowProgress("running", timingAt(78_000)).elapsedLabel, "1:18");
+});
+
+test("AH1-D. no timer is shown rather than a wrong one", () => {
+  // A settled job has nothing left to count.
+  assert.equal(describeCreateNowProgress("completed", timingAt(60_000)).elapsedLabel, null);
+  assert.equal(describeCreateNowProgress("failed", timingAt(60_000)).elapsedLabel, null);
+
+  // A running job with no started_at is a contradiction the database should never produce. It is
+  // reported as "no elapsed time" rather than silently measured from created_at instead.
+  assert.equal(describeCreateNowProgress("running", { createdAt: AH1_REQUESTED_AT, startedAt: "", nowMs: Date.parse(AH1_REQUESTED_AT) + 60_000 }).elapsedLabel, null);
+  assert.equal(createNowElapsedMs("running", { createdAt: AH1_REQUESTED_AT, startedAt: "", nowMs: Date.now() }), null);
+
+  // A browser clock behind the database clock produces a negative duration. It must render as
+  // nothing at all -- never "-0:03", and never a wrapped-around reassuring number.
+  assert.equal(createNowElapsedMs("queued", timingAt(-5_000)), null);
+  assert.equal(describeCreateNowProgress("queued", timingAt(-5_000)).elapsedLabel, null);
+  assert.equal(formatCreateNowElapsed(-1), null);
+  assert.equal(formatCreateNowElapsed(Number.NaN), null);
+
+  // An unparseable timestamp is not a reason to guess.
+  assert.equal(createNowElapsedMs("queued", { createdAt: "not-a-date", startedAt: "", nowMs: Date.now() }), null);
+
+  // A negative clock skew must not silently trip a threshold either -- it stays the calm state.
+  assert.equal(describeCreateNowProgress("queued", timingAt(-60 * 60 * 1000)).headline, "We've got your request. Starting shortly.");
+});
+
+test("AH1-D. completed and failed keep their existing terminal states, unaffected by any elapsed time", () => {
+  for (const elapsed of [0, CREATE_NOW_QUEUED_SLOW_MS, CREATE_NOW_RUNNING_SLOW_MS, 60 * 60 * 1000]) {
+    const completed = describeCreateNowProgress("completed", timingAt(elapsed));
+    assert.equal(completed.headline, "Your content is ready.");
+    assert.equal(completed.tone, "good");
+    assert.equal(completed.isSettled, true);
+
+    // §19: a failed job shows a real failure state rather than an infinite spinner, and it says so
+    // without a stack trace, a provider name, or raw CLI output.
+    const failed = describeCreateNowProgress("failed", timingAt(elapsed));
+    assert.equal(failed.headline, "We couldn't create this one.");
+    assert.equal(failed.tone, "bad");
+    assert.equal(failed.isSettled, true);
+    assert.doesNotMatch(failed.detail, /stack|at \w+\(|Error:|token|key|stderr/i);
+  }
+});
+
+test("AH1-D. the clock is read where the job is read, never during render", () => {
+  // React purity: Date.now() in a render body is an impure call that produces unstable output on an
+  // incidental re-render, and this repo's lint enforces the rule. The clock is therefore read in the
+  // same callbacks that already set the job, which also means the elapsed value and the status it
+  // labels always come from the same moment rather than drifting apart.
+  assert.doesNotMatch(createNowSource, /nowMs: Date\.now\(\)/, "the clock must not be read during render");
+  assert.match(createNowSource, /setJob\(jobResult\.job\);\s*\n\s*setNowMs\(Date\.now\(\)\);/, "a refreshed job must refresh the clock");
+  // No second timer was introduced to drive the elapsed value -- the existing poll is the only clock.
+  assert.equal((createNowSource.match(/setTimeout|setInterval/g) ?? []).length, 1, "AH1 must add no timer of its own");
+});
+
+test("AH1-D. polling still covers queued and running, so the threshold copy is actually reached", () => {
+  // §18: the thresholds are worthless if the screen stops looking before they arrive. The existing
+  // poll is reused rather than replaced -- no websocket, no realtime subscription, no new worker.
+  assert.equal(shouldPollCreativeJobStatus("queued"), true);
+  assert.equal(shouldPollCreativeJobStatus("running"), true);
+  assert.ok(CREATE_NOW_POLL_INTERVAL_MS > 0 && CREATE_NOW_POLL_INTERVAL_MS < CREATE_NOW_QUEUED_SLOW_MS, "the poll must tick well inside the queued threshold");
+  assert.doesNotMatch(createNowSource, /WebSocket|realtime|subscribe\(/i);
 });
 
 test("T. a completed job is what causes the package to be read -- nothing reads a package before then", () => {
@@ -517,10 +708,10 @@ test("H. a spent grace window is never described as \"ready\" -- the screen must
     packageMissCount: CREATE_NOW_PACKAGE_GRACE_LOOKS,
   };
 
-  const shown = describeCreateNowScreenProgress("completed", spent);
+  const shown = describeCreateNowScreenProgress("completed", spent, freshTiming());
   // The exact defect this closes: "Your content is ready." sitting directly above "taking longer to
   // show up". Content the owner cannot see is not ready, and the headline has to agree with that.
-  assert.notEqual(shown.headline, describeCreateNowProgress("completed").headline);
+  assert.notEqual(shown.headline, describeCreateNowProgress("completed", freshTiming()).headline);
   assert.doesNotMatch(shown.headline, /ready/i);
   assert.equal(shown.headline, CREATE_NOW_PACKAGE_PENDING_HEADLINE);
   assert.equal(shown.detail, CREATE_NOW_PACKAGE_PENDING_MESSAGE);
@@ -538,8 +729,8 @@ test("H. every state EXCEPT a spent grace window still reports the job's own pro
 
   for (const status of CREATIVE_JOB_STATUSES) {
     assert.deepEqual(
-      describeCreateNowScreenProgress(status, { ...live, status }),
-      describeCreateNowProgress(status),
+      describeCreateNowScreenProgress(status, { ...live, status }, freshTiming()),
+      describeCreateNowProgress(status, freshTiming()),
       `${status} must be reported exactly as before`,
     );
   }
@@ -547,7 +738,7 @@ test("H. every state EXCEPT a spent grace window still reports the job's own pro
   // A completed job whose package DID arrive is genuinely ready, at every point in the window.
   for (let miss = 0; miss <= CREATE_NOW_PACKAGE_GRACE_LOOKS; miss += 1) {
     const arrived = { status: "completed" as const, hasJobError: false, hasPackage: true, hasPackageError: false, packageMissCount: miss };
-    assert.equal(describeCreateNowScreenProgress("completed", arrived).headline, "Your content is ready.");
+    assert.equal(describeCreateNowScreenProgress("completed", arrived, freshTiming()).headline, "Your content is ready.");
   }
 });
 
@@ -572,7 +763,7 @@ test("F. a missing package spends the grace window; a genuinely unreadable one i
   assert.match(createNowSource, /shouldRefreshCreateNowJob\(\{[^}]*packageMissCount[^}]*\}\)/);
   // The expiry reaches the screen through the one function that decides what the screen says, so a
   // spent window cannot be shown and described by two places that could drift apart.
-  assert.match(createNowSource, /describeCreateNowScreenProgress\(job\.status, refreshState\)/);
+  assert.match(createNowSource, /describeCreateNowScreenProgress\(job\.status, refreshState, \{ createdAt: job\.createdAt, startedAt: job\.startedAt, nowMs \}\)/);
   // Starting over resets the window, so a previous job's misses never shorten the next job's grace.
   const another = createNowSource.slice(createNowSource.indexOf("function createAnother()"));
   assert.match(another.slice(0, 600), /setPackageMissCount\(0\)/);
@@ -739,7 +930,7 @@ test("E. a completed day promotes NO second task: the door is quiet, and the suc
 // --- AI/AJ: failure and starting over --------------------------------------------------------------
 
 test("AI. a failed job is never automatically re-queued, and the UI implements no provider retry of its own", () => {
-  const failed = describeCreateNowProgress("failed");
+  const failed = describeCreateNowProgress("failed", freshTiming());
   assert.equal(failed.isSettled, true);
   assert.equal(shouldRefreshCreateNowJob({ status: "failed", hasJobError: false, hasPackage: false, hasPackageError: false, packageMissCount: 0 }), false);
   // Nothing in the component re-submits, retries, or re-runs on failure.
