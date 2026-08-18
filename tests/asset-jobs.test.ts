@@ -10,7 +10,10 @@ import {
 import {
   type GeneratedAssetFileCandidate,
 } from "../src/lib/asset-generation-validation.ts";
+import type { ProductionSpecV1 } from "../src/lib/production-spec.ts";
 import {
+  ASSET_KINDS,
+  EXECUTABLE_ASSET_KINDS,
   buildAssetGenerationSpecForJob,
   buildMockAssetJobResult,
   claimQueuedAssetJobWithAttempt,
@@ -478,11 +481,58 @@ test("isAssetJobWorkerType accepts only mock in this milestone", () => {
   }
 });
 
-test("isAssetKind accepts only image in this milestone", () => {
+// Production MVP Wave A adds "short_video" to the asset-kind vocabulary. This is a structural
+// addition only: ProductionSpecV1 and the candidate validator both need to be able to REPRESENT a
+// video before any wave can produce one. No executor emits a short_video, and the generated-assets
+// bucket still rejects video/mp4 until the authored migration is applied -- see the route
+// executability test below, which is what actually holds that line.
+test("isAssetKind accepts image and short_video in this milestone", () => {
   assert.equal(isAssetKind("image"), true);
-  for (const kind of ["carousel", "reel", "short_video", "story_graphic", ""]) {
+  assert.equal(isAssetKind("short_video"), true);
+  for (const kind of ["carousel", "reel", "story_graphic", ""]) {
     assert.equal(isAssetKind(kind), false);
   }
+});
+
+// --- Wave A activation boundary: the asset-kind half ----------------------------------------------
+//
+// ASSET_KINDS says what the domain can REPRESENT; EXECUTABLE_ASSET_KINDS says what the runtime can
+// actually produce, and only the latter reaches the job-creation API. Reviewer finding P2-1: before
+// this boundary existed, { workerType: "external", assetKind: "short_video" } type-checked, which
+// would have queued a row no executor could honour and no bucket could store.
+type AssetJobCreationOptions = NonNullable<Parameters<typeof createAssetJobForReadyCreativePackage>[2]>;
+
+test("EXECUTABLE_ASSET_KINDS is the strictly narrower, image-only subset of ASSET_KINDS", () => {
+  assert.deepEqual([...EXECUTABLE_ASSET_KINDS], ["image"]);
+  for (const kind of EXECUTABLE_ASSET_KINDS) {
+    assert.equal((ASSET_KINDS as readonly string[]).includes(kind), true, `${kind} must be a real AssetKind`);
+  }
+  // short_video stays REPRESENTABLE and stays NON-EXECUTABLE. Both halves matter: dropping it from
+  // ASSET_KINDS would break ProductionSpecV1 and the candidate validator, and adding it here would
+  // re-open exactly the hole this boundary closes.
+  assert.equal((ASSET_KINDS as readonly string[]).includes("short_video"), true);
+  assert.equal((EXECUTABLE_ASSET_KINDS as readonly string[]).includes("short_video"), false);
+});
+
+test("[type] the job-creation API accepts the one route that is executable today", () => {
+  const executable: AssetJobCreationOptions = { workerType: "external", assetKind: "image" };
+  assert.deepEqual(executable, { workerType: "external", assetKind: "image" });
+});
+
+// COMPILE-TIME regression. Each @ts-expect-error below is load-bearing in both directions: it fails
+// tsc today if the error stops being raised (someone widened the creation API), and it fails tsc
+// tomorrow if the directive is deleted while the error remains. tsconfig includes tests/**, so
+// `npx tsc --noEmit` is what actually enforces this.
+test("[type] the job-creation API rejects every non-executable worker and kind in Wave A", () => {
+  // @ts-expect-error -- no executor emits a short_video in Wave A and the bucket rejects video/mp4
+  const videoKind: AssetJobCreationOptions = { workerType: "external", assetKind: "short_video" };
+  // @ts-expect-error -- image_provider arrives in Wave B with its executor, not before
+  const imageProvider: AssetJobCreationOptions = { workerType: "image_provider", assetKind: "image" };
+  // @ts-expect-error -- remotion arrives in Wave C with its executor, not before
+  const remotion: AssetJobCreationOptions = { workerType: "remotion", assetKind: "image" };
+
+  // Referenced so the bindings are used; the assertions that matter are the three directives above.
+  assert.ok(videoKind && imageProvider && remotion);
 });
 
 test("fromAssetJobRow maps nullable timestamps to empty strings", () => {
@@ -1039,7 +1089,10 @@ test("runAssetJobWithExecutors leaves sourceWorkspace/sourceKind unset for a job
 
 test("runAssetJobWithExecutors passes a generated spec to the executor and never exposes raw Creative Package content", async () => {
   const store = makeClient({ jobs: [assetJobRow()] });
-  const received: { spec: AssetGenerationSpecV1 | null } = { spec: null };
+  // Production MVP Wave A widened AssetJobExecutor's spec parameter to
+  // AssetGenerationSpecV1 | ProductionSpecV1, so the capture reflects the real signature. What the
+  // runner ACTUALLY passes is unchanged and is what this test still pins: an AssetGenerationSpecV1.
+  const received: { spec: AssetGenerationSpecV1 | ProductionSpecV1 | null } = { spec: null };
   const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
     mock: (_job, spec) => {
       received.spec = spec;
@@ -1051,6 +1104,9 @@ test("runAssetJobWithExecutors passes a generated spec to the executor and never
   assert.ok(received.spec);
   const spec = received.spec;
   assert.deepEqual(spec, buildAssetGenerationSpec(fromCreativePackageRow(creativePackageRow()), { assetKind: "image", brandBible: BRAND_BIBLE }));
+  // generationIntent exists only on AssetGenerationSpecV1, so this narrowing is itself the
+  // assertion: Wave A must not have started handing executors the new spec.
+  assert.ok("generationIntent" in spec, "the runner must still pass an AssetGenerationSpecV1 in Wave A -- no executor reads ProductionSpecV1 yet");
   assert.equal(spec.generationIntent.purpose, "marketing-social-feed");
   assert.equal(spec.generationIntent.outcome, "single-image");
   assert.equal(store.jobs[0].status, "completed");
