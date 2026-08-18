@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import type { ChangeEvent as ReactChangeEvent, Dispatch, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
+import type { ChangeEvent as ReactChangeEvent, Dispatch, FormEvent as ReactFormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PostgrestError, Session } from "@supabase/supabase-js";
 import {
@@ -63,6 +63,7 @@ import {
   mapContentDraftRow,
 } from "@/lib/content-drafts";
 import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "@/lib/costing";
+import { buildDuplicateCostingDraft, buildDuplicateIngredientRows } from "@/lib/costing-duplicate";
 import {
   buildMovedManualPackagingLine,
   buildSellingFormatPackagingLinePayload,
@@ -150,6 +151,7 @@ const UNSAVED_COSTING_MESSAGE = "You have unsaved changes in this costing. Leavi
 const UNSAVED_BATCH_MESSAGE = "You have unsaved changes in this batch record. Leaving now will discard them. Continue?";
 const UNSAVED_INGREDIENT_MESSAGE = "You have unsaved changes in this ingredient. Leaving now will discard them. Continue?";
 const UNSAVED_SUPPLY_MESSAGE = "You have unsaved changes in this purchase. Leaving now will discard them. Continue?";
+type CostingWorkspaceMode = "history" | "detail" | "editor";
 
 export default function ProductLab({
   view = "today",
@@ -201,6 +203,11 @@ export default function ProductLab({
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
+  const [duplicatingCostingSource, setDuplicatingCostingSource] = useState<CostingSummary | null>(null);
+  const [duplicateSellingFormats, setDuplicateSellingFormats] = useState<SellingFormat[]>([]);
+  const [duplicateSellingFormatPackagingLines, setDuplicateSellingFormatPackagingLines] = useState<SellingFormatPackagingLine[]>([]);
+  const [costingWorkspaceMode, setCostingWorkspaceMode] = useState<CostingWorkspaceMode>("history");
+  const [viewingCostingId, setViewingCostingId] = useState<string | null>(null);
   // Whichever protected form currently has unsaved changes, if any -- fed by that form's own
   // onDirtyChange, consumed by AppShell's generic navigation guard and by same-page discard actions
   // (Recent Entries' Edit, Cancel edit, and their equivalents for other forms as they adopt this).
@@ -970,9 +977,32 @@ export default function ProductLab({
   async function saveCosting(formData: FormData) {
     const costingId = String(formData.get("id") || "");
     const productId = String(formData.get("productId"));
-    const batchId = String(formData.get("batchId") || "");
+    let batchId = String(formData.get("batchId") || "");
+    const duplicateSourceBatchId = String(formData.get("duplicateSourceBatchId") || "");
+    const duplicateBatchVersion = String(formData.get("duplicateBatchVersion") || "").trim();
+    const isDuplicateNewVersionSave = Boolean(duplicateSourceBatchId);
+    const duplicateSourceBatch = duplicateSourceBatchId ? labState.batches.find((batch) => batch.id === duplicateSourceBatchId) : null;
+    const duplicateBatchId = isDuplicateNewVersionSave ? crypto.randomUUID() : "";
 
-    if (isBatchProductMismatch(labState.batches, { productId, batchId })) {
+    if (isDuplicateNewVersionSave) {
+      if (!duplicateSourceBatch || duplicateSourceBatch.productId !== productId) {
+        setMessage("The source batch for this duplicate was not found. Return to history and try again.");
+        setMessageTone("bad");
+        return;
+      }
+      if (!duplicateBatchVersion) {
+        setMessage("Enter a new batch/version name before saving this duplicate.");
+        setMessageTone("bad");
+        return;
+      }
+      const conflictingBatch = findConflictingBatch(labState.batches, { batchId: duplicateBatchId, productId, batchVersion: duplicateBatchVersion });
+      if (conflictingBatch) {
+        setMessage(`"${batchDisplayName(productId, conflictingBatch.batchVersion, labState.products)}" already exists for this product. Use a different version name.`);
+        setMessageTone("bad");
+        return;
+      }
+      batchId = duplicateBatchId;
+    } else if (isBatchProductMismatch(labState.batches, { productId, batchId })) {
       setMessage("This batch does not belong to the selected product. Refresh and try again.");
       setMessageTone("bad");
       return;
@@ -1158,7 +1188,86 @@ export default function ProductLab({
       suggestedPrice: Number(formData.get("suggestedPrice") || 0),
       notes: [baseNotes, yieldNotes, utilityNotes, gasNotes, electricityNotes, waterNotes, structuredNotes].filter(Boolean).join("\n"),
     };
+    const duplicateBatch: ProductBatch | null = isDuplicateNewVersionSave && duplicateSourceBatch
+      ? {
+          id: duplicateBatchId,
+          productId,
+          batchVersion: duplicateBatchVersion,
+          status: "draft",
+          completedAt: "",
+          voidedAt: "",
+          voidReason: "",
+          dateMade: getToday(),
+          ingredientsNotes: duplicateSourceBatch.ingredientsNotes,
+          prepTimeMinutes: duplicateSourceBatch.prepTimeMinutes,
+          bakeTimeMinutes: duplicateSourceBatch.bakeTimeMinutes,
+          coolingTimeMinutes: duplicateSourceBatch.coolingTimeMinutes,
+          usablePieces: duplicateSourceBatch.usablePieces,
+          imperfectPieces: 0,
+          stressLevel: 3,
+          tasteNotes: "",
+          textureNotes: "",
+          wentWrong: "",
+          improveNext: "",
+          launchDecision: "retest",
+        }
+      : null;
     if (supabase && session) {
+      if (duplicateBatch) {
+        const { error } = await supabase.rpc("create_batch_with_costing", {
+          p_batch: {
+            id: duplicateBatch.id,
+            product_id: duplicateBatch.productId,
+            batch_version: duplicateBatch.batchVersion,
+            date_made: duplicateBatch.dateMade,
+            ingredients_notes: duplicateBatch.ingredientsNotes,
+            prep_time_minutes: duplicateBatch.prepTimeMinutes,
+            bake_time_minutes: duplicateBatch.bakeTimeMinutes,
+            cooling_time_minutes: duplicateBatch.coolingTimeMinutes,
+            usable_pieces: duplicateBatch.usablePieces,
+            imperfect_pieces: duplicateBatch.imperfectPieces,
+            stress_level: duplicateBatch.stressLevel,
+            taste_notes: duplicateBatch.tasteNotes,
+            texture_notes: duplicateBatch.textureNotes,
+            went_wrong: duplicateBatch.wentWrong,
+            improve_next: duplicateBatch.improveNext,
+            launch_decision: duplicateBatch.launchDecision,
+            status: duplicateBatch.status,
+            completed_at: null,
+            voided_at: null,
+            void_reason: null,
+          },
+          p_costing: buildCostingSummaryPayload(costing),
+          p_costing_entries: ingredientRows.map((row) => ({
+            id: row.id,
+            product_id: row.productId,
+            batch_id: row.batchId || null,
+            ingredient_name: row.ingredientName,
+            quantity_used: row.quantityUsed,
+            unit: row.unit,
+            cost: row.cost,
+            supplier_note: row.supplierNote,
+          })),
+          p_selling_formats: sellingFormats.map(buildSellingFormatPayload),
+          p_selling_format_packaging_lines: sellingFormatPackagingLines.map(buildSellingFormatPackagingLinePayload),
+        });
+        if (error) {
+          setMessage(isDuplicateKeyError(error) ? `"${batchDisplayName(productId, duplicateBatchVersion, labState.products)}" already exists for this product. Use a different version name.` : `Duplicate save failed: ${error.message}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+        setMessage("New version and costing saved.");
+        setMessageTone("good");
+        setEditingCosting(null);
+        setDuplicatingCostingSource(null);
+        setDuplicateSellingFormats([]);
+        setDuplicateSellingFormatPackagingLines([]);
+        setViewingCostingId(costingSummaryId);
+        setCostingWorkspaceMode("detail");
+        await loadSupabaseData();
+        return;
+      }
       // Scoped by batch (not just product) so saving one batch's costing can't wipe the
       // ingredient rows belonging to a sibling costing for a different batch of the same
       // product. Legacy costings with no batch link fall back to the old product-only scope,
@@ -1261,6 +1370,11 @@ export default function ProductLab({
       setMessage(costingId ? "Costing updated." : "Costing saved.");
       setMessageTone("good");
       setEditingCosting(null);
+      setDuplicatingCostingSource(null);
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
+      setViewingCostingId(costingSummaryId);
+      setCostingWorkspaceMode("detail");
       await loadSupabaseData();
       return;
     }
@@ -1272,12 +1386,18 @@ export default function ProductLab({
     setLabState((current) => ({
       ...current,
       costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => !matchesThisCosting(entry))],
+      batches: duplicateBatch ? [duplicateBatch, ...current.batches] : current.batches,
       costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => !matchesThisCosting(entry))],
       sellingFormats: replaceSellingFormatsForCosting(current.sellingFormats, costingSummaryId, sellingFormats),
       sellingFormatPackagingLines: replaceSellingFormatPackagingLinesForCosting(current.sellingFormatPackagingLines, existingSellingFormatIdsForThisCostingLocal, sellingFormatPackagingLines),
     }));
     setEditingCosting(null);
-    setMessage(costingId ? "Costing updated locally." : "Costing saved locally.");
+    setDuplicatingCostingSource(null);
+    setDuplicateSellingFormats([]);
+    setDuplicateSellingFormatPackagingLines([]);
+    setViewingCostingId(costingSummaryId);
+    setCostingWorkspaceMode("detail");
+    setMessage(duplicateBatch ? "New version and costing saved locally." : costingId ? "Costing updated locally." : "Costing saved locally.");
     setMessageTone("good");
   }
 
@@ -1299,6 +1419,15 @@ export default function ProductLab({
       if (!error && editingCosting?.id === costing.id) {
         setEditingCosting(null);
       }
+      if (!error && viewingCostingId === costing.id) {
+        setViewingCostingId(null);
+        setCostingWorkspaceMode("history");
+      }
+      if (!error && duplicatingCostingSource?.id === costing.id) {
+        setDuplicatingCostingSource(null);
+        setDuplicateSellingFormats([]);
+        setDuplicateSellingFormatPackagingLines([]);
+      }
       await loadSupabaseData();
       return;
     }
@@ -1319,6 +1448,15 @@ export default function ProductLab({
     });
     if (editingCosting?.id === costing.id) {
       setEditingCosting(null);
+    }
+    if (viewingCostingId === costing.id) {
+      setViewingCostingId(null);
+      setCostingWorkspaceMode("history");
+    }
+    if (duplicatingCostingSource?.id === costing.id) {
+      setDuplicatingCostingSource(null);
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
     }
     setMessage("Costing deleted locally.");
     setMessageTone("good");
@@ -2593,6 +2731,11 @@ export default function ProductLab({
   function cancelCostingEdit() {
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(null);
+      setDuplicatingCostingSource(null);
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
+      setActiveUnsavedForm(null);
+      setCostingWorkspaceMode(viewingCostingId ? "detail" : "history");
     }
   }
 
@@ -2602,6 +2745,61 @@ export default function ProductLab({
     }
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(costingToEdit);
+      setDuplicatingCostingSource(null);
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
+      setViewingCostingId(costingToEdit.id);
+      setCostingWorkspaceMode("editor");
+      setActiveUnsavedForm(null);
+    }
+  }
+
+  function newCostingWithGuard() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingCosting(null);
+      setDuplicatingCostingSource(null);
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
+      setViewingCostingId(null);
+      setCostingWorkspaceMode("editor");
+      setActiveUnsavedForm(null);
+    }
+  }
+
+  function duplicateCostingWithGuard(costingToDuplicate: CostingSummary) {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      const draft = buildDuplicateCostingDraft(costingToDuplicate, labState.sellingFormats, labState.sellingFormatPackagingLines);
+      setEditingCosting(draft.costing);
+      setDuplicatingCostingSource(draft.source);
+      setDuplicateSellingFormats(draft.sellingFormats);
+      setDuplicateSellingFormatPackagingLines(draft.sellingFormatPackagingLines);
+      setViewingCostingId(costingToDuplicate.id);
+      setCostingWorkspaceMode("editor");
+      setActiveUnsavedForm(null);
+    }
+  }
+
+  function viewCostingWithGuard(costingToView: CostingSummary) {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingCosting(null);
+      setDuplicatingCostingSource(null);
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
+      setViewingCostingId(costingToView.id);
+      setCostingWorkspaceMode("detail");
+      setActiveUnsavedForm(null);
+    }
+  }
+
+  function showCostingHistoryWithGuard() {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingCosting(null);
+      setDuplicatingCostingSource(null);
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
+      setViewingCostingId(null);
+      setCostingWorkspaceMode("history");
+      setActiveUnsavedForm(null);
     }
   }
 
@@ -2713,12 +2911,26 @@ export default function ProductLab({
           ) : null}
 
           {view === "costing" ? (
-            <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
-              <div className="space-y-5">
-                <CostingGuide />
-                <RecentEntries deleteCosting={deleteCosting} editCosting={editCostingWithGuard} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
-              </div>
+            <section className="grid gap-5" id="costing">
+              <CostingWorkspace
+                costings={labState.costings}
+                deleteCosting={deleteCosting}
+                duplicateCosting={duplicateCostingWithGuard}
+                editCosting={editCostingWithGuard}
+                ingredientEntries={labState.costingEntries}
+                labState={labState}
+                message={message}
+                messageTone={messageTone}
+                mode={costingWorkspaceMode}
+                newCosting={newCostingWithGuard}
+                selectedCostingId={viewingCostingId}
+                showHistory={showCostingHistoryWithGuard}
+                viewCosting={viewCostingWithGuard}
+              />
+              {costingWorkspaceMode === "editor" ? (
+                <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} duplicateSource={duplicatingCostingSource} duplicateSellingFormatPackagingLines={duplicateSellingFormatPackagingLines} duplicateSellingFormats={duplicateSellingFormats} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={duplicatingCostingSource ? `duplicate-${duplicatingCostingSource.id}` : editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
+              ) : null}
+              {costingWorkspaceMode !== "editor" ? <CostingGuide /> : null}
             </section>
           ) : null}
 
@@ -5985,10 +6197,254 @@ function EquipmentNameField({
   );
 }
 
+function CostingWorkspace({
+  costings,
+  deleteCosting,
+  duplicateCosting,
+  editCosting,
+  ingredientEntries,
+  labState,
+  message,
+  messageTone,
+  mode,
+  newCosting,
+  selectedCostingId,
+  showHistory,
+  viewCosting,
+}: {
+  costings: CostingSummary[];
+  deleteCosting: (costing: CostingSummary) => void;
+  duplicateCosting: (costing: CostingSummary) => void;
+  editCosting: (costing: CostingSummary) => void;
+  ingredientEntries: CostingEntry[];
+  labState: LabState;
+  message: string;
+  messageTone: "good" | "bad" | "info";
+  mode: CostingWorkspaceMode;
+  newCosting: () => void;
+  selectedCostingId: string | null;
+  showHistory: () => void;
+  viewCosting: (costing: CostingSummary) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [productFilter, setProductFilter] = useState("all");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const selectedCosting = costings.find((costing) => costing.id === selectedCostingId) ?? null;
+  const isDetailMode = selectedCosting !== null && mode === "detail";
+  const latestCostingIds = new Set<string>();
+  const latestProductIds = new Set<string>();
+
+  for (const costing of costings) {
+    if (costing.productId && !latestProductIds.has(costing.productId)) {
+      latestProductIds.add(costing.productId);
+      latestCostingIds.add(costing.id);
+    }
+  }
+
+  const filteredCostings = costings
+    .filter((costing) => productFilter === "all" || costing.productId === productFilter)
+    .filter((costing) => {
+      const linkedBatch = getCostingLinkedBatch(costing, labState.batches);
+      const haystack = [
+        productName(costing.productId, labState.products),
+        linkedBatch?.batchVersion ?? "",
+        costing.notes,
+      ].join(" ").toLowerCase();
+      return haystack.includes(search.trim().toLowerCase());
+    });
+  const visibleCostings = sortOrder === "newest" ? filteredCostings : [...filteredCostings].reverse();
+
+  return (
+    <section className="rounded-lg border border-[#e1d4c4] bg-white p-5">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Costing and Pricing</p>
+          <h2 className="mt-1 text-2xl font-semibold text-[#231813]">Costing History</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[#6f5a4c]">Saved costings first. Open the calculator only when creating or editing a costing.</p>
+        </div>
+        <button className="h-10 rounded-md bg-[#231813] px-4 text-sm font-semibold text-white" onClick={newCosting} type="button">+ New costing</button>
+      </div>
+      {message && mode !== "editor" ? <div className="mt-4"><MessageBox message={message} tone={messageTone} /></div> : null}
+      {isDetailMode ? (
+        <div className="md:hidden">
+          <CostingDetail costing={selectedCosting} deleteCosting={deleteCosting} duplicateCosting={duplicateCosting} editCosting={editCosting} ingredientEntries={ingredientEntries} labState={labState} showHistory={showHistory} />
+        </div>
+      ) : null}
+      <div className={isDetailMode ? "hidden md:block" : ""}>
+        <div className="mt-5 grid gap-3 md:grid-cols-[1fr_220px_160px]">
+          <Input label="Search" name="costingHistorySearch" placeholder="Product, batch, or note" value={search} onChange={(event) => setSearch(event.target.value)} />
+          <div className="grid grid-cols-1 gap-3 min-[340px]:grid-cols-2 md:contents">
+            <label className="grid min-w-0 gap-1 text-sm font-medium">
+              Product filter
+              <select className="h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3" name="costingProductFilter" value={productFilter} onChange={(event) => setProductFilter(event.target.value)}>
+                <option value="all">All products</option>
+                {labState.products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+              </select>
+            </label>
+            <label className="grid min-w-0 gap-1 text-sm font-medium">
+              Sort
+              <select className="h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3" name="costingSortOrder" value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div className="mt-5 overflow-x-auto rounded-md border border-[#ead9c8]">
+          <table className="hidden w-full text-sm md:table">
+            <thead>
+              <tr className="border-b border-[#ead9c8] bg-[#fffaf3] text-left text-xs uppercase tracking-wide text-[#9a5b2f]">
+                <th className="px-3 py-2">Product</th>
+                <th className="px-3 py-2">Batch</th>
+                <th className="px-3 py-2">Batch cost</th>
+                <th className="px-3 py-2">Yield</th>
+                <th className="px-3 py-2">Unit cost</th>
+                <th className="px-3 py-2">Margin</th>
+                <th className="px-3 py-2">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleCostings.map((costing) => <CostingHistoryRow costing={costing} isLatest={latestCostingIds.has(costing.id)} key={costing.id} labState={labState} onView={() => viewCosting(costing)} />)}
+            </tbody>
+          </table>
+          <div className="divide-y divide-[#ead9c8] md:hidden">
+            {visibleCostings.map((costing) => <CostingHistoryCard costing={costing} isLatest={latestCostingIds.has(costing.id)} key={costing.id} labState={labState} onView={() => viewCosting(costing)} />)}
+          </div>
+          {visibleCostings.length === 0 ? <p className="p-4 text-sm text-[#6f5a4c]">No saved costings match these filters.</p> : null}
+        </div>
+      </div>
+      {selectedCosting && mode === "detail" ? (
+        <div className="hidden md:block">
+          <CostingDetail costing={selectedCosting} deleteCosting={deleteCosting} duplicateCosting={duplicateCosting} editCosting={editCosting} ingredientEntries={ingredientEntries} labState={labState} showHistory={showHistory} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function getCostingLinkedBatch(costing: CostingSummary, batches: ProductBatch[]) {
+  return batches.find((batch) => batch.id === costing.batchId) ?? batches.find((batch) => batch.productId === costing.productId) ?? null;
+}
+
+function getCostingHistoryMetrics(costing: CostingSummary, batches: ProductBatch[]) {
+  const totals = getCostingTotals(costing);
+  const linkedBatch = getCostingLinkedBatch(costing, batches);
+  const costingYield = totals.costingYield || linkedBatch?.usablePieces || 0;
+  const metrics = getCostingMetrics({
+    costingYield,
+    directCost: totals.directCost,
+    indirectCost: totals.indirectCost,
+    suggestedPrice: costing.suggestedPrice,
+    targetFoodCost: totals.targetFoodCost,
+    totalBatchCost: totals.totalBatchCost,
+  });
+  return { linkedBatch, metrics, totals, costingYield };
+}
+
+function CostingHistoryRow({ costing, isLatest, labState, onView }: { costing: CostingSummary; isLatest: boolean; labState: LabState; onView: () => void }) {
+  const { linkedBatch, metrics, totals, costingYield } = getCostingHistoryMetrics(costing, labState.batches);
+  return (
+    <tr className="border-b border-[#ead9c8] last:border-0">
+      <td className="px-3 py-3 font-semibold text-[#5f4a3d]">{productName(costing.productId, labState.products)} {isLatest ? <Tag tone="green">Latest</Tag> : null}</td>
+      <td className="px-3 py-3">{linkedBatch?.batchVersion || "Unlinked"}</td>
+      <td className="px-3 py-3">PHP {totals.totalBatchCost.toFixed(2)}</td>
+      <td className="px-3 py-3">{costingYield || "Need yield"}</td>
+      <td className="px-3 py-3">{formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`)}</td>
+      <td className="px-3 py-3">{formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`)}</td>
+      <td className="px-3 py-3"><button className="text-sm font-semibold text-[#8f5632] underline" onClick={onView} type="button">View</button></td>
+    </tr>
+  );
+}
+
+function CostingHistoryCard({ costing, isLatest, labState, onView }: { costing: CostingSummary; isLatest: boolean; labState: LabState; onView: () => void }) {
+  const { linkedBatch, metrics, totals, costingYield } = getCostingHistoryMetrics(costing, labState.batches);
+  const unitCostLabel = formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`);
+  return (
+    <button aria-label={`View ${productName(costing.productId, labState.products)} ${linkedBatch?.batchVersion || "unlinked batch"} costing. Unit cost ${unitCostLabel}.`} className="grid w-full grid-cols-[1fr_auto] gap-3 bg-white px-3 py-2.5 text-left active:bg-[#fff2d8]" onClick={onView} type="button">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-base font-semibold leading-5 text-[#231813]">{productName(costing.productId, labState.products)}</p>
+          {isLatest ? <span className="shrink-0"><Tag tone="green">Latest</Tag></span> : null}
+        </div>
+        <p className="mt-0.5 truncate text-sm font-semibold leading-5 text-[#8f5632]" title={linkedBatch?.batchVersion || "Unlinked"}>{linkedBatch?.batchVersion || "Unlinked"}</p>
+        <p className="mt-1 text-xs leading-4 text-[#6f5a4c]">Batch PHP {totals.totalBatchCost.toFixed(2)} · Yield {costingYield || "Need yield"}</p>
+      </div>
+      <div className="w-[96px] shrink-0 text-right">
+        <p className="text-base font-semibold leading-5 text-[#231813]">{unitCostLabel}</p>
+        <p className="mt-1 text-xs leading-4 text-[#6f5a4c]">{formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}% margin`)}</p>
+      </div>
+    </button>
+  );
+}
+
+function CostingDetail({ costing, deleteCosting, duplicateCosting, editCosting, ingredientEntries, labState, showHistory }: { costing: CostingSummary; deleteCosting: (costing: CostingSummary) => void; duplicateCosting: (costing: CostingSummary) => void; editCosting: (costing: CostingSummary) => void; ingredientEntries: CostingEntry[]; labState: LabState; showHistory: () => void }) {
+  const { linkedBatch, metrics, totals, costingYield } = getCostingHistoryMetrics(costing, labState.batches);
+  const savedIngredients = ingredientEntries.filter((entry) => (costing.batchId ? entry.batchId === costing.batchId : entry.productId === costing.productId && !entry.batchId));
+  return (
+    <section className="mt-5 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Costing Detail</p>
+          <h3 className="mt-1 text-xl font-semibold text-[#231813]">{costingDisplayName(costing, labState.products, labState.batches)}</h3>
+          <p className="mt-1 text-sm text-[#6f5a4c]">Read-only saved breakdown. Editing requires the explicit action below.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <SecondaryButton onClick={showHistory}>← Costing History</SecondaryButton>
+          <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => duplicateCosting(costing)} type="button">Duplicate as new version</button>
+          <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editCosting(costing)} type="button">Edit costing</button>
+          <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Delete ${costingDisplayName(costing, labState.products, labState.batches)}?`) ? deleteCosting(costing) : undefined} type="button">Delete</button>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
+        <CostingMetric featured label="Batch cost" value={`PHP ${totals.totalBatchCost.toFixed(2)}`} />
+        <CostingMetric featured label="Cost per piece" value={formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`)} />
+        <CostingMetric label="Selling price" value={`PHP ${costing.suggestedPrice.toFixed(2)}`} />
+        <CostingMetric featured label="Operating margin" value={formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`)} />
+      </div>
+      <div className="mt-4 grid gap-3 rounded-md border border-[#ead9c8] bg-white p-3 text-sm text-[#5f4a3d] sm:grid-cols-4">
+        <p><span className="block text-xs text-[#8a6a54]">Product</span>{productName(costing.productId, labState.products)}</p>
+        <p><span className="block text-xs text-[#8a6a54]">Batch</span>{linkedBatch?.batchVersion || "Unlinked"}</p>
+        <p><span className="block text-xs text-[#8a6a54]">Yield</span>{costingYield || "Need yield"}</p>
+        <p><span className="block text-xs text-[#8a6a54]">Target food cost</span>{totals.targetFoodCost ? `${(totals.targetFoodCost * 100).toFixed(1)}%` : "Not set"}</p>
+        <CostingBreakdown label="Ingredients" value={costing.ingredientCost} />
+        <CostingBreakdown label="Packaging" value={costing.packagingCost} />
+        <CostingBreakdown label="Labor" value={costing.laborEstimate} />
+        <CostingBreakdown label="Utilities" value={totals.utilityTotal} />
+        <CostingBreakdown label="Waste" value={costing.wasteAllowance} />
+        <CostingBreakdown label="Overhead" value={costing.overheadCost} />
+        <CostingBreakdown label="Equipment" value={costing.equipmentCost} />
+        <CostingBreakdown label="Total" value={totals.totalBatchCost} />
+      </div>
+      <div className="mt-4 rounded-md border border-[#ead9c8] bg-white p-3">
+        <p className="text-sm font-semibold text-[#5f4a3d]">Ingredients</p>
+        {savedIngredients.length === 0 ? <p className="mt-2 text-sm text-[#6f5a4c]">No ingredient rows saved for this costing.</p> : null}
+        <div className="mt-2 grid gap-2">
+          {savedIngredients.map((entry) => (
+            <div className="grid gap-2 rounded-md border border-[#ead9c8] bg-[#fffaf3] p-2 text-sm text-[#5f4a3d] sm:grid-cols-[1fr_100px_110px]" key={entry.id}>
+              <p className="font-semibold">{entry.brandName ? `${entry.brandName} ` : ""}{entry.ingredientName}</p>
+              <p>{entry.quantityUsed || 0} {entry.unit}</p>
+              <p>PHP {entry.cost.toFixed(2)}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+      {getCostingBaseNotes(costing.notes) ? (
+        <div className="mt-4 rounded-md border border-[#ead9c8] bg-white p-3 text-sm leading-6 text-[#5f4a3d]">
+          <p className="font-semibold">Notes</p>
+          <p className="mt-1 whitespace-pre-wrap">{getCostingBaseNotes(costing.notes)}</p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function CostingForm({
   cancelEdit,
   batches,
   costing,
+  duplicateSource,
+  duplicateSellingFormatPackagingLines,
+  duplicateSellingFormats,
   equipment,
   ingredientEntries,
   ingredients,
@@ -6005,6 +6461,9 @@ function CostingForm({
   batches: ProductBatch[];
   cancelEdit: () => void;
   costing: CostingSummary | null;
+  duplicateSource: CostingSummary | null;
+  duplicateSellingFormatPackagingLines: SellingFormatPackagingLine[];
+  duplicateSellingFormats: SellingFormat[];
   equipment: EquipmentEntry[];
   ingredientEntries: CostingEntry[];
   ingredients: Ingredient[];
@@ -6039,9 +6498,17 @@ function CostingForm({
   const savedIngredients = costing
     ? ingredientEntries.filter((entry) => (costing.batchId ? entry.batchId === costing.batchId : entry.productId === costing.productId && !entry.batchId))
     : [];
-  const existingSellingFormats = costing ? sellingFormats.filter((format) => format.costingId === costing.id) : [];
+  const isDuplicateDraft = Boolean(duplicateSource);
+  const duplicateSourceName = duplicateSource ? costingDisplayName(duplicateSource, products, batches) : "";
+  const duplicateSourceBatch = duplicateSource ? batches.find((batch) => batch.id === duplicateSource.batchId) : null;
+  const [duplicateBatchVersion, setDuplicateBatchVersion] = useState("");
+  const duplicateVersionConflict = duplicateSource
+    ? findConflictingBatch(batches, { batchId: "", productId: duplicateSource.productId, batchVersion: duplicateBatchVersion })
+    : null;
+  const isDuplicateSaveBlocked = Boolean(duplicateSource && (!duplicateBatchVersion.trim() || duplicateVersionConflict));
+  const existingSellingFormats = isDuplicateDraft ? duplicateSellingFormats : costing ? sellingFormats.filter((format) => format.costingId === costing.id) : [];
   const existingSellingFormatIds = new Set(existingSellingFormats.map((format) => format.id));
-  const existingSellingFormatPackagingLines = sellingFormatPackagingLines.filter((line) => existingSellingFormatIds.has(line.sellingFormatId));
+  const existingSellingFormatPackagingLines = isDuplicateDraft ? duplicateSellingFormatPackagingLines : sellingFormatPackagingLines.filter((line) => existingSellingFormatIds.has(line.sellingFormatId));
   const structuredDetail = getCostingStructuredDetail(costing?.notes ?? "");
   // A brand-new costing has nothing saved yet to protect, so it starts pre-filled from the
   // selected batch's formula (auto-costed against purchase history) instead of a blank row -- the "Use
@@ -6049,7 +6516,9 @@ function CostingForm({
   // auto-importing would risk silently overwriting rows the user already priced/edited.
   const [ingredientRows, setIngredientRows] = useState<CostingIngredientRow[]>(() => {
     if (savedIngredients.length > 0) {
-      return savedIngredients.map((entry) => ({ ...entry, rowId: entry.id }));
+      return isDuplicateDraft
+        ? buildDuplicateIngredientRows(savedIngredients, supplies, ingredients)
+        : savedIngredients.map((entry) => ({ ...entry, rowId: entry.id }));
     }
 
     const formulaRows = parseBatchIngredients(selectedBatch?.ingredientsNotes ?? "")
@@ -6545,15 +7014,30 @@ function CostingForm({
     );
   }
 
+  function blockDuplicateSourceBatchSubmit(event: ReactFormEvent<HTMLFormElement>) {
+    if (isDuplicateSaveBlocked) {
+      event.preventDefault();
+      setLocalMessage(duplicateVersionConflict ? "That batch/version already exists for this product. Enter a different version name." : "Enter a new batch/version name before saving this duplicate.");
+      setLocalMessageTone("bad");
+    }
+  }
+
   return (
-    <FormPanel ref={editorRef} title={costing ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
-      {costing ? (
+    <FormPanel ref={editorRef} title={costing?.id ? "Edit costing" : "Save costing summary"} icon={<Sparkles size={18} />}>
+      {duplicateSource ? (
+        <div className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm text-[#7a531d]">
+          <p className="font-semibold">New version · Based on {duplicateSourceName}</p>
+          <p className="mt-1 leading-5">
+            Formula and costing structure are copied from {duplicateSourceBatch?.batchVersion ?? "the source batch"}. Enter the new version name, make changes, then save both records together.
+          </p>
+        </div>
+      ) : costing?.id ? (
         <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
           Editing: {costingDisplayName(costing, products, batches)}
         </p>
       ) : null}
       {appliedMessage ? <MessageBox message={appliedMessage} tone={appliedMessageTone} /> : null}
-      <form action={saveCosting} className="grid gap-3">
+      <form action={saveCosting} className="grid gap-3" onSubmit={blockDuplicateSourceBatchSubmit}>
         <input name="id" type="hidden" value={costing?.id ?? ""} />
         <input name="ingredientRowIds" type="hidden" value={ingredientRows.map((row) => row.rowId).join(",")} />
         <input name="utilityRowIds" type="hidden" value={utilityRows.map((row) => row.rowId).join(",")} />
@@ -6564,20 +7048,39 @@ function CostingForm({
         <input name="sellingFormatRowIds" type="hidden" value={formatRows.map((format) => format.id).join(",")} />
         <input name="productId" type="hidden" value={selectedProductId} />
         <input name="batchId" type="hidden" value={selectedBatchId} />
-        <label className="grid gap-1 text-sm font-medium">
-          Product batch
-          {batchesByProduct.length > 0 ? (
-            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => changeBatch(event.target.value)} ref={fieldRef} value={selectedBatchId}>
-              {batchesByProduct.map((group) => (
-                <optgroup key={group.product.id} label={group.product.name}>
-                  {group.productBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.batchVersion}</option>)}
-                </optgroup>
-              ))}
-            </select>
-          ) : (
-            <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">No proof batches yet — record one on Proof Day first.</p>
-          )}
-        </label>
+        {duplicateSource ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-1 text-sm font-medium">
+              Based on
+              <p className="flex min-h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#5f4a3d]">{duplicateSourceName}</p>
+            </div>
+            <Input
+              name="duplicateBatchVersion"
+              label="New version"
+              placeholder="Brownies V7"
+              required
+              value={duplicateBatchVersion}
+              onChange={(event) => setDuplicateBatchVersion(event.target.value)}
+              helper={duplicateVersionConflict ? "That version already exists for this product." : "Enter the new batch/version name. No automatic V7 is created."}
+            />
+            <input name="duplicateSourceBatchId" type="hidden" value={duplicateSource.batchId} />
+          </div>
+        ) : (
+          <label className="grid gap-1 text-sm font-medium">
+            Product batch
+            {batchesByProduct.length > 0 ? (
+              <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => changeBatch(event.target.value)} ref={fieldRef} value={selectedBatchId}>
+                {batchesByProduct.map((group) => (
+                  <optgroup key={group.product.id} label={group.product.name}>
+                    {group.productBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.batchVersion}</option>)}
+                  </optgroup>
+                ))}
+              </select>
+            ) : (
+              <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">No proof batches yet — record one on Proof Day first.</p>
+            )}
+          </label>
+        )}
         <div className="rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -6928,9 +7431,14 @@ function CostingForm({
           )}
         </div>
         <Textarea name="notes" label="Costing notes" placeholder="What is estimated? What supplier price needs confirmation? Is this per batch, per piece, or per box?" onChange={(event) => setNotesValue(event.target.value)} value={notesValue} />
+        {isDuplicateSaveBlocked ? (
+          <p className="rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
+            {duplicateVersionConflict ? "Save is blocked because that version already exists." : "Save is blocked until you enter a new version name."}
+          </p>
+        ) : null}
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button>{costing ? "Update costing" : "Save costing"}</Button>
-          {costing ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+          <Button disabled={isDuplicateSaveBlocked}>{duplicateSource ? "Save new version" : costing?.id ? "Update costing" : "Save costing"}</Button>
+          {costing || duplicateSource ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
         </div>
       </form>
       <CostingPrintReport

@@ -379,7 +379,8 @@ test("[static] both costing_summaries write paths go through the shared payload 
   const lines = toLines(readRepoFile("src/app/product-lab.tsx"));
 
   const builderCall = lines.filter((line) => line.includes("buildCostingSummaryPayload(") && !line.trim().startsWith("//") && !line.includes("import "));
-  assert.equal(builderCall.length, 1, "expected exactly one buildCostingSummaryPayload call site");
+  assert.equal(builderCall.length, 2, "expected normal save and create_batch_with_costing RPC call sites to use buildCostingSummaryPayload");
+  assert.ok(builderCall.some((line) => line.includes("p_costing: buildCostingSummaryPayload(costing)")), "the atomic batch + costing RPC must receive the shared costing payload");
 
   const writes = lines.filter((line) => line.includes('from("costing_summaries")') && (line.includes(".insert(") || line.includes(".update(") || line.includes(".upsert(")));
   assert.equal(writes.length, 2, "expected exactly two costing_summaries write call sites (one insert, one update)");
