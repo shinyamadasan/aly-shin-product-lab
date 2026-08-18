@@ -1,5 +1,9 @@
 import { fromCreativePackageRow, type CreativePackageRecord, type CreativePackageRow } from "./creative-packages.ts";
 import { buildAssetGenerationSpec, type AssetGenerationSpecV1 } from "./asset-generation-spec.ts";
+// Type-only, and deliberately so: production-spec.ts imports AssetKind back from this module, and a
+// value import in either direction would close a runtime cycle. Same resolution, and same reason, as
+// the existing asset-generation-spec.ts <-> asset-jobs.ts pairing directly above.
+import type { ProductionSpecV1 } from "./production-spec.ts";
 import {
   validateGeneratedAssetCandidates,
   type GeneratedAssetFileCandidate,
@@ -22,15 +26,38 @@ export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
 // sourceWorkspace, a separate field on the Asset's own content, not on the job. A real API provider
 // worker type is added additively later (pure-text-union change, no migration) by the milestone
 // that actually wires one up. Mirrors CREATIVE_JOB_WORKER_TYPES' own precedent of listing only
-// what's actually implemented.
+// what's actually implemented -- a precedent Production MVP Wave A deliberately keeps rather than
+// breaks. The Production Route table names two further execution mechanisms for later waves, and
+// they live in production-route.ts, not here, so that this union keeps meaning "runnable today":
+// each later wave adds its member here in the same change that registers its executor, which is
+// what stops a queued row from naming a worker nothing can ever claim.
 export const ASSET_JOB_WORKER_TYPES = ["mock", "external"] as const;
 export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 
-// Only "image" ships in this milestone. Carousel/reel/short_video/story_graphic are each a later,
-// separately-proven `asset_kind` addition -- pure-additive TS union change, no migration, per the
-// approved Asset Generation roadmap.
-export const ASSET_KINDS = ["image"] as const;
+// "short_video" joins "image" in Wave A as a structural asset kind: ProductionSpecV1 and the
+// candidate validator both have to be able to REPRESENT a video before any wave can produce one.
+// Carousel/story_graphic remain later, separately-proven additions -- pure-additive TS union change,
+// no migration, exactly as the original comment here anticipated.
+//
+// Declaring the kind does not make it producible. No executor emits a short_video in Wave A, and the
+// generated-assets bucket still rejects video/mp4 until the authored migration is applied.
+export const ASSET_KINDS = ["image", "short_video"] as const;
 export type AssetKind = (typeof ASSET_KINDS)[number];
+
+// The subset of ASSET_KINDS a registered executor can actually PRODUCE today, and the type the
+// job-creation API accepts.
+//
+// ASSET_KINDS is the domain vocabulary -- what a spec, a route or a candidate may REPRESENT.
+// This is the narrower runtime question: what can be queued and then honoured. Wave A answers
+// "image", because that is the only kind any registered executor emits and the only one the
+// generated-assets bucket admits. Keeping the two apart is what stops a queued row from naming an
+// output nothing can make, in exactly the way ASSET_JOB_WORKER_TYPES already stops one from naming
+// a worker nothing can claim -- the asset-kind half of the same activation boundary.
+//
+// `satisfies` is load-bearing: an executable kind that is not a real AssetKind fails to compile.
+// Each later wave adds its member here in the same change that registers the executor producing it.
+export const EXECUTABLE_ASSET_KINDS = ["image"] as const satisfies readonly AssetKind[];
+export type ExecutableAssetKind = (typeof EXECUTABLE_ASSET_KINDS)[number];
 
 // The three ways a human-sourced (non-API) asset can come to exist -- describes creative origin
 // only. Distinct from worker_type (execution mechanism, above) and from provider/model (reserved
@@ -213,9 +240,16 @@ export type AssetJobResultValidation =
 // The signal is threaded through now, ahead of any real provider, so a future network-calling
 // executor can support real cancellation without another signature change -- mirrors
 // CreativeJobExecutor exactly. Today's only executor (mock) ignores it.
+//
+// Production MVP Wave A widens the SPEC PARAMETER ONLY. Everything else about this seam is
+// deliberately unchanged, because everything else about it is already right: executors still return
+// candidates rather than persisted files, so validation, upload and materialization stay owned by
+// the runner and an executor cannot invent a storage path, skip validation or bypass the attempt
+// lifecycle. Widening the union is what lets a future automated executor read a ProductionSpecV1
+// without a second executor abstraction existing alongside this one.
 export type AssetJobExecutor = (
   job: AssetJobRecord,
-  spec: AssetGenerationSpecV1,
+  spec: AssetGenerationSpecV1 | ProductionSpecV1,
   context: { signal: AbortSignal },
 ) => GeneratedAssetFileCandidate[] | Promise<GeneratedAssetFileCandidate[]>;
 export type AssetJobExecutorMap = Partial<Record<AssetJobWorkerType, AssetJobExecutor>>;
@@ -384,7 +418,10 @@ export function buildMockAssetJobResult(creativePackage: CreativePackageRecord, 
   };
 }
 
-function buildMockGeneratedAssetFileCandidates(spec: AssetGenerationSpecV1): GeneratedAssetFileCandidate[] {
+// Reads nothing but spec.dimensions, which both spec types carry, so widening the parameter costs
+// no branch. The mock stays an IMAGE fixture whatever it is handed -- it is the "no real executor"
+// stand-in, not a second renderer, and giving it a video branch would make it one.
+function buildMockGeneratedAssetFileCandidates(spec: AssetGenerationSpecV1 | ProductionSpecV1): GeneratedAssetFileCandidate[] {
   const bytes = buildMockPngBytes(spec.dimensions.width, spec.dimensions.height);
   return [
     {
@@ -533,7 +570,7 @@ export async function getAssetJobById(client: AssetJobClient, id: string): Promi
 export async function createAssetJobForReadyCreativePackage(
   client: AssetJobClient,
   creativePackageId: string,
-  options: { workerType?: AssetJobWorkerType; assetKind?: AssetKind } = {},
+  options: { workerType?: AssetJobWorkerType; assetKind?: ExecutableAssetKind } = {},
 ): Promise<AssetJobCreateResult> {
   const packageResult = await readCreativePackage(client, creativePackageId);
   if (!packageResult.ok) {
