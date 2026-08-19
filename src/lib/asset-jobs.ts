@@ -3,7 +3,7 @@ import { buildAssetGenerationSpec, type AssetGenerationSpecV1 } from "./asset-ge
 // Type-only, and deliberately so: production-spec.ts imports AssetKind back from this module, and a
 // value import in either direction would close a runtime cycle. Same resolution, and same reason, as
 // the existing asset-generation-spec.ts <-> asset-jobs.ts pairing directly above.
-import type { ProductionSpecV1 } from "./production-spec.ts";
+import { buildProductionSpec, isProductionSpecV1, productionSpecSha256, type ProductionSpecV1 } from "./production-spec.ts";
 import {
   validateGeneratedAssetCandidates,
   type GeneratedAssetFileCandidate,
@@ -15,7 +15,9 @@ import {
   finishAssetJobAttempt,
   type AssetJobAttemptClient,
   type AssetJobAttemptFinishResult,
+  type AssetJobAttemptProvenance,
 } from "./asset-job-attempts.ts";
+import { EXECUTABLE_ASSET_JOB_WORKER_TYPES, resolveProductionRoute, type ProductionRoute } from "./production-route.ts";
 
 export const ASSET_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
@@ -31,7 +33,7 @@ export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
 // they live in production-route.ts, not here, so that this union keeps meaning "runnable today":
 // each later wave adds its member here in the same change that registers its executor, which is
 // what stops a queued row from naming a worker nothing can ever claim.
-export const ASSET_JOB_WORKER_TYPES = ["mock", "external"] as const;
+export const ASSET_JOB_WORKER_TYPES = ["mock", "external", "static_renderer", "generative_image"] as const;
 export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 
 // "short_video" joins "image" in Wave A as a structural asset kind: ProductionSpecV1 and the
@@ -66,6 +68,26 @@ export type ExecutableAssetKind = (typeof EXECUTABLE_ASSET_KINDS)[number];
 // (fabricated product photography vs. a real photo is not a cosmetic difference).
 export const ASSET_SOURCE_KINDS = ["ai_generated", "photograph", "human_designed"] as const;
 export type AssetSourceKind = (typeof ASSET_SOURCE_KINDS)[number];
+
+// The creative origin each MACHINE executor produces, BY CONSTRUCTION.
+//
+// For "external" the origin is a fact only the operator knows -- a real camera photo, a Midjourney
+// render, a hand-built Canva graphic all arrive through the same worker -- so it stays an
+// operator-declared option. For the two machine workers it is not a matter of opinion:
+//
+//   generative_image calls an image model, so its output IS ai_generated and must say so.
+//   static_renderer composes this app's own authored template deterministically and never calls a
+//   model, so labelling it ai_generated would be a lie about provenance in the opposite direction.
+//
+// Derived by the runner from the worker that actually ran, rather than passed as a parameter every
+// call site has to remember, because "the caller forgot" is exactly how a generated illustration ends
+// up materialized with an undefined source kind. For the same reason the derived value WINS over
+// options.sourceKind for these two workers: a machine executor's origin is observed, not declared,
+// and an operator must not be able to relabel a model's output as a photograph.
+export const MACHINE_EXECUTOR_SOURCE_KINDS: Partial<Record<AssetJobWorkerType, AssetSourceKind>> = {
+  generative_image: "ai_generated",
+  static_renderer: "human_designed",
+};
 
 // One ordered file descriptor produced by a completed job. Candidate metadata is structurally
 // validated before this persisted envelope is built, but the dimensions/size remain declared
@@ -247,10 +269,23 @@ export type AssetJobResultValidation =
 // the runner and an executor cannot invent a storage path, skip validation or bypass the attempt
 // lifecycle. Widening the union is what lets a future automated executor read a ProductionSpecV1
 // without a second executor abstraction existing alongside this one.
+// recordProvenance is how an executor tells the runner WHICH PROVIDER AND MODEL it actually used.
+//
+// It is a callback rather than a return value because the runner has to be able to persist it on a
+// FAILED or TIMED-OUT attempt too, and a failing executor never returns anything. An executor calls
+// this at the moment provider and model are settled and a request is about to be made, so:
+//
+//   - a failure after that point still records what was really contacted, which is exactly when
+//     "which model did we call" matters most;
+//   - a failure BEFORE that point (a rejected spec, an invalid reference set) records nothing, and a
+//     null provider then truthfully means no provider was ever contacted.
+//
+// Optional so an executor that contacts no provider -- mock, external, static_renderer -- simply
+// never calls it, and so a direct unit-test invocation need not supply one. The runner always does.
 export type AssetJobExecutor = (
   job: AssetJobRecord,
   spec: AssetGenerationSpecV1 | ProductionSpecV1,
-  context: { signal: AbortSignal },
+  context: { signal: AbortSignal; recordProvenance?: (provenance: AssetJobAttemptProvenance) => void },
 ) => GeneratedAssetFileCandidate[] | Promise<GeneratedAssetFileCandidate[]>;
 export type AssetJobExecutorMap = Partial<Record<AssetJobWorkerType, AssetJobExecutor>>;
 
@@ -516,6 +551,10 @@ export type AssetGenerationSpecResult =
   | { ok: true; spec: AssetGenerationSpecV1 }
   | { ok: false; reason: "unsupported-asset-kind" | "missing-table" | "not-found" | "not-ready" | "failed"; message: string };
 
+export type AssetJobSpecResult =
+  | { ok: true; spec: AssetGenerationSpecV1 | ProductionSpecV1 }
+  | { ok: false; reason: "unsupported-asset-kind" | "missing-table" | "not-found" | "not-ready" | "failed"; message: string };
+
 // The one place a job's spec is resolved -- reused by runAssetJobWithExecutors (post-claim) and by
 // the desktop CLI's export command (pre-claim, read-only). Deliberately takes only the two fields
 // it needs, not a full job, so a pre-claim caller (which has no attempt/status context yet) can call
@@ -548,6 +587,34 @@ export async function buildAssetGenerationSpecForJob(
   }
 }
 
+export async function buildAssetJobSpecForJob(
+  client: AssetJobClient,
+  job: Pick<AssetJobRecord, "creativePackageId" | "assetKind" | "workerType">,
+): Promise<AssetJobSpecResult> {
+  if (!isAssetKind(job.assetKind)) {
+    return { ok: false, reason: "unsupported-asset-kind", message: `Unsupported asset kind: ${job.assetKind}.` };
+  }
+  const assetKind = job.assetKind;
+
+  if (job.workerType !== "static_renderer" && job.workerType !== "generative_image") {
+    return buildAssetGenerationSpecForJob(client, job);
+  }
+
+  const creativePackage = await readCreativePackage(client, job.creativePackageId);
+  if (!creativePackage.ok) {
+    return { ok: false, reason: creativePackage.reason, message: creativePackage.message };
+  }
+  if (creativePackage.creativePackage.status !== "ready") {
+    return { ok: false, reason: "not-ready", message: "Asset Job could not load a ready Creative Package." };
+  }
+
+  try {
+    return { ok: true, spec: buildProductionSpec(creativePackage.creativePackage, { assetKind, brandBible: BRAND_BIBLE }) };
+  } catch (err) {
+    return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function getAssetJobById(client: AssetJobClient, id: string): Promise<AssetJobDetailResult> {
   const result = await client.from("asset_jobs").select<AssetJobRow>("*").eq("id", id).maybeSingle();
   if (result.error) {
@@ -562,6 +629,31 @@ export async function getAssetJobById(client: AssetJobClient, id: string): Promi
   } catch (err) {
     return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+// The executable projection of a ProductionRoute: both halves already narrowed to the runtime types
+// the job-creation API accepts.
+//
+// Deliberately CONSTRUCTED, not asserted. The two values returned are the ones found INSIDE
+// EXECUTABLE_ASSET_JOB_WORKER_TYPES and EXECUTABLE_ASSET_KINDS, so their narrow types come from the
+// executable sets themselves -- there is no `as` here, and no hand-written type predicate whose body
+// TypeScript would have taken on trust. Widen either set and this widens with it; widen neither and
+// no route naming a still-unregistered future worker, or a still-unproducible asset kind, can yield
+// an ExecutableAssetJobRoute at all. (Those future workers are named in production-route.ts, never
+// here -- this module stays free of future-domain technology names, and a static test enforces it.)
+//
+// It lives in this module rather than in production-route.ts because it needs EXECUTABLE_ASSET_KINDS
+// as a VALUE, and production-route.ts imports from here type-only on purpose -- a value import in
+// that direction would close the runtime cycle both files' headers exist to prevent.
+export type ExecutableAssetJobRoute = {
+  workerType: AssetJobWorkerType;
+  assetKind: ExecutableAssetKind;
+};
+
+export function toExecutableAssetJobRoute(route: ProductionRoute): ExecutableAssetJobRoute | null {
+  const workerType = EXECUTABLE_ASSET_JOB_WORKER_TYPES.find((candidate) => candidate === route.workerType);
+  const assetKind = EXECUTABLE_ASSET_KINDS.find((candidate) => candidate === route.assetKind);
+  return workerType && assetKind ? { workerType, assetKind } : null;
 }
 
 // Unlike createCreativeJobForAcceptedOpportunity, there is no "return the existing job instead"
@@ -588,8 +680,32 @@ export async function createAssetJobForReadyCreativePackage(
     };
   }
 
-  const workerType = options.workerType ?? "mock";
-  const assetKind = options.assetKind ?? "image";
+  // THE ACTIVATION INVARIANT.
+  //
+  // The question asked here is about the FINAL PAIR that is about to be inserted, never about the
+  // resolved route alone. That distinction is the whole fix: options may override either half
+  // independently, so a guard that only fired when BOTH were absent let a partial override through --
+  // pass only workerType on a reel package and assetKind still fell back to the route's "short_video",
+  // pass only assetKind and workerType still fell back to that route's unregistered future worker --
+  // and the two casts that followed then laundered those non-executable values into
+  // AssetJobWorkerType / ExecutableAssetKind.
+  // The result was a queued row no runner could ever claim, on a package the owner was told was being
+  // produced.
+  //
+  // toExecutableAssetJobRoute replaces both casts with construction: it can only return values it
+  // took OUT of the executable sets, so there is no path from a non-executable route to an inserted
+  // row, whatever combination of options a caller supplies.
+  const resolvedRoute = resolveProductionRoute(packageResult.creativePackage);
+  const requestedRoute: ProductionRoute = {
+    workerType: options.workerType ?? resolvedRoute.workerType,
+    assetKind: options.assetKind ?? resolvedRoute.assetKind,
+  };
+  const executableRoute = toExecutableAssetJobRoute(requestedRoute);
+  if (!executableRoute) {
+    return { ok: false, reason: "failed", message: `Production route is not executable yet: ${requestedRoute.workerType} + ${requestedRoute.assetKind}.` };
+  }
+
+  const { workerType, assetKind } = executableRoute;
 
   const inserted = await client
     .from("asset_jobs")
@@ -732,7 +848,11 @@ export type AssetJobRunnerOptions = {
   timeoutMs?: number;
   // Operator-declared creative-origin provenance for an external job, threaded straight into the
   // completion envelope's metadata. Never a stand-in for provider/model -- those stay reserved for
-  // a future real API executor and are never set by this option (see PROP-027 P4, retired P3).
+  // a real API executor, on asset_job_attempts, and are never set by this option (see PROP-027 P4,
+  // retired P3).
+  //
+  // sourceKind is IGNORED for the machine workers in MACHINE_EXECUTOR_SOURCE_KINDS: their creative
+  // origin is a fact the runner observes from the executor that ran, not something a caller declares.
   sourceWorkspace?: string;
   sourceKind?: AssetSourceKind;
 };
@@ -753,6 +873,14 @@ export async function runAssetJobWithExecutors(
   const job = claimed.job;
   const attemptId = claimed.attemptId;
 
+  // Whatever the executor reported about the provider it actually contacted, if it contacted one.
+  //
+  // Declared HERE, before the executor runs, so both terminal paths below can read it: an attempt
+  // that reached a provider and then failed or timed out records the same provider/model a
+  // successful one would. It stays undefined when no provider was ever selected, and undefined is
+  // what makes "no provider was contacted" a truthful stored answer rather than a guess.
+  let attemptProvenance: AssetJobAttemptProvenance | undefined;
+
   // Job-first, attempt-second: if the process crashes between the two writes below, the job is
   // already correctly terminal (everything that matters -- Asset materialization -- gates on the
   // job, not the attempt) and only the attempt is left cosmetically stale. Mirrors
@@ -766,6 +894,7 @@ export async function runAssetJobWithExecutors(
     const attempt = await finishAssetJobAttempt(client, attemptId, attemptOutcome, {
       errorCode: attemptOutcome === "timed_out" ? "timeout" : "failed",
       errorMessage: jobResult.message,
+      provenance: attemptProvenance,
     });
     return { ...jobResult, reason, attempt };
   }
@@ -786,7 +915,7 @@ export async function runAssetJobWithExecutors(
   // ready case -- even though the resolution itself now lives in one shared place. Selecting on
   // reason, never on message text, so this can never silently drift from
   // buildAssetGenerationSpecForJob's own, more specific messages.
-  const specResult = await buildAssetGenerationSpecForJob(client, job);
+  const specResult = await buildAssetJobSpecForJob(client, job);
   if (!specResult.ok) {
     const usesGenericMessage = specResult.reason === "not-found" || specResult.reason === "missing-table" || specResult.reason === "not-ready";
     return failJobAndAttempt(usesGenericMessage ? "Asset Job could not load a ready Creative Package." : specResult.message);
@@ -808,7 +937,14 @@ export async function runAssetJobWithExecutors(
         reject(new Error(`Asset Job execution exceeded ${timeoutMs}ms timeout.`));
       }, timeoutMs);
 
-      Promise.resolve(executor(job, spec, { signal: controller.signal })).then(
+      Promise.resolve(
+        executor(job, spec, {
+          signal: controller.signal,
+          recordProvenance: (provenance) => {
+            attemptProvenance = provenance;
+          },
+        }),
+      ).then(
         (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -841,17 +977,40 @@ export async function runAssetJobWithExecutors(
 
   const { materializeAssetJobFiles } = await import("./asset-file-materialization.ts");
   const { briefSha256 } = await import("./asset-generation-brief.ts");
+
+  // TRANSITIONAL NAMING, stated plainly rather than papered over.
+  //
+  // The persisted columns are still called briefSchemaVersion/briefSha256 because renaming them is a
+  // schema migration, and this pass does not migrate. What they hold is now ONE OF TWO things,
+  // depending on which contract the executor was handed:
+  //
+  //   AssetGenerationSpecV1 -> briefSha256(spec): the digest of the RENDERED HUMAN BRIEF TEXT, the
+  //     exact prose a person is given in an external creative workspace. Byte-for-byte unchanged from
+  //     Wave A, which is the guarantee asset-generation-brief.ts exists to make.
+  //
+  //   ProductionSpecV1 -> productionSpecSha256(spec): the digest of the CANONICAL SERIALIZATION OF
+  //     THE SPEC ITSELF. A production spec is read by a machine executor and has no rendered human
+  //     brief to hash, so there is no "brief" here in the older sense of the word.
+  //
+  // Both answer the same provenance question -- "was this asset made from the input we think it was"
+  // -- for two different contracts, and briefSchemaVersion ("v1" vs "production-v1") is what tells
+  // the two apart when reading a stored envelope. Do not read a stored briefSha256 as a brief-text
+  // digest without checking briefSchemaVersion first.
+  const specSha256 = isProductionSpecV1(spec) ? await productionSpecSha256(spec) : await briefSha256(spec);
+
+  // SOURCE KIND. For a machine executor the creative origin is observed, not declared, so the derived
+  // value wins over anything the caller passed -- see MACHINE_EXECUTOR_SOURCE_KINDS. For external/mock
+  // there is nothing to derive and the operator's declaration is the only available truth (undefined
+  // for mock jobs, which never pass one).
+  const sourceKind = MACHINE_EXECUTOR_SOURCE_KINDS[workerType] ?? options.sourceKind;
+
   // workerType here is the same already-narrowed value used above to select the executor
   // (executors[workerType]) -- the envelope's worker field records the executor that actually ran,
-  // never re-derived from the job row after the fact. sourceWorkspace/sourceKind are whatever the
-  // caller declared (undefined for mock jobs, which never pass them); briefSchemaVersion is always
-  // available here at zero cost (spec is already built above). briefSha256 hashes the exact text
-  // renderAssetGenerationBrief produces for this same spec -- the identical function a future brief
-  // viewer/CLI export will call -- so it is a real fingerprint of what was actually shown, not an
-  // approximation. It is safe to (re-)compute here, at completion time, rather than only at
-  // brief-view time, because buildAssetGenerationSpec's own inputs (a Creative Package's content,
-  // this job's assetKind, the static BRAND_BIBLE) are all immutable once this job exists -- see
-  // tests/creative-packages.test.ts's "never updated in place" test. A materially different brief
+  // never re-derived from the job row after the fact. briefSchemaVersion is always available here at
+  // zero cost (spec is already built above). The digest is safe to (re-)compute here, at completion
+  // time, rather than only at brief-view time, because the spec's own inputs (a Creative Package's
+  // content, this job's assetKind, the static BRAND_BIBLE) are all immutable once this job exists --
+  // see tests/creative-packages.test.ts's "never updated in place" test. A materially different input
   // always means a different, new Asset Job, never a changed fingerprint on this one.
   const materialization = await materializeAssetJobFiles(client, {
     job,
@@ -859,9 +1018,9 @@ export async function runAssetJobWithExecutors(
     workerType,
     metadata: {
       sourceWorkspace: options.sourceWorkspace,
-      sourceKind: options.sourceKind,
+      sourceKind,
       briefSchemaVersion: spec.schemaVersion,
-      briefSha256: await briefSha256(spec),
+      briefSha256: specSha256,
     },
   });
   if (!materialization.ok) {
@@ -869,11 +1028,17 @@ export async function runAssetJobWithExecutors(
     if (jobResult.ok) {
       return { ...jobResult, materialization };
     }
-    const attempt = await finishAssetJobAttempt(client, attemptId, "failed", { errorCode: materialization.reason, errorMessage: jobResult.message });
+    // Materialization failed AFTER the executor already produced bytes, so if a provider was
+    // contacted it was contacted successfully -- that provenance is still true and is still recorded.
+    const attempt = await finishAssetJobAttempt(client, attemptId, "failed", {
+      errorCode: materialization.reason,
+      errorMessage: jobResult.message,
+      provenance: attemptProvenance,
+    });
     return { ...jobResult, attempt, materialization };
   }
 
-  const attempt = await finishAssetJobAttempt(client, attemptId, "completed");
+  const attempt = await finishAssetJobAttempt(client, attemptId, "completed", { provenance: attemptProvenance });
   return { ok: true, outcome: "completed", job: materialization.materialized.job, attempt, materialization, warnings: candidateValidation.warnings };
 }
 

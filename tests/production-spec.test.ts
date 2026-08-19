@@ -7,6 +7,8 @@ import {
   PRODUCTION_SHORT_VIDEO_DIMENSIONS,
   buildProductionSpec,
   isProductionSpecV1,
+  productionSpecSha256,
+  renderProductionSpecFingerprintInput,
   type ProductionSpecV1,
 } from "../src/lib/production-spec.ts";
 import {
@@ -407,4 +409,94 @@ test("[static] production-spec.ts names no execution technology and persists not
   for (const forbidden of [/\bfetch\s*\(/, /@supabase\/supabase-js/i, /from\("asset_jobs"\)/, /\.insert\(/, /\.update\(/, /\.rpc\(/]) {
     assert.doesNotMatch(source, forbidden, "the Production Spec is a pure translation and must not perform I/O");
   }
+});
+
+
+// --- canonical fingerprinting (review section 7) ----------------------------------------------------
+
+// Reorders the keys of an object at every level, deepest-first, WITHOUT changing a single value.
+// Any two objects related by this transform are the same fact written down in a different order.
+function withReversedKeyOrder<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(withReversedKeyOrder) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    const reordered: Record<string, unknown> = {};
+    for (const key of Object.keys(source).reverse()) {
+      reordered[key] = withReversedKeyOrder(source[key]);
+    }
+    return reordered as unknown as T;
+  }
+  return value;
+}
+
+test("production spec fingerprinting is CANONICAL: property insertion order cannot change the hash", async () => {
+  const spec = buildProductionSpec(fromCreativePackageRow(v2GeneratedPhotoRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+  const reordered = withReversedKeyOrder(spec);
+
+  // Proof the fixture is actually exercising the bug: the naive serializer these two used to share
+  // really does disagree about them.
+  assert.notEqual(JSON.stringify(spec), JSON.stringify(reordered), "fixture must actually differ in key order, or this test proves nothing");
+
+  assert.equal(renderProductionSpecFingerprintInput(spec), renderProductionSpecFingerprintInput(reordered));
+  assert.equal(await productionSpecSha256(spec), await productionSpecSha256(reordered));
+});
+
+test("production spec fingerprinting survives a JSON round-trip, as a spec read back from the database would", async () => {
+  const spec = buildProductionSpec(fromCreativePackageRow(v2GeneratedPhotoRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+  const roundTripped = JSON.parse(JSON.stringify(withReversedKeyOrder(spec))) as ProductionSpecV1;
+
+  assert.equal(await productionSpecSha256(spec), await productionSpecSha256(roundTripped));
+});
+
+test("production spec fingerprinting still separates MEANINGFUL differences", async () => {
+  const spec = buildProductionSpec(fromCreativePackageRow(v2GeneratedPhotoRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+  const baseline = await productionSpecSha256(spec);
+
+  const changedCopy: ProductionSpecV1 = { ...spec, copy: { ...spec.copy, headline: `${spec.copy.headline}!` } };
+  const changedDimensions: ProductionSpecV1 = { ...spec, dimensions: { ...spec.dimensions, width: spec.dimensions.width + 1 } };
+  const changedPackage: ProductionSpecV1 = { ...spec, sourceCreativePackageId: "package-other" };
+
+  for (const variant of [changedCopy, changedDimensions, changedPackage]) {
+    assert.notEqual(await productionSpecSha256(variant), baseline);
+  }
+});
+
+test("canonicalization sorts object keys but PRESERVES array order -- scene order is content, not noise", async () => {
+  const spec = buildProductionSpec(fromCreativePackageRow(v2GeneratedPhotoRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+  assert.notEqual(spec.visualBrief, null);
+  if (!spec.visualBrief || spec.visualBrief.scene.length < 2) {
+    throw new Error("fixture must carry a multi-entry scene for this test to mean anything");
+  }
+
+  const reversedScene: ProductionSpecV1 = {
+    ...spec,
+    visualBrief: { ...spec.visualBrief, scene: [...spec.visualBrief.scene].reverse() },
+  };
+
+  assert.notEqual(await productionSpecSha256(reversedScene), await productionSpecSha256(spec), "reordering a shot list is a different brief, not the same one");
+});
+
+// --- legacy compatibility (review section 7) --------------------------------------------------------
+
+test("the frozen legacy AssetGenerationSpecV1 brief hash is byte-for-byte unchanged by production-spec canonicalization", async () => {
+  const spec = buildAssetGenerationSpec(fromCreativePackageRow(v1Row()), { assetKind: "image", brandBible: BRAND_BIBLE });
+
+  // A GOLDEN VECTOR, pinned deliberately rather than recomputed from the same code it is meant to
+  // guard. briefSha256 is persisted on every Asset ever produced; if this constant ever has to be
+  // edited, every stored hash has already been invalidated and that is the bug, not this line.
+  assert.equal(await briefSha256(spec), "5409eca4875fc1b6cff19e94deed4656d2afeaba2a30bf77d93d789e9726ae2b");
+  assert.equal(renderAssetGenerationBrief(spec).length, 628);
+});
+
+test("the two fingerprints are computed by DIFFERENT functions over different inputs and never converge", async () => {
+  const legacySpec = buildAssetGenerationSpec(fromCreativePackageRow(v2GeneratedPhotoRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+  const productionSpec = buildProductionSpec(fromCreativePackageRow(v2GeneratedPhotoRow()), { assetKind: "image", brandBible: BRAND_BIBLE });
+
+  // The legacy digest hashes RENDERED BRIEF TEXT; the production digest hashes the canonical spec.
+  // briefSchemaVersion is what tells a stored envelope which of the two it is holding.
+  assert.equal(legacySpec.schemaVersion, "v1");
+  assert.equal(productionSpec.schemaVersion, "production-v1");
+  assert.notEqual(await productionSpecSha256(productionSpec), await briefSha256(legacySpec));
 });

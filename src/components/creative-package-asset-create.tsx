@@ -163,6 +163,21 @@ export function CreativePackageAssetCreate({
     setUploadError("");
     setUploadWarnings([]);
 
+    // EXPLICITLY external + image, and deliberately NOT the resolved Production Route.
+    //
+    // The machine routes (static_renderer, generative_image) are executable, but only from the trusted
+    // CLI worker -- this app has no scheduler, no background worker and no in-browser executor, and
+    // Wave B is not adding one. Queuing a machine job from here produced a dead end: the row was
+    // created, upload was disabled because the owner is not the one making the image, nothing in the
+    // app could run it, and the owner was left on a screen with no way forward.
+    //
+    // So until the final owner-workflow integration lands, the app offers only the path it can lead
+    // the owner all the way through. The principle, in one line: do not expose a machine-executed
+    // owner path in the app unless the app can carry the owner to completion.
+    //
+    // This is a TEMPORARY narrowing of the UI, not a removal of the capability. resolveProductionRoute
+    // is unchanged, both executors stay registered, and `node scripts/asset-workers/run.ts run` still
+    // executes them for technical and acceptance testing.
     const created = await createAssetJobForReadyCreativePackage(client, creativePackageId, { workerType: "external", assetKind: "image" });
     if (!created.ok) {
       setCreateError(created.message);

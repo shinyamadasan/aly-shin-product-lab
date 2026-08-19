@@ -27,6 +27,7 @@ import {
   isAssetJobWorkerType,
   isAssetKind,
   runAssetJobWithExecutors,
+  toExecutableAssetJobRoute,
   runMockAssetJob,
   runQueuedMockAssetJobs,
   sanitizeAssetJobErrorMessage,
@@ -35,6 +36,7 @@ import {
   type AssetJobExecutorMap,
   type AssetJobRow,
 } from "../src/lib/asset-jobs.ts";
+import { isProductionRouteExecutable, resolveProductionRoute, type ProductionRoute } from "../src/lib/production-route.ts";
 import { finishAssetJobAttempt, type AssetJobAttemptRow } from "../src/lib/asset-job-attempts.ts";
 import { briefSha256 } from "../src/lib/asset-generation-brief.ts";
 import { fromCreativePackageRow, type CreativePackageRow } from "../src/lib/creative-packages.ts";
@@ -124,12 +126,18 @@ function makeClient(
     beforeRpc?: (jobs: AssetJobRow[]) => void;
     finishJobRpcError?: ErrorLike;
     finishAttemptRpcError?: ErrorLike;
+    // Forces materialization to fail AFTER the executor has already produced valid bytes -- the one
+    // window in which a provider really was contacted but the job still ends up failed.
+    uploadError?: { statusCode?: string; message: string };
   } = {},
 ) {
   const creativePackages = [...(options.creativePackages ?? [creativePackageRow()])];
   const jobs = [...(options.jobs ?? [])];
   const attempts: AssetJobAttemptRow[] = [];
   const events: string[] = [];
+  // Which attempt-finish RPC each call actually used -- the difference between "provenance was
+  // recorded" and "the provenance-aware function was needlessly called with nulls".
+  const rpcNames: string[] = [];
   const uploadedObjects = new Map<string, Uint8Array>();
   let insertCalls = 0;
   let rpcCalls = 0;
@@ -376,12 +384,33 @@ function makeClient(
         };
       }
 
-      assert.equal(functionName, "finish_asset_job_attempt");
+      // Both finish RPCs land here. They share every guard and differ only in whether they carry
+      // provider/model, exactly as the two SQL functions do.
+      assert.ok(
+        functionName === "finish_asset_job_attempt" || functionName === "finish_asset_job_attempt_with_provenance",
+        `unexpected attempt RPC: ${functionName}`,
+      );
+      rpcNames.push(functionName);
       return {
         // Mirrors finish_asset_job_attempt's own guards: id + status='running' + p_outcome in
         // ('completed','failed','timed_out'). latency_ms uses the same fixed clock as
         // completed_at, exactly like `now() - started_at` inside the real function.
         async maybeSingle() {
+          // PostgreSQL/PostgREST resolve a function by NAME PLUS ARGUMENT NAMES. The 4-argument
+          // finish_asset_job_attempt has no p_provider/p_model parameters, so sending them does not
+          // "get ignored" -- no candidate function matches and the call fails outright. The fake
+          // reproduces that, so a miswiring that sends provenance to the base RPC fails here exactly
+          // as it would against a real database, instead of being silently accepted.
+          if (functionName === "finish_asset_job_attempt" && ("p_provider" in args || "p_model" in args)) {
+            return {
+              data: null,
+              error: {
+                code: "PGRST202",
+                message: "Could not find the function public.finish_asset_job_attempt(p_attempt_id, p_error_code, p_error_message, p_model, p_outcome, p_provider) in the schema cache",
+              },
+            };
+          }
+          const carriesProvenance = functionName === "finish_asset_job_attempt_with_provenance";
           rpcCalls += 1;
           if (options.finishAttemptRpcError) {
             return { data: null, error: options.finishAttemptRpcError };
@@ -399,6 +428,13 @@ function makeClient(
             latency_ms: Date.parse(finishedAt) - Date.parse(attempts[index].started_at),
             error_code: outcome === "completed" ? null : (args.p_error_code as string | null),
             error_message: outcome === "completed" ? null : (args.p_error_message as string | null),
+            // `coalesce(p_provider, provider)` / `coalesce(p_model, model)`. The base RPC supplies
+            // neither argument, so undefined behaves exactly like the SQL's NULL: it never erases a
+            // value, and it never invents one.
+            // Only the provenance RPC can touch these two columns. coalesce(p_x, x) so a null argument
+            // never erases an already-recorded value.
+            provider: carriesProvenance ? ((args.p_provider as string | null) ?? attempts[index].provider ?? null) : attempts[index].provider,
+            model: carriesProvenance ? ((args.p_model as string | null) ?? attempts[index].model ?? null) : attempts[index].model,
           };
           events.push(outcome === "completed" ? "finish-attempt-completed" : outcome === "timed_out" ? "finish-attempt-timed-out" : "finish-attempt-failed");
           return { data: attempts[index], error: null };
@@ -411,6 +447,9 @@ function makeClient(
         return {
           async upload(path: string, body: Uint8Array) {
             events.push(`upload:${path}`);
+            if (options.uploadError) {
+              return { data: null, error: options.uploadError };
+            }
             if (uploadedObjects.has(path)) {
               return { data: null, error: { statusCode: "409", message: "The resource already exists" } };
             }
@@ -440,6 +479,7 @@ function makeClient(
     jobs,
     attempts,
     events,
+    rpcNames,
     get insertCalls() {
       return insertCalls;
     },
@@ -514,19 +554,23 @@ test("EXECUTABLE_ASSET_KINDS is the strictly narrower, image-only subset of ASSE
   assert.equal((EXECUTABLE_ASSET_KINDS as readonly string[]).includes("short_video"), false);
 });
 
-test("[type] the job-creation API accepts the one route that is executable today", () => {
+test("[type] the job-creation API accepts the image routes executable today", () => {
   const executable: AssetJobCreationOptions = { workerType: "external", assetKind: "image" };
+  const staticRenderer: AssetJobCreationOptions = { workerType: "static_renderer", assetKind: "image" };
+  const generativeImage: AssetJobCreationOptions = { workerType: "generative_image", assetKind: "image" };
   assert.deepEqual(executable, { workerType: "external", assetKind: "image" });
+  assert.deepEqual(staticRenderer, { workerType: "static_renderer", assetKind: "image" });
+  assert.deepEqual(generativeImage, { workerType: "generative_image", assetKind: "image" });
 });
 
 // COMPILE-TIME regression. Each @ts-expect-error below is load-bearing in both directions: it fails
 // tsc today if the error stops being raised (someone widened the creation API), and it fails tsc
 // tomorrow if the directive is deleted while the error remains. tsconfig includes tests/**, so
 // `npx tsc --noEmit` is what actually enforces this.
-test("[type] the job-creation API rejects every non-executable worker and kind in Wave A", () => {
-  // @ts-expect-error -- no executor emits a short_video in Wave A and the bucket rejects video/mp4
+test("[type] the job-creation API rejects non-executable workers and kinds", () => {
+  // @ts-expect-error -- no executor emits a short_video in Wave B and the bucket rejects video/mp4
   const videoKind: AssetJobCreationOptions = { workerType: "external", assetKind: "short_video" };
-  // @ts-expect-error -- image_provider arrives in Wave B with its executor, not before
+  // @ts-expect-error -- image_provider was renamed before activation
   const imageProvider: AssetJobCreationOptions = { workerType: "image_provider", assetKind: "image" };
   // @ts-expect-error -- remotion arrives in Wave C with its executor, not before
   const remotion: AssetJobCreationOptions = { workerType: "remotion", assetKind: "image" };
@@ -546,7 +590,7 @@ test("fromAssetJobRow maps nullable timestamps to empty strings", () => {
   assert.equal(record.failedAt, "");
 });
 
-test("createAssetJobForReadyCreativePackage inserts one queued mock image job for a ready Creative Package", async () => {
+test("createAssetJobForReadyCreativePackage inserts one queued routed image job for a ready Creative Package", async () => {
   const store = makeClient();
   const result = await createAssetJobForReadyCreativePackage(store.client, "package-1");
   assert.equal(result.ok, true);
@@ -556,7 +600,7 @@ test("createAssetJobForReadyCreativePackage inserts one queued mock image job fo
   if (result.ok) {
     assert.equal(result.outcome, "created");
     assert.equal(result.job.status, "queued");
-    assert.equal(result.job.workerType, "mock");
+    assert.equal(result.job.workerType, "external");
     assert.equal(result.job.assetKind, "image");
     assert.equal(result.job.attemptCount, 0);
     assert.deepEqual(result.job.result, {});
@@ -1236,4 +1280,544 @@ test("asset job code does not call external providers, use the Supabase SDK dire
   ]) {
     assert.doesNotMatch(source, forbidden);
   }
+});
+
+// --- the activation invariant (review section 5) -----------------------------------------------------
+
+// v2 content carrying what the Production Route reads (format + productionSource decide the route),
+// plus exactly the fields validateCreativePackageContentV2 requires for each production source --
+// framing ONLY for capture_new (there is no camera to frame otherwise), and a structured visualBrief
+// for the zero-capture sources. buildProductionSpec re-validates, so a looser fixture would fail for
+// a reason that has nothing to do with routing.
+function v2PackageRow(format: string, productionSource: string): CreativePackageRow {
+  const isCapture = productionSource === "capture_new";
+  const formatFields: Record<string, unknown> = format === "reel"
+    ? { shots: [{ direction: "Board centred", onScreenText: "Mine.", approxSeconds: 3 }], targetDurationSeconds: 3, audioDirection: "Warm acoustic bed" }
+    : isCapture
+      ? { framing: "overhead" }
+      : {
+          visualBrief: {
+            concept: "Two dessert characters in a stand-off over the last brownie",
+            style: "Soft hand-drawn illustration, warm bakery palette",
+            scene: ["Board centred with one brownie left", "Two characters lean in from opposite edges"],
+            executionNotes: ["Keep the product obviously illustrated", "Use minimal background detail"],
+          },
+        };
+
+  return {
+    id: "package-1",
+    creative_job_id: "job-1",
+    status: "ready",
+    schema_version: "v2",
+    content: {
+      schemaVersion: "v2",
+      format,
+      subject: "Brownies",
+      angle: "Fresh batch",
+      hook: "Still warm.",
+      headline: "Brownies, still warm",
+      caption: "Out of the oven at 7am.",
+      cta: "Order today",
+      visualDirection: "Overhead on the wooden board, morning light",
+      overlayText: null,
+      productionSource,
+      ...formatFields,
+      platformVariants: [{ platform: "instagram", caption: "Still warm.", hashtags: ["#brownies"] }],
+      metadata: {
+        generatedFromOpportunity: null,
+        generatorVersion: "2",
+        sourceCreativeJobId: "job-1",
+        sourceWorker: "mock",
+        sourceJobResultSchemaVersion: "v2",
+        formatChosenBy: "ai",
+        formatRationale: "A single hero shot suits one product.",
+        subjectSource: "stated",
+        subjectGrounding: null,
+      },
+    },
+    created_at: "2026-08-01T09:05:00.000Z",
+    updated_at: "2026-08-01T09:05:00.000Z",
+  } as CreativePackageRow;
+}
+
+test("toExecutableAssetJobRoute narrows ONLY routes both activation halves admit, and never fabricates one", () => {
+  assert.deepEqual(toExecutableAssetJobRoute({ workerType: "external", assetKind: "image" }), { workerType: "external", assetKind: "image" });
+  assert.deepEqual(toExecutableAssetJobRoute({ workerType: "static_renderer", assetKind: "image" }), { workerType: "static_renderer", assetKind: "image" });
+  assert.deepEqual(toExecutableAssetJobRoute({ workerType: "generative_image", assetKind: "image" }), { workerType: "generative_image", assetKind: "image" });
+
+  // Unregistered worker, unproducible kind, and both at once.
+  assert.equal(toExecutableAssetJobRoute({ workerType: "remotion", assetKind: "image" }), null);
+  assert.equal(toExecutableAssetJobRoute({ workerType: "external", assetKind: "short_video" }), null);
+  assert.equal(toExecutableAssetJobRoute({ workerType: "remotion", assetKind: "short_video" }), null);
+});
+
+test("toExecutableAssetJobRoute and isProductionRouteExecutable never disagree across the whole route space", () => {
+  const workerTypes = ["external", "mock", "static_renderer", "generative_image", "remotion"] as const;
+  const assetKinds = ["image", "short_video"] as const;
+
+  for (const workerType of workerTypes) {
+    for (const assetKind of assetKinds) {
+      const route = { workerType, assetKind } as ProductionRoute;
+      assert.equal(
+        toExecutableAssetJobRoute(route) !== null,
+        isProductionRouteExecutable(route),
+        `the boolean predicate and the narrowing constructor disagree about ${workerType} + ${assetKind}`,
+      );
+    }
+  }
+});
+
+test("createAssetJobForReadyCreativePackage refuses a non-executable route when NO options are supplied", async () => {
+  const store = makeClient({ creativePackages: [v2PackageRow("reel", "template_only")] });
+  const result = await createAssetJobForReadyCreativePackage(store.client, "package-1");
+
+  assert.equal(result.ok, false);
+  assert.equal(store.jobs.length, 0);
+});
+
+// THE REGRESSION THIS SECTION EXISTS FOR. The old guard fired only when BOTH options were absent, so
+// supplying either one alone skipped the check entirely and the other half was cast in from a
+// non-executable route -- producing a queued row nothing could ever claim.
+test("a PARTIAL option cannot bypass route executability -- workerType alone", async () => {
+  const store = makeClient({ creativePackages: [v2PackageRow("reel", "template_only")] });
+  const result = await createAssetJobForReadyCreativePackage(store.client, "package-1", { workerType: "external" });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    // The message must name the FINAL pair that was rejected, including the half that came from the
+    // route -- otherwise it reads as though "external" were the problem.
+    assert.match(result.message, /short_video/);
+  }
+  assert.equal(store.jobs.length, 0, "no unclaimable row may be inserted");
+});
+
+test("a PARTIAL option cannot bypass route executability -- assetKind alone", async () => {
+  const store = makeClient({ creativePackages: [v2PackageRow("reel", "template_only")] });
+  const result = await createAssetJobForReadyCreativePackage(store.client, "package-1", { assetKind: "image" });
+
+  assert.equal(result.ok, false);
+  assert.equal(store.jobs.length, 0);
+});
+
+test("a PARTIAL option cannot bypass route executability -- reel capture_new still cannot queue a short_video", async () => {
+  const store = makeClient({ creativePackages: [v2PackageRow("reel", "capture_new")] });
+  const result = await createAssetJobForReadyCreativePackage(store.client, "package-1", { workerType: "external" });
+
+  assert.equal(result.ok, false);
+  assert.equal(store.jobs.length, 0);
+});
+
+test("no combination of options can ever queue an unregistered worker or an unproducible asset kind", async () => {
+  const optionSets = [{}, { workerType: "external" as const }, { assetKind: "image" as const }, { workerType: "static_renderer" as const }];
+  for (const [format, productionSource] of [["reel", "template_only"], ["reel", "capture_new"]] as const) {
+    for (const options of optionSets) {
+      const store = makeClient({ creativePackages: [v2PackageRow(format, productionSource)] });
+      await createAssetJobForReadyCreativePackage(store.client, "package-1", options);
+      for (const job of store.jobs) {
+        assert.notEqual(job.worker_type, "remotion");
+        assert.notEqual(job.asset_kind, "short_video");
+      }
+    }
+  }
+});
+
+test("an EXPLICIT external + image stays creatable for any package -- the owner-facing path is unchanged", async () => {
+  const store = makeClient({ creativePackages: [v2PackageRow("reel", "capture_new")] });
+  const result = await createAssetJobForReadyCreativePackage(store.client, "package-1", { workerType: "external", assetKind: "image" });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.job.workerType, "external");
+    assert.equal(result.job.assetKind, "image");
+  }
+});
+
+test("the executable photo routes still resolve and queue by default", async () => {
+  const cases = [["generate_visual", "generative_image"], ["template_only", "static_renderer"], ["capture_new", "external"]] as const;
+  for (const [productionSource, expectedWorker] of cases) {
+    const store = makeClient({ creativePackages: [v2PackageRow("photo", productionSource)] });
+    const result = await createAssetJobForReadyCreativePackage(store.client, "package-1");
+
+    assert.equal(result.ok, true, `photo:${productionSource} should be queueable`);
+    if (result.ok) {
+      assert.equal(result.job.workerType, expectedWorker);
+      assert.equal(result.job.assetKind, "image");
+      assert.deepEqual(resolveProductionRoute(fromCreativePackageRow(v2PackageRow("photo", productionSource))), {
+        workerType: expectedWorker,
+        assetKind: "image",
+      });
+    }
+  }
+});
+
+// --- machine-executor source kind (review section 3) -------------------------------------------------
+
+test("a generative_image job materializes as ai_generated WITHOUT any caller declaring it", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { generative_image: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, true);
+  const envelope = store.jobs[0].result;
+  assert.equal(isAssetJobResultEnvelope(envelope), true);
+  if (isAssetJobResultEnvelope(envelope)) {
+    assert.equal(envelope.metadata.sourceKind, "ai_generated");
+    // The production contract, not the legacy one.
+    assert.equal(envelope.metadata.briefSchemaVersion, "production-v1");
+    // Still never provider/model on this envelope -- those belong on asset_job_attempts.
+    assert.equal("provider" in envelope.metadata, false);
+    assert.equal("model" in envelope.metadata, false);
+  }
+});
+
+test("a deterministic static_renderer job is NEVER mislabelled as ai_generated", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "template_only")],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { static_renderer: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, true);
+  const envelope = store.jobs[0].result;
+  if (isAssetJobResultEnvelope(envelope)) {
+    assert.equal(envelope.metadata.sourceKind, "human_designed");
+    assert.notEqual(envelope.metadata.sourceKind, "ai_generated");
+  }
+});
+
+test("an operator cannot relabel a machine executor's observed origin, but external stays operator-declared", async () => {
+  const machine = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+  await runAssetJobWithExecutors(machine.client, "asset-job-1", { generative_image: () => [validGeneratedAssetFileCandidate()] }, { sourceKind: "photograph" });
+  const machineEnvelope = machine.jobs[0].result;
+  if (isAssetJobResultEnvelope(machineEnvelope)) {
+    assert.equal(machineEnvelope.metadata.sourceKind, "ai_generated", "a model's output must not be relabellable as a photograph");
+  }
+
+  const external = makeClient({ jobs: [assetJobRow({ worker_type: "external" })] });
+  await runAssetJobWithExecutors(external.client, "asset-job-1", { external: () => [validGeneratedAssetFileCandidate()] }, { sourceKind: "photograph" });
+  const externalEnvelope = external.jobs[0].result;
+  if (isAssetJobResultEnvelope(externalEnvelope)) {
+    assert.equal(externalEnvelope.metadata.sourceKind, "photograph", "only the operator knows how an external asset was really made");
+  }
+});
+
+// --- durable provider/model provenance ---------------------------------------------------------------
+//
+// The persisted pair lives on asset_job_attempts, never on the result envelope. These tests assert
+// what actually reaches the attempt row, and which RPC carried it there.
+
+// A generative executor stand-in: reports the provenance a real provider call would, then succeeds.
+function generativeExecutorReporting(provider: string, model: string): AssetJobExecutorMap {
+  return {
+    generative_image: (_job, _spec, context) => {
+      context.recordProvenance?.({ provider, model });
+      return [validGeneratedAssetFileCandidate()];
+    },
+  };
+}
+
+test("A: a successful generative_image attempt persists provider and model on the attempt row", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", generativeExecutorReporting("cloudflare-workers-ai", "@cf/black-forest-labs/flux-2-klein-9b"));
+
+  assert.equal(result.ok, true);
+  assert.equal(store.attempts.length, 1);
+  assert.equal(store.attempts[0].status, "completed");
+  assert.equal(store.attempts[0].provider, "cloudflare-workers-ai");
+  assert.equal(store.attempts[0].model, "@cf/black-forest-labs/flux-2-klein-9b");
+  // It must have gone through the provenance-aware RPC, not the base one.
+  assert.ok(store.rpcNames.includes("finish_asset_job_attempt_with_provenance"));
+});
+
+test("B: a model override persists the model ACTUALLY used, not the default", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  await runAssetJobWithExecutors(store.client, "asset-job-1", generativeExecutorReporting("cloudflare-workers-ai", "@cf/some/other-model"));
+
+  assert.equal(store.attempts[0].model, "@cf/some/other-model");
+  assert.notEqual(store.attempts[0].model, "@cf/black-forest-labs/flux-2-klein-9b");
+});
+
+test("C: a static_renderer attempt claims no provider and no model", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "template_only")],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { static_renderer: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, true);
+  assert.equal(store.attempts[0].status, "completed");
+  assert.equal(store.attempts[0].provider, null, "a deterministic local render contacted no provider");
+  assert.equal(store.attempts[0].model, null);
+  // And it must not have needed the provenance RPC at all -- a deployment without that migration
+  // still finishes deterministic renders normally.
+  assert.deepEqual(store.rpcNames, ["finish_asset_job_attempt"]);
+});
+
+test("D: an external attempt with no provenance still finishes through the original, unchanged RPC", async () => {
+  const store = makeClient({ jobs: [assetJobRow({ worker_type: "external" })] });
+
+  const result = await runAssetJobWithExecutors(
+    store.client,
+    "asset-job-1",
+    { external: () => [validGeneratedAssetFileCandidate()] },
+    { sourceWorkspace: "chatgpt", sourceKind: "ai_generated" },
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(store.attempts[0].status, "completed");
+  assert.equal(store.attempts[0].provider, null);
+  assert.equal(store.attempts[0].model, null);
+  assert.deepEqual(store.rpcNames, ["finish_asset_job_attempt"]);
+  // An operator-declared sourceKind is creative origin, never provider identity -- the two must not
+  // bleed into each other.
+  const envelope = store.jobs[0].result;
+  if (isAssetJobResultEnvelope(envelope)) {
+    assert.equal(envelope.metadata.sourceKind, "ai_generated");
+    assert.equal("provider" in envelope.metadata, false);
+  }
+});
+
+test("E: a FAILED provider attempt still records the provider and model that were actually contacted", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    generative_image: (_job, _spec, context) => {
+      // Provider and model settled, request attempted -- then the provider failed.
+      context.recordProvenance?.({ provider: "cloudflare-workers-ai", model: "@cf/some/other-model" });
+      throw new Error("Cloudflare Workers AI request failed with 500");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(store.jobs[0].status, "failed");
+  assert.equal(store.attempts[0].status, "failed");
+  assert.equal(store.attempts[0].provider, "cloudflare-workers-ai", "which model we called matters most when the call failed");
+  assert.equal(store.attempts[0].model, "@cf/some/other-model");
+  assert.ok(store.rpcNames.includes("finish_asset_job_attempt_with_provenance"));
+});
+
+test("E: a TIMED-OUT provider attempt records the same provenance, and still reports as a timeout", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  const result = await runAssetJobWithExecutors(
+    store.client,
+    "asset-job-1",
+    {
+      generative_image: async (_job, _spec, context) => {
+        context.recordProvenance?.({ provider: "cloudflare-workers-ai", model: "@cf/black-forest-labs/flux-2-klein-9b" });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return [validGeneratedAssetFileCandidate()];
+      },
+    },
+    { timeoutMs: 5 },
+  );
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "timeout");
+  }
+  assert.equal(store.attempts[0].status, "timed_out");
+  assert.equal(store.attempts[0].error_code, "timeout");
+  assert.equal(store.attempts[0].provider, "cloudflare-workers-ai");
+  assert.equal(store.attempts[0].model, "@cf/black-forest-labs/flux-2-klein-9b");
+});
+
+test("F: a failure BEFORE provider selection never fabricates a provider", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    // Reference validation / spec rejection: this throws before any provider or model is chosen and
+    // before any request is made, so it must never call recordProvenance.
+    generative_image: () => {
+      throw new Error("Generative image reference anchor.png is not a supported image.");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(store.attempts[0].status, "failed");
+  assert.equal(store.attempts[0].provider, null, "no provider was contacted, so none may be claimed");
+  assert.equal(store.attempts[0].model, null);
+  assert.deepEqual(store.rpcNames, ["finish_asset_job_attempt"]);
+});
+
+test("F: a job whose executor is missing entirely records no provenance", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {});
+
+  assert.equal(result.ok, false);
+  assert.equal(store.attempts[0].provider, null);
+  assert.equal(store.attempts[0].model, null);
+});
+
+test("G: only the two short identifiers are persisted -- no prompt, reference bytes, or credentials", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+
+  await runAssetJobWithExecutors(store.client, "asset-job-1", generativeExecutorReporting("cloudflare-workers-ai", "@cf/black-forest-labs/flux-2-klein-9b"));
+
+  const persisted = JSON.stringify(store.attempts[0]);
+  for (const forbidden of [/Bearer/i, /api[_-]?token/i, /Do not generate readable text/i, /promptSha256/i, /referenceImagePaths/i, /input_image_/i]) {
+    assert.doesNotMatch(persisted, forbidden);
+  }
+  // The attempt row gains exactly the two provenance fields and nothing structurally new.
+  assert.deepEqual(
+    Object.keys(store.attempts[0]).sort(),
+    ["asset_job_id", "attempt_number", "completed_at", "created_at", "error_code", "error_message", "id", "latency_ms", "model", "provider", "started_at", "status", "worker_type"],
+  );
+});
+
+test("H: outcome, error and timestamp semantics are unchanged by the provenance path", async () => {
+  const withProvenance = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+  });
+  await runAssetJobWithExecutors(withProvenance.client, "asset-job-1", {
+    generative_image: (_job, _spec, context) => {
+      context.recordProvenance?.({ provider: "cloudflare-workers-ai", model: "@cf/m" });
+      throw new Error("provider exploded");
+    },
+  });
+
+  const withoutProvenance = makeClient({ jobs: [assetJobRow({ worker_type: "external" })] });
+  await runAssetJobWithExecutors(withoutProvenance.client, "asset-job-1", {
+    external: () => {
+      throw new Error("provider exploded");
+    },
+  });
+
+  const a = withProvenance.attempts[0];
+  const b = withoutProvenance.attempts[0];
+
+  // Everything except the two provenance columns must be identical between the two RPCs.
+  assert.equal(a.status, b.status);
+  assert.equal(a.error_code, b.error_code);
+  assert.equal(a.error_message, b.error_message);
+  assert.equal(a.completed_at, b.completed_at);
+  assert.equal(a.latency_ms, b.latency_ms);
+  assert.equal(a.status, "failed");
+  assert.match(a.error_message ?? "", /provider exploded/);
+
+  // And the terminal timestamp is still database-sourced and at or after started_at.
+  assert.ok(Date.parse(a.completed_at ?? "") >= Date.parse(a.started_at));
+});
+
+// --- P3-1: provenance survives a materialization failure ---------------------------------------------
+
+test("a provider that WAS contacted stays recorded even when materialization then fails", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "generate_visual")],
+    jobs: [assetJobRow({ worker_type: "generative_image" })],
+    // The executor succeeds and returns real bytes; storage is what breaks.
+    uploadError: { statusCode: "500", message: "storage is unavailable" },
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", {
+    generative_image: (_job, _spec, context) => {
+      context.recordProvenance?.({ provider: "cloudflare-workers-ai", model: "@cf/some/other-model" });
+      return [validGeneratedAssetFileCandidate()];
+    },
+  });
+
+  // The job failed -- but it failed AFTER a real, successful provider call.
+  assert.equal(result.ok, false);
+  assert.equal(result.materialization?.ok, false);
+  assert.equal(store.jobs[0].status, "failed");
+  assert.equal(store.attempts[0].status, "failed");
+
+  // That call really happened, so it is still recorded. Losing it here would mean the one attempt
+  // that cost money and produced bytes is the one with no record of which model produced them.
+  assert.equal(store.attempts[0].provider, "cloudflare-workers-ai");
+  assert.equal(store.attempts[0].model, "@cf/some/other-model");
+  assert.ok(store.rpcNames.includes("finish_asset_job_attempt_with_provenance"));
+});
+
+test("a materialization failure with NO provider contacted still records no provenance", async () => {
+  const store = makeClient({
+    creativePackages: [v2PackageRow("photo", "template_only")],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+    uploadError: { statusCode: "500", message: "storage is unavailable" },
+  });
+
+  const result = await runAssetJobWithExecutors(store.client, "asset-job-1", { static_renderer: () => [validGeneratedAssetFileCandidate()] });
+
+  assert.equal(result.ok, false);
+  assert.equal(store.attempts[0].status, "failed");
+  assert.equal(store.attempts[0].provider, null);
+  assert.equal(store.attempts[0].model, null);
+  assert.deepEqual(store.rpcNames, ["finish_asset_job_attempt"]);
+});
+
+// --- P3-4: the fakes cannot mask incorrect RPC wiring ------------------------------------------------
+
+test("the BASE attempt RPC rejects provenance arguments exactly as PostgreSQL would", async () => {
+  const store = makeClient({ jobs: [assetJobRow()], creativePackages: [creativePackageRow()] });
+  const claim = await claimQueuedAssetJobWithAttempt(store.client, "asset-job-1");
+  assert.equal(claim.ok, true);
+  if (!claim.ok) return;
+
+  // PostgREST resolves by function name PLUS argument names. finish_asset_job_attempt has no
+  // p_provider/p_model parameters, so this matches no candidate function and fails -- it is NOT
+  // silently accepted-and-ignored. If the fake tolerated it, a miswiring that sent provenance to the
+  // base RPC would pass every test here and then lose provenance in production.
+  const rejected = await store.client
+    .rpc("finish_asset_job_attempt", {
+      p_attempt_id: claim.attemptId,
+      p_outcome: "completed",
+      p_error_code: null,
+      p_error_message: null,
+      p_provider: "cloudflare-workers-ai",
+      p_model: "@cf/m",
+    } as never)
+    .maybeSingle();
+
+  assert.equal(rejected.data, null);
+  assert.equal(rejected.error?.code, "PGRST202");
+  assert.equal(store.attempts[0].status, "running", "a rejected call must not finish the attempt");
+  assert.equal(store.attempts[0].provider, null, "and must certainly not write provenance");
+});
+
+test("only the provenance RPC can write provider/model -- the base RPC leaves them untouched", async () => {
+  const store = makeClient({ jobs: [assetJobRow()], creativePackages: [creativePackageRow()] });
+  const claim = await claimQueuedAssetJobWithAttempt(store.client, "asset-job-1");
+  assert.equal(claim.ok, true);
+  if (!claim.ok) return;
+
+  await store.client
+    .rpc("finish_asset_job_attempt", { p_attempt_id: claim.attemptId, p_outcome: "completed", p_error_code: null, p_error_message: null })
+    .maybeSingle();
+
+  assert.equal(store.attempts[0].status, "completed");
+  assert.equal(store.attempts[0].provider, null);
+  assert.equal(store.attempts[0].model, null);
 });

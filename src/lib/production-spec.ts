@@ -1,4 +1,5 @@
 import type { BrandBible } from "./marketing-advisor-context.ts";
+import { sha256Hex } from "./asset-digest.ts";
 import { deriveBrandStyle, type AssetGenerationBrandStyle } from "./asset-generation-spec.ts";
 import { isCreativePackageContentV2, type CreativeVisualBrief } from "./creative-package-content-v2.ts";
 import type { CreativePackageRecord } from "./creative-packages.ts";
@@ -115,6 +116,62 @@ export function isProductionSpecV1(value: unknown): value is ProductionSpecV1 {
   }
   const candidate = value as Partial<ProductionSpecV1>;
   return candidate.schemaVersion === "production-v1";
+}
+
+// --- canonical fingerprinting --------------------------------------------------------------------
+//
+// JSON.stringify is NOT a canonical serializer: it emits keys in insertion order, so two specs that
+// are the same fact -- one built by buildProductionSpec, one round-tripped through the database or
+// assembled field-by-field in a different order -- serialize to different bytes and therefore hash
+// differently. A fingerprint that changes when nothing meaningful changed cannot answer "was this
+// asset made from the spec we think it was", which is the only question it exists to answer.
+//
+// So the value is canonicalized before it is serialized: object keys sorted, arrays left alone.
+// Array order is deliberately preserved -- a Reel's scenes and a brief's executionNotes are ordered
+// content, and sorting them would make two genuinely different specs collide.
+//
+// Deliberately narrow: this handles exactly the JSON value shapes ProductionSpecV1 can contain
+// (objects, arrays, strings, numbers, booleans, null). It is not a general-purpose canonical-JSON
+// implementation, and it is not applied to anything else.
+function canonicalizeJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeJsonValue);
+  }
+
+  if (value !== null && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    const canonical: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) {
+      const entry = source[key];
+      // Matches JSON.stringify's own behaviour rather than diverging from it: an undefined-valued
+      // key is absent from the output, so a spec and its JSON round-trip canonicalize identically.
+      if (entry === undefined) {
+        continue;
+      }
+      canonical[key] = canonicalizeJsonValue(entry);
+    }
+    return canonical;
+  }
+
+  return value;
+}
+
+export function renderProductionSpecFingerprintInput(spec: ProductionSpecV1): string {
+  return JSON.stringify(canonicalizeJsonValue(spec));
+}
+
+// The ProductionSpecV1 counterpart of briefSha256, and deliberately a SEPARATE function rather than
+// a widening of it.
+//
+// briefSha256 hashes the RENDERED HUMAN BRIEF text of an AssetGenerationSpecV1 -- the exact prose a
+// person is handed in an external creative workspace. This hashes the canonical serialization of the
+// production spec itself, because a production spec is read by an executor and has no rendered human
+// brief to hash. The two are different inputs answering the same provenance question for two
+// different contracts, and blurring them would make the stored digest ambiguous about which it is.
+// The persisted column they currently share is named for the older of the two -- see the
+// transitional-naming note at the runAssetJobWithExecutors call site.
+export async function productionSpecSha256(spec: ProductionSpecV1): Promise<string> {
+  return sha256Hex(new TextEncoder().encode(renderProductionSpecFingerprintInput(spec)));
 }
 
 // Deterministic and total for the inputs it accepts: no AI, no clock, no I/O. Throws rather than

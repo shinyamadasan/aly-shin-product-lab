@@ -211,3 +211,42 @@ of `acquireLock` -- also benefits Daily Advisor, which shares this module.
 
 PROP-035 (Today's UI) has not been started. Its dependency on this proposal having run successfully
 at least once is now satisfied, but per explicit instruction, PROP-035 work has not begun.
+
+## 2026-08-18 — Production MVP Wave B: `supabase-add-asset-job-attempt-provenance.sql` applied to the live project
+
+Applied by the owner in the Supabase SQL editor to the live project used by this app
+(`kouesgllnyallmyesvrl.supabase.co`) and verified from the database afterwards. Recorded here because
+this repo keeps no migration ledger and the SQL file itself shipped in the same commit -- without this
+note nothing distinguishes "authored" from "applied".
+
+What the migration does: adds `finish_asset_job_attempt_with_provenance(uuid, text, text, text, text,
+text)` BESIDE the existing `finish_asset_job_attempt`, so provider/model execution provenance can
+finally be written for machine generation attempts. It adds no column -- `asset_job_attempts.provider`
+and `.model` already existed as nullable text (created by `supabase-add-asset-job-attempts.sql` "for
+the first-real-provider milestone to populate"); only the writer was missing. The sibling-function
+shape follows `supabase-add-creative-job-ai-execution-trace.sql`'s own precedent, and is not optional:
+widening the existing 4-argument signature would have produced a second same-named function and broken
+every existing call with "function ... is not unique" (proven against real PostgreSQL in
+`tests/smoke/postgres/asset-job-attempt-provenance.smoke.test.ts`, which also proves idempotent
+re-application and preflight abort).
+
+Post-application verification, run as catalog inspection only (no test data created, nothing written):
+
+- original `finish_asset_job_attempt(p_attempt_id uuid, p_outcome text, p_error_code text,
+  p_error_message text)` still present, signature byte-identical -- preserved, not replaced
+- new `finish_asset_job_attempt_with_provenance(..., p_provider text, p_model text)` present,
+  signature byte-identical to the authored file
+- exactly ONE function per name -- no overload ambiguity
+- `asset_job_attempts.provider` and `.model` are `text`, nullable -- pre-existing, not added here
+- 13 columns on `asset_job_attempts`, unchanged -- no column added or removed
+- 0 rows changed and nothing backfilled (the table held 0 attempts at application time, so there was
+  no historical provenance to preserve either way)
+- grants on the new function identical to the original's; neither is `SECURITY DEFINER`
+
+Operational consequence: `node scripts/asset-workers/run.ts run --job-id <id> --worker
+generative_image` now persists provider/model onto its attempt row, including on `failed` and
+`timed_out` attempts where a provider really was contacted. That worker DEPENDS on this migration --
+without it the asset is still produced correctly but attempt bookkeeping fails and the CLI exits 3
+rather than 0. `static_renderer`, `export` and `import` do not need it.
+
+No Cloudflare call was made, and no other migration was applied.
