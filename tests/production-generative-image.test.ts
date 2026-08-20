@@ -40,6 +40,7 @@ function spec(): ProductionSpecV1 {
       headline: "little reward",
       caption: "A gentle dessert sharing moment.",
       cta: "save for the next craving",
+      overlayText: "little reward",
     },
     brandStyle: null,
     visualBrief: {

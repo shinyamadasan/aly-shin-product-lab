@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { Resvg } from "@resvg/resvg-js";
 import { createElement, type ReactNode } from "react";
 import sharp from "sharp";
@@ -7,8 +5,11 @@ import satori from "satori";
 
 import type { GeneratedAssetFileCandidate } from "./asset-generation-validation.ts";
 import { isProductionSpecV1, type ProductionSpecV1 } from "./production-spec.ts";
+import { CopyDoesNotFitError, fitTextBlock } from "./production-copy-fit.ts";
+import { EMBEDDED_PRODUCTION_FONTS, PRODUCTION_FONT_LICENSE, PRODUCTION_FONT_SOURCE_PACKAGE, PRODUCTION_FONT_SOURCE_VERSION } from "./production-fonts.ts";
 
-const require = createRequire(import.meta.url);
+// No node:fs, no node:path and no createRequire anywhere in this module -- that is the point of the
+// embedded faces, and it is what makes the renderer behave identically in a bundled server chunk.
 
 // --- portable, app-owned font set -----------------------------------------------------------------
 //
@@ -37,15 +38,24 @@ const FONT_FAMILY = "Geist";
 // Satori does not synthesize a bold from a regular -- it falls back to the nearest registered face --
 // so the mark silently rendered at 400 and the `fontWeight: 700` in the style object was decorative.
 // Registering the real 700 face is what makes the declared weight true.
-const FONT_FACES = [
-  { weight: 400, path: require.resolve("@fontsource/geist-sans/files/geist-sans-latin-400-normal.woff") },
-  { weight: 700, path: require.resolve("@fontsource/geist-sans/files/geist-sans-latin-700-normal.woff") },
-] as const;
+// Faces come from the EMBEDDED module, not the filesystem.
+//
+// require.resolve worked under `node --test` and the CLI and then failed in the Next server runtime
+// the first time a real owner-facing production run went through /api/production: a bundler rewrites
+// require.resolve inside a server chunk, so the "path" it returns is a bundler identifier
+// ("[externals]/@fontsource/...") rather than a real file, and the render died with ENOENT.
+//
+// Embedding removes the question entirely -- no resolution, no file tracing, no bundler interaction,
+// and the identical code path under node --test, the CLI, the dev server and a serverless
+// deployment. See scripts/production-static-renderer/generate-embedded-fonts.ts for provenance and
+// the OFL-1.1 licence note; @fontsource/geist-sans remains a declared dependency and the source of
+// truth for the bytes.
+const FONT_WEIGHTS = [400, 700] as const;
 
 type ProductionStaticRendererFont = {
   name: string;
   data: ArrayBuffer;
-  weight: (typeof FONT_FACES)[number]["weight"];
+  weight: (typeof FONT_WEIGHTS)[number];
   style: "normal";
 };
 
@@ -59,9 +69,9 @@ export type ProductionStaticRenderOptions = {
 let fontsPromise: Promise<ProductionStaticRendererFont[]> | null = null;
 
 async function loadFonts(): Promise<ProductionStaticRendererFont[]> {
-  fontsPromise ??= Promise.all(
-    FONT_FACES.map(async (face) => {
-      const buffer = await readFile(face.path);
+  fontsPromise ??= Promise.resolve(
+    EMBEDDED_PRODUCTION_FONTS.map((face) => {
+      const buffer = Buffer.from(face.base64, "base64");
       return {
         name: FONT_FAMILY,
         data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
@@ -72,6 +82,35 @@ async function loadFonts(): Promise<ProductionStaticRendererFont[]> {
   );
   return fontsPromise;
 }
+
+// --- what may be drawn, and how large (review sections 2 and 3) ---------------------------------------
+//
+// TWO fields are visual-facing, and the social caption is NOT one of them:
+//
+//   headline    -- the composition's own title line
+//   overlayText -- CreativePackageContentV2's "single canonical home for text placed ON the visual"
+//
+// spec.copy.caption is the social post caption and is deliberately never drawn. It stays in the spec
+// because the generative prompt legitimately falls back to it, and it stays in the Creative Package
+// untouched -- it simply is not image body copy.
+//
+// SIZES ARE A RANGE, NOT A CONSTANT. Each field lists the sizes it may be rendered at, largest first,
+// in REFERENCE units (they pass through the same uniform scaler as everything else). The floor is the
+// smallest size still readable at thumbnail size on a phone; below it the renderer refuses rather
+// than producing a wall of unreadable text or silently truncating public copy.
+const HEADLINE_SIZES = [96, 84, 72, 62, 54] as const;
+const OVERLAY_SIZES = [104, 88, 74, 62, 52, 44] as const;
+const ILLUSTRATION_HEADLINE_SIZES = [88, 76, 66, 58, 50] as const;
+const ILLUSTRATION_OVERLAY_SIZES = [34, 30, 27, 24] as const;
+
+const HEADLINE_LINE_HEIGHT = 0.98;
+const OVERLAY_LINE_HEIGHT = 0.96;
+
+// The text column, and the vertical room it may occupy before it would reach the decorative rule and
+// the brand mark below it. Reference units; the brand mark's own band is excluded, which is what
+// makes "never collides with branding" structural rather than a hope.
+const TEXT_BLOCK = { left: 154, top: 238, width: 760, gap: 28, indent: 142 } as const;
+const BRAND_SAFE_AREA_TOP = 780;
 
 // --- dimension-aware geometry ----------------------------------------------------------------------
 //
@@ -125,7 +164,7 @@ function doodleHeart(g: Geometry, style: Record<string, unknown> = {}): ReactNod
   return h("div", { style: { color: "#b77442", fontSize: g.su(38), lineHeight: 1, ...style } }, "♡");
 }
 
-function editorialTextComposition(spec: ProductionSpecV1, g: Geometry): ReactNode {
+function editorialTextComposition(spec: ProductionSpecV1, g: Geometry, fit: FittedCopy): ReactNode {
   const background = "#fff8ef";
   const ink = "#2a1812";
   const accent = "#b77442";
@@ -174,28 +213,32 @@ function editorialTextComposition(spec: ProductionSpecV1, g: Geometry): ReactNod
         "div",
         {
           style: {
-            fontSize: g.su(96),
-            lineHeight: 0.98,
+            fontSize: fit.headlineSize,
+            lineHeight: HEADLINE_LINE_HEIGHT,
             letterSpacing: 0,
-            maxWidth: g.sx(720),
+            maxWidth: g.sx(TEXT_BLOCK.width),
           },
         },
         spec.copy.headline,
       ),
-      h(
-        "div",
-        {
-          style: {
-            marginTop: g.sy(28),
-            marginLeft: g.sx(142),
-            fontSize: g.su(104),
-            lineHeight: 0.96,
-            letterSpacing: 0,
-            color: accent,
-          },
-        },
-        spec.copy.caption,
-      ),
+      // overlayText, NOT the social caption. Absent overlayText renders nothing at all rather than
+      // substituting post copy that was never meant to be in the picture.
+      fit.overlayText
+        ? h(
+            "div",
+            {
+              style: {
+                marginTop: g.sy(TEXT_BLOCK.gap),
+                marginLeft: g.sx(TEXT_BLOCK.indent),
+                fontSize: fit.overlaySize,
+                lineHeight: OVERLAY_LINE_HEIGHT,
+                letterSpacing: 0,
+                color: accent,
+              },
+            },
+            fit.overlayText,
+          )
+        : null,
     ),
     h("div", {
       style: {
@@ -247,7 +290,7 @@ function editorialTextComposition(spec: ProductionSpecV1, g: Geometry): ReactNod
   );
 }
 
-function illustrationComposition(spec: ProductionSpecV1, g: Geometry): ReactNode {
+function illustrationComposition(spec: ProductionSpecV1, g: Geometry, fit: FittedCopy): ReactNode {
   const ink = "#2a1812";
 
   return h(
@@ -275,21 +318,23 @@ function illustrationComposition(spec: ProductionSpecV1, g: Geometry): ReactNode
           flexDirection: "column",
         },
       },
-      h("div", { style: { fontSize: g.su(88), lineHeight: 0.96, letterSpacing: 0 } }, spec.copy.headline),
-      h(
-        "div",
-        {
-          style: {
-            marginTop: g.sy(18),
-            marginLeft: g.sx(18),
-            width: g.sx(620),
-            color: "#6a4635",
-            fontSize: g.su(34),
-            lineHeight: 1.14,
-          },
-        },
-        spec.copy.caption,
-      ),
+      h("div", { style: { fontSize: fit.headlineSize, lineHeight: 0.96, letterSpacing: 0 } }, spec.copy.headline),
+      fit.overlayText
+        ? h(
+            "div",
+            {
+              style: {
+                marginTop: g.sy(18),
+                marginLeft: g.sx(18),
+                width: g.sx(620),
+                color: "#6a4635",
+                fontSize: fit.overlaySize,
+                lineHeight: 1.14,
+              },
+            },
+            fit.overlayText,
+          )
+        : null,
       h("div", {
         style: {
           marginTop: g.sy(20),
@@ -324,12 +369,65 @@ function illustrationComposition(spec: ProductionSpecV1, g: Geometry): ReactNode
 // the canvas empty and the art detached from the copy above it.
 const ILLUSTRATION_BAND = { top: 300, height: 780 } as const;
 
-function composition(spec: ProductionSpecV1, options: ProductionStaticRenderOptions, g: Geometry): ReactNode {
+function composition(spec: ProductionSpecV1, options: ProductionStaticRenderOptions, g: Geometry, fit: FittedCopy): ReactNode {
   if (options.illustration) {
-    return illustrationComposition(spec, g);
+    return illustrationComposition(spec, g, fit);
   }
 
-  return editorialTextComposition(spec, g);
+  return editorialTextComposition(spec, g, fit);
+}
+
+type FittedCopy = {
+  headlineSize: number;
+  overlaySize: number;
+  overlayText: string | null;
+};
+
+// MEASURE, THEN RENDER.
+//
+// Both visual-facing fields are laid out for real before the final composition is built, and the
+// largest size that fits its share of the text column wins. The two share one budget: the headline is
+// measured first and whatever it does not use is what the overlay may have, so a long headline
+// shrinks the overlay rather than pushing it through the brand mark.
+//
+// Refuses instead of degrading. If either field still overflows at the smallest stated size, this
+// throws CopyDoesNotFitError -- no truncation, no rewording, no unreadable type, and no visually
+// broken asset written to storage.
+async function fitCopy(spec: ProductionSpecV1, g: Geometry, illustrated: boolean): Promise<FittedCopy> {
+  const fonts = await loadFonts();
+  const overlayText = spec.copy.overlayText?.trim() ? spec.copy.overlayText.trim() : null;
+
+  // The column, in FINAL pixels, and the room above the brand mark's band.
+  const columnWidth = illustrated ? g.sx(620) : g.sx(TEXT_BLOCK.width);
+  const availableHeight = illustrated
+    ? g.sy(BRAND_SAFE_AREA_TOP - 72) - g.sy(TEXT_BLOCK.gap)
+    : g.sy(BRAND_SAFE_AREA_TOP) - g.sy(TEXT_BLOCK.top) - g.sy(TEXT_BLOCK.gap);
+
+  const headlineSizes = (illustrated ? ILLUSTRATION_HEADLINE_SIZES : HEADLINE_SIZES).map((size) => g.su(size));
+  const overlaySizes = (illustrated ? ILLUSTRATION_OVERLAY_SIZES : OVERLAY_SIZES).map((size) => g.su(size));
+
+  const headline = await fitTextBlock(
+    { text: spec.copy.headline, maxWidth: columnWidth, maxHeight: availableHeight, candidateSizes: headlineSizes, lineHeight: HEADLINE_LINE_HEIGHT },
+    fonts,
+  );
+  if (!headline.ok) {
+    throw new CopyDoesNotFitError("headline", headline.smallestTriedSize, headline.measuredHeight, availableHeight);
+  }
+
+  if (!overlayText) {
+    return { headlineSize: headline.fontSize, overlaySize: overlaySizes[0] ?? 0, overlayText: null };
+  }
+
+  const overlayBudget = availableHeight - headline.measuredHeight;
+  const overlay = await fitTextBlock(
+    { text: overlayText, maxWidth: columnWidth - (illustrated ? 0 : g.sx(TEXT_BLOCK.indent)), maxHeight: overlayBudget, candidateSizes: overlaySizes, lineHeight: OVERLAY_LINE_HEIGHT },
+    fonts,
+  );
+  if (!overlay.ok) {
+    throw new CopyDoesNotFitError("overlayText", overlay.smallestTriedSize, overlay.measuredHeight, overlayBudget);
+  }
+
+  return { headlineSize: headline.fontSize, overlaySize: overlay.fontSize, overlayText };
 }
 
 export async function renderProductionStaticImage(
@@ -341,8 +439,9 @@ export async function renderProductionStaticImage(
   }
 
   const g = geometryFor(spec.dimensions);
+  const fit = await fitCopy(spec, g, Boolean(options.illustration));
 
-  const svg = await satori(composition(spec, options, g), {
+  const svg = await satori(composition(spec, options, g, fit), {
     width: g.width,
     height: g.height,
     fonts: await loadFonts(),
@@ -389,9 +488,11 @@ export async function renderProductionStaticImage(
 // renderer must never be able to drift back onto a private framework path without this changing too.
 export const PRODUCTION_STATIC_RENDERER_FONT = {
   family: FONT_FAMILY,
-  package: "@fontsource/geist-sans",
-  weights: FONT_FACES.map((face) => face.weight),
-  paths: FONT_FACES.map((face) => face.path),
-  license: "OFL-1.1",
+  package: PRODUCTION_FONT_SOURCE_PACKAGE,
+  version: PRODUCTION_FONT_SOURCE_VERSION,
+  weights: FONT_WEIGHTS,
+  license: PRODUCTION_FONT_LICENSE,
+  // Embedded rather than resolved -- see the note above loadFonts.
+  embedded: true,
   source: "Geist Sans (C) 2023 Vercel / basement.studio, redistributed under the SIL Open Font License 1.1 via the @fontsource/geist-sans dependency.",
-} as const;
+};

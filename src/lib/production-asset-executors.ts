@@ -4,6 +4,7 @@ import { inspectAssetBytes, type SupportedGeneratedAssetMimeType } from "./asset
 import { sha256Hex } from "./asset-digest.ts";
 import type { AssetJobExecutor } from "./asset-jobs.ts";
 import { isProductionSpecV1, type ProductionSpecV1 } from "./production-spec.ts";
+import { buildGenerativeImagePrompt } from "./production-image-prompt.ts";
 import { renderProductionStaticImage } from "./production-static-renderer.ts";
 
 // Production MVP Wave B -- the two machine executors the Production Route selects, and nothing else.
@@ -119,6 +120,16 @@ export type CloudflareGenerativeImageConfig = {
   // Called once per execution, immediately after a successful generation, with the provenance of the
   // call that actually produced the bytes.
   onProvenance?: (provenance: GenerativeImageProvenance) => void | Promise<void>;
+  // Called at most once, with the HTTP status of the request that FINALLY failed (after any bounded
+  // transport retry). Exists so a caller can tell "we are out of quota" from "the token is wrong"
+  // from "the gateway is down" STRUCTURALLY.
+  //
+  // The alternative was to re-derive the cause by matching substrings in the error message the
+  // runner stores, and this codebase already refuses that everywhere else (see the "selecting on
+  // reason, never on message text" note in runAssetJobWithExecutors). A status code the executor
+  // actually saw is a fact; a regex over an error string is a guess that breaks the first time
+  // anyone rewords a message.
+  onTransportFailure?: (failure: { status: number }) => void;
 };
 
 function requireProductionImageSpec(spec: unknown): ProductionSpecV1 {
@@ -132,27 +143,11 @@ export function buildStaticRendererExecutor(): AssetJobExecutor {
   return async (_job, spec) => [await renderProductionStaticImage(requireProductionImageSpec(spec))];
 }
 
-export function buildGenerativeImagePrompt(spec: ProductionSpecV1): string {
-  const brief = spec.visualBrief;
-  const scene = brief?.scene.join(" ") ?? spec.copy.caption;
-  const notes = brief?.executionNotes.join(" ") ?? "";
-
-  return [
-    "Create a text-free expressive illustration for a square social post.",
-    "Warm hand-drawn editorial bakery style, simple human characters are allowed, cream background, charming minimal composition.",
-    "Do not generate readable text, logos, captions, signatures, UI, labels, or branding.",
-    "Use reference input only for broad visual language: warmth, palette, simplified linework, texture, density. Do not copy exact artwork, characters, pose, joke, text, or composition.",
-    "The imagery must stay visibly illustrated or doodled, not photoreal product documentation.",
-    "Desserts must read as ordinary bakery food: neat brownies, blondies, pastry slices, or clean crumb texture.",
-    "Avoid flesh-like texture, skin-like tearing, grotesque food, ambiguous goo, slop, malformed pastry anatomy, severe fusion, body-horror, mutilation, or peeling layers.",
-    `Concept: ${brief?.concept ?? spec.copy.headline}`,
-    `Style: ${brief?.style ?? "warm editorial bakery illustration"}`,
-    `Scene: ${scene}`,
-    notes ? `Constraints: ${notes}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
+// The prompt itself now lives in the PURE module production-image-prompt.ts, because the owner-facing
+// manual prompt package renders it in the browser and this module reaches node:fs/promises, satori,
+// resvg and sharp. Re-exported here so every existing importer of buildGenerativeImagePrompt keeps
+// working unchanged, and so there is still exactly ONE prompt in the system rather than two.
+export { GENERATIVE_IMAGE_NEGATIVE_CONSTRAINTS, GENERATIVE_IMAGE_STYLE_DIRECTIVES, buildGenerativeImagePrompt } from "./production-image-prompt.ts";
 
 // ONE canonical model-normalization rule, used by every reader of config.model.
 //
@@ -298,6 +293,9 @@ async function requestGenerativeImage(
 
     const isTransient = TRANSIENT_GENERATIVE_IMAGE_HTTP_STATUSES.includes(response.status);
     if (!isTransient || attempt >= MAX_GENERATIVE_IMAGE_TRANSPORT_ATTEMPTS) {
+      // Reported BEFORE the throw, and only for the request that finally failed -- a 429 that the
+      // bounded retry then recovers from is not a quota outage the owner should ever be shown.
+      config.onTransportFailure?.({ status: response.status });
       const detail = await response.text().catch(() => "");
       throw new Error(`Cloudflare Workers AI request failed with ${response.status}${detail ? `: ${detail.slice(0, 240)}` : ""}`);
     }

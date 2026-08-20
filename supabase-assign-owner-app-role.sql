@@ -1,0 +1,114 @@
+-- Wave B authorization closure: assign the app_metadata.app_role claim to a Supabase Auth user.
+--
+-- ============================================================================================
+-- RUN THIS IN THE SUPABASE SQL EDITOR (Dashboard -> SQL Editor). OWNER EXECUTION ONLY.
+-- ============================================================================================
+--
+-- WHY THE SQL EDITOR AND NOT A SCRIPT.
+--
+-- Writing app_metadata requires either the Admin API (which needs the service-role key) or direct
+-- SQL against auth.users. The SQL Editor already runs with sufficient privilege, so this needs NO
+-- service-role key to exist on any developer machine, in any .env file, or in CI. That is the point:
+-- the most dangerous credential in a Supabase project is never created, copied or handled.
+--
+-- NO OWNER IDENTIFIER IS COMMITTED. Both placeholders below are filled in by you at run time and
+-- must not be saved back into this file or into git.
+--
+-- ============================================================================================
+-- STEP 1 -- LOOK BEFORE YOU WRITE. Confirm you are about to modify exactly the right user.
+-- ============================================================================================
+--
+-- Replace the placeholder with the owner's sign-in email. This is READ-ONLY.
+
+-- select id, email, raw_app_meta_data, last_sign_in_at
+-- from auth.users
+-- where email = 'REPLACE_WITH_OWNER_EMAIL';
+
+-- Expect EXACTLY ONE row. If you get zero, the email is wrong or the user does not exist.
+-- If you get more than one, stop and reconcile before continuing.
+
+-- ============================================================================================
+-- STEP 2 -- ASSIGN THE CLAIM.
+-- ============================================================================================
+--
+-- Uncomment, replace BOTH placeholders, and run.
+--
+--   REPLACE_WITH_EMAIL  the account's sign-in email
+--   REPLACE_WITH_ROLE   'owner'           for the Product Lab owner (the human)
+--                       'creative_worker' for the advisor/worker automation account
+--                                         (the one in .env.advisor.local -- it runs the creative
+--                                          and asset workers and MUST keep write access, but must
+--                                          NOT be able to open the owner UI)
+--
+-- Do NOT assign 'owner' to the worker account. Do NOT assign either role to the public-order
+-- website account -- that principal must end up with no creative-domain access at all.
+--
+-- The `||` merge preserves Supabase's own keys (provider, providers). A bare assignment would
+-- destroy them and can break sign-in.
+--
+-- The guard blocks the write unless exactly one user matches, so a typo'd email is a no-op rather
+-- than a silent miss.
+
+-- do $$
+-- declare
+--   target_email text := 'REPLACE_WITH_EMAIL';
+--   target_role  text := 'REPLACE_WITH_ROLE';
+--   matched      integer;
+-- begin
+--   if target_role not in ('owner', 'creative_worker') then
+--     raise exception 'Refusing to assign unrecognised app_role %. Use owner or creative_worker.', target_role;
+--   end if;
+--
+--   select count(*) into matched from auth.users where email = target_email;
+--   if matched <> 1 then
+--     raise exception 'Expected exactly 1 user for that email, found %. Nothing was changed.', matched;
+--   end if;
+--
+--   if target_role = 'owner' and exists (
+--     select 1 from auth.users
+--     where raw_app_meta_data ->> 'app_role' = 'owner' and email <> target_email
+--   ) then
+--     raise exception 'Another user already holds the owner claim. There is exactly ONE owner identity -- revoke the other first (STEP 4) if you are moving it.';
+--   end if;
+--
+--   update auth.users
+--      set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || jsonb_build_object('app_role', target_role)
+--    where email = target_email;
+--
+--   raise notice 'Assigned app_role=% to 1 user.', target_role;
+-- end $$;
+
+-- ============================================================================================
+-- STEP 3 -- VERIFY.
+-- ============================================================================================
+--
+-- Shows who holds which claim across the whole project. Run it and confirm:
+--   * exactly one 'owner'
+--   * the worker account is 'creative_worker'
+--   * the public-order account appears with app_role NULL
+
+-- select email, raw_app_meta_data ->> 'app_role' as app_role
+-- from auth.users
+-- order by app_role nulls last, email;
+
+-- ============================================================================================
+-- STEP 4 -- REVOKE (only if you need to move or remove a claim).
+-- ============================================================================================
+
+-- update auth.users
+--    set raw_app_meta_data = raw_app_meta_data - 'app_role'
+--  where email = 'REPLACE_WITH_EMAIL';
+
+-- ============================================================================================
+-- STEP 5 -- REFRESH TOKENS. THIS IS REQUIRED, NOT OPTIONAL.
+-- ============================================================================================
+--
+-- app_metadata is stamped into the JWT when the token is ISSUED. An access token minted before
+-- STEP 2 does not gain the claim, and will keep being refused (or keep being allowed, after a
+-- revoke) until it is replaced.
+--
+--   Owner browser  : sign out of Product Lab and sign back in.
+--   Workers        : restart the creative worker, the asset worker and the Creative Prep task, so
+--                    each signs in again with signInWithPassword and receives a fresh token.
+--
+-- Only after this does the new authorization state take effect anywhere.

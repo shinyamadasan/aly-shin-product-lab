@@ -33,8 +33,36 @@ export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
 // they live in production-route.ts, not here, so that this union keeps meaning "runnable today":
 // each later wave adds its member here in the same change that registers its executor, which is
 // what stops a queued row from naming a worker nothing can ever claim.
-export const ASSET_JOB_WORKER_TYPES = ["mock", "external", "static_renderer", "generative_image"] as const;
+//
+// "manual_illustration" is the MANUAL half of the generative image path, and it is a distinct
+// execution mechanism rather than a flavour of "external" because neither existing value can
+// describe it without lying about something load-bearing:
+//
+//   "external" resolves its spec as AssetGenerationSpecV1, so the job would persist
+//     briefSchemaVersion "v1" and a digest of the rendered human BRIEF -- when what the owner was
+//     actually handed, and generated from, is the production prompt package. The stored provenance
+//     would name a document that played no part in making the asset.
+//
+//   "static_renderer" resolves the right spec but appears in MACHINE_EXECUTOR_SOURCE_KINDS as
+//     "human_designed", and a derived source kind WINS over the operator's declaration. A ChatGPT
+//     illustration would be permanently recorded as human-designed, which is exactly the provenance
+//     lie that map exists to prevent in the other direction.
+//
+// A third value is the smallest thing that is truthful on both axes: it reads ProductionSpecV1 (so
+// the fingerprint is of the spec the prompt package was rendered from), and it is deliberately
+// ABSENT from MACHINE_EXECUTOR_SOURCE_KINDS (so the owner still declares the origin, because only
+// they know which tool made it). It is also why capture_new cannot accidentally be composited: that
+// path runs a different worker with a different executor, not the same worker behind a flag.
+//
+// worker_type is a plain text column with no CHECK constraint (see supabase-add-asset-jobs.sql), so
+// this is a pure TypeScript union change and needs no migration -- the same additive precedent the
+// paragraph above describes.
+export const ASSET_JOB_WORKER_TYPES = ["mock", "external", "static_renderer", "generative_image", "manual_illustration"] as const;
 export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
+
+// The workers whose executor reads ProductionSpecV1 rather than AssetGenerationSpecV1. Named once,
+// here, because buildAssetJobSpecForJob and the Wave B executors must never disagree about it.
+export const PRODUCTION_SPEC_WORKER_TYPES: readonly AssetJobWorkerType[] = ["static_renderer", "generative_image", "manual_illustration"];
 
 // "short_video" joins "image" in Wave A as a structural asset kind: ProductionSpecV1 and the
 // candidate validator both have to be able to REPRESENT a video before any wave can produce one.
@@ -596,7 +624,10 @@ export async function buildAssetJobSpecForJob(
   }
   const assetKind = job.assetKind;
 
-  if (job.workerType !== "static_renderer" && job.workerType !== "generative_image") {
+  // Widened to string rather than cast, matching isProductionRouteExecutable's own precedent:
+  // AssetJobRecord.workerType is a plain string (a row can hold anything), so asking whether it is
+  // in the set is a real question, not an assertion about a value we have not checked.
+  if (!(PRODUCTION_SPEC_WORKER_TYPES as readonly string[]).includes(job.workerType)) {
     return buildAssetGenerationSpecForJob(client, job);
   }
 

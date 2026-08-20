@@ -11,20 +11,18 @@ import {
   runAssetJobWithExecutors,
   type AssetJobExecutionClient,
   type AssetJobRecord,
-  type AssetJobWorkerType,
   type AssetSourceKind,
 } from "../../src/lib/asset-jobs.ts";
 import { buildAssetUploadCandidate } from "../../src/lib/asset-upload-intake.ts";
 import type { AssetGenerationSpecV1 } from "../../src/lib/asset-generation-spec.ts";
 import { renderAssetGenerationBrief } from "../../src/lib/asset-generation-brief.ts";
 import { buildExternalAssetExecutor } from "../../src/lib/external-asset-provider.ts";
+import type { GenerativeImageProvenance } from "../../src/lib/production-asset-executors.ts";
 import {
-  PRODUCTION_EXECUTOR_TIMEOUTS_MS,
-  buildCloudflareGenerativeImageExecutor,
-  buildStaticRendererExecutor,
-  cloudflareGenerativeImageConfigFromEnv,
-  type GenerativeImageProvenance,
-} from "../../src/lib/production-asset-executors.ts";
+  CLI_PRODUCTION_EXECUTOR_TIMEOUTS_MS,
+  executeProductionAssetJob,
+  type ProductionWorkerType,
+} from "../../src/lib/production-execution.ts";
 import { loadEnvFile, readSupabaseCredentials } from "../daily-advisor/env.ts";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -119,85 +117,53 @@ export async function runImportCommand(
   return { exitCode: 0, message: `Asset Job ${jobId} completed.` };
 }
 
-export type ProductionWorkerType = Extract<AssetJobWorkerType, "static_renderer" | "generative_image">;
-
 // TECHNICAL / ACCEPTANCE-TESTING SURFACE, deliberately.
 //
-// This is the only place the two machine executors can be run, and it stays a trusted CLI command
-// rather than anything the app or a scheduler invokes. See the comment on the owner-facing job
-// creation in creative-package-asset-create.tsx for why the app does not queue these routes yet.
+// This is the CLI half of machine production. It shares ONE execution boundary with the owner-facing
+// route -- executeProductionAssetJob -- so neither path can drift from the other's guarantees. All
+// this function adds is the CLI's own contract: exit codes and operator-readable lines.
+//
+// Unlike the route, this runs in a plain Node process with no platform ceiling, so it uses the
+// executor's own full budget rather than the reduced web one.
 export async function runProductionWorkerCommand(
   client: AssetJobExecutionClient,
   jobId: string,
   workerType: ProductionWorkerType,
 ): Promise<CliOutcome & { provenance?: GenerativeImageProvenance }> {
-  // Provenance is captured from the executor that actually ran, not reconstructed afterwards from
-  // config -- so a model override or a retried transport attempt is reported as it happened.
-  let provenance: GenerativeImageProvenance | undefined;
-
-  const executors =
-    workerType === "static_renderer"
-      ? { static_renderer: buildStaticRendererExecutor() }
-      : {
-          generative_image: buildCloudflareGenerativeImageExecutor({
-            ...cloudflareGenerativeImageConfigFromEnv(),
-            onProvenance: (captured) => {
-              provenance = captured;
-            },
-          }),
-        };
-
-  // The explicit per-executor timeout, never the runner's legacy 30s default -- see
-  // PRODUCTION_EXECUTOR_TIMEOUTS_MS for why inheriting that default was wrong for a provider call.
-  //
-  // sourceKind is NOT passed: the runner derives it from the worker that ran
-  // (MACHINE_EXECUTOR_SOURCE_KINDS), so a generated illustration is always recorded as ai_generated
-  // and a deterministic template render is never mislabelled as one.
-  //
-  // provider/model are not passed either, and for the same reason: the executor reports them to the
-  // runner through the execution context, so what gets persisted on asset_job_attempts is what the
-  // executor actually used -- including on a failed or timed-out attempt this CLI never sees a
-  // result for.
-  const result = await runAssetJobWithExecutors(client, jobId, executors, {
-    timeoutMs: PRODUCTION_EXECUTOR_TIMEOUTS_MS[workerType],
+  const outcome = await executeProductionAssetJob(client, jobId, workerType, {
+    timeoutMs: CLI_PRODUCTION_EXECUTOR_TIMEOUTS_MS[workerType],
   });
 
-  if (!result.ok) {
-    return { exitCode: 1, message: `Asset Job ${jobId} did not complete: ${result.message}`, provenance };
+  switch (outcome.kind) {
+    case "not-configured":
+      return { exitCode: 2, message: outcome.message };
+
+    case "failed":
+      return { exitCode: 1, message: `Asset Job ${jobId} did not complete: ${outcome.message}`, provenance: outcome.provenance };
+
+    case "bookkeeping-failed": {
+      const file = outcome.files[0];
+      const asset = file ? `: ${file.publicUrl || file.storagePath}` : ".";
+      return {
+        exitCode: ATTEMPT_BOOKKEEPING_EXIT_CODE,
+        message:
+          `Asset Job ${jobId} produced its asset${asset} BUT attempt bookkeeping FAILED: ${outcome.message}
+` +
+          `The Asset and the Asset Job are complete and correct -- do NOT re-run this command, which would produce a SECOND asset.
+` +
+          `asset_job_attempts row for this run is likely still status='running', and its provider/model were not recorded.
+` +
+          `Most likely cause: supabase-add-asset-job-attempt-provenance.sql has not been applied to this Supabase project.`,
+        provenance: outcome.provenance,
+      };
+    }
+
+    case "completed": {
+      const file = outcome.files[0];
+      const asset = file ? `: ${file.publicUrl || file.storagePath}` : ".";
+      return { exitCode: 0, message: `Asset Job ${jobId} completed${asset}`, provenance: outcome.provenance };
+    }
   }
-
-  const file = result.materialization?.ok ? result.materialization.materialized.files[0] : null;
-  const asset = file ? `: ${file.publicUrl || file.storagePath}` : ".";
-
-  // ATTEMPT BOOKKEEPING IS PART OF SUCCESS.
-  //
-  // finishAssetJobAttempt is deliberately non-fatal to the JOB -- the job is already terminal and the
-  // Asset is already materialized by the time it runs, and failing the job to hide a bookkeeping
-  // error would destroy real work. But non-fatal is not the same as invisible: judging this command
-  // by result.ok alone let the most likely failure in this whole slice -- running
-  // `--worker generative_image` before supabase-add-asset-job-attempt-provenance.sql has been
-  // applied, so the provenance RPC does not exist -- print a green "completed" and exit 0, while the
-  // attempt row stayed status='running' forever and provider/model were silently lost.
-  //
-  // So the asset stays completed and is still reported, and the command still fails. No retry: a
-  // missing function is a migration that has not been applied, and retrying it is pointless. No
-  // fabricated provenance: nothing is written to stand in for what did not persist.
-  if (result.attempt && !result.attempt.ok) {
-    return {
-      exitCode: ATTEMPT_BOOKKEEPING_EXIT_CODE,
-      message:
-        `Asset Job ${jobId} produced its asset${asset} BUT attempt bookkeeping FAILED: ${result.attempt.message}
-` +
-        `The Asset and the Asset Job are complete and correct -- do NOT re-run this command, which would produce a SECOND asset.
-` +
-        `asset_job_attempts row for this run is likely still status='running', and its provider/model were not recorded.
-` +
-        `Most likely cause: supabase-add-asset-job-attempt-provenance.sql has not been applied to this Supabase project.`,
-      provenance,
-    };
-  }
-
-  return { exitCode: 0, message: `Asset Job ${jobId} completed${asset}`, provenance };
 }
 
 function log(level: "info" | "warn" | "error", message: string): void {

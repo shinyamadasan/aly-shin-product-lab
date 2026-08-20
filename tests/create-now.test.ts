@@ -1119,3 +1119,80 @@ test("S4 added no second request contract: the request Create Now builds IS the 
   assert.match(createNowLibSource, /from "\.\/creative-formats\.ts"/);
   assert.doesNotMatch(createNowLibSource, /"photo" \| "reel"/);
 });
+
+// --- create-now can reach Production (Wave B owner workflow) ------------------------------------------
+//
+// The gap these lock closed: EVERY Creative Package in the live project is intent-origin (create-now)
+// and has no Opportunity, while the only two surfaces that rendered the production panel --
+// Opportunities and Today -- are both opportunity-driven. The owner could create content and then had
+// no route to produce an asset from it.
+
+test("A: the create-now package result renders the production/asset surface", () => {
+  assert.match(createNowSource, /<CreativePackageAssetCreate\s+creativePackageId=\{packageId\}/);
+  assert.match(createNowSource, /<CreativePackageAssets\s+creativePackageId=\{packageId\}/);
+  // It needs the package's identity to do that, and must keep it alongside the rendered view.
+  assert.match(createNowSource, /setPackageId\(packageResult\.creativePackage\.id\)/);
+});
+
+test("B: reaching Production from create-now requires no Opportunity, and none is invented", () => {
+  // Same comment-stripped view the pre-existing fabrication guard uses, so prose in the file header
+  // that EXPLAINS the boundary is never mistaken for code that crosses it.
+  assert.doesNotMatch(createNowCode, /opportunit/i, "create-now's code must never reach for the Opportunity domain");
+
+  // Origin stays what it is: a direct request, created by its own function.
+  assert.match(createNowCode, /createCreativeJobFromRequest/);
+
+  // And the production surface is reached with nothing but the package id.
+  assert.match(createNowCode, /creativePackageId=\{packageId\}/);
+});
+
+test("C + D: Opportunities and Today still render the same surface, unchanged", () => {
+  const opportunitiesSource = readFileSync(new URL("../src/components/opportunities-page.tsx", import.meta.url), "utf8");
+  assert.match(opportunitiesSource, /<CreativePackageAssetCreate creativePackageId=\{selectedPackage\.id\}/);
+  assert.match(opportunitiesSource, /<CreativePackageAssets creativePackageId=\{selectedPackage\.id\}/);
+  assert.match(todayPageSource, /<CreativePackageAssetCreate creativePackageId=\{state\.candidate\.creativePackage\.id\}/);
+});
+
+test("E: production behaviour is REUSED, never duplicated into create-now", () => {
+  // create-now supplies a package id and nothing else. Every production decision -- which worker, how
+  // to execute, how to preview, what the owner may decide -- stays in the shared components.
+  for (const forbidden of [
+    "production-execution",
+    "production-asset-executors",
+    "production-static-renderer",
+    "production-auth-server",
+    "resolveProductionRoute",
+    "runAssetJobWithExecutors",
+    "createAssetJobForReadyCreativePackage",
+    "/api/production",
+    "setAssetOwnerDecision",
+  ]) {
+    assert.equal(createNowSource.includes(forbidden), false, `create-now must not reimplement production (${forbidden})`);
+  }
+});
+
+test("F: the owner's decisions live on the shared production surface create-now renders", () => {
+  const production = readFileSync(new URL("../src/components/creative-package-production.tsx", import.meta.url), "utf8");
+  for (const control of ["Accept", "Reject", "Regenerate"]) {
+    assert.ok(production.includes(control), `${control} must remain available on completed output`);
+  }
+  assert.match(production, /setAssetOwnerDecision/);
+});
+
+test("G: the external/manual upload path is untouched by this wiring", () => {
+  const entry = readFileSync(new URL("../src/components/creative-package-asset-create.tsx", import.meta.url), "utf8");
+  // capture_new still resolves to external and still gets the upload panel, byte for byte.
+  assert.match(entry, /External Creative Workspace/);
+  assert.match(entry, /createAssetJobForReadyCreativePackage\(\s*client,\s*creativePackageId,\s*\{\s*workerType:\s*"external",\s*assetKind:\s*"image"\s*\}\s*\)/);
+});
+
+test("H: create-now opens no route to a blocked worker or asset kind", () => {
+  for (const blocked of ["remotion", "short_video"]) {
+    assert.equal(createNowSource.includes(blocked), false, `create-now must not name ${blocked}`);
+  }
+});
+
+test("starting another creation clears the previous package's production surface", () => {
+  // Otherwise the panel for the package just created would linger over the next one.
+  assert.match(createNowSource, /setPackageView\(null\);\s*\n\s*setPackageId\(null\);/);
+});

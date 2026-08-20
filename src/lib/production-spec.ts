@@ -48,10 +48,32 @@ export type ProductionSpecDimensions = {
   aspectRatio: string;
 };
 
+// The copy an executor receives, and -- load-bearing -- WHICH OF IT MAY BE DRAWN ON THE IMAGE.
+//
+// This distinction was missing, and the first real production run is what exposed it. `caption` is
+// the SOCIAL POST CAPTION: 231 characters of copy that belongs under the post, not inside the
+// picture. The renderer drew it as the composition's accent line, so a real package's caption ran off
+// the canvas and through the brand mark.
+//
+// CreativePackageContentV2 already answers this and always did. Its own contract states that
+// "overlayText remains the single canonical home for text placed ON the visual, so the two cannot
+// disagree about what the image says". The package that overflowed carries
+// overlayText = "HELLO my name is BLONDIES" -- short, designed for the image, and exactly what its
+// visualDirection describes. Nothing about the package was wrong; the SPEC simply did not carry the
+// field, so the renderer had nothing to draw but the social caption.
+//
+// So overlayText is transported here. That is a mapping fix inside Wave B's own executor-facing
+// spec: CreativePackageContentV2 is untouched, no copy field is invented, and no wording is changed.
 export type ProductionSpecCopy = {
   headline: string;
+  // SOCIAL POST COPY. Carried because it is legitimate creative context (the generative prompt falls
+  // back to it when a package has no visualBrief) but it is NEVER drawn into the image.
   caption: string;
   cta: string;
+  // THE ONLY free text that may be drawn onto the visual, besides the headline. Null means the
+  // package specifies no on-image text, and the composition then shows the headline alone rather
+  // than substituting something else.
+  overlayText: string | null;
 };
 
 // One shot's worth of intent, mapped 1:1 from a Reel shot. Deliberately the same three facts the
@@ -196,6 +218,8 @@ export function buildProductionSpec(creativePackage: CreativePackageRecord, para
       headline: content.headline,
       caption: content.caption,
       cta: content.cta,
+      // Only a photo package has overlayText; a Reel carries its on-screen text per shot instead.
+      overlayText: content.format === "photo" ? (content.overlayText ?? null) : null,
     },
     brandStyle: params.brandBible ? deriveBrandStyle(params.brandBible) : null,
     // Only a photo package carries a brief today, and only a non-capture one at that. Absent stays

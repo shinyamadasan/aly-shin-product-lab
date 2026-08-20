@@ -24,6 +24,7 @@ function spec(overrides: Partial<ProductionImageSpecV1>): ProductionImageSpecV1 
       headline: "",
       caption: "",
       cta: "",
+      overlayText: null,
     },
     brandStyle: null,
     visualBrief: null,
@@ -98,6 +99,7 @@ async function main() {
         headline: "some days deserve",
         caption: "a little reward.",
         cta: "",
+        overlayText: null,
       },
     }),
   );
@@ -108,6 +110,7 @@ async function main() {
         headline: "sharing is caring.",
         caption: "until someone starts measuring the pieces",
         cta: "",
+        overlayText: null,
       },
       visualBrief: {
         concept: "A gentle sharing dessert moment.",

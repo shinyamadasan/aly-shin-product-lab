@@ -250,3 +250,81 @@ without it the asset is still produced correctly but attempt bookkeeping fails a
 rather than 0. `static_renderer`, `export` and `import` do not need it.
 
 No Cloudflare call was made, and no other migration was applied.
+
+## 2026-08-19 — Production MVP Wave B: owner authorization applied live (`supabase-assign-owner-app-role.sql` + `supabase-harden-creative-production-rls.sql`)
+
+Both files applied by the owner in the Supabase SQL editor to the live project
+(`kouesgllnyallmyesvrl.supabase.co`) and verified against it afterwards. Recorded here for the same
+reason the provenance migration above is: this repo keeps no migration ledger, both SQL files ship in
+the same commit, and without this note nothing distinguishes "authored" from "applied". No account
+identifier, UUID, password or token is recorded here or in either SQL file -- both take the operator's
+own input at run time.
+
+**Why it was needed.** Two P1s. The application owner gate was keyed on `PRODUCTION_OWNER_EMAILS`,
+which defaults to OPEN when unset -- and it was unset, so the gate admitted every authenticated
+principal. Underneath it, every creative/production table shipped `to authenticated using (true)`,
+which is a ROLE check, not an IDENTITY check. This project has five Supabase Auth accounts, so
+"signed in" never meant "the owner". Measured live BEFORE the change: the public-order website
+principal could read all 14 Creative Packages and could list, sign, download, upload and delete
+objects in the private `generated-assets` bucket.
+
+**1. Identity claims assigned** (`supabase-assign-owner-app-role.sql`). Authorization now derives from
+Supabase Auth's own `app_metadata.app_role`, which is writable only via the Admin API or SQL -- never
+`user_metadata`, which a user can rewrite from the browser, and never an email allowlist, which the
+database cannot read. `PRODUCTION_OWNER_EMAILS` was removed outright rather than kept as a fallback.
+
+- owner identity assigned `app_metadata.app_role = "owner"` (exactly one account)
+- worker identity assigned `app_metadata.app_role = "creative_worker"` -- the advisor/worker
+  automation account that runs `scripts/creative-workers` and `scripts/asset-workers`. It is
+  deliberately NOT the owner: it holds a password in a local env file, and `owner` would unlock the
+  full UI. `isProductionOwner()` refuses it.
+- the public-order website principal and two unused accounts were left with no claim
+
+**2. Sessions and workers refreshed.** `app_metadata` is stamped into a JWT at ISSUANCE, so a token
+minted before assignment does not gain the claim. The owner signed out and back in; the workers are
+per-invocation processes that call `signInWithPassword` on every run, so they re-authenticated on
+their next scheduled run without intervention. Verified from a fresh token before the policy change:
+`app_metadata.app_role : "creative_worker"`.
+
+**3. RLS hardened** (`supabase-harden-creative-production-rls.sql`), applied after the claims existed
+-- that order matters, since applying it first would have stopped the workers until the claims landed.
+It adds three `stable`, `security invoker`, `search_path`-pinned helpers (`current_app_role`,
+`is_product_lab_owner`, `is_creative_domain_principal`) reading the SAME claim path the application
+reads, then replaces the permissive policy on:
+
+- `creative_jobs`
+- `creative_job_attempts`
+- `creative_packages`
+- `asset_jobs`
+- `asset_job_attempts`
+- `assets`
+- `asset_files`
+- `storage.objects` for the `generated-assets` bucket
+
+Grants were deliberately left in place; RLS is what enforces identity. No table, column, index or row
+was modified -- policies and functions only. Public ordering (`customers`, `orders`, `order_lines`,
+`save_order`) and the `batch-photos` storage policy were not touched.
+
+**Post-application verification, measured live against the real project:**
+
+- OWNER application path works -- `/content-studio` opens, Saved Creatives lists, a `?job=` deep link
+  reopens the existing package with its finished production asset, and a refresh keeps it
+- `creative_worker` retains full pipeline access -- all seven tables readable, storage list/sign/
+  download/upload/delete all allowed, so generation is unaffected
+- public-order authenticated principal is denied the creative domain -- all seven tables return 0
+  rows (was 14/14/14/8/8/4/4), storage list returns nothing, upload denied by RLS, and signing or
+  downloading a KNOWN object path (discovered via the worker account and replayed) is refused
+- anonymous remains denied at the grant layer on all seven tables (HTTP 401, SQLSTATE 42501)
+- existing production assets remain intact -- 9 objects still present in the bucket and all 4
+  `asset_files` rows still resolve to a downloadable object
+
+`scripts/verify-owner-authorization.mjs` reproduces the non-owner and anonymous halves of that
+verification on demand. It prints verdicts only, never a token, password, key, account or object path.
+
+**Scope, stated so it is not overread.** This hardened the Wave B creative/production domain only.
+Roughly twenty other Product Lab tables are still `to authenticated using (true)` and remain readable
+by every authenticated account -- including the public-order principal. That is tracked separately as
+pre-existing owner-data RLS debt and was deliberately not addressed here. Do not describe the Product
+Lab database as owner-secure.
+
+No Cloudflare call was made, and no other migration was applied.
