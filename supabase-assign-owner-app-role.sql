@@ -1,4 +1,7 @@
--- Wave B authorization closure: assign the app_metadata.app_role claim to a Supabase Auth user.
+-- Authorization: assign the app_metadata.app_role claim to a Supabase Auth user.
+--
+-- Introduced by Wave B for 'owner' and 'creative_worker'. Extended by SECURITY S1 with a third
+-- value, 'public_order', for the server-only website principal in .env.public-order.local.
 --
 -- ============================================================================================
 -- RUN THIS IN THE SUPABASE SQL EDITOR (Dashboard -> SQL Editor). OWNER EXECUTION ONLY.
@@ -39,9 +42,21 @@
 --                                         (the one in .env.advisor.local -- it runs the creative
 --                                          and asset workers and MUST keep write access, but must
 --                                          NOT be able to open the owner UI)
+--                       'public_order'    for the server-only website principal
+--                                         (the one in .env.public-order.local -- it renders the
+--                                          public menu and records public submissions, and must
+--                                          have NO creative-domain and NO business-data access)
 --
--- Do NOT assign 'owner' to the worker account. Do NOT assign either role to the public-order
--- website account -- that principal must end up with no creative-domain access at all.
+-- Do NOT assign 'owner' to the worker or website account. Wave B originally instructed that the
+-- public-order account receive NO claim at all; SECURITY S1 supersedes that. Leaving it claimless
+-- is no longer the safe state -- once supabase-harden-product-lab-owner-data-rls.sql is applied, a
+-- claimless account cannot read the catalog, and the public ordering page stops working. The
+-- claim is what tells the database this account is the website and not one of the project's
+-- unexplained human accounts, which must continue to hold nothing.
+--
+-- ASSIGN 'public_order' BEFORE applying the S1 hardening migration. That file's preflight refuses
+-- to run until the claim exists, precisely so the wrong order is a clean error instead of an
+-- outage on the one customer-facing surface this project has.
 --
 -- The `||` merge preserves Supabase's own keys (provider, providers). A bare assignment would
 -- destroy them and can break sign-in.
@@ -55,8 +70,8 @@
 --   target_role  text := 'REPLACE_WITH_ROLE';
 --   matched      integer;
 -- begin
---   if target_role not in ('owner', 'creative_worker') then
---     raise exception 'Refusing to assign unrecognised app_role %. Use owner or creative_worker.', target_role;
+--   if target_role not in ('owner', 'creative_worker', 'public_order') then
+--     raise exception 'Refusing to assign unrecognised app_role %. Use owner, creative_worker or public_order.', target_role;
 --   end if;
 --
 --   select count(*) into matched from auth.users where email = target_email;
@@ -85,7 +100,8 @@
 -- Shows who holds which claim across the whole project. Run it and confirm:
 --   * exactly one 'owner'
 --   * the worker account is 'creative_worker'
---   * the public-order account appears with app_role NULL
+--   * the website account is 'public_order'
+--   * every remaining account has app_role NULL -- and that you can name why each one exists
 
 -- select email, raw_app_meta_data ->> 'app_role' as app_role
 -- from auth.users
@@ -110,5 +126,9 @@
 --   Owner browser  : sign out of Product Lab and sign back in.
 --   Workers        : restart the creative worker, the asset worker and the Creative Prep task, so
 --                    each signs in again with signInWithPassword and receives a fresh token.
+--   Website        : nothing to do by hand. src/lib/supabase-server.ts holds its session only in
+--                    the memory of a warm serverless instance and calls signInWithPassword() on
+--                    every cold start, so the new claim arrives on its own. Redeploy only if you
+--                    want it immediately.
 --
 -- Only after this does the new authorization state take effect anywhere.
