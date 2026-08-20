@@ -1,4 +1,5 @@
-import type { ProductBatch } from "./product-lab-types";
+import type { CostingEntry, ProductBatch } from "./product-lab-types";
+import { normalizeIngredientName } from "./ingredient-normalization.ts";
 
 export type BatchFormulaRow = {
   brand: string;
@@ -40,7 +41,7 @@ export function parseBatchRecord(notes: string): { formula: BatchFormulaRow[]; s
           ingredient: row.ingredient ?? "",
           previousQuantity: row.previousQuantity,
           quantity: row.quantity ?? 0,
-          rowId: crypto.randomUUID(),
+          rowId: row.rowId ?? crypto.randomUUID(),
           step: row.step ?? "",
           unit: row.unit ?? "",
         })),
@@ -57,7 +58,7 @@ export function parseBatchRecord(notes: string): { formula: BatchFormulaRow[]; s
           ingredient: row.ingredient ?? "",
           previousQuantity: row.previousQuantity,
           quantity: row.quantity ?? 0,
-          rowId: crypto.randomUUID(),
+          rowId: row.rowId ?? crypto.randomUUID(),
           step: row.step ?? "",
           unit: row.unit ?? "",
         })),
@@ -77,6 +78,45 @@ export function parseBatchIngredients(notes: string): BatchFormulaRow[] {
 
 export function parseBatchProcessSteps(notes: string): string[] {
   return parseBatchRecord(notes).steps;
+}
+
+function formulaMatchKey(row: { brand: string; ingredient: string; unit: string }): string {
+  return `${row.brand.trim().toLowerCase()}|${row.ingredient.trim().toLowerCase()}|${row.unit.trim().toLowerCase()}`;
+}
+
+export function syncBatchFormulaFromCostingEntries(currentNotes: string, entries: CostingEntry[]): string {
+  const current = parseBatchRecord(currentNotes);
+  const existingByKey = new Map<string, BatchFormulaRow[]>();
+  current.formula.forEach((row) => {
+    const key = formulaMatchKey(row);
+    existingByKey.set(key, [...(existingByKey.get(key) ?? []), row]);
+  });
+
+  const formula = entries
+    .filter((entry) => entry.ingredientName.trim())
+    .map((entry, index) => {
+      const key = formulaMatchKey({ brand: entry.brandName, ingredient: entry.ingredientName, unit: entry.unit });
+      const matchingRows = existingByKey.get(key) ?? [];
+      const matched = matchingRows.shift() ?? current.formula[index];
+      if (matchingRows.length > 0) {
+        existingByKey.set(key, matchingRows);
+      } else {
+        existingByKey.delete(key);
+      }
+
+      return {
+        brand: entry.brandName,
+        change: matched?.change ?? "",
+        ingredient: entry.ingredientName,
+        previousQuantity: matched?.previousQuantity,
+        quantity: entry.quantityUsed,
+        rowId: matched?.rowId ?? crypto.randomUUID(),
+        step: matched?.step ?? "",
+        unit: entry.unit,
+      };
+    });
+
+  return JSON.stringify({ formula, steps: current.steps });
 }
 
 // Trim + case-fold so "Brownies V3", "Brownies v3", and " Brownies V3 " all compare equal. Mirrors
@@ -125,7 +165,7 @@ export function getPreviousBatch(batches: ProductBatch[], batch: ProductBatch): 
 // Matched by ingredient + step together, so the same ingredient used in two different steps (cocoa
 // powder in the mix vs. as a sprinkle) is compared as two independent rows, not merged into one.
 export function diffFormulaRows(previousFormula: BatchFormulaRow[], currentFormula: BatchFormulaRow[]): FormulaComparisonRow[] {
-  const rowKey = (row: BatchFormulaRow) => `${row.ingredient.trim().toLowerCase()}|${row.step.trim().toLowerCase()}`;
+  const rowKey = (row: BatchFormulaRow) => `${normalizeIngredientName(row.ingredient)}|${row.step.trim().toLowerCase()}`;
   const previousByKey = new Map(previousFormula.filter((row) => row.ingredient.trim()).map((row) => [rowKey(row), row]));
   const currentByKey = new Map(currentFormula.filter((row) => row.ingredient.trim()).map((row) => [rowKey(row), row]));
   const allKeys = Array.from(new Set([...previousByKey.keys(), ...currentByKey.keys()]));

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "../src/lib/costing.ts";
+import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, getUncostedBatches, isBatchProductMismatch, resolveCostingId } from "../src/lib/costing.ts";
 import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
 import type { CostingSummary, ProductBatch } from "../src/lib/product-lab-types.ts";
 
@@ -185,6 +185,19 @@ test("findConflictingCosting: only one unlinked costing per product is allowed",
   const existing = baseCosting({ id: "costing-1", batchId: "" });
   const conflict = findConflictingCosting([existing], { costingId: "", productId: "product-1", batchId: "" });
   assert.equal(conflict, existing);
+});
+
+test("getUncostedBatches: a proof batch with no batch-linked costing remains visible for costing", () => {
+  const v6 = baseBatch({ id: "batch-v6", batchVersion: "V6" });
+  const v7 = baseBatch({ id: "batch-v7", batchVersion: "V7" });
+  const v8 = baseBatch({ id: "batch-v8", batchVersion: "V8" });
+  const costings = [
+    baseCosting({ id: "costing-v6", batchId: "batch-v6" }),
+    baseCosting({ id: "costing-v8", batchId: "batch-v8" }),
+    baseCosting({ id: "legacy-product-costing", batchId: "" }),
+  ];
+
+  assert.deepEqual(getUncostedBatches([v8, v7, v6], costings), [v7]);
 });
 
 test("findConflictingCosting: unlinked costings for different products do not conflict", () => {

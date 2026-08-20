@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findConflictingBatch, normalizeBatchVersion } from "../src/lib/batches.ts";
+import { diffFormulaRows, findConflictingBatch, normalizeBatchVersion, parseBatchRecord, syncBatchFormulaFromCostingEntries } from "../src/lib/batches.ts";
 import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
-import type { ProductBatch } from "../src/lib/product-lab-types.ts";
+import type { CostingEntry, ProductBatch } from "../src/lib/product-lab-types.ts";
 
 function baseBatch(overrides: Partial<ProductBatch> = {}): ProductBatch {
   return {
@@ -89,4 +89,70 @@ test("isDuplicateKeyError: other error codes and missing errors are not duplicat
   assert.equal(isDuplicateKeyError({ code: "23514" }), false);
   assert.equal(isDuplicateKeyError(null), false);
   assert.equal(isDuplicateKeyError(undefined), false);
+});
+
+test("syncBatchFormulaFromCostingEntries updates a proof formula from edited costing ingredients", () => {
+  const currentNotes = JSON.stringify({
+    formula: [
+      { brand: "Calumet", change: "same", ingredient: "Cocoa Powder", previousQuantity: 20, quantity: 25, rowId: "formula-cocoa", step: "Batter", unit: "g" },
+      { brand: "Anchor", change: "same", ingredient: "Butter", previousQuantity: 100, quantity: 100, rowId: "formula-butter", step: "Batter", unit: "g" },
+    ],
+    steps: ["Melt butter", "Mix batter"],
+  });
+  const costingEntries: CostingEntry[] = [
+    {
+      id: "entry-cocoa",
+      productId: "product-1",
+      batchId: "batch-1",
+      brandName: "Calumet",
+      ingredientName: "Cocoa Powder",
+      quantityUsed: 40,
+      unit: "g",
+      cost: 12,
+      supplierNote: "",
+    },
+    {
+      id: "entry-sugar",
+      productId: "product-1",
+      batchId: "batch-1",
+      brandName: "Maya",
+      ingredientName: "Brown Sugar",
+      quantityUsed: 80,
+      unit: "g",
+      cost: 8,
+      supplierNote: "",
+    },
+  ];
+
+  const synced = parseBatchRecord(syncBatchFormulaFromCostingEntries(currentNotes, costingEntries));
+
+  assert.deepEqual(synced.steps, ["Melt butter", "Mix batter"]);
+  assert.equal(synced.formula.length, 2);
+  assert.equal(synced.formula[0].ingredient, "Cocoa Powder");
+  assert.equal(synced.formula[0].quantity, 40);
+  assert.equal(synced.formula[0].rowId, "formula-cocoa");
+  assert.equal(synced.formula[0].step, "Batter");
+  assert.equal(synced.formula[1].ingredient, "Brown Sugar");
+  assert.equal(synced.formula[1].quantity, 80);
+});
+
+test("diffFormulaRows matches the same ingredient when one version includes purchase package size", () => {
+  const previous = [
+    { brand: "Palermo", change: "", ingredient: "Palermo Pink Himalayan Salt 390g", quantity: 5, rowId: "salt-old", step: "", unit: "g" },
+    { brand: "McCormick", change: "", ingredient: "McCormick Vanilla Extract 475mL", quantity: 2.5, rowId: "vanilla-old", step: "", unit: "tsp" },
+    { brand: "S&R", change: "", ingredient: "S&R Member's Value 100% Colombian Regular Instant Coffee 200g", quantity: 3, rowId: "coffee-old", step: "", unit: "g" },
+  ];
+  const current = [
+    { brand: "Palermo", change: "", ingredient: "Palermo Pink Himalayan Salt", quantity: 6, rowId: "salt-new", step: "", unit: "g" },
+    { brand: "McCormick", change: "", ingredient: "McCormick Vanilla Extract", quantity: 3, rowId: "vanilla-new", step: "", unit: "tsp" },
+    { brand: "S&R", change: "", ingredient: "S&R Member's Value 100% Colombian Regular Instant Coffee", quantity: 3.6, rowId: "coffee-new", step: "", unit: "g" },
+  ];
+
+  const diff = diffFormulaRows(previous, current);
+
+  assert.equal(diff.length, 3);
+  assert.deepEqual(diff.map((row) => row.status), ["changed", "changed", "changed"]);
+  assert.equal(diff.find((row) => row.ingredient === "Palermo Pink Himalayan Salt")?.previousQuantity, 5);
+  assert.equal(diff.find((row) => row.ingredient === "McCormick Vanilla Extract")?.previousQuantity, 2.5);
+  assert.equal(diff.find((row) => row.ingredient === "S&R Member's Value 100% Colombian Regular Instant Coffee")?.previousQuantity, 3);
 });
