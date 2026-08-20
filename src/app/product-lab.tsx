@@ -16,6 +16,7 @@ import {
   FlaskConical,
   GripVertical,
   NotebookPen,
+  Plus,
   PackageCheck,
   PackageX,
   ShieldAlert,
@@ -47,6 +48,18 @@ import { BakePage } from "@/components/bake-page";
 import { OpportunitiesPage } from "@/components/opportunities-page";
 import { OrdersPage, UNSAVED_ORDER_MESSAGE } from "@/components/orders-page";
 import { TodayPage } from "@/components/today-page";
+import { CreateNow } from "@/components/create-now";
+import { CREATE_NOW_JOB_SEARCH_PARAM } from "@/lib/create-now";
+import {
+  OWNER_ACCESS_DENIED_DETAIL,
+  OWNER_ACCESS_DENIED_HEADLINE,
+  OWNER_ACCESS_UNAVAILABLE_DETAIL,
+  OWNER_ACCESS_UNAVAILABLE_HEADLINE,
+  ownerVerdictKey,
+  resolveOwnerAccess,
+  type OwnerAccessState,
+} from "@/lib/owner-access";
+import { SavedCreatives } from "@/components/saved-creatives";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -224,6 +237,18 @@ export default function ProductLab({
   // against one click firing twice without blocking a *different* entry's button (see
   // isCreateContentPending in src/lib/content-drafts.ts).
   const [creatingContentForEntryId, setCreatingContentForEntryId] = useState<string | null>(null);
+  // Wave B authorization. "Signed in" has never meant "the owner": every authenticated principal
+  // in this Supabase project holds the same `authenticated` role, and this project deliberately
+  // has a second one (the public-order website principal, held by the server-only Supabase module).
+  // The verdict is the
+  // SERVER's -- /api/owner verifies the presented token against the auth server and checks it
+  // against the server-only PRODUCTION_OWNER_EMAILS allowlist, the same rule /api/production has
+  // always used. Nothing here decides ownership; this only holds the answer.
+  // Stored WITH the key it was computed for, rather than reset to "checking" on every session
+  // change. That is what keeps a verdict from outliving the session it was about: a different token
+  // (a sign-out and sign-in as another account) simply does not match, and reads as unanswered.
+  const [ownerVerdict, setOwnerVerdict] = useState<{ key: string; state: OwnerAccessState } | null>(null);
+  const [ownerCheckToken, setOwnerCheckToken] = useState(0);
 
   useEffect(() => {
     if (!supabase) {
@@ -241,6 +266,49 @@ export default function ProductLab({
 
     return () => data.subscription.unsubscribe();
   }, []);
+
+  // Runs on every session, and again on an explicit retry. Re-runs when the session changes so a
+  // sign-out/sign-in as a different account is re-checked rather than inheriting the last verdict.
+  useEffect(() => {
+    if (!supabase || !session) {
+      return;
+    }
+
+    let cancelled = false;
+    const key = ownerVerdictKey(session.access_token, ownerCheckToken);
+
+    async function check(accessToken: string) {
+      try {
+        const response = await fetch("/api/owner", { headers: { Authorization: `Bearer ${accessToken}` } });
+        let body: unknown = null;
+        try {
+          body = await response.json();
+        } catch {
+          // A body we cannot read is not a grant. resolveOwnerAccess treats it as "unavailable".
+        }
+        if (!cancelled) {
+          setOwnerVerdict({ key, state: resolveOwnerAccess({ kind: "response", status: response.status, body }) });
+        }
+      } catch {
+        if (!cancelled) {
+          setOwnerVerdict({ key, state: resolveOwnerAccess({ kind: "unreachable" }) });
+        }
+      }
+    }
+
+    check(session.access_token);
+    return () => {
+      cancelled = true;
+    };
+    // ownerVerdict is deliberately not read here: this effect only WRITES it, so it cannot re-run
+    // itself when its own answer lands.
+  }, [session, ownerCheckToken]);
+
+  // Derived, never stored as "checking". A verdict that does not match the current session and retry
+  // count is not a verdict about this session, so it reads as unanswered -- which the gate below
+  // treats as no access.
+  const ownerAccess: OwnerAccessState =
+    session && ownerVerdict?.key === ownerVerdictKey(session.access_token, ownerCheckToken) ? ownerVerdict.state : "checking";
 
   useEffect(() => {
     if (!supabase || !session) {
@@ -2875,6 +2943,28 @@ export default function ProductLab({
     return <LoginScreen message={message} signIn={signIn} />;
   }
 
+  // The authorization gate, one step after the authentication gate and before ANY view renders.
+  //
+  // Placed here on purpose rather than inside Content Studio: Saved Creatives is not a special
+  // surface. Today reopens the same Creative Packages via ?job=, Opportunities renders the same
+  // jobs, and every other page reads the same tables. A gate on one screen would leave the same
+  // data served from the screen next door while looking protected -- which is worse than no gate,
+  // because it invites the belief that the app is closed when it is not.
+  //
+  // Fail-closed: only an explicit server "owner: true" falls through to the app.
+  if (isSupabaseConfigured && session && ownerAccess !== "owner") {
+    if (ownerAccess === "checking") {
+      return <LoadingScreen />;
+    }
+    return (
+      <OwnerAccessScreen
+        onRetry={ownerAccess === "unavailable" ? () => setOwnerCheckToken((current) => current + 1) : null}
+        signOut={signOut}
+        state={ownerAccess}
+      />
+    );
+  }
+
   return (
     <AppShell navigationConfirmationMessage={activeUnsavedForm?.message} shouldConfirmNavigation={Boolean(activeUnsavedForm)} view={view}>
           {message && view !== "dashboard" && view !== "costing" && view !== "today" ? <MessageBox message={message} tone={messageTone} /> : null}
@@ -3001,6 +3091,7 @@ export default function ProductLab({
           {view === "content-studio" ? (
             <ContentStudio
               editingDraft={editingDraft}
+              initialCreativeJobId={initialCreativeJobId}
               isContentDraftsTableMissing={isContentDraftsTableMissing}
               labState={labState}
               saveDraftForm={saveDraftForm}
@@ -3976,63 +4067,124 @@ function LaunchOfferBuilder({ labState }: { labState: LabState }) {
 // "M2C1.5 UX contract" it implements. Replaces the old journal[0]-derived stub entirely --
 // nothing about that stub's logic survives (it was never real persistence). Table-missing
 // banner mirrors every other isXTableMissing screen in this app exactly.
+// Wave B -- Content Studio is now two things stacked, and only the first is new.
+//
+// The top half is CREATIVE work: the Create Now entrance, and Saved Creatives, the history that
+// finally makes a generated Creative Package reachable again after the owner walks away. The bottom
+// half is the unchanged M2C2 content-draft workspace, byte for byte as it was.
+//
+// Reopening deliberately renders the SAME <CreateNow> component Today renders, driven by the SAME
+// `?job=` parameter, resolved by the same resolveCreateNowJobId. No Production component is
+// duplicated here and no second package renderer exists: CreateNow already composes the package
+// view, the Production panel and the Assets list, and it does all of that from a job id alone.
 function ContentStudio({
   editingDraft,
+  initialCreativeJobId,
   isContentDraftsTableMissing,
   labState,
   saveDraftForm,
   setEditingDraft,
 }: {
   editingDraft: ContentDraft | null;
+  initialCreativeJobId: string | null;
   isContentDraftsTableMissing: boolean;
   labState: LabState;
   saveDraftForm: (formData: FormData) => void;
   setEditingDraft: Dispatch<SetStateAction<ContentDraft | null>>;
 }) {
-  if (isContentDraftsTableMissing) {
-    return (
-      <Panel icon={<Sparkles size={18} />} title="Content Studio needs one-time setup">
-        <p className="text-sm leading-6 text-[#5f4a3d]">
-          Run <code>supabase-add-content-drafts.sql</code> once in the Supabase SQL editor, then
-          reload this page.
-        </p>
-      </Panel>
-    );
+  // Seeded once from the route and owned here afterwards -- exactly TodayPage's arrangement, for
+  // exactly its reason: stepping back to the list and returning must not resurrect a job the owner
+  // already left.
+  const [creativeJobId, setCreativeJobId] = useState(initialCreativeJobId);
+  const [isCreating, setIsCreating] = useState(initialCreativeJobId !== null);
+
+  // Leaving the reopened creative also drops `?job=` from the URL, so "back" stays back across a
+  // refresh. replaceState rather than a router push, for the same reason CreateNow uses it: this is
+  // the same screen showing a different part of itself, not a new place to go back from.
+  function exitCreating() {
+    setIsCreating(false);
+    setCreativeJobId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete(CREATE_NOW_JOB_SEARCH_PARAM);
+    window.history.replaceState(null, "", url);
+  }
+
+  if (isCreating) {
+    return <CreateNow jobId={creativeJobId} onExit={exitCreating} onJobIdChange={setCreativeJobId} products={labState.products} />;
   }
 
   const sortedDrafts = [...labState.contentDrafts].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-  return (
-    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
-      <ContentDraftForm cancelEdit={() => setEditingDraft(null)} draft={editingDraft} saveDraft={saveDraftForm} />
+  // Saved creatives sit ABOVE the drafts workspace and outside its missing-table guard on purpose:
+  // they live in creative_packages, not content_drafts, so a project that has never run
+  // supabase-add-content-drafts.sql must still be able to find and reopen its finished creatives.
+  const creativeHistory = (
+    <section className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold tracking-tight">Recent creatives</h2>
+        <button
+          className="inline-flex h-10 items-center gap-2 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427]"
+          onClick={() => {
+            setCreativeJobId(null);
+            setIsCreating(true);
+          }}
+          type="button"
+        >
+          <Plus size={16} /> Create
+        </button>
+      </div>
+      <SavedCreatives basePath="/content-studio" />
+    </section>
+  );
+
+  if (isContentDraftsTableMissing) {
+    return (
       <div className="space-y-5">
-        <ContentStudioGuide />
-        <Panel icon={<Sparkles size={18} />} title="Content drafts">
-          <div className="space-y-3">
-            {sortedDrafts.length === 0 ? (
-              <p className="text-sm text-[#6f5a4c]">No content drafts yet. Create one from a Journey entry, or start one below.</p>
-            ) : null}
-            {sortedDrafts.map((draft) => (
-              <div
-                className={`border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0 ${draft.id === editingDraft?.id ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8] pl-2" : ""}`}
-                key={draft.id}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <p className="text-sm font-medium">{draft.title || "Untitled draft"}</p>
-                  <button className="shrink-0 text-xs font-semibold text-[#8f5632] underline" onClick={() => setEditingDraft(draft)} type="button">
-                    Edit
-                  </button>
-                </div>
-                <p className="mt-1 line-clamp-2 text-sm text-[#6f5a4c]">
-                  {contentTypeLabel(draft.contentType)} · {contentDraftStatusLabel(draft.status)}
-                  {draft.journeyEntryId ? " · From Journey" : ""}
-                </p>
-              </div>
-            ))}
-          </div>
+        {creativeHistory}
+        <Panel icon={<Sparkles size={18} />} title="Content drafts need one-time setup">
+          <p className="text-sm leading-6 text-[#5f4a3d]">
+            Run <code>supabase-add-content-drafts.sql</code> once in the Supabase SQL editor, then
+            reload this page.
+          </p>
         </Panel>
       </div>
-    </section>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {creativeHistory}
+      <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+        <ContentDraftForm cancelEdit={() => setEditingDraft(null)} draft={editingDraft} saveDraft={saveDraftForm} />
+        <div className="space-y-5">
+          <ContentStudioGuide />
+          <Panel icon={<Sparkles size={18} />} title="Content drafts">
+            <div className="space-y-3">
+              {sortedDrafts.length === 0 ? (
+                <p className="text-sm text-[#6f5a4c]">No content drafts yet. Create one from a Journey entry, or start one below.</p>
+              ) : null}
+              {sortedDrafts.map((draft) => (
+                <div
+                  className={`border-t border-[#ead9c8] pt-3 first:border-t-0 first:pt-0 ${draft.id === editingDraft?.id ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8] pl-2" : ""}`}
+                  key={draft.id}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-medium">{draft.title || "Untitled draft"}</p>
+                    <button className="shrink-0 text-xs font-semibold text-[#8f5632] underline" onClick={() => setEditingDraft(draft)} type="button">
+                      Edit
+                    </button>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-sm text-[#6f5a4c]">
+                    {contentTypeLabel(draft.contentType)} · {contentDraftStatusLabel(draft.status)}
+                    {draft.journeyEntryId ? " · From Journey" : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -8367,6 +8519,35 @@ function LoadingScreen() {
         <h1 className="mt-2 text-2xl font-semibold">Loading Product Lab</h1>
         <p className="mt-2 text-sm text-[#6f5a4c]">Connecting to Supabase.</p>
       </div>
+    </main>
+  );
+}
+
+// Two different situations, deliberately never conflated. A REFUSAL says plainly that this account
+// is not the owner account and offers the only action that helps (sign out). A missing verdict says
+// nothing about the account at all and offers a retry -- telling a legitimate owner they are not the
+// owner because a fetch failed would be the worst possible wording for the most likely failure.
+function OwnerAccessScreen({
+  onRetry,
+  signOut,
+  state,
+}: {
+  onRetry: (() => void) | null;
+  signOut: () => void;
+  state: "denied" | "unavailable";
+}) {
+  const isDenied = state === "denied";
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#f7f2ea] px-4 text-[#211713]">
+      <section className="w-full max-w-md rounded-lg border border-[#e1d4c4] bg-white p-6">
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#9a5b2f]">Aly &amp; Shin</p>
+        <h1 className="mt-2 text-2xl font-semibold">{isDenied ? OWNER_ACCESS_DENIED_HEADLINE : OWNER_ACCESS_UNAVAILABLE_HEADLINE}</h1>
+        <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">{isDenied ? OWNER_ACCESS_DENIED_DETAIL : OWNER_ACCESS_UNAVAILABLE_DETAIL}</p>
+        <div className="mt-6 flex flex-wrap gap-3">
+          {onRetry ? <SecondaryButton onClick={onRetry}>Try again</SecondaryButton> : null}
+          <SecondaryButton onClick={signOut}>Sign out</SecondaryButton>
+        </div>
+      </section>
     </main>
   );
 }

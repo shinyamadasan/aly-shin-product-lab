@@ -367,7 +367,13 @@ test("[static] saveDraft uses buildContentDraftUpdatePayload (not buildContentDr
   assert.match(match[0], /insert\(\{ id: persistedDraft\.id, \.\.\.buildContentDraftPayload\(persistedDraft\) \}\)/);
 });
 
-test("[static] /content-studio's route file itself is untouched", () => {
+// Pinned byte for byte by M2C2 to prove that milestone added no route logic. Wave B adds exactly one
+// thing -- resolving the pre-existing `?job=` parameter with the pre-existing resolveCreateNowJobId,
+// exactly as `/` already does -- so this now pins the invariant rather than the bytes: the route
+// stays a thin wrapper that delegates to ProductLab under the content-studio view, and still knows
+// nothing whatsoever about content drafts.
+test("[static] /content-studio's route file is still a thin delegating wrapper that knows nothing about drafts", () => {
   const contentStudioPage = readFileSync(new URL("../src/app/content-studio/page.tsx", import.meta.url), "utf8");
-  assert.match(contentStudioPage, /return <ProductLab view="content-studio" \/>;/);
+  assert.match(contentStudioPage, /<ProductLab initialCreativeJobId=\{resolveCreateNowJobId\(job\)\} view="content-studio" \/>/);
+  assert.doesNotMatch(contentStudioPage.toLowerCase(), /draft/);
 });

@@ -14,8 +14,33 @@ import type { AssetJobAttemptClient } from "./asset-job-attempts.ts";
 import { insertAssetFilesForAsset, listAssetFilesForAsset, type AssetFileClient, type AssetFileRecord } from "./asset-files.ts";
 import type { AssetJobFileMaterializationClient } from "./asset-file-materialization.ts";
 
-export const ASSET_STATUSES = ["generated"] as const;
+// The Asset review lifecycle, widened in Production MVP Wave B's owner-workflow slice.
+//
+// "generated" is what the pipeline writes. The other two are what the OWNER writes, and only the
+// owner: nothing in this codebase may mark its own output accepted (see setAssetOwnerDecision).
+//
+// WHY THIS NEEDS NO MIGRATION. assets.status is `text not null default 'generated'` with no CHECK
+// constraint, so the column already admits these values -- supabase-add-assets.sql shipped the
+// column precisely to carry a lifecycle and deferred only the DECIDING. Widening this union is a
+// TypeScript change, not a schema change, and it deliberately does NOT add reviewed_by/reviewed_at/
+// rejection_reason: that trio is still refused by that file's disallowed-column guard and still
+// belongs to the later human-review-gate milestone.
+//
+// What that costs, stated plainly: there is no free-text rejection reason, and no reviewer identity.
+// Neither is missed here -- this data model already assumes exactly one trusted operator (see the
+// browser-authorization note in creative-package-asset-create.tsx), and assets.updated_at already
+// records WHEN the decision was made.
+export const ASSET_STATUSES = ["generated", "accepted", "rejected"] as const;
 export type AssetStatus = (typeof ASSET_STATUSES)[number];
+
+// The two an owner may choose. "generated" is excluded on purpose: a decision can be changed from
+// accepted to rejected or back, but an Asset can never be returned to "never decided".
+export const ASSET_OWNER_DECISIONS = ["accepted", "rejected"] as const;
+export type AssetOwnerDecision = (typeof ASSET_OWNER_DECISIONS)[number];
+
+export function isAssetOwnerDecision(value: string): value is AssetOwnerDecision {
+  return (ASSET_OWNER_DECISIONS as readonly string[]).includes(value);
+}
 
 export const ASSET_SCHEMA_VERSIONS = ["v1"] as const;
 export type AssetSchemaVersion = (typeof ASSET_SCHEMA_VERSIONS)[number];
@@ -84,6 +109,9 @@ export type AssetClient = {
         single(): QueryResult<AssetRow>;
       };
     };
+    // The ONLY mutation of an existing Asset anywhere in this codebase, and it writes exactly one
+    // column: status. Content, files and provenance are immutable once materialized.
+    update(row: Pick<AssetRow, "status">): QueryBuilder<AssetRow>;
   };
   from(table: "asset_jobs"): {
     select<T = unknown>(columns: string): QueryBuilder<T>;
@@ -93,6 +121,10 @@ export type AssetClient = {
 // Everything needed to run a mock Asset Job and materialize its Asset + Asset Files in one call --
 // mirrors CreativePackageRunnerClient's own composition exactly.
 export type AssetRunnerClient = AssetClient & AssetFileClient & AssetJobClient & AssetJobAttemptClient & AssetJobFileMaterializationClient;
+
+export type AssetOwnerDecisionResult =
+  | { ok: true; asset: AssetRecord }
+  | { ok: false; reason: "missing-table" | "not-found" | "failed"; message: string };
 
 export type AssetDetailResult =
   | { ok: true; asset: AssetRecord }
@@ -354,4 +386,36 @@ export async function runMockAssetJobAndMaterializeAsset(
   }
 
   return { ok: true, job: jobResult.job, outcome: "existing", asset: existing.asset, files: files.files };
+}
+
+// --- owner decision (Production MVP Wave B, owner workflow) -----------------------------------------
+//
+// The one place an Asset's status is ever changed, and the only mutation of an existing Asset row in
+// this codebase.
+//
+// ONLY THE OWNER DECLARES ACCEPTANCE. Nothing in the production pipeline calls this: an executor
+// writes "generated" and stops there, so a machine can never mark its own output accepted. That is
+// the whole reason this is a separate function from materialization rather than a flag the runner
+// could set.
+//
+// Rejection is NON-DESTRUCTIVE by construction: this writes one column. The Asset row, its
+// asset_files, the storage objects, the Asset Job and every attempt with its provider/model
+// provenance all survive untouched, so "the owner did not like this" never erases the evidence that
+// it was produced, what produced it, or what it cost. A rejected Asset can also be accepted later --
+// the decision is a current opinion, not a tombstone.
+export async function setAssetOwnerDecision(client: AssetClient, assetId: string, decision: AssetOwnerDecision): Promise<AssetOwnerDecisionResult> {
+  const result = await client.from("assets").update({ status: decision }).eq("id", assetId).select("*").maybeSingle();
+
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+  if (!result.data) {
+    return { ok: false, reason: "not-found", message: "Asset could not be updated because it no longer exists." };
+  }
+
+  try {
+    return { ok: true, asset: fromAssetRow(result.data) };
+  } catch (err) {
+    return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
+  }
 }

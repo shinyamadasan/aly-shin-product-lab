@@ -17,6 +17,9 @@ import {
 } from "@/lib/asset-jobs";
 import { buildAssetUploadCandidateFromBlob } from "@/lib/asset-upload-intake";
 import { buildExternalAssetExecutor } from "@/lib/external-asset-provider";
+import { getCreativePackageById, type CreativePackageClient } from "@/lib/creative-packages";
+import { isProductionRouteExecutable, resolveProductionRoute, type ProductionRoute } from "@/lib/production-route";
+import { CreativePackageProduction } from "@/components/creative-package-production";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type BriefResolution = { ok: true; text: string } | { ok: false; message: string };
@@ -94,6 +97,15 @@ export function CreativePackageAssetCreate({
   const [uploadError, setUploadError] = useState("");
   const [uploadWarnings, setUploadWarnings] = useState<string[]>([]);
 
+  // The resolved Production Route for this package, or null while it is still being read.
+  //
+  // This is what decides WHICH owner surface renders. capture_new (and every legacy/unroutable
+  // package) resolves to external and keeps the External Creative Workspace panel below, byte for
+  // byte. template_only and generate_visual resolve to a machine worker and render the Production
+  // panel instead -- which is the gap Wave B's P1-6 fix deliberately left open until the app could
+  // actually carry a machine job to completion. It now can, via /api/production.
+  const [route, setRoute] = useState<ProductionRoute | null>(null);
+
   const client = supabase as unknown as AssetJobExecutionClient | null;
   const canUpload = job !== null && job.status === "queued";
 
@@ -111,6 +123,16 @@ export function CreativePackageAssetCreate({
           setLoadError("Asset Jobs require the configured Supabase project. Local browser-only mode cannot create or read them.");
           setIsLoadingInitial(false);
         }
+        return;
+      }
+
+      const packageResult = await getCreativePackageById(client as unknown as CreativePackageClient, creativePackageId);
+      if (cancelled) return;
+      const resolvedRoute = packageResult.ok ? resolveProductionRoute(packageResult.creativePackage) : null;
+      setRoute(resolvedRoute);
+      // A machine route hands off entirely to the Production panel, which does its own loading.
+      if (resolvedRoute && resolvedRoute.workerType !== "external" && isProductionRouteExecutable(resolvedRoute)) {
+        setIsLoadingInitial(false);
         return;
       }
 
@@ -163,6 +185,10 @@ export function CreativePackageAssetCreate({
     setUploadError("");
     setUploadWarnings([]);
 
+    // Explicitly external + image, and this function is now only ever reached for a package whose
+    // resolved route IS external -- a machine route returned the Production panel above and never
+    // gets here. Stating the pair explicitly keeps this call site honest about the one flow it
+    // serves: a human produces the image elsewhere and uploads it.
     const created = await createAssetJobForReadyCreativePackage(client, creativePackageId, { workerType: "external", assetKind: "image" });
     if (!created.ok) {
       setCreateError(created.message);
@@ -234,6 +260,12 @@ export function CreativePackageAssetCreate({
     setSourceKindLabel("");
     setIsUploading(false);
     onUploaded();
+  }
+
+  // A machine route renders the Production panel instead of this one. Everything below stays exactly
+  // the External Creative Workspace flow that capture_new packages have always used.
+  if (route && route.workerType !== "external" && isProductionRouteExecutable(route)) {
+    return <CreativePackageProduction creativePackageId={creativePackageId} onProduced={onUploaded} route={route} />;
   }
 
   return (

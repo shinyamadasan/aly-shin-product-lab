@@ -37,8 +37,8 @@ test("resolveProductionRoute maps every routed format x productionSource combina
   const expected: Array<[string, string | undefined, ProductionRoute]> = [
     // Photo -- the format that spans all three production sources.
     ["photo", "capture_new", { workerType: "external", assetKind: "image" }],
-    ["photo", "generate_visual", { workerType: "image_provider", assetKind: "image" }],
-    ["photo", "template_only", { workerType: "remotion", assetKind: "image" }],
+    ["photo", "generate_visual", { workerType: "generative_image", assetKind: "image" }],
+    ["photo", "template_only", { workerType: "static_renderer", assetKind: "image" }],
 
     // Reel. capture_new is the only combination the stored contract permits TODAY; template_only is
     // the synthetic future row that Wave D unlocks once a renderer exists. The table defines both
@@ -148,7 +148,7 @@ test("productionSource vocabulary is unchanged: exactly capture_new, generate_vi
 });
 
 test("no execution technology leaked into the productionSource vocabulary", () => {
-  for (const forbidden of ["remotion", "generate_motion", "ai_video", "image_provider", "ffmpeg", "comfyui"]) {
+  for (const forbidden of ["remotion", "generate_motion", "ai_video", "generative_image", "image_provider", "ffmpeg", "comfyui"]) {
     assert.equal(
       (CREATIVE_PRODUCTION_SOURCES as readonly string[]).includes(forbidden),
       false,
@@ -179,7 +179,7 @@ test("the executable worker set is exactly what the runner can claim today", () 
   assert.deepEqual([...EXECUTABLE_ASSET_JOB_WORKER_TYPES].sort(), [...ASSET_JOB_WORKER_TYPES].sort());
 });
 
-test("the future worker types are NOT part of the Asset Job worker vocabulary yet", () => {
+test("only future worker types stay outside the Asset Job worker vocabulary", () => {
   for (const future of FUTURE_PRODUCTION_WORKER_TYPES) {
     assert.equal(
       (ASSET_JOB_WORKER_TYPES as readonly string[]).includes(future),
@@ -193,8 +193,8 @@ test("isProductionRouteExecutable is true only for routes a registered executor 
   assert.equal(isProductionRouteExecutable({ workerType: "external", assetKind: "image" }), true);
   assert.equal(isProductionRouteExecutable({ workerType: "mock", assetKind: "image" }), true);
 
-  // No executor exists for either future worker.
-  assert.equal(isProductionRouteExecutable({ workerType: "image_provider", assetKind: "image" }), false);
+  assert.equal(isProductionRouteExecutable({ workerType: "generative_image", assetKind: "image" }), true);
+  assert.equal(isProductionRouteExecutable({ workerType: "static_renderer", assetKind: "image" }), true);
   assert.equal(isProductionRouteExecutable({ workerType: "remotion", assetKind: "image" }), false);
 
   // And short_video is not executable even behind a registered worker: nothing produces one, and
@@ -230,7 +230,7 @@ function collectSourceFiles(dir: string): string[] {
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const RESOLVER_MODULE = path.join(REPO_ROOT, "src", "lib", "production-route.ts");
 
-test("[static] NO production source anywhere consumes resolveProductionRoute in Wave A", () => {
+test("[static] production route consumption is allowed now that Wave B image executors are registered", () => {
   // src/ is the application; scripts/ is the worker and CLI surface that actually creates and runs
   // Asset Jobs. Both are production, so both are scanned -- an activation wired from a worker would
   // queue exactly the same unclaimable row as one wired from a component.
@@ -248,16 +248,22 @@ test("[static] NO production source anywhere consumes resolveProductionRoute in 
     .filter((file) => /resolveProductionRoute/.test(readFileSync(file, "utf8")))
     .map((file) => path.relative(REPO_ROOT, file).split(path.sep).join("/"));
 
-  assert.deepEqual(
-    consumers,
-    [],
-    `these production sources consume the Production Route, but image_provider and remotion have no registered executor and short_video has no executable path, so a job created from a resolved route could never be claimed: ${consumers.join(", ")}`,
-  );
+  assert.ok(consumers.includes("src/lib/asset-jobs.ts"), "Asset Job creation must consume the resolver now that image production routes are executable.");
 });
 
-test("[static] Asset Job creation still defaults to the legacy external image route", () => {
+test("[static] the owner-facing app still creates only the external image job it can lead the owner through", () => {
   const creation = readFileSync(new URL("../src/components/creative-package-asset-create.tsx", import.meta.url), "utf8");
-  // The single existing call site is unchanged: still explicitly external + image, still the only
-  // way an owner creates an Asset Job.
+
+  // Wave B registers both machine executors, but ONLY the trusted CLI worker can run them: this app
+  // has no scheduler, no background worker and no in-browser executor. Letting the owner-facing button
+  // queue a machine route therefore created a job the app could not execute, on a screen where upload
+  // was disabled and no completion path existed.
+  //
+  // So the single owner call site stays explicitly external + image until the final owner-workflow
+  // integration lands. This assertion is what stops that narrowing from being quietly undone: deleting
+  // the options here would re-open the dead end, not "activate a feature".
   assert.match(creation, /createAssetJobForReadyCreativePackage\(\s*client,\s*creativePackageId,\s*\{\s*workerType:\s*"external",\s*assetKind:\s*"image"\s*\}\s*\)/);
+
+  // And the app never names a machine worker in a job it creates.
+  assert.doesNotMatch(creation, /workerType:\s*"(static_renderer|generative_image)"/);
 });

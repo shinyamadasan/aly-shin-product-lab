@@ -197,7 +197,7 @@ const shortVideoSpec: ProductionSpecV1 = {
   assetKind: "short_video",
   sourceCreativePackageId: "package-1",
   dimensions: { width: 1080, height: 1920, aspectRatio: "9:16" },
-  copy: { headline: "Morning bake", caption: "The first tray of the day.", cta: "Come by before 9" },
+  copy: { headline: "Morning bake", caption: "The first tray of the day.", cta: "Come by before 9", overlayText: null },
   brandStyle: null,
   visualBrief: null,
   scenes: [{ direction: "Oven door opens", text: "7:00am", approxSeconds: 3 }],

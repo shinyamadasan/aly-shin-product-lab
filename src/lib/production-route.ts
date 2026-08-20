@@ -28,10 +28,24 @@ import type { AssetJobWorkerType, AssetKind } from "./asset-jobs.ts";
 // cannot be passed to createAssetJobForReadyCreativePackage without someone first widening
 // AssetJobWorkerType -- which is exactly the change that should only ever land alongside a
 // registered executor. The compiler enforces what a comment would only request.
-export const FUTURE_PRODUCTION_WORKER_TYPES = ["image_provider", "remotion"] as const;
+export const FUTURE_PRODUCTION_WORKER_TYPES = ["remotion"] as const;
 export type FutureProductionWorkerType = (typeof FUTURE_PRODUCTION_WORKER_TYPES)[number];
 
 export type ProductionWorkerType = AssetJobWorkerType | FutureProductionWorkerType;
+
+// The MACHINE workers -- the two an owner can ask this app to run, as opposed to "external" (a human
+// produced the image elsewhere) and "mock" (tests).
+//
+// Declared HERE rather than beside the executors on purpose: this module is pure and client-safe,
+// while production-asset-executors.ts pulls in satori, resvg and sharp -- native modules that must
+// never be reachable from a browser bundle. A client component needs to ask "is this a machine
+// route?" without dragging a renderer along with the question.
+export const MACHINE_PRODUCTION_WORKER_TYPES = ["static_renderer", "generative_image"] as const;
+export type MachineProductionWorkerType = (typeof MACHINE_PRODUCTION_WORKER_TYPES)[number];
+
+export function isMachineProductionWorkerType(value: string): value is MachineProductionWorkerType {
+  return (MACHINE_PRODUCTION_WORKER_TYPES as readonly string[]).includes(value);
+}
 
 export type ProductionRoute = {
   workerType: ProductionWorkerType;
@@ -48,8 +62,8 @@ export type ProductionRoute = {
 // activation boundary that separates the two.
 const PRODUCTION_ROUTES: Readonly<Record<string, ProductionRoute>> = {
   "photo:capture_new": { workerType: "external", assetKind: "image" },
-  "photo:generate_visual": { workerType: "image_provider", assetKind: "image" },
-  "photo:template_only": { workerType: "remotion", assetKind: "image" },
+  "photo:generate_visual": { workerType: "generative_image", assetKind: "image" },
+  "photo:template_only": { workerType: "static_renderer", assetKind: "image" },
   "reel:capture_new": { workerType: "external", assetKind: "short_video" },
   "reel:template_only": { workerType: "remotion", assetKind: "short_video" },
 };
@@ -75,14 +89,29 @@ const ROUTED_FORMATS: readonly CreativeFormat[] = ["photo", "reel"];
 // The load-bearing distinction of Wave A.
 //
 // resolveProductionRoute knows the DESIRED route. The live system can only run the executors that
-// are actually registered, and today that is exactly one: "external", the human/External Creative
-// Workspace path. "image_provider" arrives in Wave B and "remotion" in Wave C.
+// are actually registered. Wave A shipped exactly one -- "external", the human/External Creative
+// Workspace path. Wave B registers "static_renderer" and "generative_image" in the same change that
+// adds them here, which is the rule this boundary exists to enforce. "remotion" is still unregistered
+// and arrives in Wave C, and short_video remains unproducible until its executor and storage path
+// both exist.
 //
 // An Asset Job written with a worker_type nothing can claim is not a harmless forward reference --
 // it is a queued row that never completes, on a package the owner was told was being produced. That
-// is why this is data a caller can ask about rather than only a comment: Wave B and Wave C each
-// extend the executable set in the same change that registers the executor it names.
-export const EXECUTABLE_ASSET_JOB_WORKER_TYPES: readonly AssetJobWorkerType[] = ["external", "mock"];
+// is why this is data a caller can ask about rather than only a comment: each wave extends the
+// executable set in the same change that registers the executor it names.
+//
+// isProductionRouteExecutable answers the question for a whole route. The job-creation path needs
+// something stronger -- values narrowed to the types it may insert, with no cast in between -- and
+// that is toExecutableAssetJobRoute in asset-jobs.ts. The two must always agree; a regression test
+// holds them together across the full route table.
+//
+// "manual_illustration" is executable but is deliberately NOT a destination in the route table
+// above. No package resolves to it: it is the owner's explicit fallback CHOICE when the automated
+// generative_image route is unavailable, requested by passing options.workerType at job creation --
+// the same way the External Creative Workspace panel has always named "external" explicitly. Listing
+// it here is what lets that job be created; leaving it out of PRODUCTION_ROUTES is what keeps the
+// automated route for a generate_visual package unchanged.
+export const EXECUTABLE_ASSET_JOB_WORKER_TYPES: readonly AssetJobWorkerType[] = ["external", "mock", "static_renderer", "generative_image", "manual_illustration"];
 
 // Both halves matter. "short_video" has no executor AND no storage path (the bucket still rejects
 // video/mp4), so an otherwise-runnable worker paired with it is still not executable today.

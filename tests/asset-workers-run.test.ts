@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildAssetExportDocument, parseSubcommand, runExportCommand, runImportCommand } from "../scripts/asset-workers/run.ts";
+import {
+  ATTEMPT_BOOKKEEPING_EXIT_CODE,
+  buildAssetExportDocument,
+  parseSubcommand,
+  runExportCommand,
+  runImportCommand,
+  runProductionWorkerCommand,
+} from "../scripts/asset-workers/run.ts";
 import type { AssetJobExecutionClient } from "../src/lib/asset-jobs.ts";
 import type { AssetJobRow } from "../src/lib/asset-jobs.ts";
 import type { AssetJobAttemptRow } from "../src/lib/asset-job-attempts.ts";
@@ -69,7 +76,7 @@ function assetJobRow(overrides: Partial<AssetJobRow> = {}): AssetJobRow {
 // A focused fake -- proves the CLI's own wiring (reads before claiming, claims once, completes end
 // to end), not every edge case of runAssetJobWithExecutors, which already has its own exhaustive
 // suite in tests/asset-jobs.test.ts.
-function makeClient(options: { creativePackages?: CreativePackageRow[]; jobs?: AssetJobRow[] } = {}) {
+function makeClient(options: { creativePackages?: CreativePackageRow[]; jobs?: AssetJobRow[]; finishAttemptError?: { code?: string; message: string } } = {}) {
   const creativePackages = [...(options.creativePackages ?? [creativePackageRow()])];
   const jobs = [...(options.jobs ?? [assetJobRow()])];
   const attempts: AssetJobAttemptRow[] = [];
@@ -200,13 +207,33 @@ function makeClient(options: { creativePackages?: CreativePackageRow[]; jobs?: A
         };
       }
 
-      assert.equal(functionName, "finish_asset_job_attempt");
+      // Both attempt-finish RPCs land here, exactly as in the other attempt fakes.
+      assert.ok(
+        functionName === "finish_asset_job_attempt" || functionName === "finish_asset_job_attempt_with_provenance",
+        `unexpected attempt RPC: ${functionName}`,
+      );
       return {
         async maybeSingle() {
+          // Stands in for the most likely real failure: the provenance RPC has not been created yet
+          // because supabase-add-asset-job-attempt-provenance.sql was never applied.
+          if (options.finishAttemptError) {
+            events.push("finish-attempt-error");
+            return { data: null, error: options.finishAttemptError };
+          }
           const outcome = args.p_outcome as string;
           const index = attempts.findIndex((row) => row.id === (args.p_attempt_id as string) && row.status === "running");
           if (index === -1) return { data: null, error: null };
-          attempts[index] = { ...attempts[index], status: outcome as AssetJobAttemptRow["status"], completed_at: finishedAt, latency_ms: 0, error_code: null, error_message: null };
+          const carriesProvenance = functionName === "finish_asset_job_attempt_with_provenance";
+          attempts[index] = {
+            ...attempts[index],
+            status: outcome as AssetJobAttemptRow["status"],
+            completed_at: finishedAt,
+            latency_ms: 0,
+            error_code: null,
+            error_message: null,
+            provider: carriesProvenance ? ((args.p_provider as string | null) ?? attempts[index].provider ?? null) : attempts[index].provider,
+            model: carriesProvenance ? ((args.p_model as string | null) ?? attempts[index].model ?? null) : attempts[index].model,
+          };
           events.push("finish-attempt");
           return { data: attempts[index], error: null };
         },
@@ -234,9 +261,10 @@ function makeClient(options: { creativePackages?: CreativePackageRow[]; jobs?: A
   return { client, jobs, attempts, events };
 }
 
-test("parseSubcommand recognizes only export and import -- no run-api, no API provider path exists", () => {
+test("parseSubcommand recognizes export, import, and the bounded production run command", () => {
   assert.equal(parseSubcommand(["export"]), "export");
   assert.equal(parseSubcommand(["import"]), "import");
+  assert.equal(parseSubcommand(["run"]), "run");
   assert.equal(parseSubcommand(["run-api"]), null);
   assert.equal(parseSubcommand([]), null);
   assert.equal(parseSubcommand(["anything-else"]), null);
@@ -317,4 +345,144 @@ test("runImportCommand works with sourceKind omitted -- it is optional, never gu
 
   assert.equal(outcome.exitCode, 0);
   assert.equal(store.jobs[0].status, "completed");
+});
+
+// --- attempt finalization must never fail silently (P2-2) --------------------------------------------
+//
+// static_renderer is used throughout: it is deterministic, needs no credentials, and makes no network
+// call, so these tests exercise the CLI's success/failure contract without touching a provider.
+
+function v2TemplateOnlyPackageRow(): CreativePackageRow {
+  return {
+    id: "package-1",
+    creative_job_id: "job-1",
+    status: "ready",
+    schema_version: "v2",
+    content: {
+      schemaVersion: "v2",
+      format: "photo",
+      subject: "Brownies",
+      angle: "Fresh batch",
+      hook: "Still warm.",
+      headline: "Brownies, still warm",
+      caption: "Out of the oven at 7am.",
+      cta: "Order today",
+      visualDirection: "Overhead on the wooden board, morning light",
+      overlayText: null,
+      productionSource: "template_only",
+      visualBrief: {
+        concept: "A neat tray of brownies on a wooden board",
+        style: "Warm hand-drawn editorial bakery illustration",
+        scene: ["Board centred", "Clean separated slices"],
+        executionNotes: ["No readable text", "No photoreal product documentation"],
+      },
+      platformVariants: [{ platform: "instagram", caption: "Still warm.", hashtags: ["#brownies"] }],
+      metadata: {
+        generatedFromOpportunity: null,
+        generatorVersion: "2",
+        sourceCreativeJobId: "job-1",
+        sourceWorker: "mock",
+        sourceJobResultSchemaVersion: "v2",
+        formatChosenBy: "ai",
+        formatRationale: "A single hero shot suits one product.",
+        subjectSource: "stated",
+        subjectGrounding: null,
+      },
+    },
+    created_at: "2026-08-05T09:05:00.000Z",
+    updated_at: "2026-08-05T09:05:00.000Z",
+  } as CreativePackageRow;
+}
+
+test("runProductionWorkerCommand exits 0 and reports the asset when everything succeeds", async () => {
+  const store = makeClient({
+    creativePackages: [v2TemplateOnlyPackageRow()],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+  });
+
+  const outcome = await runProductionWorkerCommand(store.client, "asset-job-1", "static_renderer");
+
+  assert.equal(outcome.exitCode, 0);
+  assert.match(outcome.message ?? "", /completed/);
+  assert.equal(store.jobs[0].status, "completed");
+  assert.equal(store.attempts[0].status, "completed");
+  assert.ok(store.events.includes("finish-attempt"));
+});
+
+test("a completed asset with FAILED attempt bookkeeping is an operational failure, never silently green", async () => {
+  const store = makeClient({
+    creativePackages: [v2TemplateOnlyPackageRow()],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+    // The exact shape of "the provenance migration has not been applied yet".
+    finishAttemptError: { code: "PGRST202", message: "Could not find the function public.finish_asset_job_attempt_with_provenance in the schema cache" },
+  });
+
+  const outcome = await runProductionWorkerCommand(store.client, "asset-job-1", "static_renderer");
+
+  // NOT zero. This is the entire point: the old code returned 0 here.
+  assert.notEqual(outcome.exitCode, 0);
+  assert.equal(outcome.exitCode, ATTEMPT_BOOKKEEPING_EXIT_CODE);
+
+  // The operator must be able to tell, from the message alone, what happened and what to do.
+  const message = outcome.message ?? "";
+  assert.match(message, /attempt bookkeeping FAILED/i);
+  assert.match(message, /do NOT re-run/i);
+  assert.match(message, /still status='running'/i);
+  assert.match(message, /supabase-add-asset-job-attempt-provenance\.sql/);
+  assert.match(message, /Could not find the function/, "the underlying database error must be surfaced, not swallowed");
+
+  // The asset and the job are NOT falsified to hide the bookkeeping problem.
+  assert.equal(store.jobs[0].status, "completed");
+  assert.equal(store.events.includes("fail-job"), false);
+  assert.equal(store.attempts[0].status, "running", "the attempt really is left running -- that is the condition being reported");
+
+  // And nothing was retried.
+  assert.equal(store.events.filter((event) => event === "finish-attempt-error").length, 1);
+});
+
+test("the bookkeeping failure exit code is distinct from a real job failure", async () => {
+  // Different failures, different operator responses -- so they must not share an exit code.
+  const bookkeeping = makeClient({
+    creativePackages: [v2TemplateOnlyPackageRow()],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+    finishAttemptError: { message: "attempt write failed" },
+  });
+  const bookkeepingOutcome = await runProductionWorkerCommand(bookkeeping.client, "asset-job-1", "static_renderer");
+
+  // A job that never completed at all: no such job to claim.
+  const jobFailure = makeClient({ creativePackages: [v2TemplateOnlyPackageRow()], jobs: [] });
+  const jobFailureOutcome = await runProductionWorkerCommand(jobFailure.client, "asset-job-1", "static_renderer");
+
+  assert.equal(bookkeepingOutcome.exitCode, ATTEMPT_BOOKKEEPING_EXIT_CODE);
+  assert.equal(jobFailureOutcome.exitCode, 1);
+  assert.notEqual(bookkeepingOutcome.exitCode, jobFailureOutcome.exitCode);
+  assert.match(jobFailureOutcome.message ?? "", /did not complete/);
+  assert.doesNotMatch(jobFailureOutcome.message ?? "", /do NOT re-run/i, "a job that produced nothing is safe to re-run");
+});
+
+test("the bookkeeping check never fires when finalization succeeded", async () => {
+  const store = makeClient({
+    creativePackages: [v2TemplateOnlyPackageRow()],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+  });
+
+  const outcome = await runProductionWorkerCommand(store.client, "asset-job-1", "static_renderer");
+
+  assert.equal(outcome.exitCode, 0);
+  assert.doesNotMatch(outcome.message ?? "", /bookkeeping/i);
+  assert.doesNotMatch(outcome.message ?? "", /do NOT re-run/i);
+});
+
+test("static_renderer needs no Cloudflare credentials and records no provenance", async () => {
+  const store = makeClient({
+    creativePackages: [v2TemplateOnlyPackageRow()],
+    jobs: [assetJobRow({ worker_type: "static_renderer" })],
+  });
+
+  const outcome = await runProductionWorkerCommand(store.client, "asset-job-1", "static_renderer");
+
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(outcome.provenance, undefined, "a deterministic local render contacted no provider");
+  assert.equal(store.attempts[0].provider, null);
+  assert.equal(store.attempts[0].model, null);
 });
