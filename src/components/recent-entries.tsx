@@ -1,4 +1,4 @@
-import { formatCostingMetric, getCostingMetrics, getCostingTotals } from "@/lib/costing";
+import { formatCostingMetric, getCostingMetrics, getCostingTotals, getUncostedBatches } from "@/lib/costing";
 import type { LabState } from "@/lib/lab-state";
 import type { ContentJournalEntry, CostingSummary, ProductBatch } from "@/lib/product-lab-types";
 import { journeyTypeLabel } from "@/lib/journal";
@@ -19,6 +19,7 @@ export function RecentEntries({
   editJournal,
   labState,
   only,
+  startCostingBatch,
 }: {
   // Journey -> Content handoff (M2C2) -- see MARKETING_MODULE.md's "M2C1.5 UX contract". Only
   // ever wired for the Journey list: RecentEntries has no journal-linked concept for
@@ -38,6 +39,7 @@ export function RecentEntries({
   editJournal?: (entry: ContentJournalEntry) => void;
   labState: LabState;
   only?: "batches" | "costing" | "journal";
+  startCostingBatch?: (batchId: string) => void;
 }) {
   const showBatches = !only || only === "batches";
   const showCosting = !only || only === "costing";
@@ -66,34 +68,49 @@ export function RecentEntries({
             onEdit: editBatch ? () => editBatch(batch) : undefined,
           }))}
         /> : null}
-        {showCosting ? <RecentList
-          title="Costing"
-          empty="No costing saved yet."
-          items={labState.costings.slice(0, 3).map((costing) => {
-            const totals = getCostingTotals(costing);
-            // Prefer the batch this costing is actually linked to; only fall back to "any batch
-            // of this product" for legacy costings saved before costing was batch-scoped.
-            const linkedBatch = labState.batches.find((batch) => batch.id === costing.batchId)
-              ?? labState.batches.find((batch) => batch.productId === costing.productId);
-            const metrics = getCostingMetrics({
-              costingYield: linkedBatch?.usablePieces ?? 0,
-              directCost: totals.directCost,
-              indirectCost: totals.indirectCost,
-              suggestedPrice: costing.suggestedPrice,
-              targetFoodCost: 0,
-              totalBatchCost: totals.totalBatchCost,
-            });
+        {showCosting ? (
+          <div className="grid gap-4">
+            <RecentList
+              title="Costing"
+              empty="No costing saved yet."
+              items={labState.costings.slice(0, 3).map((costing) => {
+                const totals = getCostingTotals(costing);
+                // Prefer the batch this costing is actually linked to; only fall back to "any batch
+                // of this product" for legacy costings saved before costing was batch-scoped.
+                const linkedBatch = labState.batches.find((batch) => batch.id === costing.batchId)
+                  ?? labState.batches.find((batch) => batch.productId === costing.productId);
+                const metrics = getCostingMetrics({
+                  costingYield: linkedBatch?.usablePieces ?? 0,
+                  directCost: totals.directCost,
+                  indirectCost: totals.indirectCost,
+                  suggestedPrice: costing.suggestedPrice,
+                  targetFoodCost: 0,
+                  totalBatchCost: totals.totalBatchCost,
+                });
 
-            return {
-              id: costing.id,
-              title: batchDisplayName(costing.productId, linkedBatch?.batchVersion ?? "", labState.products),
-              detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`, "needs yield")}. Margin ${formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`, "needs yield")}.`,
-              isActive: costing.id === editingCostingId,
-              onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
-              onEdit: editCosting ? () => editCosting(costing) : undefined,
-            };
-          })}
-        /> : null}
+                return {
+                  id: costing.id,
+                  title: batchDisplayName(costing.productId, linkedBatch?.batchVersion ?? "", labState.products),
+                  detail: `Batch PHP ${totals.totalBatchCost.toFixed(2)}. Unit cost ${formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`, "needs yield")}. Margin ${formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}%`, "needs yield")}.`,
+                  isActive: costing.id === editingCostingId,
+                  onDelete: deleteCosting ? () => deleteCosting(costing) : undefined,
+                  onEdit: editCosting ? () => editCosting(costing) : undefined,
+                };
+              })}
+            />
+            <RecentList
+              title="Needs costing"
+              empty="Every proof batch has a costing."
+              items={getUncostedBatches(labState.batches, labState.costings).slice(0, 5).map((batch) => ({
+                id: batch.id,
+                title: batchDisplayName(batch.productId, batch.batchVersion, labState.products),
+                editLabel: "Cost",
+                detail: `Proof saved. Yield: ${batch.usablePieces || "not set"}. Decision: ${batch.launchDecision}.`,
+                onEdit: startCostingBatch ? () => startCostingBatch(batch.id) : undefined,
+              }))}
+            />
+          </div>
+        ) : null}
         {showJournal ? <RecentList
           title="Journey"
           empty="No Journey entries saved yet."
@@ -123,6 +140,7 @@ function RecentList({
   items: Array<{
     id: string;
     title: string;
+    editLabel?: string;
     detail: string;
     isActive?: boolean;
     onDelete?: () => void;
@@ -155,7 +173,7 @@ function RecentList({
                       {item.isCreatingContent ? "Creating…" : "Create content"}
                     </button>
                   ) : null}
-                  {item.onEdit ? <button className="text-xs font-semibold text-[#8f5632] underline" onClick={item.onEdit} type="button">Edit</button> : null}
+                  {item.onEdit ? <button className="text-xs font-semibold text-[#8f5632] underline" onClick={item.onEdit} type="button">{item.editLabel ?? "Edit"}</button> : null}
                   {item.onDelete ? <button className="text-xs font-semibold text-[#8a3827] underline" onClick={() => window.confirm(`Delete ${item.title}?`) ? item.onDelete?.() : undefined} type="button">Delete</button> : null}
                 </div>
               ) : null}

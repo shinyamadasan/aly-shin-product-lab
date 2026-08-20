@@ -59,7 +59,7 @@ import {
   createDraftFromJourney,
   mapContentDraftRow,
 } from "@/lib/content-drafts";
-import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "@/lib/costing";
+import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, getUncostedBatches, isBatchProductMismatch, resolveCostingId } from "@/lib/costing";
 import {
   buildMovedManualPackagingLine,
   buildSellingFormatPackagingLinePayload,
@@ -112,6 +112,7 @@ import {
   parseBatchIngredients,
   parseBatchProcessSteps,
   parseBatchRecord,
+  syncBatchFormulaFromCostingEntries,
   type BatchFormulaRow,
 } from "@/lib/batches";
 import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "@/lib/inventory-safety";
@@ -194,6 +195,7 @@ export default function ProductLab({
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
+  const [draftCostingBatchId, setDraftCostingBatchId] = useState("");
   // Whichever protected form currently has unsaved changes, if any -- fed by that form's own
   // onDirtyChange, consumed by AppShell's generic navigation guard and by same-page discard actions
   // (Recent Entries' Edit, Cancel edit, and their equivalents for other forms as they adopt this).
@@ -1144,6 +1146,10 @@ export default function ProductLab({
       suggestedPrice: Number(formData.get("suggestedPrice") || 0),
       notes: [baseNotes, yieldNotes, utilityNotes, gasNotes, electricityNotes, waterNotes, structuredNotes].filter(Boolean).join("\n"),
     };
+    const linkedBatch = batchId ? labState.batches.find((batch) => batch.id === batchId) : undefined;
+    const syncedBatch = linkedBatch
+      ? { ...linkedBatch, ingredientsNotes: syncBatchFormulaFromCostingEntries(linkedBatch.ingredientsNotes, ingredientRows) }
+      : null;
     if (supabase && session) {
       // Scoped by batch (not just product) so saving one batch's costing can't wipe the
       // ingredient rows belonging to a sibling costing for a different batch of the same
@@ -1189,6 +1195,19 @@ export default function ProductLab({
         setMessageTone("bad");
         await loadSupabaseData();
         return;
+      }
+
+      if (syncedBatch) {
+        const { error: batchSyncError } = await supabase
+          .from("product_batches")
+          .update({ ingredients_notes: syncedBatch.ingredientsNotes })
+          .eq("id", syncedBatch.id);
+        if (batchSyncError) {
+          setMessage(`Costing saved, but the linked proof batch formula did not sync: ${batchSyncError.message}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
       }
 
       // Steps 4-7 (Selling Formats + their packaging lines) only run once the costing itself is
@@ -1247,6 +1266,7 @@ export default function ProductLab({
       setMessage(costingId ? "Costing updated." : "Costing saved.");
       setMessageTone("good");
       setEditingCosting(null);
+      setDraftCostingBatchId("");
       await loadSupabaseData();
       return;
     }
@@ -1257,12 +1277,14 @@ export default function ProductLab({
       .map((format) => format.id);
     setLabState((current) => ({
       ...current,
+      batches: syncedBatch ? current.batches.map((batch) => (batch.id === syncedBatch.id ? syncedBatch : batch)) : current.batches,
       costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => !matchesThisCosting(entry))],
       costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => !matchesThisCosting(entry))],
       sellingFormats: replaceSellingFormatsForCosting(current.sellingFormats, costingSummaryId, sellingFormats),
       sellingFormatPackagingLines: replaceSellingFormatPackagingLinesForCosting(current.sellingFormatPackagingLines, existingSellingFormatIdsForThisCostingLocal, sellingFormatPackagingLines),
     }));
     setEditingCosting(null);
+    setDraftCostingBatchId("");
     setMessage(costingId ? "Costing updated locally." : "Costing saved locally.");
     setMessageTone("good");
   }
@@ -2579,6 +2601,7 @@ export default function ProductLab({
   function cancelCostingEdit() {
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(null);
+      setDraftCostingBatchId("");
     }
   }
 
@@ -2588,6 +2611,15 @@ export default function ProductLab({
     }
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(costingToEdit);
+      setDraftCostingBatchId("");
+    }
+  }
+
+  function startCostingBatchWithGuard(batchId: string) {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingCosting(null);
+      setDraftCostingBatchId(batchId);
+      setMessage("");
     }
   }
 
@@ -2697,10 +2729,10 @@ export default function ProductLab({
 
           {view === "costing" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="costing">
-              <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
+              <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} draftBatchId={draftCostingBatchId} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={editingCosting?.id ?? (draftCostingBatchId || "new-costing")} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
               <div className="space-y-5">
                 <CostingGuide />
-                <RecentEntries deleteCosting={deleteCosting} editCosting={editCostingWithGuard} editingCostingId={editingCosting?.id} labState={labState} only="costing" />
+                <RecentEntries deleteCosting={deleteCosting} editCosting={editCostingWithGuard} editingCostingId={editingCosting?.id} labState={labState} only="costing" startCostingBatch={startCostingBatchWithGuard} />
               </div>
             </section>
           ) : null}
@@ -5961,6 +5993,7 @@ function CostingForm({
   cancelEdit,
   batches,
   costing,
+  draftBatchId,
   equipment,
   ingredientEntries,
   ingredients,
@@ -5977,6 +6010,7 @@ function CostingForm({
   batches: ProductBatch[];
   cancelEdit: () => void;
   costing: CostingSummary | null;
+  draftBatchId?: string;
   equipment: EquipmentEntry[];
   ingredientEntries: CostingEntry[];
   ingredients: Ingredient[];
@@ -6004,7 +6038,7 @@ function CostingForm({
     }))
     .filter((group) => group.productBatches.length > 0);
   const [selectedBatchId, setSelectedBatchId] = useState(
-    () => costing?.batchId || batches.find((item) => item.productId === costing?.productId)?.id || batchesByProduct[0]?.productBatches[0]?.id || "",
+    () => costing?.batchId || draftBatchId || batches.find((item) => item.productId === costing?.productId)?.id || batchesByProduct[0]?.productBatches[0]?.id || "",
   );
   const selectedBatch = batches.find((item) => item.id === selectedBatchId);
   const selectedProductId = selectedBatch?.productId ?? costing?.productId ?? products[0]?.id ?? "";
@@ -6279,6 +6313,21 @@ function CostingForm({
     setSelectedBatchId(batchId);
     const newlySelectedBatch = batches.find((item) => item.id === batchId);
     setCostingYield(newlySelectedBatch?.usablePieces || 0);
+    const rows = parseBatchIngredients(newlySelectedBatch?.ingredientsNotes ?? "")
+      .filter((row) => row.ingredient.trim())
+      .map((row) => ({
+        batchId,
+        cost: 0,
+        id: "",
+        brandName: row.brand,
+        ingredientName: row.ingredient,
+        productId: newlySelectedBatch?.productId ?? products[0]?.id ?? "",
+        quantityUsed: row.quantity,
+        rowId: crypto.randomUUID(),
+        supplierNote: row.change,
+        unit: row.unit,
+      }));
+    setIngredientRows(rows.length > 0 ? autoCostRows(rows) : [{ batchId, brandName: "", cost: 0, id: "", ingredientName: "", productId: newlySelectedBatch?.productId ?? products[0]?.id ?? "", quantityUsed: 0, rowId: crypto.randomUUID(), supplierNote: "", unit: "" }]);
   }
 
   function addSellingFormat() {

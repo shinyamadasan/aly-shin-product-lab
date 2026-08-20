@@ -1,4 +1,4 @@
-import type { ProductBatch } from "./product-lab-types";
+import type { CostingEntry, ProductBatch } from "./product-lab-types";
 
 export type BatchFormulaRow = {
   brand: string;
@@ -159,4 +159,40 @@ export function diffFormulaRows(previousFormula: BatchFormulaRow[], currentFormu
     })
     .filter((row): row is FormulaComparisonRow => row !== null)
     .sort((a, b) => a.ingredient.localeCompare(b.ingredient));
+}
+
+function formulaMatchKey(row: { brand?: string; ingredient?: string; unit?: string }) {
+  return `${(row.brand ?? "").trim().toLowerCase()}|${(row.ingredient ?? "").trim().toLowerCase()}|${(row.unit ?? "").trim().toLowerCase()}`;
+}
+
+export function syncBatchFormulaFromCostingEntries(currentNotes: string, entries: CostingEntry[]): string {
+  const current = parseBatchRecord(currentNotes);
+  const remainingByKey = new Map<string, BatchFormulaRow[]>();
+
+  for (const row of current.formula) {
+    const key = formulaMatchKey(row);
+    remainingByKey.set(key, [...(remainingByKey.get(key) ?? []), row]);
+  }
+
+  const formula = entries
+    .filter((entry) => entry.ingredientName.trim())
+    .map((entry, index) => {
+      const key = formulaMatchKey({ brand: entry.brandName, ingredient: entry.ingredientName, unit: entry.unit });
+      const existingByKey = remainingByKey.get(key)?.shift();
+      const existingByIndex = current.formula[index];
+      const existing = existingByKey ?? existingByIndex;
+
+      return {
+        brand: entry.brandName,
+        change: existing?.change ?? "",
+        ingredient: entry.ingredientName,
+        previousQuantity: existing?.previousQuantity,
+        quantity: entry.quantityUsed,
+        rowId: existing?.rowId ?? crypto.randomUUID(),
+        step: existing?.step ?? "",
+        unit: entry.unit,
+      };
+    });
+
+  return JSON.stringify({ formula, steps: current.steps });
 }

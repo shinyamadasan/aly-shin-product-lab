@@ -116,6 +116,11 @@ export function findConflictingCosting(costings: CostingSummary[], candidate: Co
   );
 }
 
+export function getUncostedBatches(batches: ProductBatch[], costings: CostingSummary[]): ProductBatch[] {
+  const costedBatchIds = new Set(costings.map((costing) => costing.batchId).filter(Boolean));
+  return batches.filter((batch) => !costedBatchIds.has(batch.id));
+}
+
 // CostingForm's batch picker derives productId from whichever batch is selected, so a mismatch
 // shouldn't occur through normal use -- but saveCosting reads both values straight off FormData
 // without cross-checking them, and findConflictingCosting's unlinked-costing bucket above depends

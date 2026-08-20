@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "../src/lib/costing.ts";
+import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, getUncostedBatches, isBatchProductMismatch, resolveCostingId } from "../src/lib/costing.ts";
 import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
 import type { CostingSummary, ProductBatch } from "../src/lib/product-lab-types.ts";
 
@@ -190,6 +190,15 @@ test("findConflictingCosting: unlinked costings for different products do not co
   const existing = baseCosting({ id: "costing-1", productId: "product-1", batchId: "" });
   const conflict = findConflictingCosting([existing], { costingId: "", productId: "product-2", batchId: "" });
   assert.equal(conflict, null);
+});
+
+test("getUncostedBatches returns proof batches that do not have a batch-linked costing yet", () => {
+  const v6 = baseBatch({ id: "batch-v6", batchVersion: "V6" });
+  const v7 = baseBatch({ id: "batch-v7", batchVersion: "V7" });
+  const legacyProductCosting = baseCosting({ batchId: "" });
+  const v6Costing = baseCosting({ id: "costing-v6", batchId: "batch-v6" });
+
+  assert.deepEqual(getUncostedBatches([v7, v6], [legacyProductCosting, v6Costing]), [v7]);
 });
 
 test("isDuplicateKeyError: Postgres 23505 is recognized as a duplicate-key error", () => {

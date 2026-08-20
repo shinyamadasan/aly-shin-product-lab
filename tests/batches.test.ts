@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findConflictingBatch, normalizeBatchVersion } from "../src/lib/batches.ts";
+import { findConflictingBatch, normalizeBatchVersion, parseBatchRecord, syncBatchFormulaFromCostingEntries } from "../src/lib/batches.ts";
 import { isDuplicateKeyError } from "../src/lib/database-errors.ts";
 import type { ProductBatch } from "../src/lib/product-lab-types.ts";
 
@@ -89,4 +89,25 @@ test("isDuplicateKeyError: other error codes and missing errors are not duplicat
   assert.equal(isDuplicateKeyError({ code: "23514" }), false);
   assert.equal(isDuplicateKeyError(null), false);
   assert.equal(isDuplicateKeyError(undefined), false);
+});
+
+test("syncBatchFormulaFromCostingEntries updates the linked proof formula from edited costing ingredients", () => {
+  const currentNotes = JSON.stringify({
+    formula: [
+      { brand: "Brand A", ingredient: "Cocoa", quantity: 100, unit: "g", change: "copied from V7", step: "Dry mix" },
+      { brand: "Brand B", ingredient: "Butter", quantity: 80, unit: "g", change: "", step: "Wet mix" },
+    ],
+    steps: ["Dry mix", "Wet mix"],
+  });
+
+  const synced = parseBatchRecord(syncBatchFormulaFromCostingEntries(currentNotes, [
+    { id: "entry-1", productId: "brownies", batchId: "batch-v8", brandName: "Brand A", ingredientName: "Cocoa", quantityUsed: 120, unit: "g", cost: 25, supplierNote: "" },
+    { id: "entry-2", productId: "brownies", batchId: "batch-v8", brandName: "Brand C", ingredientName: "Chocolate", quantityUsed: 50, unit: "g", cost: 40, supplierNote: "" },
+  ]));
+
+  assert.deepEqual(synced.formula.map((row) => ({ brand: row.brand, ingredient: row.ingredient, quantity: row.quantity, step: row.step, unit: row.unit })), [
+    { brand: "Brand A", ingredient: "Cocoa", quantity: 120, step: "Dry mix", unit: "g" },
+    { brand: "Brand C", ingredient: "Chocolate", quantity: 50, step: "Wet mix", unit: "g" },
+  ]);
+  assert.deepEqual(synced.steps, ["Dry mix", "Wet mix"]);
 });
