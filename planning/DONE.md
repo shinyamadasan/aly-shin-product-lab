@@ -328,3 +328,117 @@ pre-existing owner-data RLS debt and was deliberately not addressed here. Do not
 Lab database as owner-secure.
 
 No Cloudflare call was made, and no other migration was applied.
+
+## 2026-08-20 — SECURITY S1: Product Lab owner-data authorization applied live (`supabase-assign-owner-app-role.sql` + `supabase-harden-product-lab-owner-data-rls.sql`)
+
+Both files applied by the owner in the Supabase SQL editor to the live project
+(`kouesgllnyallmyesvrl.supabase.co`) and verified against it afterwards. Recorded here for the same
+reason the Wave B entry above is: this repo keeps no migration ledger, so without this note nothing
+distinguishes "authored" from "applied". No account identifier, UUID, password or token is recorded
+here or in either SQL file -- both take the operator's own input at run time.
+
+**What it closes.** The debt the Wave B entry above named and deliberately left open. Twenty-three
+Product Lab tables were still `to authenticated using (true) with check (true)` -- a ROLE check, not
+an IDENTITY check. Measured live BEFORE the change, signed in as the public-order website principal
+(an internet-facing service account that exists only to render a menu and record an order):
+
+- 386 rows of `purchase_import_rows` (line-item supplier pricing), 98 `costing_entries`,
+  38 `inventory_transactions`, 37 `supply_entries`, 33 `content_journal`, 32 `purchase_imports`,
+  26 `ingredients`, 20 `ingredient_aliases`, plus `equipment`, `batch_photos`, `content_drafts`,
+  `selling_format_packaging_lines`, `tasting_feedback`, `brand_profiles`, `customers` and the whole
+  catalog -- all readable, and all writable, including DELETE
+- the `batch-photos` storage bucket listable, uploadable, overwritable and deletable
+
+The same was true of every other authenticated account in the project.
+
+**1. A third claim value assigned** (`supabase-assign-owner-app-role.sql`, extended). The website
+principal now holds `app_metadata.app_role = 'public_order'`. Wave B had instructed that this account
+receive NO claim; that is now superseded and the file says so -- once the catalog policies require a
+claim, a claimless website account cannot build a menu and the public ordering page stops. Assigning
+it is what distinguishes the website from an ordinary signed-in account.
+
+The claim family is unchanged and no new identity mechanism was introduced: no email allowlist, no
+hardcoded UUID, no `user_metadata`, no `owner_id` column, no client-side filter.
+
+**2. RLS hardened** (`supabase-harden-product-lab-owner-data-rls.sql`), applied after the claim
+existed -- the file's preflight REFUSES to run otherwise, so the wrong order is a clean error rather
+than an outage on the ordering page. It reuses Wave B's three helpers rather than redefining them,
+and adds three more in the same style (`stable`, `security invoker`, `search_path`-pinned):
+`is_catalog_read_principal()`, `is_ordering_principal()`, `is_public_order_principal()`.
+
+60 policies replaced 23 permissive ones, in these tiers:
+
+- **owner only** (11): `ingredient_aliases`, `purchase_imports`, `purchase_import_rows`,
+  `inventory_transactions`, `equipment`, `costing_entries`, `batch_photos`, `content_drafts`,
+  `ai_reviews`, `selling_format_packaging_lines`, `customers`
+- **owner writes, worker reads** (5): `ingredients`, `content_journal`, `supply_entries`,
+  `tasting_feedback`, `brand_profiles` -- each justified by a cited line in `scripts/daily-advisor`,
+  `scripts/marketing-advisor` or `scripts/creative-workers`, and SELECT only
+- **catalog: owner writes, owner+worker+website read** (4): `products`, `product_batches`,
+  `costing_summaries`, `selling_formats`
+- **owner + worker, full** (1): `opportunities` -- the one business table the daily advisor writes
+- **ordering**: `customers`, `orders`, `order_lines` -- owner full; website read/insert/update, never
+  delete
+- **storage**: the `batch-photos` policy, owner-claim only
+
+`EXECUTE` on seven owner-domain RPCs was narrowed from PUBLIC to `authenticated`
+(`apply_inventory_adjustment`, both `confirm_purchase_import` signatures, `confirm_bake`,
+`save_supply_with_inventory_effect`, `delete_supply_with_inventory_effect`,
+`repair_supply_inventory_effects`, `create_batch_with_costing`), applying the argument
+`supabase-add-orders.sql` already made for `save_order`. There is no SECURITY DEFINER function
+anywhere in this repository -- every one is `security invoker`, so RLS is respected inside them.
+
+Grants were deliberately left in place; RLS is what enforces identity. No table, column, index or
+row was modified -- policies, functions and function grants only.
+
+**Post-application verification, measured live against the real project:**
+
+- public-order principal is denied the owner-business domain -- every Group A/A2 table returns 0 rows
+  (was 386/98/38/37/33/32/26/20/...), and `batch-photos` is no longer listable
+- `creative_worker` keeps exactly its five business reads (`ingredients` 26, `supply_entries` 37,
+  `content_journal` 33, `tasting_feedback` 2, `brand_profiles` 1) and is denied all eleven owner-only
+  tables, `orders`, `order_lines` and `customers`
+- the catalog remains readable by the website principal (4 products, 11 batches, 9 costings,
+  1 selling format) and is no longer writable by it
+- Wave B is intact -- worker still reads 14/14/14/9/9/5/5 and retains full `generated-assets` storage;
+  public-order still sees 0 of all seven and cannot upload
+- anonymous remains denied at the grant layer on every table (HTTP 401, SQLSTATE 42501)
+- `select count(*) from pg_policies where policyname like 'S1 %'` returns 60, of which 1 is the
+  storage policy, and 0 permissive (`using (true)`) policies remain anywhere in `public`
+- public ordering still works: `/order` returns 200 and renders the same menu state as before
+
+`scripts/verify-owner-data-authorization.mjs` reproduces the non-owner and anonymous halves of that
+verification on demand. Read-only -- counts only, never a token, password, key, account or row value.
+
+**Executable proof, not SQL-text proof.** Wave B's review noted that reading a migration as a string
+is weaker than running it. `tests/smoke/postgres/owner-data-rls.smoke.test.ts` (25 tests,
+`RUN_POSTGRES_SMOKE=1 npm run postgres:smoke`) boots a throwaway PostgreSQL, applies 23 real
+migration files plus this one, and asserts the whole matrix as owner / creative_worker /
+public_order / no-claim / anon, including `save_public_order_once` end to end.
+
+It caught a design error before application: **`INSERT ... ON CONFLICT DO UPDATE` requires a PASSING
+SELECT policy** on the target table, even with no conflicting row and no RETURNING clause. Isolated
+on postgres:16 -- no SELECT policy and `using (false)` both fail; `using (true)` succeeds. The first
+draft withheld SELECT on `customers` and `order_lines` and would have broken public ordering on
+application. Both are now granted, with the measurement recorded in the migration, and the test
+removes the `customers` policy, proves ordering breaks, and restores it -- so it cannot be mistaken
+for a decorative grant later.
+
+**Auth roster resolved.** All five accounts are now accounted for: owner, worker (`creative_worker`),
+website (`public_order`), and two that Wave B had flagged as unexplained, confirmed by the owner on
+2026-08-20 to be their own. They hold no claim and can therefore read nothing after this change; they
+can still sign in, which is the owner's accepted position. `supabase-check-auth-account-roster.sql`
+(SELECTs only) reproduces the roster and asserts its invariants. Note that signing into Product Lab
+with one of them now yields the owner-gate refusal screen -- that is the gate working, not a fault.
+
+**Scope, stated so it is not overread.** This did NOT touch the Wave B creative/production domain or
+the `generated-assets` bucket, did not change the ordering architecture, did not move anything to
+service-role credentials, and introduced no multi-tenancy or `owner_id` column. Known remaining debt:
+`customers` PII stays readable by the website principal (forced by the ON CONFLICT rule above);
+`orders`/`order_lines` are not row-scoped to `entry_method = 'website'`; the creative-domain RPCs are
+still `EXECUTE`-able by PUBLIC (their table RLS denies the data); `batch-photos` remains a PUBLIC
+bucket, so any object URL is still fetchable; and `supabase-add-asset-files.sql` cannot be applied to
+a fresh database (its index self-check matches an unquoted `position`, which PostgreSQL always
+renders quoted) -- pre-existing and unrelated to this slice.
+
+No Cloudflare call was made, and no other migration was applied.
