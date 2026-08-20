@@ -24,10 +24,20 @@ import path from "node:path";
 //     top-level app_role, not a nested object
 //   * public ordering still works end to end: save_public_order_once creates once and replays
 //
-// That last one is the reason this file exists rather than a paragraph of reasoning. The migration
-// deliberately withholds SELECT on `customers` from the website principal, on the argument that
-// INSERT ... ON CONFLICT DO UPDATE needs the UPDATE policy and not a SELECT policy when there is no
-// RETURNING clause. That is a claim about PostgreSQL, and the honest way to make it is to run it.
+// It also carries the proof for both halves of the `ON CONFLICT` question, which look identical
+// from a distance and are not:
+//
+//   `customers` KEEPS SELECT and UPDATE. Both are load-bearing. PostgreSQL requires a PASSING
+//   SELECT policy for `INSERT ... ON CONFLICT DO UPDATE` even when no row conflicts and there is
+//   no RETURNING clause -- an earlier draft of the S1 migration withheld it and would have broken
+//   public ordering on application. A test below removes the policy, proves ordering breaks, and
+//   restores it, so nobody can mistake the grant for decoration.
+//
+//   `orders` and `order_lines` LOSE UPDATE (SECURITY S1.1). The UPDATE policies are evaluated only
+//   when a row actually conflicts, and on the public path a conflict is unreachable:
+//   save_public_order_once checks existence under an advisory lock and returns created:false
+//   without calling save_order. So the website principal creates orders and reads them back, and
+//   can change nothing that already exists.
 //
 // Opt-in only. Not part of `npm test` (that glob is tests/*.test.ts and does not recurse). Requires
 // Docker:
@@ -401,6 +411,39 @@ test("SECURITY S1: owner-data RLS admits exactly the principals it names", { ski
     );
   });
 
+  // --- C2. SECURITY S1.1 ------------------------------------------------------------------------
+
+  await t.test("S1.1 narrows on top of S1, and applies again with no change", () => {
+    run(sql("supabase-narrow-s1-least-privilege.sql"));
+    run(sql("supabase-narrow-s1-least-privilege.sql"));
+
+    assert.equal(
+      run(`select coalesce(string_agg(tablename || '.' || cmd, ', ' order by tablename, cmd), '(none)')
+           from pg_policies
+           where schemaname = 'public' and tablename in ('orders', 'order_lines')
+             and policyname like '%public order%' and cmd in ('UPDATE', 'DELETE');`),
+      "(none)",
+      "the website principal must hold no UPDATE and no DELETE policy on the ordering tables",
+    );
+
+    // `customers` is deliberately NOT narrowed -- all three verbs stay.
+    assert.equal(
+      run(`select string_agg(cmd, ',' order by cmd) from pg_policies
+           where schemaname = 'public' and tablename = 'customers' and policyname like '%public order%';`),
+      "INSERT,SELECT,UPDATE",
+    );
+
+    assert.equal(
+      run(`select coalesce(string_agg(proname, ','), '(none)') from pg_proc p
+           join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'is_ordering_principal';`),
+      "(none)",
+      "the dead helper must be gone",
+    );
+
+    // Everything from here on is asserted against S1 + S1.1, not S1 alone.
+  });
+
   // --- D. OWNER ---------------------------------------------------------------------------------
 
   await t.test("OWNER: the whole owner-business domain is readable", () => {
@@ -478,6 +521,43 @@ test("SECURITY S1: owner-data RLS admits exactly the principals it names", { ski
     );
     // One seeded plus the one the worker just created.
     assert.equal(run(counts("creative_worker", ["opportunities"])).trim(), "opportunities=2");
+  });
+
+  await t.test("CREATIVE WORKER: opportunities is SELECT/INSERT/UPDATE and never DELETE (S1.1)", () => {
+    // S1 granted `for all`, which includes a DELETE nothing in the codebase performs.
+    // scripts/daily-advisor/opportunity-persistence.ts uses exactly three verbs (:102, :110, :168).
+    run(as("creative_worker", `update opportunities set status = 'accepted' where deduplication_key = 's1-key';`));
+    assert.equal(
+      run(as("owner", `select status from opportunities where deduplication_key = 's1-key';`)),
+      "accepted",
+      "the daily advisor must still be able to refresh an Opportunity it created",
+    );
+
+    const before = run(as("owner", `select 'opportunities=' || count(*) from opportunities;`));
+    run(as("creative_worker", `delete from opportunities;`));
+    assert.equal(
+      run(as("owner", `select 'opportunities=' || count(*) from opportunities;`)),
+      before,
+      "the worker has no DELETE policy, so its delete must match no row",
+    );
+  });
+
+  await t.test("OWNER: keeps DELETE on opportunities (S1.1)", () => {
+    // Narrowing the worker must not narrow the owner. Removing an Opportunity stays a human call.
+    run(
+      as(
+        "owner",
+        `insert into opportunities (id, opportunity_type, producer, source_type, source_id, title, summary, reason,
+           recommended_action, evidence_version, evidence, source_rule_ids, source_findings, status, detected_at, expires_at, deduplication_key)
+         values ('c4444444-4444-4444-8444-444444444444','product_marketing_content','daily_advisor','daily_advisor','src',
+           'T','S','R','create_content','v1','{}'::jsonb,'{}'::text[],'[]'::jsonb,'new', now(), now() + interval '3 days','s11-owner-delete');`,
+      ),
+    );
+    run(as("owner", `delete from opportunities where deduplication_key = 's11-owner-delete';`));
+    assert.equal(
+      run(as("owner", `select 'left=' || count(*) from opportunities where deduplication_key = 's11-owner-delete';`)),
+      "left=0",
+    );
   });
 
   await t.test("CREATIVE WORKER: keeps its Wave B creative-domain access", () => {
@@ -590,16 +670,39 @@ test("SECURITY S1: owner-data RLS admits exactly the principals it names", { ski
     );
   });
 
+  await t.test("PUBLIC ORDER: cannot change an order it created (S1.1)", () => {
+    // The website principal creates orders and reads them back. It must not be able to move one to
+    // completed, rewrite a line's quantity, or edit anyone's notes. A filtered UPDATE is silent --
+    // it matches no row and reports success having changed nothing -- so this is asserted by
+    // reading the row back as the owner, not by expecting an error.
+    const orderBefore = run(as("owner", `select coalesce(notes, '(null)') || '|' || status from orders where id = 'd2222222-2222-4222-8222-222222222222';`));
+    const lineBefore = run(as("owner", `select unit_price || '|' || quantity from order_lines where id = 'd3333333-3333-4333-8333-333333333333';`));
+
+    run(as("public_order", `update orders set notes = 'HIJACKED', status = 'completed';`));
+    run(as("public_order", `update order_lines set quantity = 99;`));
+
+    assert.equal(
+      run(as("owner", `select coalesce(notes, '(null)') || '|' || status from orders where id = 'd2222222-2222-4222-8222-222222222222';`)),
+      orderBefore,
+      "the website principal must not be able to alter an order",
+    );
+    assert.equal(
+      run(as("owner", `select unit_price || '|' || quantity from order_lines where id = 'd3333333-3333-4333-8333-333333333333';`)),
+      lineBefore,
+      "the website principal must not be able to alter an order line",
+    );
+  });
+
   await t.test("PUBLIC ORDER: cannot delete an order or a customer", () => {
     // A filtered DELETE is silent rather than an error -- there is no DELETE policy, so it matches
     // no row and reports success having removed nothing. Counted before and after, because that is
     // the only thing that distinguishes "denied" from "deleted".
-    const before = run(as("owner", `select 'orders=' || count(*) from orders; select 'customers=' || count(*) from customers;`));
-    run(as("public_order", `delete from orders; delete from customers;`));
+    const before = run(as("owner", `select 'orders=' || count(*) from orders; select 'order_lines=' || count(*) from order_lines; select 'customers=' || count(*) from customers;`));
+    run(as("public_order", `delete from orders; delete from order_lines; delete from customers;`));
     assert.equal(
-      run(as("owner", `select 'orders=' || count(*) from orders; select 'customers=' || count(*) from customers;`)),
+      run(as("owner", `select 'orders=' || count(*) from orders; select 'order_lines=' || count(*) from order_lines; select 'customers=' || count(*) from customers;`)),
       before,
-      "orders and customers survived a delete attempt by the website principal",
+      "orders, order lines and customers all survived a delete attempt by the website principal",
     );
   });
 
@@ -645,9 +748,11 @@ test("SECURITY S1: owner-data RLS admits exactly the principals it names", { ski
   // --- I. the claim readers themselves ----------------------------------------------------------
 
   await t.test("the helpers read app_metadata.app_role and nothing else", () => {
-    const probe = "select coalesce(public.current_app_role(), '(null)') || '|' || public.is_product_lab_owner() || '|' || public.is_catalog_read_principal() || '|' || public.is_ordering_principal();";
+    // is_ordering_principal() was dropped by S1.1 as dead -- no policy ever named it -- so the
+    // probe reads the three helpers that actually gate something.
+    const probe = "select coalesce(public.current_app_role(), '(null)') || '|' || public.is_product_lab_owner() || '|' || public.is_catalog_read_principal() || '|' || public.is_public_order_principal();";
 
-    assert.equal(run(as("owner", probe)), "owner|true|true|true");
+    assert.equal(run(as("owner", probe)), "owner|true|true|false");
     assert.equal(run(as("creative_worker", probe)), "creative_worker|false|true|false");
     assert.equal(run(as("public_order", probe)), "public_order|false|true|true");
 
