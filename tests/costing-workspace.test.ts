@@ -134,11 +134,12 @@ test("duplicate save uses one atomic RPC and local fallback creates batch plus c
   assert.match(PRODUCT_LAB_SOURCE, /p_costing_entries: ingredientRows\.map/);
   assert.match(PRODUCT_LAB_SOURCE, /p_selling_formats: sellingFormats\.map\(buildSellingFormatPayload\)/);
   assert.match(PRODUCT_LAB_SOURCE, /p_selling_format_packaging_lines: sellingFormatPackagingLines\.map\(buildSellingFormatPackagingLinePayload\)/);
-  assert.match(PRODUCT_LAB_SOURCE, /batches: duplicateBatch \? \[duplicateBatch, \.\.\.current\.batches\] : current\.batches/);
+  assert.match(PRODUCT_LAB_SOURCE, /\? \[duplicateBatch, \.\.\.current\.batches\]/);
+  assert.match(PRODUCT_LAB_SOURCE, /current\.batches\.map\(\(batch\) => \(batch\.id === syncedLinkedBatch\.id \? syncedLinkedBatch : batch\)\)/);
 });
 
 test("duplicate as new version copies batch structure but not historical batch evidence", () => {
-  assert.match(PRODUCT_LAB_SOURCE, /ingredientsNotes: duplicateSourceBatch\.ingredientsNotes/);
+  assert.match(PRODUCT_LAB_SOURCE, /ingredientsNotes: syncBatchFormulaFromCostingEntries\(duplicateSourceBatch\.ingredientsNotes, ingredientRows\)/);
   assert.match(PRODUCT_LAB_SOURCE, /prepTimeMinutes: duplicateSourceBatch\.prepTimeMinutes/);
   assert.match(PRODUCT_LAB_SOURCE, /bakeTimeMinutes: duplicateSourceBatch\.bakeTimeMinutes/);
   assert.match(PRODUCT_LAB_SOURCE, /coolingTimeMinutes: duplicateSourceBatch\.coolingTimeMinutes/);

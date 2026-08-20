@@ -75,7 +75,7 @@ import {
   createDraftFromJourney,
   mapContentDraftRow,
 } from "@/lib/content-drafts";
-import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, isBatchProductMismatch, resolveCostingId } from "@/lib/costing";
+import { buildCostingSummaryPayload, findConflictingCosting, formatCostingMetric, getCostingMetrics, getCostingTotals, getUncostedBatches, isBatchProductMismatch, resolveCostingId } from "@/lib/costing";
 import { buildDuplicateCostingDraft, buildDuplicateIngredientRows } from "@/lib/costing-duplicate";
 import {
   buildMovedManualPackagingLine,
@@ -129,6 +129,7 @@ import {
   parseBatchIngredients,
   parseBatchProcessSteps,
   parseBatchRecord,
+  syncBatchFormulaFromCostingEntries,
   type BatchFormulaRow,
 } from "@/lib/batches";
 import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "@/lib/inventory-safety";
@@ -217,6 +218,7 @@ export default function ProductLab({
   const [editingBatch, setEditingBatch] = useState<ProductBatch | null>(null);
   const [editingCosting, setEditingCosting] = useState<CostingSummary | null>(null);
   const [duplicatingCostingSource, setDuplicatingCostingSource] = useState<CostingSummary | null>(null);
+  const [draftCostingBatchId, setDraftCostingBatchId] = useState("");
   const [duplicateSellingFormats, setDuplicateSellingFormats] = useState<SellingFormat[]>([]);
   const [duplicateSellingFormatPackagingLines, setDuplicateSellingFormatPackagingLines] = useState<SellingFormatPackagingLine[]>([]);
   const [costingWorkspaceMode, setCostingWorkspaceMode] = useState<CostingWorkspaceMode>("history");
@@ -1256,6 +1258,13 @@ export default function ProductLab({
       suggestedPrice: Number(formData.get("suggestedPrice") || 0),
       notes: [baseNotes, yieldNotes, utilityNotes, gasNotes, electricityNotes, waterNotes, structuredNotes].filter(Boolean).join("\n"),
     };
+    const linkedBatch = batchId ? labState.batches.find((batch) => batch.id === batchId) : null;
+    const syncedLinkedBatch = linkedBatch
+      ? {
+          ...linkedBatch,
+          ingredientsNotes: syncBatchFormulaFromCostingEntries(linkedBatch.ingredientsNotes, ingredientRows),
+        }
+      : null;
     const duplicateBatch: ProductBatch | null = isDuplicateNewVersionSave && duplicateSourceBatch
       ? {
           id: duplicateBatchId,
@@ -1266,7 +1275,7 @@ export default function ProductLab({
           voidedAt: "",
           voidReason: "",
           dateMade: getToday(),
-          ingredientsNotes: duplicateSourceBatch.ingredientsNotes,
+          ingredientsNotes: syncBatchFormulaFromCostingEntries(duplicateSourceBatch.ingredientsNotes, ingredientRows),
           prepTimeMinutes: duplicateSourceBatch.prepTimeMinutes,
           bakeTimeMinutes: duplicateSourceBatch.bakeTimeMinutes,
           coolingTimeMinutes: duplicateSourceBatch.coolingTimeMinutes,
@@ -1329,6 +1338,7 @@ export default function ProductLab({
         setMessageTone("good");
         setEditingCosting(null);
         setDuplicatingCostingSource(null);
+        setDraftCostingBatchId("");
         setDuplicateSellingFormats([]);
         setDuplicateSellingFormatPackagingLines([]);
         setViewingCostingId(costingSummaryId);
@@ -1380,6 +1390,19 @@ export default function ProductLab({
         setMessageTone("bad");
         await loadSupabaseData();
         return;
+      }
+
+      if (syncedLinkedBatch) {
+        const { error: batchSyncError } = await supabase
+          .from("product_batches")
+          .update({ ingredients_notes: syncedLinkedBatch.ingredientsNotes })
+          .eq("id", syncedLinkedBatch.id);
+        if (batchSyncError) {
+          setMessage(`Costing saved, but the linked proof batch formula did not sync: ${batchSyncError.message}`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
       }
 
       // Steps 4-7 (Selling Formats + their packaging lines) only run once the costing itself is
@@ -1439,6 +1462,7 @@ export default function ProductLab({
       setMessageTone("good");
       setEditingCosting(null);
       setDuplicatingCostingSource(null);
+      setDraftCostingBatchId("");
       setDuplicateSellingFormats([]);
       setDuplicateSellingFormatPackagingLines([]);
       setViewingCostingId(costingSummaryId);
@@ -1454,13 +1478,18 @@ export default function ProductLab({
     setLabState((current) => ({
       ...current,
       costingEntries: [...ingredientRows, ...current.costingEntries.filter((entry) => !matchesThisCosting(entry))],
-      batches: duplicateBatch ? [duplicateBatch, ...current.batches] : current.batches,
+      batches: duplicateBatch
+        ? [duplicateBatch, ...current.batches]
+        : syncedLinkedBatch
+          ? current.batches.map((batch) => (batch.id === syncedLinkedBatch.id ? syncedLinkedBatch : batch))
+          : current.batches,
       costings: costingId ? current.costings.map((entry) => (entry.id === costingId ? costing : entry)) : [costing, ...current.costings.filter((entry) => !matchesThisCosting(entry))],
       sellingFormats: replaceSellingFormatsForCosting(current.sellingFormats, costingSummaryId, sellingFormats),
       sellingFormatPackagingLines: replaceSellingFormatPackagingLinesForCosting(current.sellingFormatPackagingLines, existingSellingFormatIdsForThisCostingLocal, sellingFormatPackagingLines),
     }));
     setEditingCosting(null);
     setDuplicatingCostingSource(null);
+    setDraftCostingBatchId("");
     setDuplicateSellingFormats([]);
     setDuplicateSellingFormatPackagingLines([]);
     setViewingCostingId(costingSummaryId);
@@ -2800,6 +2829,7 @@ export default function ProductLab({
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(null);
       setDuplicatingCostingSource(null);
+      setDraftCostingBatchId("");
       setDuplicateSellingFormats([]);
       setDuplicateSellingFormatPackagingLines([]);
       setActiveUnsavedForm(null);
@@ -2814,6 +2844,7 @@ export default function ProductLab({
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(costingToEdit);
       setDuplicatingCostingSource(null);
+      setDraftCostingBatchId("");
       setDuplicateSellingFormats([]);
       setDuplicateSellingFormatPackagingLines([]);
       setViewingCostingId(costingToEdit.id);
@@ -2826,6 +2857,20 @@ export default function ProductLab({
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(null);
       setDuplicatingCostingSource(null);
+      setDraftCostingBatchId("");
+      setDuplicateSellingFormats([]);
+      setDuplicateSellingFormatPackagingLines([]);
+      setViewingCostingId(null);
+      setCostingWorkspaceMode("editor");
+      setActiveUnsavedForm(null);
+    }
+  }
+
+  function startCostingBatchWithGuard(batchId: string) {
+    if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
+      setEditingCosting(null);
+      setDuplicatingCostingSource(null);
+      setDraftCostingBatchId(batchId);
       setDuplicateSellingFormats([]);
       setDuplicateSellingFormatPackagingLines([]);
       setViewingCostingId(null);
@@ -2839,6 +2884,7 @@ export default function ProductLab({
       const draft = buildDuplicateCostingDraft(costingToDuplicate, labState.sellingFormats, labState.sellingFormatPackagingLines);
       setEditingCosting(draft.costing);
       setDuplicatingCostingSource(draft.source);
+      setDraftCostingBatchId("");
       setDuplicateSellingFormats(draft.sellingFormats);
       setDuplicateSellingFormatPackagingLines(draft.sellingFormatPackagingLines);
       setViewingCostingId(costingToDuplicate.id);
@@ -2851,6 +2897,7 @@ export default function ProductLab({
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(null);
       setDuplicatingCostingSource(null);
+      setDraftCostingBatchId("");
       setDuplicateSellingFormats([]);
       setDuplicateSellingFormatPackagingLines([]);
       setViewingCostingId(costingToView.id);
@@ -2863,6 +2910,7 @@ export default function ProductLab({
     if (!activeUnsavedForm || window.confirm(activeUnsavedForm.message)) {
       setEditingCosting(null);
       setDuplicatingCostingSource(null);
+      setDraftCostingBatchId("");
       setDuplicateSellingFormats([]);
       setDuplicateSellingFormatPackagingLines([]);
       setViewingCostingId(null);
@@ -3015,10 +3063,11 @@ export default function ProductLab({
                 newCosting={newCostingWithGuard}
                 selectedCostingId={viewingCostingId}
                 showHistory={showCostingHistoryWithGuard}
+                startCostingBatch={startCostingBatchWithGuard}
                 viewCosting={viewCostingWithGuard}
               />
               {costingWorkspaceMode === "editor" ? (
-                <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} duplicateSource={duplicatingCostingSource} duplicateSellingFormatPackagingLines={duplicateSellingFormatPackagingLines} duplicateSellingFormats={duplicateSellingFormats} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={duplicatingCostingSource ? `duplicate-${duplicatingCostingSource.id}` : editingCosting?.id ?? "new-costing"} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
+                <CostingForm batches={labState.batches} cancelEdit={cancelCostingEdit} costing={editingCosting} draftBatchId={draftCostingBatchId} duplicateSource={duplicatingCostingSource} duplicateSellingFormatPackagingLines={duplicateSellingFormatPackagingLines} duplicateSellingFormats={duplicateSellingFormats} equipment={labState.equipment} ingredientEntries={labState.costingEntries} ingredients={labState.ingredients} isSellingFormatsTableMissing={isSellingFormatsTableMissing} key={duplicatingCostingSource ? `duplicate-${duplicatingCostingSource.id}` : (editingCosting?.id ?? draftCostingBatchId) || "new-costing"} message={message} messageTone={messageTone} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_COSTING_MESSAGE } : null)} products={labState.products} saveCosting={saveCosting} sellingFormatPackagingLines={labState.sellingFormatPackagingLines} sellingFormats={labState.sellingFormats} supplies={labState.supplies} />
               ) : null}
               {costingWorkspaceMode !== "editor" ? <CostingGuide /> : null}
             </section>
@@ -6362,6 +6411,7 @@ function CostingWorkspace({
   newCosting,
   selectedCostingId,
   showHistory,
+  startCostingBatch,
   viewCosting,
 }: {
   costings: CostingSummary[];
@@ -6376,6 +6426,7 @@ function CostingWorkspace({
   newCosting: () => void;
   selectedCostingId: string | null;
   showHistory: () => void;
+  startCostingBatch: (batchId: string) => void;
   viewCosting: (costing: CostingSummary) => void;
 }) {
   const [search, setSearch] = useState("");
@@ -6405,6 +6456,13 @@ function CostingWorkspace({
       return haystack.includes(search.trim().toLowerCase());
     });
   const visibleCostings = sortOrder === "newest" ? filteredCostings : [...filteredCostings].reverse();
+  const filteredUncostedBatches = getUncostedBatches(labState.batches, costings)
+    .filter((batch) => productFilter === "all" || batch.productId === productFilter)
+    .filter((batch) => {
+      const haystack = [productName(batch.productId, labState.products), batch.batchVersion, batch.ingredientsNotes].join(" ").toLowerCase();
+      return haystack.includes(search.trim().toLowerCase());
+    });
+  const visibleUncostedBatches = sortOrder === "newest" ? filteredUncostedBatches : [...filteredUncostedBatches].reverse();
 
   return (
     <section className="rounded-lg border border-[#e1d4c4] bg-white p-5">
@@ -6457,12 +6515,14 @@ function CostingWorkspace({
             </thead>
             <tbody>
               {visibleCostings.map((costing) => <CostingHistoryRow costing={costing} isLatest={latestCostingIds.has(costing.id)} key={costing.id} labState={labState} onView={() => viewCosting(costing)} />)}
+              {visibleUncostedBatches.map((batch) => <UncostedBatchHistoryRow batch={batch} key={batch.id} labState={labState} onCost={() => startCostingBatch(batch.id)} />)}
             </tbody>
           </table>
           <div className="divide-y divide-[#ead9c8] md:hidden">
             {visibleCostings.map((costing) => <CostingHistoryCard costing={costing} isLatest={latestCostingIds.has(costing.id)} key={costing.id} labState={labState} onView={() => viewCosting(costing)} />)}
+            {visibleUncostedBatches.map((batch) => <UncostedBatchHistoryCard batch={batch} key={batch.id} labState={labState} onCost={() => startCostingBatch(batch.id)} />)}
           </div>
-          {visibleCostings.length === 0 ? <p className="p-4 text-sm text-[#6f5a4c]">No saved costings match these filters.</p> : null}
+          {visibleCostings.length === 0 && visibleUncostedBatches.length === 0 ? <p className="p-4 text-sm text-[#6f5a4c]">No saved costings or uncosted proof batches match these filters.</p> : null}
         </div>
       </div>
       {selectedCosting && mode === "detail" ? (
@@ -6508,6 +6568,20 @@ function CostingHistoryRow({ costing, isLatest, labState, onView }: { costing: C
   );
 }
 
+function UncostedBatchHistoryRow({ batch, labState, onCost }: { batch: ProductBatch; labState: LabState; onCost: () => void }) {
+  return (
+    <tr className="border-b border-[#ead9c8] bg-[#fffaf3] last:border-0">
+      <td className="px-3 py-3 font-semibold text-[#5f4a3d]">{productName(batch.productId, labState.products)}</td>
+      <td className="px-3 py-3">{batch.batchVersion}</td>
+      <td className="px-3 py-3 text-[#6f5a4c]">Needs costing</td>
+      <td className="px-3 py-3">{batch.usablePieces || "Need yield"}</td>
+      <td className="px-3 py-3 text-[#6f5a4c]">Needs costing</td>
+      <td className="px-3 py-3 text-[#6f5a4c]">Needs costing</td>
+      <td className="px-3 py-3"><button className="text-sm font-semibold text-[#8f5632] underline" onClick={onCost} type="button">Cost</button></td>
+    </tr>
+  );
+}
+
 function CostingHistoryCard({ costing, isLatest, labState, onView }: { costing: CostingSummary; isLatest: boolean; labState: LabState; onView: () => void }) {
   const { linkedBatch, metrics, totals, costingYield } = getCostingHistoryMetrics(costing, labState.batches);
   const unitCostLabel = formatCostingMetric(metrics.costPerPiece, (value) => `PHP ${value.toFixed(2)}`);
@@ -6524,6 +6598,22 @@ function CostingHistoryCard({ costing, isLatest, labState, onView }: { costing: 
       <div className="w-[96px] shrink-0 text-right">
         <p className="text-base font-semibold leading-5 text-[#231813]">{unitCostLabel}</p>
         <p className="mt-1 text-xs leading-4 text-[#6f5a4c]">{formatCostingMetric(metrics.margin, (value) => `${value.toFixed(1)}% margin`)}</p>
+      </div>
+    </button>
+  );
+}
+
+function UncostedBatchHistoryCard({ batch, labState, onCost }: { batch: ProductBatch; labState: LabState; onCost: () => void }) {
+  return (
+    <button aria-label={`Cost ${productName(batch.productId, labState.products)} ${batch.batchVersion}`} className="grid w-full grid-cols-[1fr_auto] gap-3 bg-[#fffaf3] px-3 py-2.5 text-left active:bg-[#fff2d8]" onClick={onCost} type="button">
+      <div className="min-w-0">
+        <p className="truncate text-base font-semibold leading-5 text-[#231813]">{productName(batch.productId, labState.products)}</p>
+        <p className="mt-0.5 truncate text-sm font-semibold leading-5 text-[#8f5632]" title={batch.batchVersion}>{batch.batchVersion}</p>
+        <p className="mt-1 text-xs leading-4 text-[#6f5a4c]">Yield {batch.usablePieces || "Need yield"}</p>
+      </div>
+      <div className="w-[96px] shrink-0 text-right">
+        <p className="text-sm font-semibold leading-5 text-[#8f5632] underline">Cost</p>
+        <p className="mt-1 text-xs leading-4 text-[#6f5a4c]">Needs costing</p>
       </div>
     </button>
   );
@@ -6594,6 +6684,7 @@ function CostingForm({
   cancelEdit,
   batches,
   costing,
+  draftBatchId,
   duplicateSource,
   duplicateSellingFormatPackagingLines,
   duplicateSellingFormats,
@@ -6613,6 +6704,7 @@ function CostingForm({
   batches: ProductBatch[];
   cancelEdit: () => void;
   costing: CostingSummary | null;
+  draftBatchId?: string;
   duplicateSource: CostingSummary | null;
   duplicateSellingFormatPackagingLines: SellingFormatPackagingLine[];
   duplicateSellingFormats: SellingFormat[];
@@ -6643,7 +6735,7 @@ function CostingForm({
     }))
     .filter((group) => group.productBatches.length > 0);
   const [selectedBatchId, setSelectedBatchId] = useState(
-    () => costing?.batchId || batches.find((item) => item.productId === costing?.productId)?.id || batchesByProduct[0]?.productBatches[0]?.id || "",
+    () => costing?.batchId || draftBatchId || batches.find((item) => item.productId === costing?.productId)?.id || batchesByProduct[0]?.productBatches[0]?.id || "",
   );
   const selectedBatch = batches.find((item) => item.id === selectedBatchId);
   const selectedProductId = selectedBatch?.productId ?? costing?.productId ?? products[0]?.id ?? "";
