@@ -163,7 +163,9 @@ test("the worker service claim is separate from the owner claim, and documented 
   // so that it can keep writing Assets without being able to open the owner UI.
   assert.match(hardeningStatements, /'owner', 'creative_worker'/);
   assert.match(hardeningStatements, /public\.is_product_lab_owner\(\)/);
-  assert.match(assignment, /Do NOT assign 'owner' to the worker account/);
-  // And the assignment script refuses any other value.
-  assert.match(assignmentStatements.length > 0 ? assignment : assignment, /not in \('owner', 'creative_worker'\)/);
+  assert.match(assignment, /Do NOT assign 'owner' to the worker or website account/);
+  // And the assignment script refuses any value outside the known claim family. SECURITY S1 added
+  // a third member, 'public_order', for the server-only website principal; this assertion tracks
+  // the family rather than pinning it at two, but still refuses to let it grow silently.
+  assert.match(assignment, /not in \('owner', 'creative_worker', 'public_order'\)/);
 });
