@@ -13,10 +13,21 @@ import "server-only";
 // This signs in as a dedicated Supabase Auth user holding the ordinary `authenticated` role. That
 // is the least-privilege principal that works: prerequisite P1 measured it live -- the account
 // reaches save_order and is rejected by the function's OWN validation (P0001), never by the grant
-// system (42501, which is still what `anon` receives). No new grant, no policy change, no anon
-// privilege and no service-role key are required, and none is used here. A service-role key would
-// bypass RLS entirely for no gain, since every policy in this schema is already `using (true)` for
-// authenticated.
+// system (42501, which is still what `anon` receives). No new grant, no anon privilege and no
+// service-role key are required, and none is used here.
+//
+// UPDATED BY SECURITY S1/S1.1. The last clause of this paragraph used to read "since every policy
+// in this schema is already `using (true)` for authenticated", which was true when this file was
+// written and is the exact condition S1 removed. Every policy is now claim-based, and this account
+// holds `app_metadata.app_role = 'public_order'` -- assigned out of band, never stored here.
+//
+// What that claim buys it is deliberately small: SELECT on the four catalog tables
+// public-catalog-repository.ts reads, SELECT + INSERT on `orders` and `order_lines`, and
+// SELECT + INSERT + UPDATE on `customers` (the upsert in save_public_order_once needs all three).
+// It has no UPDATE on an order, no DELETE anywhere, and no read of any Product Lab business table.
+//
+// A service-role key would still be the wrong tool, and now for a stronger reason than when this
+// was written: it would bypass every one of those policies rather than merely being redundant.
 //
 // The browser never receives any of this. The public surface talks to a Route Handler; the Route
 // Handler talks to Supabase.
