@@ -76,7 +76,15 @@ export async function authenticateOwnerWith<TClient>(
 
 // --- who is the owner ---------------------------------------------------------------------------------
 //
-// ONE authoritative owner identity, carried by Supabase Auth itself.
+// ONE authoritative owner CLAIM, carried by Supabase Auth itself.
+//
+// One claim, not one person. `owner` is a ROLE: a business with co-owners assigns it to each of
+// their accounts, and every holder gets identical access -- there is no seniority and no per-account
+// ownership of a row anywhere in this system. What matters is that the claim has exactly one
+// definition and exactly one place it can be written from. Nothing here counts owners, and neither
+// does any policy in the database: `isProductionOwner()` below and `is_product_lab_owner()` in SQL
+// are the same equality test. (Corrected by SECURITY S1.2, which removed the stale exactly-one-owner
+// assumption from the migration guards and runbooks; runtime behaviour is unchanged.)
 //
 // WHY app_metadata AND NOT THE THINGS IT REPLACED.
 //
@@ -91,8 +99,8 @@ export async function authenticateOwnerWith<TClient>(
 //   removed rather than kept alongside this. It defaulted to OPEN when unset -- which is exactly how
 //   the gate came to be effectively disabled in the live environment -- and it named the owner in a
 //   place the DATABASE cannot read, so RLS could never agree with the application about who the
-//   owner was. The claim below is readable by both, which is what lets one identity govern both
-//   layers.
+//   owner was. The claim below is readable by both, which is what lets one definition of "owner"
+//   govern both layers.
 //
 // The owner identifier itself appears NOWHERE in this repository: no email, no UUID, no default.
 // The claim is assigned once, out of band, against the Supabase project.

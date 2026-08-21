@@ -49,7 +49,7 @@ select
   users.email,
   users.raw_app_meta_data ->> 'app_role' as app_role,
   case users.raw_app_meta_data ->> 'app_role'
-    when 'owner'           then 'Product Lab owner (the human). There must be exactly one.'
+    when 'owner'           then 'Product Lab owner. A ROLE, not a person -- one or more accounts may hold it, and every holder has identical access.'
     when 'creative_worker' then 'Advisor/worker automation -- .env.advisor.local. Runs daily-advisor, marketing-advisor, creative + asset workers, Creative Prep.'
     when 'public_order'    then 'Public ordering website -- .env.public-order.local, server-only, used by /order and /api/public-orders.'
     else                        '(no claim -- accounted for?)'
@@ -80,17 +80,27 @@ select
   count(*) as total_accounts
 from auth.users;
 
--- Expected after SECURITY S1:
+-- Expected after SECURITY S1 (owner cardinality corrected by SECURITY S1.2):
 --
---   owner_accounts       1     exactly one, always
+--   owner_accounts      >= 1   AT LEAST ONE. `owner` is a role, not a person: a business with
+--                              co-owners assigns the claim to each of their accounts, and every
+--                              holder gets identical access. There is no upper bound and no
+--                              seniority. ZERO is the failure -- it means nobody can reach Product
+--                              Lab at all. This project currently has two, which is a legitimate
+--                              observed state and NOT a permanent maximum.
 --   worker_accounts      1     the advisor/worker automation
 --   website_accounts     1     the public ordering principal
 --   unrecognised_claims  0     any other value is a typo or something nobody wrote down
 --   unclaimed_accounts   ?     every one of these should have a name and a reason. They can read
 --                              nothing after S1, but they can still sign in.
 --
+-- Every owner_accounts value above zero should still be RECONCILED -- each holder named and
+-- accounted for. "More than one is allowed" is not "more than one is unexamined". What changed in
+-- S1.2 is that a second legitimate owner is no longer reported as a failed security invariant.
+--
 -- If unrecognised_claims is not 0, stop and reconcile before trusting any policy in this project:
--- a claim value nobody recognises is a claim nobody has reviewed.
+-- a claim value nobody recognises is a claim nobody has reviewed. That check is UNCHANGED and is
+-- not weakened by the owner-count correction above.
 
 -- --------------------------------------------------------------------------------------------
 -- 3. Is any account referenced by this repository's configuration?
