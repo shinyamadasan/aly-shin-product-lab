@@ -366,6 +366,10 @@ than an outage on the ordering page. It reuses Wave B's three helpers rather tha
 and adds three more in the same style (`stable`, `security invoker`, `search_path`-pinned):
 `is_catalog_read_principal()`, `is_ordering_principal()`, `is_public_order_principal()`.
 
+> Superseded 2026-08-20 by SECURITY S1.1 (entry at the end of this file): `is_ordering_principal()`
+> was dead on arrival -- no policy ever named it -- and has since been dropped. Two of these three
+> remain live.
+
 60 policies replaced 23 permissive ones, in these tiers:
 
 - **owner only** (11): `ingredient_aliases`, `purchase_imports`, `purchase_import_rows`,
@@ -405,6 +409,8 @@ row was modified -- policies, functions and function grants only.
 - anonymous remains denied at the grant layer on every table (HTTP 401, SQLSTATE 42501)
 - `select count(*) from pg_policies where policyname like 'S1 %'` returns 60, of which 1 is the
   storage policy, and 0 permissive (`using (true)`) policies remain anywhere in `public`
+  (superseded: S1.1 later dropped three of those 60 and added four named `S1.1 %`, which that
+  `like 'S1 %'` pattern does not match -- the count is now 57 + 4)
 - public ordering still works: `/order` returns 200 and renders the same menu state as before
 
 `scripts/verify-owner-data-authorization.mjs` reproduces the non-owner and anonymous halves of that
@@ -440,5 +446,109 @@ still `EXECUTE`-able by PUBLIC (their table RLS denies the data); `batch-photos`
 bucket, so any object URL is still fetchable; and `supabase-add-asset-files.sql` cannot be applied to
 a fresh database (its index self-check matches an unquoted `position`, which PostgreSQL always
 renders quoted) -- pre-existing and unrelated to this slice.
+
+No Cloudflare call was made, and no other migration was applied.
+
+## 2026-08-20 — SECURITY S1.1: least-privilege narrowing applied live (`supabase-narrow-s1-least-privilege.sql`)
+
+Applied by the owner in the Supabase SQL editor to the live project (`kouesgllnyallmyesvrl.supabase.co`)
+and verified against it afterwards. Same day as the S1 entry above and strictly on top of it: S1 was
+NOT rewritten, and the repository history reads S1 -> S1.1, which is what actually happened.
+
+**What it closes.** S1's independent review passed with no P0 and no P1 and found three grants wider
+than the runtime evidence supports. This file closes those three and nothing else. No table, column,
+index, constraint, trigger, grant or row was created, altered or deleted -- policies and one function
+only.
+
+**1. `public_order` UPDATE removed from `orders` and `order_lines`.** S1 granted it on the reasoning
+that `save_order`'s `insert ... on conflict (id) do update` needs an UPDATE policy. It does not, and
+the reason is the exact inverse of the `customers` case the S1 entry above records. PostgreSQL
+evaluates an INSERT's UPDATE policies only when a row ACTUALLY CONFLICTS; it evaluates the SELECT
+policy either way. On the public path a conflict is unreachable: `save_public_order_once` takes a
+transaction-scoped advisory lock on the derived order id, checks existence under it, and returns
+`created:false` WITHOUT calling `save_order` when the row is there. `save_order` therefore only runs
+when the order is absent, on a first submission and a replay alike. `order_lines` is doubly
+unreachable -- it cascades with its parent order, so no line can exist for an order that does not.
+
+The website principal keeps SELECT (the replay/existence check) and INSERT (the write). It now has no
+UPDATE and no DELETE anywhere in the ordering domain: it can create an order and read it back, and can
+change nothing that already exists -- not status, not payment, not lines.
+
+**2. `creative_worker` DELETE removed from `opportunities`.** S1 gave the creative domain `for all`,
+which includes a DELETE no runtime path performs. One policy became four: the owner's `for all`,
+plus the worker's three verbs written out individually, each cited to the line that uses it
+(`scripts/daily-advisor/opportunity-persistence.ts` :102 select, :110 update, :168 insert). They are
+permissive and therefore OR'd, so the owner still satisfies every one -- and the owner's policy is the
+only one that carries DELETE. Removing an Opportunity stays a decision a human makes.
+
+**3. `is_ordering_principal()` dropped.** S1 created three helpers and used two. This one (owner +
+public_order) was written for an ordering-policy shape the final design did not use -- the ordering
+policies name `is_product_lab_owner()` and `is_public_order_principal()` separately. Verified
+unreferenced by any policy, migration, `src/`, `scripts/` or test before dropping, and PostgreSQL
+enforces that independently since it refuses to drop a function a policy depends on. Dropping the
+function dropped its `EXECUTE` grant with it.
+
+**What it deliberately did NOT do.** `customers` is untouched: the public-order principal keeps
+SELECT, INSERT and UPDATE, and still has no DELETE. SELECT is load-bearing for the ON CONFLICT rule
+recorded in the S1 entry above. UPDATE is load-bearing too, though by a narrower path -- customer ids
+outlive their orders (`orders.customer_id references customers(id) on delete restrict`, so deleting an
+order leaves its customer), and a replayed idempotency key after an order deletion reaches the
+`on conflict do update` branch. The migration's postflight asserts all three are still present, so a
+future edit cannot remove them quietly.
+
+**Owner-count semantics.** S1.1's preflight requires `owner_count >= 1` rather than exactly one, which
+is why it applies cleanly to a project that now intentionally holds TWO owner accounts. The S1 file
+itself still requires exactly one and can therefore no longer be replayed against current production.
+That is real, is NOT this slice's problem, and is tracked as SECURITY S1.2 below.
+
+**Post-application verification, measured live against the real project:**
+
+- no `%public order%` policy with `cmd = UPDATE` or `DELETE` survives on `orders` or `order_lines`;
+  both keep exactly owner-`ALL` + public-order SELECT + public-order INSERT
+- `customers` keeps all four: owner-`ALL`, public-order SELECT, INSERT and UPDATE
+- `opportunities` shows exactly four policies -- `S1.1 owner manages opportunities` (`ALL`, the only
+  one) plus `S1.1 creative domain` SELECT / INSERT / UPDATE; `S1 creative domain manages
+  opportunities` is gone
+- the schema-wide permissive-policy probe returns NO ROWS, confirming across all of `public` what S1's
+  own postflight only asserted across its 23 named tables
+- the file's own postflight committed, which is itself proof of the checks it makes: it runs inside the
+  editor's implicit transaction, so a raise would have rolled back the `S1.1 %` policies now visible.
+  That covers `is_ordering_principal()` being absent, the owner retaining DELETE on `opportunities`,
+  and the five surviving helpers
+
+Not re-measured after application: the `/order` page returning 200, and the per-principal row counts
+the S1 entry above records. S1.1 removes only verbs no runtime path uses, and the executable test
+covers both.
+
+**Executable proof.** `tests/smoke/postgres/owner-data-rls.smoke.test.ts` now runs 35 tests (was 25)
+and applies S1.1 immediately after S1 in the same throwaway PostgreSQL, so every assertion from that
+point on is against S1 + S1.1. It proves behaviourally, not by reading SQL as a string: the website
+principal's UPDATE of `orders` and `order_lines` changes nothing (read back as the owner, because a
+filtered UPDATE under RLS is silent rather than an error); its DELETE of orders, order lines and
+customers removes nothing; `save_public_order_once` still returns `created=true` then `created=false`
+with no duplicate; the worker can still select, insert and update an Opportunity but its DELETE
+removes no row; and the owner still deletes one. Full run: 35/35. Repository baseline at application:
+`npm test` 3335 total / 3334 pass / 0 fail / 1 skipped, typecheck clean, build clean, changed-file
+eslint clean.
+
+**Documentation corrected.** `src/lib/supabase-server.ts` carried a comment claiming every policy in
+the schema was `using (true)` for authenticated -- true when written, and the exact condition S1
+removed. It now describes the real model. Comment-only; no runtime behaviour changed.
+
+**Known remaining debt, stated so it is not overread.** Everything the S1 entry above lists as
+remaining debt still stands -- S1.1 narrowed three grants and closed none of it. Added by this slice:
+
+- **SECURITY S1.2 — co-owner / migration replayability.** The merged S1 migration's preflight requires
+  exactly one owner; production has two. That migration can no longer be replayed directly against
+  current production. The branch `feat/product-lab-co-owner-claims` is orphaned and needs a rebase.
+- **S1 replay now silently undoes S1.1.** Re-running `supabase-harden-product-lab-owner-data-rls.sql`
+  recreates all three widened grants -- the two ordering UPDATE policies, the `for all` opportunities
+  policy, and `is_ordering_principal()`. That is documented in S1.1 as its rollback path, and it is
+  also a constraint on S1.2: whoever repairs S1 for replay must either fold this narrowing in or
+  re-run S1.1 immediately afterwards.
+- **The narrowing postflight is name-scoped, not predicate-scoped.** Checks 4a/4b/4c filter on
+  `policyname like '%public order%'` and verify `cmd`, but not the policy's predicate. A policy
+  granting `is_public_order_principal()` UPDATE under a different name would pass. 4d/4e already do it
+  the stronger way for the creative domain. Non-blocking; no such policy exists.
 
 No Cloudflare call was made, and no other migration was applied.
