@@ -552,3 +552,133 @@ remaining debt still stands -- S1.1 narrowed three grants and closed none of it.
   the stronger way for the creative domain. Non-blocking; no such policy exists.
 
 No Cloudflare call was made, and no other migration was applied.
+
+## 2026-08-21 — SECURITY S1.2: S1 replay made safe for multiple owners (repository only — NOT applied live)
+
+**NO PRODUCTION CHANGE. NO LIVE SQL WAS RUN.** Read this entry differently from the two above it:
+S1 and S1.1 were migrations applied to `kouesgllnyallmyesvrl`. S1.2 is not. Production already holds
+the correct S1 + S1.1 authorization state, so there was nothing to apply — running a migration purely
+to manufacture an application event would have been theatre. What S1.2 repairs is the REPOSITORY's
+recovery and replay semantics: the ability to rebuild the current authorization state from these
+files after a restore, on a fresh project, or during an incident.
+
+**The defect.** S1's preflight required `owner_count <> 1`. That was never an authorization property.
+Nothing in the model counts owners: `is_product_lab_owner()` is `current_app_role() = 'owner'` and
+`isProductionOwner()` is the same equality in TypeScript. The limit was a statement about company
+structure, and it made S1 UNREPLAYABLE the moment a second legitimate owner existed -- which is what
+happened. Runtime authorization already supported co-owners and was never broken; only the apply-time
+guards and the documentation around them were wrong.
+
+**The fix.** One functional line:
+
+    -  if owner_count <> 1 then   -- 'Expected exactly 1 account with app_role = owner, found %'
+    +  if owner_count < 1 then    -- 'No account holds app_role = owner. ... locks every human out'
+
+ZERO owners still refuses, and that is the case that protects something: hardening on top of a claim
+nobody holds does not produce a locked-down database, it produces one with no way in, including for
+the humans who own it. One or more explicitly assigned owner accounts are valid. There is no upper
+bound, no owner is identified by email or UUID, and authorization remains
+`app_metadata.app_role = 'owner'` exactly as before.
+
+**Option C was chosen deliberately, and S1's policy output was NOT rewritten.** The alternative --
+editing S1 to emit S1.1's narrowed policies directly -- would have made a fresh install a single
+file, at the cost of falsifying the merged S1.1 header ("S1 IS ALREADY APPLIED IN PRODUCTION AND IS
+NOT REWRITTEN") and pretending the applied migration was something other than what it was. The
+repository keeps the additive model instead. Verified mechanically: filtering S1's diff to
+policy/function statements returns ZERO lines. `supabase-narrow-s1-least-privilege.sql` is
+byte-untouched. The production history remains what actually happened:
+
+    Wave B  ->  S1  ->  S1.1
+
+**The canonical replay unit is S1 -> S1.1.** S1 alone is the HISTORICAL stage, not the current
+authorization state; replaying it alone restores four privileges production no longer grants
+(public_order UPDATE on `orders` and on `order_lines`, creative_worker DELETE on `opportunities` via
+the old `for all` policy, and `is_ordering_principal()`). Because that cannot be enforced from inside
+a migration -- a file cannot compel the next one -- it is stated in three places instead: a boxed
+banner at the top of S1, step 4 of its order-of-operations, and a `raise notice` in its postflight
+that an operator SEES in the SQL editor rather than has to read the file to find.
+
+**Executable proof, in a real PostgreSQL.** `tests/smoke/postgres/owner-data-rls.smoke.test.ts` grew
+from 35 tests to 42. S1.2 changes no production policy, so this harness is not supporting evidence --
+it is the entire correctness argument.
+
+- **CASE A, 0 owners:** S1 refuses with `No account holds app_role = owner`.
+- **CASE B, 1 owner:** S1 then S1.1 both apply and reach the narrowed state.
+- **CASE C, 2 owners:** two real `auth.users` rows carrying the owner claim; S1 then S1.1 both apply
+  and reach the SAME narrowed state. The co-owner stays seeded from this point on, so the entire
+  remaining authorization matrix -- all 42 tests -- runs in a two-owner project rather than a
+  single-owner one.
+- **Both owners:** two distinct authenticated subjects, same claim, proven to hold identical access.
+  Each deletes the OTHER's row, which exercises in one assertion that DELETE is owner-only and that
+  no per-account ownership of a row exists anywhere in this schema.
+- **Replay convergence:** the full authorization surface (every policy in `public` plus
+  `storage.objects` -- table, command, name, `qual`, `with_check` -- and the helper-function family)
+  is snapshotted from the correct S1 + S1.1 state, the unit is replayed, and the snapshot is compared
+  again. IDENTICAL.
+
+The convergence proof is deliberately non-vacuous. The test between the two halves proves the state
+genuinely DIVERGES first: after replaying S1 alone the ordering UPDATE policies are measurably back,
+`is_ordering_principal()` exists again, and the website principal really can write -- an `update
+orders set notes` succeeds and is read back as the owner. So the comparison is a real round trip, not
+two reads of a database nothing happened to.
+
+**Validation at this commit:**
+
+- Postgres smoke: 42 / 42 (was 35 / 35)
+- `npm test`: 3335 total, 3334 pass, 0 fail, 1 skipped -- unchanged, as expected: the postgres smoke
+  is opt-in and outside the `tests/*.test.ts` glob
+- typecheck clean, build clean, changed-file eslint clean
+
+**Files changed (5).** `supabase-harden-product-lab-owner-data-rls.sql` (preflight guard, message,
+banner, postflight notices), `supabase-assign-owner-app-role.sql` (the guard that REFUSED to assign a
+second owner now notifies instead, reporting a count and never an identifier),
+`supabase-check-auth-account-roster.sql` (`owner_accounts >= 1`), `src/lib/production-auth.ts`
+(comment only -- verified: zero non-comment lines changed), and the smoke test.
+
+**Accepted, non-blocking debt.** The final independent review returned PASS WITH NON-BLOCKING
+FOLLOW-UPS, P0 none, P1 none. NONE of the following was fixed. Each is recorded rather than left
+implicit, and each belongs to S1.2 itself -- see the closing paragraph for why that boundary matters.
+
+P2:
+
+1. **Supabase SQL Editor NOTICE visibility is unverified.** The postflight notices pointing at S1.1
+   were proven to fire in psql; whether the hosted editor surfaces every one of them was not tested.
+   If it does not, the banner at the top of S1 and its order-of-operations remain as the other two
+   layers -- but the layer most likely to be READ at the moment it matters is the unproven one.
+2. **Sequential recovery has no operator response or time bound.** S1 -> S1.1 is a sequence, not an
+   atomic unit: between the two files the database genuinely holds the broader historical privileges
+   again, and the test asserts that state rather than hiding it. What is missing is not the warning
+   but the PROCEDURE -- nothing tells an operator who becomes stranded after S1 how to recognise it,
+   how long the exposure may last, or what to do besides "run S1.1". The window is nominally one
+   paste into the SQL editor; nothing bounds it if the operator stops there.
+
+P3:
+
+3. **AUTHZ_SNAPSHOT compares helper function NAMES, not function BODIES.** A helper whose definition
+   changed while keeping its name would pass the convergence comparison. This is the sharpest of the
+   P3s, because convergence is the whole correctness argument for S1.2 -- though in practice the
+   policies that call those helpers are compared in full, `qual` and `with_check` included.
+4. **The two-owner SUBJECT test is mainly a future regression guard.** No current policy inspects
+   `sub`, so two subjects carrying the same claim are indistinguishable to every predicate in the
+   schema by construction. The load-bearing owner-count proof is the one that uses two real
+   `auth.users` rows; the subject test guards against a future policy that starts reading identity.
+5. **The Wave B post-replay matrix has limited non-vacuity.** Several of those tables are empty in
+   the harness, so "creative_worker sees what the owner sees" compares zero to zero on them.
+   `creative_jobs` carries the real signal.
+6. **CASE A does not explicitly assert that no DDL leaked before the refusal.** It proves the
+   zero-owner preflight refuses. That nothing was created first is currently proven only structurally
+   -- the preflight is the first statement in the file -- rather than by a post-refusal assertion.
+7. **The S1 banner phrase "S1.1 removes exactly those four and nothing else" is loose at the
+   policy-object level.** It is exact as a statement about the PRIVILEGE delta. As a statement about
+   policy objects it is not: S1.1 also replaces one `for all` policy with four narrower ones, so the
+   object count changes by more than four.
+
+Everything listed as remaining debt in the S1 and S1.1 entries above still stands, including the two
+S1.1 items an earlier draft of this entry wrongly restated here -- the partly name-scoped
+website-policy postflight, and `customers` UPDATE not being proven load-bearing by policy removal.
+Both are real and both remain open; they are S1.1's debt, recorded in S1.1's entry, and listing them
+again as S1.2 review findings would have made this slice look like it inherited defects it did not
+introduce. S1.2 closed the replay defect and nothing else.
+
+No Cloudflare call was made, no migration was applied, and no SQL of any kind was run against the
+live project.
