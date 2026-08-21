@@ -1,5 +1,8 @@
 import type { AssetGenerationSpecV1 } from "./asset-generation-spec.ts";
 import type { ProductionSpecV1 } from "./production-spec.ts";
+// Type-only, for the same reason asset-jobs.ts imports back the other way type-only: a value import
+// here would close a cycle between the validator and the job module.
+import type { AssetKind } from "./asset-jobs.ts";
 
 export type GeneratedAssetFileCandidate = {
   position: number;
@@ -26,6 +29,42 @@ export const GENERATED_ASSET_ALLOWED_VIDEO_MIME_TYPES = ["video/mp4"] as const;
 export const GENERATED_ASSET_MIN_DIMENSION_PX = 256;
 export const GENERATED_ASSET_MAX_DIMENSION_PX = 4096;
 export const GENERATED_ASSET_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
+// Production MVP Wave C1 -- the PER-KIND byte ceiling, and the resolution of a mismatch Wave A left
+// open in writing.
+//
+// THE MISMATCH. GENERATED_ASSET_MAX_FILE_SIZE_BYTES above is 10 MB and has been since PROP-025. It
+// was sized for a single 1080x1080 still and it is the number the app's own upload boundary
+// (asset-upload-intake.ts) and byte inspector (asset-binary.ts) both enforce. Meanwhile
+// supabase-add-generated-assets-video.sql raises the STORAGE bucket to 50 MB so an MP4 can be
+// uploaded at all. Left as it was, the two gates disagreed: storage would accept a 20 MB Reel that
+// the application had already refused.
+//
+// WHY NOT SIMPLY RAISE THE ONE NUMBER. Raising GENERATED_ASSET_MAX_FILE_SIZE_BYTES to 50 MB would
+// have resolved the mismatch by giving every PNG a fivefold allowance it has no use for. A 1080x1080
+// still that arrives at 30 MB is not a large image, it is a wrong one -- a mis-exported TIFF-sized
+// PNG, a video renamed, or a provider returning something unexpected -- and the 10 MB ceiling is the
+// cheapest place that gets caught. A single global limit sized for the largest kind stops being a
+// limit for every smaller kind.
+//
+// SO THE LIMIT BECOMES PER KIND, with one canonical table.
+//
+//   image        10 MB, byte-identical to what has always shipped. Not a new number; the existing
+//                constant is referenced rather than retyped, so there is still exactly one 10 MB.
+//   short_video  50 MB, matching the ceiling supabase-add-generated-assets-video.sql sets on the
+//                bucket. Chosen so the application and storage refuse the same files: an app limit
+//                above the bucket's would surface as an opaque storage rejection after a full render.
+//
+// `satisfies` is load-bearing in the same way EXECUTABLE_ASSET_KINDS uses it: a kind added to
+// ASSET_KINDS without a limit here fails to compile, so no asset kind can ever fall back to a default.
+export const GENERATED_ASSET_MAX_FILE_SIZE_BYTES_BY_KIND = {
+  image: GENERATED_ASSET_MAX_FILE_SIZE_BYTES,
+  short_video: 50 * 1024 * 1024,
+} as const satisfies Record<AssetKind, number>;
+
+export function maxGeneratedAssetFileSizeBytes(assetKind: AssetKind): number {
+  return GENERATED_ASSET_MAX_FILE_SIZE_BYTES_BY_KIND[assetKind];
+}
 
 // Advisory, not a rejection reason: a candidate's declared dimensions differing from the spec's
 // requested dimensions no longer fails validation -- see validateGeneratedAssetCandidates below.
@@ -144,11 +183,14 @@ export function validateGeneratedAssetCandidates(
     return { ok: false, reason: "duration-present-for-image", message: "Image asset generation candidates must not include durationMs." };
   }
 
-  // Kind-aware wording only. The reason code, the bound and the accept/reject behaviour are
-  // deliberately unchanged -- this branch reads the same GENERATED_ASSET_MAX_FILE_SIZE_BYTES for
-  // both kinds, and reconciling that per-kind limit is Wave C entry work, not a Wave A change. The
-  // image message stays byte-identical to the one this milestone shipped with.
-  if (candidate.fileSizeBytes <= 0 || candidate.fileSizeBytes > GENERATED_ASSET_MAX_FILE_SIZE_BYTES) {
+  // Wave C1 -- the per-kind bound Wave A's note above deferred to "Wave C entry work".
+  //
+  // The reason code, the accept/reject behaviour and both messages stay exactly as they were; only
+  // the BOUND is now looked up by kind. For an image that lookup returns GENERATED_ASSET_MAX_FILE_SIZE_BYTES
+  // itself, so this branch is byte-for-byte the behaviour it has always had for every asset that has
+  // ever been produced. What changed is that a short_video is no longer measured against a ceiling
+  // sized for a still.
+  if (candidate.fileSizeBytes <= 0 || candidate.fileSizeBytes > maxGeneratedAssetFileSizeBytes(spec.assetKind)) {
     return {
       ok: false,
       reason: "empty-bytes",
