@@ -295,8 +295,13 @@ insert into storage.objects (id, bucket_id, name)
 // "Sign in" as a principal for the duration of one statement batch: become the `authenticated`
 // role, and present a JWT with the given app_metadata.app_role. Wrapped in a transaction so
 // `set local` reverts even if a statement raises.
-function as(claim: string | null, statements: string): string {
-  const claims = claim === null ? `{"role":"authenticated"}` : `{"role":"authenticated","app_metadata":{"app_role":"${claim}"}}`;
+// `subject` is optional and exists for SECURITY S1.2: it makes TWO DISTINCT owner principals
+// expressible, which is what proves `owner` is a role rather than a person. No policy in this
+// schema reads `sub` -- that is the point. Both subjects carry the same claim and must therefore
+// receive identical access.
+function as(claim: string | null, statements: string, subject?: string): string {
+  const sub = subject === undefined ? "" : `,"sub":"${subject}"`;
+  const claims = claim === null ? `{"role":"authenticated"${sub}}` : `{"role":"authenticated"${sub},"app_metadata":{"app_role":"${claim}"}}`;
   return `begin;
 set local role authenticated;
 set local request.jwt.claims = '${claims}';
@@ -388,14 +393,80 @@ test("SECURITY S1: owner-data RLS admits exactly the principals it names", { ski
     run("update auth.users set raw_app_meta_data = raw_app_meta_data || '{\"app_role\":\"public_order\"}'::jsonb where email = 'website@example.test';");
   });
 
-  await t.test("the migration refuses to run when the owner claim is ambiguous", () => {
-    run("update auth.users set raw_app_meta_data = raw_app_meta_data || '{\"app_role\":\"owner\"}'::jsonb where email = 'unexplained@example.test';");
+  // SECURITY S1.2. This test used to assert the OPPOSITE -- that two owners was a refusal. That was
+  // never an authorization property: no policy and no TypeScript path counts owners, so requiring
+  // exactly one was a statement about company structure, and it made the file unreplayable the
+  // moment a legitimate co-owner existed. The case that protects something is ZERO.
+  await t.test("S1.2 CASE A -- 0 owner claims: the migration refuses before hardening", () => {
+    run("update auth.users set raw_app_meta_data = raw_app_meta_data - 'app_role' where email = 'owner@example.test';");
     assert.match(
       runExpectingFailure(sql("supabase-harden-product-lab-owner-data-rls.sql")),
-      /Expected exactly 1 account with app_role = owner, found 2/i,
-      "two owners is a reconciliation problem, not something to harden on top of",
+      /No account holds app_role = owner/i,
+      "hardening on top of a claim nobody holds does not produce a locked-down database -- it produces one with no way in",
     );
-    run("update auth.users set raw_app_meta_data = raw_app_meta_data - 'app_role' where email = 'unexplained@example.test';");
+    run("update auth.users set raw_app_meta_data = raw_app_meta_data || '{\"app_role\":\"owner\"}'::jsonb where email = 'owner@example.test';");
+  });
+
+  await t.test("S1.2 CASE B -- 1 owner claim: S1 then S1.1 both apply", () => {
+    assert.equal(run(`select count(*) from auth.users where raw_app_meta_data ->> 'app_role' = 'owner';`), "1");
+    run(sql("supabase-harden-product-lab-owner-data-rls.sql"));
+    run(sql("supabase-narrow-s1-least-privilege.sql"));
+    assert.equal(
+      run(`select coalesce(string_agg(tablename || '.' || cmd, ', ' order by tablename, cmd), '(none)')
+           from pg_policies
+           where schemaname = 'public' and tablename in ('orders', 'order_lines')
+             and policyname like '%public order%' and cmd in ('UPDATE', 'DELETE');`),
+      "(none)",
+      "the replay unit must reach the narrowed state with a single owner",
+    );
+  });
+
+  // From here on the world has TWO owners, exactly as production does. Every assertion that follows
+  // -- the entire authorization matrix -- is therefore proven in a co-owner project rather than a
+  // single-owner one. Two is the OBSERVED state, not a maximum: nothing below depends on the count.
+  await t.test("S1.2 CASE C -- 2 owner claims: S1 then S1.1 both apply", () => {
+    run(`insert into auth.users (email, raw_app_meta_data)
+         values ('coowner@example.test', '{"provider":"email","app_role":"owner"}'::jsonb);`);
+    assert.equal(run(`select count(*) from auth.users where raw_app_meta_data ->> 'app_role' = 'owner';`), "2");
+
+    // Both files must APPLY, not merely not-crash: each carries its own postflight that raises on a
+    // wrong final shape, so reaching the assertion below is the proof.
+    run(sql("supabase-harden-product-lab-owner-data-rls.sql"));
+    run(sql("supabase-narrow-s1-least-privilege.sql"));
+
+    assert.equal(
+      run(`select coalesce(string_agg(tablename || '.' || cmd, ', ' order by tablename, cmd), '(none)')
+           from pg_policies
+           where schemaname = 'public' and tablename in ('orders', 'order_lines')
+             and policyname like '%public order%' and cmd in ('UPDATE', 'DELETE');`),
+      "(none)",
+      "the replay unit must reach the same narrowed state with two owners",
+    );
+  });
+
+  await t.test("S1.2: BOTH owner principals hold identical owner-domain access", () => {
+    // Two distinct authenticated subjects carrying the same claim. The policies key on the claim
+    // alone, so neither is privileged over the other -- which is what "owner is a role" means.
+    const probe = `select 'purchase_import_rows=' || count(*) from purchase_import_rows;`;
+    const first = run(as("owner", probe, "owner-subject-1"));
+    const second = run(as("owner", probe, "owner-subject-2"));
+    assert.equal(first, "purchase_import_rows=1");
+    assert.equal(second, first, "a co-owner must see exactly what the first owner sees");
+
+    run(as("owner", `insert into ai_reviews (id, product_id, action, prompt)
+      values ('c0000001-0000-4000-8000-000000000001','p1','review','From owner one.');`, "owner-subject-1"));
+    run(as("owner", `insert into ai_reviews (id, product_id, action, prompt)
+      values ('c0000002-0000-4000-8000-000000000002','p1','review','From owner two.');`, "owner-subject-2"));
+
+    // Each deletes the OTHER's row. There is no per-account ownership of a row anywhere in this
+    // schema, and DELETE is the verb only an owner holds -- so this exercises both facts at once.
+    run(as("owner", `delete from ai_reviews where id = 'c0000002-0000-4000-8000-000000000002';`, "owner-subject-1"));
+    run(as("owner", `delete from ai_reviews where id = 'c0000001-0000-4000-8000-000000000001';`, "owner-subject-2"));
+    assert.equal(
+      run(`select 'left=' || count(*) from ai_reviews where id in ('c0000001-0000-4000-8000-000000000001','c0000002-0000-4000-8000-000000000002');`),
+      "left=0",
+      "either owner must be able to remove the other's row -- no seniority, no per-row ownership",
+    );
   });
 
   // --- C. apply, twice, to prove idempotency ----------------------------------------------------
@@ -828,5 +899,171 @@ test("SECURITY S1: owner-data RLS admits exactly the principals it names", { ski
                           'save_order','save_public_order_once')
         and has_function_privilege('public', p.oid, 'execute');`).trim();
     assert.equal(offenders, "(none)", `these functions are still executable by PUBLIC: ${offenders}`);
+  });
+
+  // --- K. SECURITY S1.2: the canonical replay unit ----------------------------------------------
+  //
+  // THE MOST IMPORTANT TEST IN S1.2, and the only executable proof this slice has -- S1.2 changes no
+  // production policy, so there is no live measurement to fall back on.
+  //
+  // The repository deliberately keeps the historical additive model: S1 created the broader policies
+  // and S1.1 narrowed them afterwards, which is what actually happened. Neither file is rewritten to
+  // pretend otherwise. The cost of that honesty is that S1 ALONE is not the current authorization
+  // state, and replaying it alone silently restores four privileges production no longer grants.
+  //
+  // So the supported recovery contract is a PAIR -- S1 then S1.1 -- and this section proves the pair
+  // converges: replaying it from the correct final state returns exactly that state.
+
+  // Everything the two files are allowed to touch, rendered deterministically. Compared as one
+  // string, so a difference anywhere in the authorization surface fails -- not merely the parts a
+  // hand-written assertion happened to anticipate.
+  const AUTHZ_SNAPSHOT = `
+    select coalesce(string_agg(line, chr(10) order by line), '(no policies)') from (
+      select schemaname || '.' || tablename || '|' || cmd || '|' || policyname
+             || '|' || coalesce(qual, '-') || '|' || coalesce(with_check, '-') as line
+      from pg_policies
+      where schemaname = 'public' or (schemaname = 'storage' and tablename = 'objects')
+    ) policies;
+    select coalesce(string_agg(proname, ',' order by proname), '(no helpers)')
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and (p.proname like 'is/_%' escape '/' or p.proname = 'current_app_role');`;
+
+  let beforeReplay = "";
+
+  await t.test("S1.2: the authorization surface is snapshotted before the replay", () => {
+    beforeReplay = run(AUTHZ_SNAPSHOT);
+    // Guard against a trivially-empty snapshot, which would make the comparison meaningless.
+    assert.ok(beforeReplay.includes("public.opportunities|"), "the snapshot must actually contain policies");
+    assert.ok(beforeReplay.includes("is_public_order_principal"), "the snapshot must actually contain the helper family");
+    assert.ok(!beforeReplay.includes("is_ordering_principal"), "the dead helper must already be gone before the replay starts");
+  });
+
+  // Reported rather than hidden, per the operational reality: the pair is a SEQUENCE, not an atomic
+  // unit. Between the two files the database really does hold the broader S1 privileges again. That
+  // is the honest cost of not rewriting history. The window is the length of one paste into the SQL
+  // editor, and the acceptance criterion is the state AFTER S1.1 -- but an operator must know it.
+  await t.test("S1.2: replaying S1 alone TEMPORARILY restores the broad privileges (honest intermediate state)", () => {
+    run(sql("supabase-harden-product-lab-owner-data-rls.sql"));
+
+    assert.equal(
+      run(`select coalesce(string_agg(tablename || '.' || cmd, ', ' order by tablename, cmd), '(none)')
+           from pg_policies
+           where schemaname = 'public' and tablename in ('orders', 'order_lines')
+             and policyname like '%public order%' and cmd = 'UPDATE';`),
+      "order_lines.UPDATE, orders.UPDATE",
+      "S1 alone puts the ordering UPDATE policies back -- which is why S1.1 is not optional",
+    );
+
+    // Not merely a policy row: the website principal can genuinely write again.
+    run(as("public_order", `update orders set notes = 'INTERMEDIATE' where id = 'a2222222-2222-4222-8222-222222222222';`));
+    assert.equal(
+      run(as("owner", `select coalesce(notes, '(null)') from orders where id = 'a2222222-2222-4222-8222-222222222222';`)),
+      "INTERMEDIATE",
+      "the intermediate state is a real privilege, not a cosmetic policy row",
+    );
+
+    assert.equal(
+      run(`select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'is_ordering_principal';`),
+      "1",
+      "S1 alone also recreates the dead helper",
+    );
+  });
+
+  await t.test("S1.2: replaying S1.1 completes the unit and restores the exact prior state", () => {
+    run(sql("supabase-narrow-s1-least-privilege.sql"));
+
+    assert.equal(
+      run(AUTHZ_SNAPSHOT),
+      beforeReplay,
+      "replaying the canonical unit S1 -> S1.1 must converge on the identical authorization surface",
+    );
+  });
+
+  await t.test("S1.2: the post-replay authorization matrix, re-proven behaviourally", () => {
+    // The snapshot above compares policy TEXT. This re-proves the same conclusion by ACTING as each
+    // principal, because a policy that reads correctly and behaves wrongly is the failure that
+    // matters. The intermediate write is undone first so it cannot mask a regression.
+    run(`update orders set notes = null where id = 'a2222222-2222-4222-8222-222222222222';`);
+
+    // PUBLIC_ORDER -- reads its catalog, sees no owner data. Asserted against what the OWNER sees
+    // rather than against literals: earlier tests in this file write catalog rows of their own, so a
+    // hardcoded count would be asserting the order they happen to run in.
+    const ownerCatalog = run(counts("owner", CATALOG_TABLES));
+    assert.equal(run(counts("public_order", CATALOG_TABLES)), ownerCatalog, "the catalog must stay fully readable by the website principal after the replay");
+    assert.ok(!ownerCatalog.includes("=0"), `the catalog must not be empty, or the comparison above proves nothing: ${ownerCatalog}`);
+    expectCounts(run(counts("public_order", OWNER_ONLY_TABLES)), Object.fromEntries(OWNER_ONLY_TABLES.map((table) => [table, 0])));
+
+    const orderBefore = run(as("owner", `select coalesce(notes,'(null)') || '|' || status from orders where id = 'a2222222-2222-4222-8222-222222222222';`));
+    const lineBefore = run(as("owner", `select unit_price || '|' || quantity from order_lines where id = 'a3333333-3333-4333-8333-333333333333';`));
+    const countsBefore = run(as("owner", `select 'orders=' || count(*) from orders; select 'order_lines=' || count(*) from order_lines; select 'customers=' || count(*) from customers;`));
+
+    run(as("public_order", `update orders set notes = 'HIJACKED', status = 'completed';`));
+    run(as("public_order", `update order_lines set quantity = 99;`));
+    run(as("public_order", `delete from orders; delete from order_lines; delete from customers;`));
+
+    assert.equal(run(as("owner", `select coalesce(notes,'(null)') || '|' || status from orders where id = 'a2222222-2222-4222-8222-222222222222';`)), orderBefore, "public_order must not be able to alter an order after the replay");
+    assert.equal(run(as("owner", `select unit_price || '|' || quantity from order_lines where id = 'a3333333-3333-4333-8333-333333333333';`)), lineBefore, "public_order must not be able to alter an order line after the replay");
+    assert.equal(run(as("owner", `select 'orders=' || count(*) from orders; select 'order_lines=' || count(*) from order_lines; select 'customers=' || count(*) from customers;`)), countsBefore, "public_order must not be able to delete after the replay");
+
+    // customers keeps the three verbs it genuinely needs, and still no DELETE.
+    assert.equal(
+      run(`select string_agg(cmd, ',' order by cmd) from pg_policies
+           where schemaname = 'public' and tablename = 'customers' and policyname like '%public order%';`),
+      "INSERT,SELECT,UPDATE",
+    );
+
+    // CREATIVE_WORKER -- three verbs on opportunities, never the fourth.
+    const oppsBefore = run(as("owner", `select 'opportunities=' || count(*) from opportunities;`));
+    run(as("creative_worker", `delete from opportunities;`));
+    assert.equal(run(as("owner", `select 'opportunities=' || count(*) from opportunities;`)), oppsBefore, "creative_worker must still have no DELETE route to opportunities after the replay");
+    run(as("creative_worker", `update opportunities set status = 'accepted' where deduplication_key = 's1-seed';`));
+    assert.equal(run(as("owner", `select status from opportunities where deduplication_key = 's1-seed';`)), "accepted", "the daily advisor must still be able to refresh an Opportunity after the replay");
+    assert.equal(run(counts("creative_worker", WORKER_READ_TABLES)), run(counts("owner", WORKER_READ_TABLES)), "the advisor reads must survive the replay unchanged");
+
+    // Wave B is untouched by either file in the unit. Owner-relative for the same reason as the
+    // catalog above: both principals are creative-domain, so they must see the identical set.
+    const waveB = ["creative_jobs", "creative_packages", "asset_jobs", "assets", "asset_files"];
+    assert.equal(run(counts("creative_worker", waveB)), run(counts("owner", waveB)), "Wave B access must survive the replay unchanged");
+    expectCounts(run(counts("public_order", waveB)), Object.fromEntries(waveB.map((table) => [table, 0])));
+    assert.equal(
+      run(`select count(*) from pg_policies where schemaname = 'storage' and tablename = 'objects'
+           and policyname = 'Creative domain principals manage generated asset files';`),
+      "1",
+      "the Wave B generated-assets storage policy must survive the replay",
+    );
+
+    // OWNER -- BOTH of them -- keeps everything, DELETE included.
+    for (const subject of ["owner-subject-1", "owner-subject-2"]) {
+      run(as("owner", `insert into opportunities (id, opportunity_type, producer, source_type, source_id, title, summary, reason,
+        recommended_action, evidence_version, evidence, source_rule_ids, source_findings, status, detected_at, expires_at, deduplication_key)
+        values ('c1111111-1111-4111-8111-111111111111','product_marketing_content','daily_advisor','daily_advisor','src',
+        'T','S','R','create_content','v1','{}'::jsonb,'{}'::text[],'[]'::jsonb,'new', now(), now() + interval '3 days','s12-replay');`, subject));
+      run(as("owner", `delete from opportunities where deduplication_key = 's12-replay';`, subject));
+      assert.equal(
+        run(as("owner", `select 'left=' || count(*) from opportunities where deduplication_key = 's12-replay';`, subject)),
+        "left=0",
+        `owner principal ${subject} must retain DELETE on opportunities after the replay`,
+      );
+    }
+
+    // The dead helper is gone again at the END of the unit.
+    assert.equal(
+      run(`select coalesce(string_agg(proname, ','), '(none)') from pg_proc p
+           join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'is_ordering_principal';`),
+      "(none)",
+      "is_ordering_principal() must be absent at the end of the replay unit",
+    );
+
+    // NO CLAIM and ANON remain denied.
+    expectCounts(run(counts(null, OWNER_ONLY_TABLES)), Object.fromEntries(OWNER_ONLY_TABLES.map((table) => [table, 0])));
+    expectCounts(run(counts(null, CATALOG_TABLES)), Object.fromEntries(CATALOG_TABLES.map((table) => [table, 0])));
+    assert.match(
+      runExpectingFailure(`begin; set local role anon; select count(*) from products; commit;`),
+      /permission denied/i,
+      "anon must still be refused at the grant layer after the replay",
+    );
   });
 });

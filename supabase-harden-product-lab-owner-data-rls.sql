@@ -3,6 +3,30 @@
 -- Safe to run more than once in the Supabase SQL editor. Policies, functions and function GRANTs
 -- only: no table, column, index, constraint, trigger or row is created, altered or deleted.
 --
+-- ############################################################################################
+-- #                                                                                          #
+-- #   STOP -- THIS FILE ALONE IS NOT THE CURRENT AUTHORIZATION STATE.                        #
+-- #                                                                                          #
+-- #   SECURITY S1 is the HISTORICAL hardening stage. To reach the least-privilege state       #
+-- #   production actually runs, apply SECURITY S1.1 IMMEDIATELY AFTER this file:              #
+-- #                                                                                          #
+-- #       1.  supabase-harden-product-lab-owner-data-rls.sql   (this file)                    #
+-- #       2.  supabase-narrow-s1-least-privilege.sql           (S1.1 -- REQUIRED)             #
+-- #                                                                                          #
+-- #   The two together are the CANONICAL REPLAY UNIT. Stopping after this file leaves four    #
+-- #   privileges broader than production has:                                                 #
+-- #                                                                                          #
+-- #       * public_order UPDATE on `orders`                                                   #
+-- #       * public_order UPDATE on `order_lines`                                              #
+-- #       * creative_worker DELETE on `opportunities` (via the `for all` policy below)        #
+-- #       * the unused helper `is_ordering_principal()`                                        #
+-- #                                                                                          #
+-- #   S1.1 removes exactly those four and nothing else. Both files are idempotent, so the     #
+-- #   pair can be replayed as often as needed and always converges on the same final state.   #
+-- #   The postflight at the end of this file repeats this warning where you will see it.      #
+-- #                                                                                          #
+-- ############################################################################################
+--
 -- ============================================================================================
 -- WHAT THIS FIXES
 -- ============================================================================================
@@ -110,9 +134,16 @@
 --      signInWithPassword() on each cold start, so they mint a fresh token carrying the new claim.
 --      The OWNER's browser session predates nothing here and is unaffected.
 --   3. THEN run this file.
+--   4. THEN run supabase-narrow-s1-least-privilege.sql (SECURITY S1.1). This step is NOT optional.
+--      See the banner at the top: S1 and S1.1 together are the canonical replay unit, and stopping
+--      after step 3 leaves four privileges broader than production grants.
 --
 -- Step 0 below REFUSES to run if step 1 has not happened, so getting the order wrong is a clean
--- error rather than an outage on the public ordering page.
+-- error rather than an outage on the public ordering page. Nothing enforces step 4 from inside this
+-- file -- a migration cannot compel the next one -- so the postflight ends by naming it explicitly.
+--
+-- One or more accounts may hold app_role = 'owner'. Step 0 requires at least one and imposes no
+-- upper bound: `owner` is a role, not a person. (SECURITY S1.2.)
 --
 -- ============================================================================================
 -- ROLLBACK
@@ -211,8 +242,20 @@ begin
   select count(*) into worker_count       from auth.users where raw_app_meta_data ->> 'app_role' = 'creative_worker';
   select count(*) into public_order_count from auth.users where raw_app_meta_data ->> 'app_role' = 'public_order';
 
-  if owner_count <> 1 then
-    raise exception 'Expected exactly 1 account with app_role = owner, found %. Fix the claim with supabase-assign-owner-app-role.sql before hardening.', owner_count;
+  -- AT LEAST ONE OWNER, NOT EXACTLY ONE. (SECURITY S1.2 -- replay guard repair.)
+  --
+  -- This check originally required `owner_count <> 1`, which was never an authorization property.
+  -- Nothing in the model counts owners: `is_product_lab_owner()` is `current_app_role() = 'owner'`
+  -- and `isProductionOwner()` is the same equality in TypeScript. `owner` is a ROLE, and a business
+  -- with co-owners gives each of them their own account holding the same claim; every holder gets
+  -- identical access, with no seniority and no per-row ownership anywhere in this schema.
+  --
+  -- Requiring exactly one made this file UNREPLAYABLE the moment a second legitimate owner existed
+  -- -- which is what happened, and which is the defect S1.2 repairs. The case that actually protects
+  -- something is ZERO: hardening on top of a claim nobody holds does not produce a locked-down
+  -- database, it produces one with no way in, including for the humans who own it.
+  if owner_count < 1 then
+    raise exception 'No account holds app_role = owner. Assign it with supabase-assign-owner-app-role.sql BEFORE hardening -- applying this file first locks every human out of Product Lab.';
   end if;
 
   if public_order_count < 1 then
@@ -223,7 +266,7 @@ begin
     raise warning 'No account holds app_role = creative_worker. The daily advisor, marketing advisor and creative/asset workers will lose their reads. This is allowed but is almost certainly not what you want.';
   end if;
 
-  raise notice 'Preflight passed: % owner, % creative_worker, % public_order account(s).', owner_count, worker_count, public_order_count;
+  raise notice 'Preflight passed: % owner, % creative_worker, % public_order account(s). One or more owners is expected; more than one is not an error.', owner_count, worker_count, public_order_count;
 end $$;
 
 -- --------------------------------------------------------------------------------------------
@@ -701,6 +744,11 @@ begin
   end if;
 
   raise notice 'SECURITY S1 owner-data RLS hardening verified.';
+  raise notice '---';
+  raise notice 'NOT FINISHED. S1 is the historical stage, not the current authorization state.';
+  raise notice 'Now apply supabase-narrow-s1-least-privilege.sql (SECURITY S1.1) to remove the four';
+  raise notice 'privileges this file creates that production no longer grants: public_order UPDATE on';
+  raise notice 'orders and order_lines, creative_worker DELETE on opportunities, and is_ordering_principal().';
 end $$;
 
 -- Post-apply inspection (read-only; run separately if you want to eyeball the result):

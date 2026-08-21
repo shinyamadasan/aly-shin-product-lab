@@ -37,7 +37,8 @@
 -- Uncomment, replace BOTH placeholders, and run.
 --
 --   REPLACE_WITH_EMAIL  the account's sign-in email
---   REPLACE_WITH_ROLE   'owner'           for the Product Lab owner (the human)
+--   REPLACE_WITH_ROLE   'owner'           for a Product Lab owner (a human). ONE OR MORE explicitly
+--                                         authorized accounts may hold this claim -- see below.
 --                       'creative_worker' for the advisor/worker automation account
 --                                         (the one in .env.advisor.local -- it runs the creative
 --                                          and asset workers and MUST keep write access, but must
@@ -61,14 +62,16 @@
 -- The `||` merge preserves Supabase's own keys (provider, providers). A bare assignment would
 -- destroy them and can break sign-in.
 --
--- The guard blocks the write unless exactly one user matches, so a typo'd email is a no-op rather
--- than a silent miss.
+-- The guard blocks the write unless exactly one user matches THAT EMAIL, so a typo'd email is a
+-- no-op rather than a silent miss. That check is about addressing the right row and is unrelated to
+-- how many owners exist -- one or more accounts may hold app_role = 'owner'.
 
 -- do $$
 -- declare
 --   target_email text := 'REPLACE_WITH_EMAIL';
 --   target_role  text := 'REPLACE_WITH_ROLE';
 --   matched      integer;
+--   existing_owners integer;
 -- begin
 --   if target_role not in ('owner', 'creative_worker', 'public_order') then
 --     raise exception 'Refusing to assign unrecognised app_role %. Use owner, creative_worker or public_order.', target_role;
@@ -79,11 +82,22 @@
 --     raise exception 'Expected exactly 1 user for that email, found %. Nothing was changed.', matched;
 --   end if;
 --
---   if target_role = 'owner' and exists (
---     select 1 from auth.users
---     where raw_app_meta_data ->> 'app_role' = 'owner' and email <> target_email
---   ) then
---     raise exception 'Another user already holds the owner claim. There is exactly ONE owner identity -- revoke the other first (STEP 4) if you are moving it.';
+--   -- CO-OWNERS ARE ALLOWED. (SECURITY S1.2.)
+--   --
+--   -- This block used to REFUSE when another account already held 'owner'. That was a statement
+--   -- about company structure, not about authorization, and it is what made a co-owner
+--   -- impossible to add. `owner` is a role: every holder gets identical access, there is no
+--   -- seniority, and no policy anywhere in this schema counts owners or scopes a row to one.
+--   --
+--   -- It now NOTIFIES instead of refusing, so adding a co-owner is a deliberate act you see
+--   -- confirmed rather than one you have to defeat a guard to perform. The count is reported;
+--   -- no email, id or other identifier is read back or written down.
+--   if target_role = 'owner' then
+--     select count(*) into existing_owners from auth.users
+--      where raw_app_meta_data ->> 'app_role' = 'owner' and email <> target_email;
+--     if existing_owners > 0 then
+--       raise notice 'NOTE: % other account(s) already hold app_role = owner. This adds a CO-OWNER with identical access. If you meant to MOVE the claim, revoke the other with STEP 4.', existing_owners;
+--     end if;
 --   end if;
 --
 --   update auth.users
@@ -98,7 +112,8 @@
 -- ============================================================================================
 --
 -- Shows who holds which claim across the whole project. Run it and confirm:
---   * exactly one 'owner'
+--   * AT LEAST ONE 'owner', and that you can name every account holding it. More than one is
+--     allowed and is not an error -- but "allowed" is not "unexamined". Zero is a lockout.
 --   * the worker account is 'creative_worker'
 --   * the website account is 'public_order'
 --   * every remaining account has app_role NULL -- and that you can name why each one exists
