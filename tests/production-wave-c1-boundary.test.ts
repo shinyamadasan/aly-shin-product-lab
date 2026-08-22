@@ -19,12 +19,23 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // same change that registers the executor it names. C1 registers no executor, so the executable set
 // must be exactly what Wave B left behind.
 
-test("the Remotion worker is still only a FUTURE worker type -- nothing can claim it", () => {
-  assert.ok((FUTURE_PRODUCTION_WORKER_TYPES as readonly string[]).includes("remotion"));
-  // The compiler-level half of the boundary: "remotion" is deliberately absent from the set of
-  // worker types an Asset Job row may carry, so a resolved Remotion route cannot be inserted without
-  // someone first widening this list -- which is the change that should only land with an executor.
-  assert.equal((ASSET_JOB_WORKER_TYPES as readonly string[]).includes("remotion"), false);
+// UPDATED BY WAVE C2A -- the ONE assertion in this file that C2A legitimately changes.
+//
+// C1 asserted that "remotion" was purely a FUTURE worker: no executor existed, so nothing could
+// claim it. C2A registers the executor, which is precisely the change production-route.ts said this
+// list exists to gate -- "each wave extends the executable set in the same change that registers the
+// executor it names". Leaving the old assertion in place would have meant C2A could not do the one
+// thing it was chartered to do.
+//
+// The guarantee this file exists to protect is UNCHANGED and every other test below still holds it:
+// short_video remains non-executable through the application. What moved is the worker half.
+test("the Remotion worker is REGISTERED but is still not app-creatable", () => {
+  // Nothing is purely-future any more; the list is empty and stays as the seam for the next wave.
+  assert.deepEqual([...FUTURE_PRODUCTION_WORKER_TYPES], []);
+  // The worker runtime can claim it...
+  assert.equal((ASSET_JOB_WORKER_TYPES as readonly string[]).includes("remotion"), true);
+  // ...and the application still cannot name it. The job-creation API's worker union is derived from
+  // this list, so absence here is a compile error at the call site as well as a runtime refusal.
   assert.equal((EXECUTABLE_ASSET_JOB_WORKER_TYPES as readonly string[]).includes("remotion"), false);
 });
 

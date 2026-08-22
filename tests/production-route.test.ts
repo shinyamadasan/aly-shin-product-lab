@@ -175,8 +175,22 @@ test("[static] the Creative Package contract names no execution technology", () 
 
 // --- the runtime activation boundary (Wave A's load-bearing guarantee) ----------------------------------
 
-test("the executable worker set is exactly what the runner can claim today", () => {
-  assert.deepEqual([...EXECUTABLE_ASSET_JOB_WORKER_TYPES].sort(), [...ASSET_JOB_WORKER_TYPES].sort());
+// Wave C2A is the first wave in which these two sets DIFFER, and the difference is the whole point.
+//
+// Before C2A they were equal, and equality was a fine way to say "every claimable worker is also
+// app-creatable". Registering the Remotion executor separates them: the worker runtime can claim it,
+// the application may not name it. So the invariant becomes a strict-subset relation plus an exact
+// statement of the gap -- which pins more, not less, than the old equality did.
+test("the app-creatable worker set is a STRICT SUBSET of what the runner can claim", () => {
+  for (const workerType of EXECUTABLE_ASSET_JOB_WORKER_TYPES) {
+    assert.ok(
+      (ASSET_JOB_WORKER_TYPES as readonly string[]).includes(workerType),
+      `${workerType} is app-creatable but is not a worker the runner can claim -- a queued row naming it could never run`,
+    );
+  }
+
+  const workerOnly = ASSET_JOB_WORKER_TYPES.filter((workerType) => !(EXECUTABLE_ASSET_JOB_WORKER_TYPES as readonly string[]).includes(workerType));
+  assert.deepEqual([...workerOnly], ["remotion"], "the only worker the app may not create is the Remotion one, until C2B activates it");
 });
 
 test("only future worker types stay outside the Asset Job worker vocabulary", () => {

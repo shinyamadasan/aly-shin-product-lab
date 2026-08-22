@@ -572,7 +572,11 @@ test("[type] the job-creation API rejects non-executable workers and kinds", () 
   const videoKind: AssetJobCreationOptions = { workerType: "external", assetKind: "short_video" };
   // @ts-expect-error -- image_provider was renamed before activation
   const imageProvider: AssetJobCreationOptions = { workerType: "image_provider", assetKind: "image" };
-  // @ts-expect-error -- remotion arrives in Wave C with its executor, not before
+  // @ts-expect-error -- Wave C2A REGISTERS remotion as a claimable worker type, and this directive
+  // still holds for a different and stronger reason than before: the creation API's worker union is
+  // now derived from EXECUTABLE_ASSET_JOB_WORKER_TYPES (the app-creatable set), not from
+  // AssetJobWorkerType (everything the worker runtime can claim). The worker knows how to run
+  // remotion; the application still cannot ask it to.
   const remotion: AssetJobCreationOptions = { workerType: "remotion", assetKind: "image" };
 
   // Referenced so the bindings are used; the assertions that matter are the three directives above.
@@ -1271,7 +1275,6 @@ test("asset job code does not call external providers, use the Supabase SDK dire
     /Gemini/i,
     /Veo/i,
     /Runway/i,
-    /Remotion/i,
     /\bfetch\s*\(/,
     /@supabase\/supabase-js/i,
     /from\("approvals"\)/i,
@@ -1279,6 +1282,30 @@ test("asset job code does not call external providers, use the Supabase SDK dire
     /from\("content_drafts"\)/i,
   ]) {
     assert.doesNotMatch(source, forbidden);
+  }
+
+  // Wave C2A NARROWS the Remotion rule rather than dropping it.
+  //
+  // "remotion" is now a REGISTERED worker type, so asset-jobs.ts must name it in
+  // ASSET_JOB_WORKER_TYPES -- exactly as it already names static_renderer and generative_image. What
+  // the original blanket ban was actually protecting is that this module contains no execution
+  // TECHNOLOGY: it must not import a renderer, call one, or know what a frame or a codec is. That is
+  // what is asserted below, and it is a stricter statement than a ban on the word.
+  //
+  // NOTED, NOT FIXED: every other worker type is named by MECHANISM (static_renderer,
+  // generative_image, manual_illustration) while "remotion" is a vendor name. That identifier was
+  // frozen by Wave A in the production route table and job rows must match it, so renaming it is a
+  // contract change and not C2A's to make.
+  for (const forbiddenUsage of [
+    /from\s+["']@remotion\//,
+    /from\s+["']remotion["']/,
+    /renderMedia/,
+    /selectComposition/,
+    /durationInFrames/,
+    /\bcodec\b/i,
+    /ffprobe/i,
+  ]) {
+    assert.doesNotMatch(source, forbiddenUsage, `asset-jobs.ts must not contain rendering technology (${forbiddenUsage})`);
   }
 });
 

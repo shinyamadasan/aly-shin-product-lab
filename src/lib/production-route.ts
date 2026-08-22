@@ -28,7 +28,17 @@ import type { AssetJobWorkerType, AssetKind } from "./asset-jobs.ts";
 // cannot be passed to createAssetJobForReadyCreativePackage without someone first widening
 // AssetJobWorkerType -- which is exactly the change that should only ever land alongside a
 // registered executor. The compiler enforces what a comment would only request.
-export const FUTURE_PRODUCTION_WORKER_TYPES = ["remotion"] as const;
+// Wave C2A EMPTIES this list, and the empty list is the point rather than a leftover.
+//
+// Wave A created it to name workers the route table was allowed to WANT but that nothing could
+// claim, and "remotion" was its only member. Wave C2A registers the Remotion executor, so
+// "remotion" moves into ASSET_JOB_WORKER_TYPES and there is nothing purely-future left.
+//
+// The concept is kept rather than deleted because the boundary it expresses is still live: the next
+// wave that adds a route to a not-yet-built worker puts it here, and the ProductionWorkerType union
+// below keeps working unchanged. FutureProductionWorkerType is now `never`, which is exactly the
+// truthful statement that no route currently points at an unbuildable worker.
+export const FUTURE_PRODUCTION_WORKER_TYPES = [] as const satisfies readonly string[];
 export type FutureProductionWorkerType = (typeof FUTURE_PRODUCTION_WORKER_TYPES)[number];
 
 export type ProductionWorkerType = AssetJobWorkerType | FutureProductionWorkerType;
@@ -111,7 +121,15 @@ const ROUTED_FORMATS: readonly CreativeFormat[] = ["photo", "reel"];
 // the same way the External Creative Workspace panel has always named "external" explicitly. Listing
 // it here is what lets that job be created; leaving it out of PRODUCTION_ROUTES is what keeps the
 // automated route for a generate_visual package unchanged.
-export const EXECUTABLE_ASSET_JOB_WORKER_TYPES: readonly AssetJobWorkerType[] = ["external", "mock", "static_renderer", "generative_image", "manual_illustration"];
+// `as const satisfies` rather than a plain annotation, added in Wave C2A.
+//
+// `satisfies` keeps the guarantee the annotation gave -- a member that is not a real
+// AssetJobWorkerType still fails to compile -- while `as const` preserves the LITERAL types, so
+// asset-jobs.ts can derive the app-creatable worker union from this list instead of restating it.
+// Before Wave C2A there was no need: AssetJobWorkerType and this list happened to have the same
+// members. Registering "remotion" as a claimable worker made them different sets for the first time,
+// and the job-creation API must follow this one, not the wider one.
+export const EXECUTABLE_ASSET_JOB_WORKER_TYPES = ["external", "mock", "static_renderer", "generative_image", "manual_illustration"] as const satisfies readonly AssetJobWorkerType[];
 
 // Both halves matter. "short_video" has no executor AND no storage path (the bucket still rejects
 // video/mp4), so an otherwise-runnable worker paired with it is still not executable today.

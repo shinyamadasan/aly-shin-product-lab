@@ -1,9 +1,3 @@
-import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
-
 // Production MVP Wave C1 -- video validation that reads the FILE, not the filename.
 //
 // asset-binary.ts already holds this line for images: it decodes PNG/JPEG/WebP headers itself and
@@ -241,53 +235,19 @@ export function validateProbedVideo(probed: ProbedVideo, expectation: VideoExpec
   return issues.length === 0 ? { ok: true } : { ok: false, issues };
 }
 
-// --- invocation ------------------------------------------------------------------------------------------
-
-// Remotion ships its own ffprobe (a 7.1-line build, in the platform compositor package) and exposes
-// its path through RenderInternals.getExecutablePath. That is used first, because it means the probe
-// needs nothing installed on the machine beyond what a render already required.
+// --- invocation lives ELSEWHERE, on purpose --------------------------------------------------------
 //
-// RenderInternals is, as the name says, internal. The fallback exists for exactly that reason: if a
-// future Remotion moves it, the probe drops to whatever ffprobe is on PATH rather than the whole
-// validation path disappearing. The resolved path is reported so a reviewer can always see which one
-// answered.
-export async function resolveFfprobeExecutable(): Promise<string> {
-  try {
-    const { RenderInternals } = await import("@remotion/renderer");
-    const resolved = RenderInternals.getExecutablePath({
-      type: "ffprobe",
-      indent: false,
-      logLevel: "error",
-      binariesDirectory: null,
-    });
-    if (typeof resolved === "string" && existsSync(resolved)) {
-      return resolved;
-    }
-  } catch {
-    // Fall through to PATH.
-  }
-  return "ffprobe";
-}
-
-export const FFPROBE_ARGS = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams"] as const;
-
-export async function probeVideoFile(filePath: string): Promise<ProbeResult & { executable?: string }> {
-  if (!existsSync(filePath)) {
-    return { ok: false, reason: "missing-file", message: `No file exists at ${filePath}.` };
-  }
-
-  const executable = await resolveFfprobeExecutable();
-
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync(executable, [...FFPROBE_ARGS, filePath], { maxBuffer: 8 * 1024 * 1024 }));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // ENOENT means no probe was reachable at all, which demands a different response from an
-    // otherwise-working probe rejecting a file: install or resolve a binary, rather than fix the video.
-    const reason: ProbeFailureReason = message.includes("ENOENT") ? "probe-unavailable" : "probe-failed";
-    return { ok: false, reason, message: `${executable}: ${message}`, executable };
-  }
-
-  return { ...parseFfprobeJson(stdout, statSync(filePath).size), executable };
-}
+// Wave C2A moved binary resolution and the process spawn out of this module and into
+// src/remotion/runtime/ffprobe-runtime.ts.
+//
+// What is left here is PURE: parseFfprobeJson, validateProbedVideo, parseFrameRate, isMp4Container
+// and the tolerance derivation. No node:child_process, no node:fs, no environment read, no
+// @remotion/renderer import -- so every rule above can be exercised from a fixture string with no
+// binary present, and a C2B runtime that obtains the same JSON some other way (a container sidecar,
+// a managed probe service, getVideoMetadata) reuses this file and every test written against it
+// without change.
+//
+// C1 kept the two halves together and reached RenderInternals.getExecutablePath from here. That put
+// an undocumented internal API and a node_modules layout assumption inside domain validation, which
+// is exactly the leak C2A was asked to close. See ffprobe-runtime.ts for why no stable public API
+// replaces it, and for the fallback that makes the internal accessor acceptable.

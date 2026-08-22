@@ -21,7 +21,8 @@
     "creative-ai:worker": "node scripts/creative-workers/background-worker.ts",
     "marketing-advisor": "node scripts/marketing-advisor/run.ts",
     "postgres:smoke": "node --test tests/smoke/postgres/*.test.ts",
-    "remotion:render": "node scripts/remotion/render-warm-open.ts"
+    "remotion:render": "node scripts/remotion/render-warm-open.ts",
+    "remotion:worker": "node scripts/asset-workers/remotion-worker.ts"
   },
   "dependencies": {
     "@fontsource/geist-sans": "^5.3.0",
