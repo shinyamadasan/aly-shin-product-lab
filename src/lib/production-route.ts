@@ -159,10 +159,16 @@ export function isProductionRouteExecutable(route: ProductionRoute): boolean {
 //      a stricter audioDirection check, say -- would silently re-route packages, which is exactly
 //      the kind of action-at-a-distance this codebase avoids elsewhere.
 //
-//   2. It would make the route table unable to express its own future rows. reel + template_only is
-//      rejected by today's validator on purpose (Wave D relaxes it, once Remotion exists). If
-//      routing re-validated, that row could never resolve to the Remotion route, and the table would
-//      have to be edited in Wave D -- defeating the point of freezing the desired mapping now.
+//   2. It would make the route table unable to express its own future rows -- and reel +
+//      template_only is the worked example. That combination was rejected by the stored contract for
+//      three waves after this table froze it; had routing re-validated, the row could never have
+//      resolved at all and the table would have had to be edited later, defeating the point of
+//      freezing the desired mapping up front. Wave C2B-1 relaxed the stored contract instead, so the
+//      row is now reachable from a valid package WITHOUT this module changing by a single character.
+//      That is the payoff of keeping routing structural: the table was right early and stayed still.
+//
+//      Reachable is not executable. The activation boundary below is what still gates it, and
+//      broader owner-facing authoring remains later work.
 //
 // Validation remains where it already is: at generation and at storage. A package that reaches this
 // function has been validated by whatever wrote it, and this function's job is the mapping alone.

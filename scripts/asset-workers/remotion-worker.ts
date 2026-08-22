@@ -35,25 +35,30 @@ function log(line: string): void {
 // The controlled proof fixture: a valid v2 reel Creative Package. Written here rather than read from
 // anywhere so the proof depends on no live data.
 //
-// IT DELIBERATELY CARRIES NO productionSource, and the reason is a real finding rather than a
-// shortcut.
+// IT DELIBERATELY CARRIES NO productionSource, and that is still a valid package shape.
 //
-// production-route.ts maps "reel:template_only" to the Remotion route, and that is the row C2B will
-// activate. But validateCreativePackageContentV2 REFUSES that combination today:
+// WHAT CHANGED SINCE THIS FIXTURE WAS WRITTEN. When C2A shipped, validateCreativePackageContentV2
+// refused "reel + template_only" outright ("a Reel is filmed"), so no Creative Package could be
+// authored that resolved to the Remotion route at all, and this fixture omitted productionSource to
+// sidestep that honestly. Wave C2B-1 closed exactly that mismatch. The current truth is:
 //
-//   "Creative Package v2 reel productionSource must be capture_new, not template_only: a Reel is
-//    filmed."
+//   - CreativePackageContentV2 now PERMITS a narrowly valid reel + template_only package: ordered
+//     shots with directions, no camera framing, a positive target duration, and spokenScript null.
+//   - production-route.ts resolves that combination to remotion + short_video, as it has since
+//     Wave A froze the row.
+//   - owner/API execution is STILL intentionally disabled. EXECUTABLE_ASSET_KINDS remains ["image"],
+//     remotion is absent from both the app-creatable and the production-API worker sets, and
+//     createAssetJobForReadyCreativePackage still refuses the pair. The worker knows how; the
+//     application still may not ask.
 //
-// production-route.ts already predicted this ("reel + template_only is rejected by today's validator
-// on purpose (Wave D relaxes it, once Remotion exists)") and deliberately froze the desired route
-// anyway. So no Creative Package that resolves to the Remotion route can currently be AUTHORED --
-// which is a C2B/Wave D blocker, recorded as one, and not something C2A may fix: relaxing that rule
-// is a content-brain change, and C2A is explicitly forbidden from redesigning CreativePackage.
+// WHY THE FIXTURE IS UNCHANGED ANYWAY. A Reel with no productionSource is the legitimate pre-H1-B
+// shape, it validates, and buildProductionSpec reads only schemaVersion + format when building a
+// short_video spec -- it never consults productionSource. So this proof exercises the identical
+// executor path either way, and leaving it alone keeps the C2A proof byte-for-byte the one that was
+// independently reproduced. Switching it to a real template_only package is a fair follow-up, not a
+// correction.
 //
-// Omitting productionSource sidesteps it honestly. Such a package is the legitimate pre-H1-B shape,
-// it validates, and buildProductionSpec reads only schemaVersion + format when building a
-// short_video spec -- it never consults productionSource. The proof therefore exercises the real
-// executor path without touching the validator, and without pretending the route gap is closed.
+// C2B-2 and C2B-3 still own operational hardening and live activation respectively.
 function proofReelPackageContent() {
   return {
     schemaVersion: "v2",
