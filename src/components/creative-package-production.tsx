@@ -8,7 +8,7 @@ import {
   createAssetJobForReadyCreativePackage,
   type AssetJobClient,
   type AssetJobRecord,
-  type AssetJobWorkerType,
+  type AppCreatableAssetJobWorkerType,
   type AssetSourceKind,
 } from "@/lib/asset-jobs";
 import {
@@ -259,11 +259,15 @@ export function CreativePackageProduction({
   // a queued generative_image job left behind by a failed Cloudflare attempt must never be handed to
   // the manual composer, because the runner would look up its executor by the job's own worker type
   // and find nothing registered.
-  function reusableJobId(workerType: AssetJobWorkerType): string | null {
+  // Wave C2A narrows these two from AssetJobWorkerType to the APP-CREATABLE subset. The UI's three
+  // callers already pass only generative_image / static_renderer / manual_illustration; the wider
+  // type merely failed to say so, and after "remotion" joined AssetJobWorkerType it would have let
+  // this component ask for a worker the application is not allowed to launch.
+  function reusableJobId(workerType: AppCreatableAssetJobWorkerType): string | null {
     return job && job.status === "queued" && job.workerType === workerType ? job.id : null;
   }
 
-  async function ensureJob(workerType: AssetJobWorkerType): Promise<string | null> {
+  async function ensureJob(workerType: AppCreatableAssetJobWorkerType): Promise<string | null> {
     const reusable = reusableJobId(workerType);
     if (reusable) {
       return reusable;

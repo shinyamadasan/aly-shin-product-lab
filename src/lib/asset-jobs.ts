@@ -57,12 +57,27 @@ export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
 // worker_type is a plain text column with no CHECK constraint (see supabase-add-asset-jobs.sql), so
 // this is a pure TypeScript union change and needs no migration -- the same additive precedent the
 // paragraph above describes.
-export const ASSET_JOB_WORKER_TYPES = ["mock", "external", "static_renderer", "generative_image", "manual_illustration"] as const;
+// Wave C2A registers "remotion", and this is exactly the change production-route.ts predicted:
+// "each wave extends the executable set in the same change that registers the executor it names."
+// The Remotion executor now exists (src/remotion/asset-job-executor.ts), so the worker type it runs
+// under becomes a value an asset_jobs row may carry and the runner may claim.
+//
+// REGISTERING THE WORKER IS NOT ACTIVATING THE CAPABILITY, and the distinction is the whole point of
+// Wave C2A. Three separate gates still stand between this line and an owner producing a video:
+//
+//   EXECUTABLE_ASSET_KINDS is still ["image"], so toExecutableAssetJobRoute refuses every
+//     short_video route and createAssetJobForReadyCreativePackage cannot queue one from a package.
+//   MACHINE_PRODUCTION_WORKER_TYPES still omits "remotion", so /api/production rejects it outright.
+//   ASSET_WORKER_EXECUTABLE_ASSET_KINDS (asset-worker-activation.ts) is read ONLY by the worker
+//     runtime and by nothing the application can reach.
+//
+// So: the worker knows HOW to execute a short_video. The application is still not allowed to ASK.
+export const ASSET_JOB_WORKER_TYPES = ["mock", "external", "static_renderer", "generative_image", "manual_illustration", "remotion"] as const;
 export type AssetJobWorkerType = (typeof ASSET_JOB_WORKER_TYPES)[number];
 
 // The workers whose executor reads ProductionSpecV1 rather than AssetGenerationSpecV1. Named once,
 // here, because buildAssetJobSpecForJob and the Wave B executors must never disagree about it.
-export const PRODUCTION_SPEC_WORKER_TYPES: readonly AssetJobWorkerType[] = ["static_renderer", "generative_image", "manual_illustration"];
+export const PRODUCTION_SPEC_WORKER_TYPES: readonly AssetJobWorkerType[] = ["static_renderer", "generative_image", "manual_illustration", "remotion"];
 
 // "short_video" joins "image" in Wave A as a structural asset kind: ProductionSpecV1 and the
 // candidate validator both have to be able to REPRESENT a video before any wave can produce one.
@@ -115,6 +130,15 @@ export type AssetSourceKind = (typeof ASSET_SOURCE_KINDS)[number];
 export const MACHINE_EXECUTOR_SOURCE_KINDS: Partial<Record<AssetJobWorkerType, AssetSourceKind>> = {
   generative_image: "ai_generated",
   static_renderer: "human_designed",
+  // Wave C2A. Remotion assembles this app's own authored composition deterministically from
+  // structured props and calls no model, so it belongs beside static_renderer and not beside
+  // generative_image. Labelling a deterministic render ai_generated would be the same provenance lie
+  // in the same direction this map already refuses for the static renderer.
+  //
+  // If a future composition ever embeds generative video, that is a DIFFERENT worker with a
+  // different executor, not this one behind a flag -- for exactly the reason manual_illustration is
+  // a separate worker rather than a mode of static_renderer.
+  remotion: "human_designed",
 };
 
 // One ordered file descriptor produced by a completed job. Candidate metadata is structurally
@@ -681,6 +705,16 @@ export type ExecutableAssetJobRoute = {
   assetKind: ExecutableAssetKind;
 };
 
+// The worker types the APPLICATION may name when creating a job, as opposed to the wider set the
+// WORKER RUNTIME may claim and execute. Wave C2A is the first wave where those two differ.
+//
+// Derived from EXECUTABLE_ASSET_JOB_WORKER_TYPES rather than restated, so it can never drift: the
+// day a wave registers a new app-creatable worker, this widens with it and not before. "remotion" is
+// absent from that list, so `{ workerType: "remotion" }` is a COMPILE error at the creation API --
+// which is the same answer toExecutableAssetJobRoute already gives at runtime, now enforced one
+// stage earlier.
+export type AppCreatableAssetJobWorkerType = (typeof EXECUTABLE_ASSET_JOB_WORKER_TYPES)[number];
+
 export function toExecutableAssetJobRoute(route: ProductionRoute): ExecutableAssetJobRoute | null {
   const workerType = EXECUTABLE_ASSET_JOB_WORKER_TYPES.find((candidate) => candidate === route.workerType);
   const assetKind = EXECUTABLE_ASSET_KINDS.find((candidate) => candidate === route.assetKind);
@@ -693,7 +727,7 @@ export function toExecutableAssetJobRoute(route: ProductionRoute): ExecutableAss
 export async function createAssetJobForReadyCreativePackage(
   client: AssetJobClient,
   creativePackageId: string,
-  options: { workerType?: AssetJobWorkerType; assetKind?: ExecutableAssetKind } = {},
+  options: { workerType?: AppCreatableAssetJobWorkerType; assetKind?: ExecutableAssetKind } = {},
 ): Promise<AssetJobCreateResult> {
   const packageResult = await readCreativePackage(client, creativePackageId);
   if (!packageResult.ok) {
@@ -999,7 +1033,13 @@ export async function runAssetJobWithExecutors(
   const inspected: InspectedAssetCandidate[] = [];
   const { validateAssetCandidateBytes } = await import("./asset-binary.ts");
   for (const candidate of candidateValidation.candidates) {
-    const byteValidation = await validateAssetCandidateBytes(candidate);
+    // Wave C2A -- the SPEC's asset kind decides which decoder and which byte ceiling apply.
+    //
+    // Before this, every candidate was measured as an image against a flat 10 MiB limit, whatever
+    // kind the job actually was. spec.assetKind is the right source: it is what the executor was
+    // told to produce, and validateGeneratedAssetCandidates has already checked the candidate's MIME
+    // family against that same kind one step above.
+    const byteValidation = await validateAssetCandidateBytes(candidate, spec.assetKind);
     if (!byteValidation.ok) {
       return failJobAndAttempt(byteValidation.message);
     }

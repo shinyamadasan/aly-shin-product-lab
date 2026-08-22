@@ -2,10 +2,11 @@ import { fromAssetFileRow, type AssetFileRecord, type AssetFileRow } from "./ass
 import {
   buildGeneratedAssetObjectPath,
   GENERATED_ASSETS_BUCKET,
-  inspectAssetBytes,
+  inspectMediaBytes,
   type InspectedAssetCandidate,
 } from "./asset-binary.ts";
-import type { AssetJobRecord, AssetJobResultEnvelope, AssetJobRow, AssetJobWorkerType, AssetSourceKind } from "./asset-jobs.ts";
+import { isAssetKind } from "./asset-jobs.ts";
+import type { AssetJobRecord, AssetJobResultEnvelope, AssetJobRow, AssetJobWorkerType, AssetKind, AssetSourceKind } from "./asset-jobs.ts";
 import type { AssetRecord, AssetRow } from "./assets.ts";
 
 type SupabaseErrorLike = {
@@ -129,14 +130,25 @@ function inspectedMatches(left: InspectedAssetCandidate, right: Omit<InspectedAs
   );
 }
 
-async function verifyExistingObject(client: AssetJobFileMaterializationClient, path: string, inspected: InspectedAssetCandidate): Promise<{ ok: true } | { ok: false; message: string }> {
+// Wave C2A -- assetKind decides which decoder re-reads the existing object.
+//
+// This is the idempotency check: an object already at this path must decode to the SAME bytes the
+// current candidate carries. Before video existed it could only ever be an image, so it called the
+// image decoder directly. Left that way it would have reported "not a decodable PNG, JPEG, or WebP"
+// for a perfectly correct MP4 re-run, turning a successful retry into a materialization failure.
+async function verifyExistingObject(
+  client: AssetJobFileMaterializationClient,
+  path: string,
+  inspected: InspectedAssetCandidate,
+  assetKind: AssetKind,
+): Promise<{ ok: true } | { ok: false; message: string }> {
   const downloaded = await client.storage.from(GENERATED_ASSETS_BUCKET).download(path);
   if (downloaded.error || !downloaded.data) {
     return { ok: false, message: downloaded.error?.message ?? "Existing generated asset object could not be downloaded for verification." };
   }
 
   const existingBytes = await bytesFromDownloadedObject(downloaded.data);
-  const existingInspection = await inspectAssetBytes(existingBytes);
+  const existingInspection = await inspectMediaBytes(existingBytes, assetKind);
   if (!existingInspection.ok) {
     return { ok: false, message: existingInspection.message };
   }
@@ -182,14 +194,22 @@ function buildResultEnvelope(job: AssetJobRecord, files: InspectedAssetCandidate
   return {
     schemaVersion: "v1",
     worker: workerType,
-    assetKind: "image",
+    // Wave C2A -- the JOB's own kind, not a literal.
+    //
+    // "image" was hardcoded here because it was the only kind anything could produce. A short_video
+    // job would have completed with an envelope claiming it made an image, and
+    // validateAssetJobResultEnvelope would have accepted it, because "image" is a valid AssetKind.
+    // That is the quietest possible way to persist a lie about what an asset is.
+    assetKind: isAssetKind(job.assetKind) ? job.assetKind : "image",
     output: {
       files: files.map((file) => ({
         position: file.candidate.position,
         mimeType: file.actualMimeType,
         width: file.actualWidth,
         height: file.actualHeight,
-        durationMs: null,
+        // Wave C2A -- the duration decoded from the container, not a literal null. Still null for
+        // every image, because inspectAssetBytes returns null there by construction.
+        durationMs: file.actualDurationMs,
         fileSizeBytes: file.byteSize,
         storageBucket: GENERATED_ASSETS_BUCKET,
         storagePath: buildGeneratedAssetObjectPath({ assetJobId: job.id, attemptNumber: job.attemptCount, sha256: file.sha256, extension: file.extension }),
@@ -238,7 +258,7 @@ export async function materializeAssetJobFiles(
     const path = buildGeneratedAssetObjectPath({ assetJobId: args.job.id, attemptNumber: args.job.attemptCount, sha256: image.sha256, extension: image.extension });
     const upload = await client.storage.from(GENERATED_ASSETS_BUCKET).upload(path, image.bytes, { contentType: image.actualMimeType, upsert: false });
     if (upload.error && isAlreadyExistsStorageError(upload.error)) {
-      const verification = await verifyExistingObject(client, path, image);
+      const verification = await verifyExistingObject(client, path, image, isAssetKind(args.job.assetKind) ? args.job.assetKind : "image");
       if (!verification.ok) {
         return { ok: false, reason: "existing-object-verification-failed", message: verification.message, uploadedThisRun, reusedExistingPaths };
       }

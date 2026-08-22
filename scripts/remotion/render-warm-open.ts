@@ -7,7 +7,10 @@ import {
   clampWarmOpenDurationSeconds,
   warmOpenMetadata,
 } from "../../src/remotion/composition-catalog.ts";
-import { probeVideoFile, validateProbedVideo } from "../../src/remotion/probe.ts";
+import { validateProbedVideo } from "../../src/remotion/probe.ts";
+// Wave C2A -- the probe INVOCATION now comes from the runtime adapter, while the expectation check
+// stays in the pure module. Same behaviour, one honest split.
+import { probeVideoFile } from "../../src/remotion/runtime/ffprobe-runtime.ts";
 import { bundleRemotionProductionModule, renderRemotionComposition } from "../../src/remotion/render.ts";
 import { maxGeneratedAssetFileSizeBytes } from "../../src/lib/asset-generation-validation.ts";
 
@@ -99,7 +102,7 @@ export async function main(argv: string[]): Promise<number> {
     console.log(`Size        : ${formatBytes(result.fileSizeBytes)}`);
 
     const probe = await probeVideoFile(result.outputPath);
-    console.log(`ffprobe     : ${probe.executable ?? "unresolved"}`);
+    console.log(`ffprobe     : ${probe.executable} (${probe.source})`);
     if (!probe.ok) {
       console.error(`FAIL probe  : ${probe.reason} -- ${probe.message}`);
       failures += 1;
