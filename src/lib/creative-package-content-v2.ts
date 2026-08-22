@@ -360,11 +360,53 @@ function validateFormatFields(
   }
 
   if (value.format === "reel") {
-    // H1-B §10 -- the Content MVP has no video generation and no template-video renderer, so a Reel
-    // is a filmed Reel. Storing one that claims otherwise would describe an asset nothing can make.
-    if (productionSource !== undefined && productionSource !== "capture_new") {
-      return { ok: false, message: `Creative Package v2 reel productionSource must be capture_new, not ${productionSource}: a Reel is filmed.` };
+    // H1-B §10 said a Reel is a filmed Reel, and that was true when it was written: the Content MVP
+    // had no video generation and no template-video renderer, so storing a Reel that claimed
+    // otherwise would have described an asset nothing could make.
+    //
+    // Wave C2B-1 -- a deterministic template-video renderer now exists in the Production Engine, and
+    // it has been proven end to end against a Reel's own shot list. So the premise of the categorical
+    // rule is no longer true for ONE production source, and this is the smallest change that says so.
+    //
+    // (WHICH renderer, and what it emits, is deliberately not named here. This module is the CONTENT
+    // contract: it describes creative intent, and the execution mechanism that honours that intent
+    // lives in the production route and below. A static test enforces exactly that separation, and it
+    // is the reason this comment describes a capability rather than a technology.)
+    //
+    // "template_only" joins "capture_new". Nothing else does:
+    //
+    //   capture_new     a person films it. Unchanged, and still the only source the GENERATOR ever
+    //                   chooses -- see productionSourcesForFormat in creative-generation/contracts.ts,
+    //                   which C2B-1 deliberately does not touch. A validator that MAY accept a shape
+    //                   is not a generator that WILL emit it.
+    //   template_only   deterministic assembly of the package's own shot list. This is the row the
+    //                   production route froze in Wave A and could not reach until now.
+    //   generate_visual STILL REJECTED, and the distinction is precise rather than a leftover.
+    //                   template_only is DETERMINISTIC ASSEMBLY of material the package already
+    //                   carries; generate_visual means a GENERATED VISUAL SOURCE, and no such source
+    //                   exists for a Reel -- the generative path this system does have produces
+    //                   stills, not moving footage. A Reel claiming one would be exactly the
+    //                   promise-nothing-can-keep this rule exists to prevent. Widening it here would
+    //                   broaden a combination this slice has no evidence for.
+    //
+    // WHAT MAKES A template_only REEL NARROW is almost entirely rules this format ALREADY has, which
+    // is why only one new check follows rather than a new sub-schema:
+    //
+    //   - at least one shot, each with a non-empty direction  (checked below, for every Reel)
+    //   - framing FORBIDDEN on those shots                    (validateOptionalFraming already
+    //     refuses framing whenever productionSource is not capture_new -- "there is no camera to
+    //     frame" -- so a template_only Reel is already structurally camera-less)
+    //   - a positive targetDurationSeconds                    (checked below, for every Reel)
+    //
+    // Those three together already mean a template_only Reel is ordered, timed, camera-less visual
+    // material. The only thing missing is narration, handled where spokenScript is validated below.
+    if (productionSource !== undefined && productionSource !== "capture_new" && productionSource !== "template_only") {
+      return {
+        ok: false,
+        message: `Creative Package v2 reel productionSource must be capture_new or template_only, not ${productionSource}: no generated visual source exists for a Reel.`,
+      };
     }
+
     if (!Array.isArray(value.shots) || value.shots.length === 0) {
       return { ok: false, message: "Creative Package v2 reel requires at least one shot." };
     }
@@ -385,6 +427,37 @@ function validateFormatFields(
     }
     if (!isNullableString(value.spokenScript)) {
       return { ok: false, message: "Creative Package v2 reel spokenScript must be a string or null." };
+    }
+
+    // THE ONE NEW RULE, and it is a narrowing of an already-nullable field rather than a new field.
+    //
+    // ProductionSpecV1 transports a Reel's shots and its targetDurationSeconds. It does NOT transport
+    // spokenScript -- see buildProductionSpec. For a capture_new Reel that costs nothing, because the
+    // executor is a person: they read the script while filming it, and the script is honoured by the
+    // human the "external" worker represents.
+    //
+    // A template_only Reel has exactly one executor -- a deterministic template assembly -- and it
+    // cannot speak. There is no text-to-speech anywhere in this repository, Wave C added none by
+    // design, and the composition it assembles authors no audio at all. So a template_only Reel
+    // carrying narration would be a package whose only reachable route structurally cannot produce
+    // what it describes -- the same class of untruth the generate_visual rejection above prevents,
+    // arriving through a different field.
+    //
+    // Requiring null rather than forbidding the key: spokenScript is a required key with a nullable
+    // value (`string | null`), and the generation prompt already tells the model it "should usually
+    // be null: a visual-only reel with on-screen text is the normal case for a bakery". Null is
+    // therefore the shape this contract already expects, not a new one being invented.
+    //
+    // audioDirection is NOT given the same treatment, deliberately. It is equally untransported by
+    // ProductionSpecV1, but it is a REQUIRED non-empty field for every Reel -- forbidding it would
+    // make a template_only Reel impossible under the existing contract, or force a required field to
+    // become conditionally optional, and either is a larger change than this bridge should make.
+    // Recorded as a finding for the wave that gives the composition an audio track.
+    if (productionSource === "template_only" && value.spokenScript !== null) {
+      return {
+        ok: false,
+        message: "Creative Package v2 reel spokenScript must be null when productionSource is template_only: a deterministic template assembly has no voice.",
+      };
     }
     if (!isNonEmptyString(value.audioDirection)) {
       return { ok: false, message: "Creative Package v2 reel requires a non-empty audioDirection." };

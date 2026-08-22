@@ -120,10 +120,18 @@ function v2GeneratedPhotoRow(): CreativePackageRow {
   } as CreativePackageRow;
 }
 
-// A Reel package. capture_new because that is the ONLY productionSource the stored contract permits
-// for a Reel today -- Wave D relaxes that, not Wave A. The short_video spec is built from it here to
-// prove the 1:1 shot mapping structurally, which is exactly what the brief permits: synthetic
-// coverage of the spec shape without the live generator being allowed to produce a rendered Reel.
+// A Reel package. capture_new because that is what the GENERATOR still chooses for every Reel
+// (productionSourcesForFormat), and this fixture stands in for generator output.
+//
+// The stored contract is wider than that as of Wave C2B-1: it now also permits a narrowly valid
+// reel + template_only package. This fixture deliberately does not use it -- buildProductionSpec
+// reads only schemaVersion and format when building a short_video spec and never consults
+// productionSource, so the 1:1 shot mapping proven below is identical either way, and the
+// template_only shape has its own dedicated coverage in tests/production-wave-c2b1-template-reel.test.ts.
+//
+// The short_video spec is built here to prove that mapping structurally, which is exactly what the
+// brief permits: synthetic coverage of the spec shape without the live generator being allowed to
+// produce a rendered Reel.
 function v2ReelRow(): CreativePackageRow {
   return {
     id: "package-4",
