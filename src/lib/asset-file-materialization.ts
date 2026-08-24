@@ -18,6 +18,10 @@ type SupabaseErrorLike = {
 type StorageUploadResult = PromiseLike<{ data: { path?: string } | null; error: SupabaseErrorLike | null }>;
 type StorageDownloadResult = PromiseLike<{ data: Blob | ArrayBuffer | Uint8Array | null; error: SupabaseErrorLike | null }>;
 type StorageRemoveResult = PromiseLike<{ data: unknown[] | null; error: SupabaseErrorLike | null }>;
+// Wave C2B-2. TYPE-ONLY widening: Supabase Storage has always had list(); the client interface here
+// simply never declared it, because nothing until now needed to ENUMERATE objects rather than address
+// one by its exact path. Orphan reconciliation does, and it needs no schema change to do it.
+type StorageListResult = PromiseLike<{ data: Array<{ name: string }> | null; error: SupabaseErrorLike | null }>;
 type QueryResult<T> = PromiseLike<{ data: T | null; error: SupabaseErrorLike | null }>;
 
 export type AssetJobFileMaterializationClient = {
@@ -26,6 +30,11 @@ export type AssetJobFileMaterializationClient = {
       upload(path: string, body: Uint8Array, options: { contentType: string; upsert: false }): StorageUploadResult;
       download(path: string): StorageDownloadResult;
       remove(paths: string[]): StorageRemoveResult;
+      // OPTIONAL, and the optionality is meaningful rather than a convenience for fakes: a client
+      // that cannot enumerate cannot be reconciled, and reconciliation reports that as a named
+      // outcome ("listing-unavailable") instead of silently doing nothing. The real Supabase client
+      // always has it.
+      list?(prefix: string, options?: { limit?: number }): StorageListResult;
     };
   };
   rpc(

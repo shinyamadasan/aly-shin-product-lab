@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { AssetJobExecutor, AssetJobRecord } from "../lib/asset-jobs.ts";
@@ -123,6 +123,18 @@ export function workerRenderDirectory(scratchRoot: string, assetJobId: string, a
 export async function cleanupRenderArtifacts(directory: string): Promise<{ ok: true } | { ok: false; message: string }> {
   try {
     await rm(directory, { recursive: true, force: true });
+
+    // Wave C2B-2 -- also drop the now-empty asset-job-<id>/ parent, using rmdir WITHOUT recursive.
+    //
+    // The non-recursive form is the entire safety argument rather than a stylistic choice: rmdir
+    // fails with ENOTEMPTY if anything is still inside. So if another attempt of the same job still
+    // has artifacts -- or a second worker process is mid-render under attempt-N+1 -- the call simply
+    // fails and the directory stays. There is no window in which this can remove a sibling attempt's
+    // work, because it can only ever succeed on a directory that is already empty.
+    //
+    // Swallowed on purpose. A leftover empty directory is cosmetic; turning it into a job failure
+    // would trade a tidy scratch root for a false negative on a completed render.
+    await rmdir(path.dirname(directory)).catch(() => undefined);
     return { ok: true };
   } catch (err) {
     // Never fatal. Cleanup failing must not turn a completed job into a failed one -- the asset is

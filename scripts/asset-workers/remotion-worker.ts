@@ -2,15 +2,24 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { createClient } from "@supabase/supabase-js";
 
-import type { AssetJobExecutionClient } from "../../src/lib/asset-jobs.ts";
-import { DEFAULT_WORKER_POLL_INTERVAL_MS, runRemotionWorkerLoop, type RemotionWorkerJobOutcome } from "../../src/remotion/worker.ts";
+import { listRunningAssetJobs, type AssetJobExecutionClient } from "../../src/lib/asset-jobs.ts";
+import { bundleRemotionProductionModule } from "../../src/remotion/render.ts";
+import {
+  DEFAULT_STUCK_JOB_THRESHOLD_MS,
+  DEFAULT_WORKER_POLL_INTERVAL_MS,
+  recoverStuckRemotionJobs,
+  runRemotionWorkerLoop,
+  type RemotionWorkerJobOutcome,
+} from "../../src/remotion/worker.ts";
 import { loadEnvFile, readSupabaseCredentials } from "../daily-advisor/env.ts";
 import { createInMemoryAssetJobStore, proofJobId } from "./in-memory-asset-job-store.ts";
 
 // Production MVP Wave C2A -- the long-running Remotion worker process.
 //
-//   npm run remotion:worker                 poll live Supabase for queued remotion jobs
+//   npm run remotion:worker                            poll live Supabase for queued remotion jobs
 //   npm run remotion:worker -- --store memory --once   the controlled local proof (no live anything)
+//   npm run remotion:worker -- --recover-stuck         one-shot stale-running recovery, then exit
+//   npm run remotion:worker -- --recover-stuck --reconcile-storage --stale-minutes 45
 //
 // WHAT IT IS. One process that starts, polls at a bounded interval, claims one executable job at a
 // time, runs it to a terminal state, and keeps going until it is asked to stop. No manual action
@@ -91,14 +100,33 @@ function proofReelPackageContent() {
   };
 }
 
+// Injects one transient bundle failure, then builds for real. See the --fail-first-bundle note at the
+// call site for why this exists.
+function failFirstThenRealBundle(logLine: (line: string) => void): () => Promise<string> {
+  let attempts = 0;
+  return async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      logLine("bundle       INJECTED transient failure (--fail-first-bundle)");
+      throw new Error("injected transient bundle failure");
+    }
+    logLine(`bundle       real build, attempt ${attempts}`);
+    return bundleRemotionProductionModule();
+  };
+}
+
 type WorkerStore = { client: AssetJobExecutionClient; describe: string; seededJobId?: string };
 
 function buildMemoryStore(): WorkerStore {
   const store = createInMemoryAssetJobStore();
   const creativePackageId = store.seedCreativePackage(proofReelPackageContent());
-  const jobId = proofJobId("wave-c2a-warm-open");
-  store.seedJob({ id: jobId, creative_package_id: creativePackageId, worker_type: "remotion", asset_kind: "short_video" });
-  return { client: store.client, describe: "in-memory proof store (no live Supabase, no live storage)", seededJobId: jobId };
+  // TWO jobs, so a proof run shows both halves of the bundle lifecycle: the first job survives a
+  // transient build failure and then renders, and the second reuses the bundle that first job built.
+  const first = proofJobId("wave-c2a-warm-open");
+  const second = proofJobId("wave-c2b2-second-job");
+  store.seedJob({ id: first, creative_package_id: creativePackageId, worker_type: "remotion", asset_kind: "short_video" });
+  store.seedJob({ id: second, creative_package_id: creativePackageId, worker_type: "remotion", asset_kind: "short_video" });
+  return { client: store.client, describe: "in-memory proof store (no live Supabase, no live storage)", seededJobId: `${first}, ${second}` };
 }
 
 function buildSupabaseStore(): WorkerStore | { error: string } {
@@ -122,6 +150,10 @@ export async function main(argv: string[]): Promise<number> {
       "brand-mark": { type: "string" },
       once: { type: "boolean" },
       "keep-artifacts": { type: "boolean" },
+      "recover-stuck": { type: "boolean" },
+      "stale-minutes": { type: "string" },
+      "reconcile-storage": { type: "boolean" },
+      "fail-first-bundle": { type: "boolean" },
     },
     allowPositionals: false,
   });
@@ -151,6 +183,64 @@ export async function main(argv: string[]): Promise<number> {
   log(`node         ${process.version} on ${process.platform}/${process.arch}`);
   if (built.seededJobId) {
     log(`seeded job   ${built.seededJobId}`);
+  }
+
+  // --- stale-running recovery, as an EXPLICIT one-shot mode -------------------------------------
+  //
+  // Wave C2B-2 wires the recovery helper C2A shipped but never called.
+  //
+  // EXPLICIT ON PURPOSE. This does not run at startup and is not part of the polling loop. A worker
+  // that terminalized every old running job when it booted would, on the day two workers are ever run
+  // at once, kill the other one's in-flight render -- and it would do it silently, at the moment an
+  // operator was least expecting side effects. The conservative model is that a human asks.
+  //
+  // It also returns BEFORE the poll loop starts, so recovery can be run against a machine that is not
+  // currently rendering anything.
+  if (values["recover-stuck"] === true) {
+    const staleMinutes = values["stale-minutes"] ? Number(values["stale-minutes"]) : DEFAULT_STUCK_JOB_THRESHOLD_MS / 60_000;
+    if (!Number.isFinite(staleMinutes) || staleMinutes <= 0) {
+      console.error(`--stale-minutes must be a positive number of minutes. Received: ${values["stale-minutes"]}`);
+      return 1;
+    }
+    const thresholdMs = staleMinutes * 60_000;
+    const reconcileStorage = values["reconcile-storage"] === true;
+
+    log(`mode         stale-running recovery (one-shot, no poll loop)`);
+    log(`threshold    ${staleMinutes} minute(s)`);
+    log(`reconcile    ${reconcileStorage ? "yes -- orphaned storage objects for recovered jobs will be removed" : "no (pass --reconcile-storage to enable)"}`);
+
+    // Only remotion jobs are read, and recoverStuckRemotionJobs re-checks the worker type anyway --
+    // the query narrows, the helper enforces.
+    const running = await listRunningAssetJobs(built.client, 100, "remotion");
+    if (!running.ok) {
+      console.error(`Could not list running Asset Jobs: ${running.message}`);
+      return 1;
+    }
+    log(`running      ${running.jobs.length} remotion job(s) currently in running state`);
+
+    const recoveries = await recoverStuckRemotionJobs(built.client, running.jobs, { thresholdMs, reconcileStorage });
+    if (recoveries.length === 0) {
+      log("result       no stale jobs past the threshold -- nothing was changed.");
+      return 0;
+    }
+
+    let unrecovered = 0;
+    for (const recovery of recoveries) {
+      // Job id, attempt number and outcome. No credential, URL or key is reachable from here.
+      log(`  job=${recovery.jobId} attempt=${recovery.attemptNumber} startedAt=${recovery.startedAt} recovered=${recovery.recovered}`);
+      log(`     ${recovery.message}`);
+      if (recovery.reconciliation) {
+        const r = recovery.reconciliation;
+        log(`     storage: ${r.attempted ? `found=${r.found.length} removed=${r.removed.length} failed=${r.failed.length}` : `not attempted (${r.reason})`} -- ${r.message}`);
+      }
+      if (!recovery.recovered) {
+        unrecovered += 1;
+      }
+    }
+    log(`result       ${recoveries.length - unrecovered} recovered, ${unrecovered} left for a later run.`);
+
+    // Non-zero when something was deliberately left behind, so a scheduled invocation surfaces it.
+    return unrecovered === 0 ? 0 : 1;
   }
 
   // --- graceful shutdown ----------------------------------------------------------------------------
@@ -188,7 +278,7 @@ export async function main(argv: string[]): Promise<number> {
 
   const summary: RemotionWorkerJobOutcome[] = [];
 
-  const { processed, polls } = await runRemotionWorkerLoop(
+  const { processed, polls, workerFailures } = await runRemotionWorkerLoop(
     built.client,
     {
       scratchRoot,
@@ -196,6 +286,13 @@ export async function main(argv: string[]): Promise<number> {
       pollIntervalMs,
       keepRenderArtifacts: values["keep-artifacts"] === true,
       log,
+      // --fail-first-bundle is a PROOF AFFORDANCE, in the same spirit as --store memory: it makes the
+      // C2B-2 daemon-resilience claim reproducible by anyone, instead of resting on a run nobody else
+      // can repeat. It injects exactly ONE transient build failure and then defers to the real
+      // bundler, so the second attempt is a genuine webpack build and a genuine render.
+      //
+      // Undefined when the flag is absent, which leaves RemotionBundleHost on its real default.
+      bundleBuild: values["fail-first-bundle"] === true ? failFirstThenRealBundle(log) : undefined,
     },
     {
       shouldStop: () => stopping,
@@ -212,7 +309,10 @@ export async function main(argv: string[]): Promise<number> {
   );
   summary.push(...processed);
 
-  log(`stopped after ${polls} poll(s), ${summary.length} job(s) processed.`);
+  log(`stopped after ${polls} poll(s), ${summary.length} job(s) processed, ${workerFailures.length} worker-level failure(s) survived.`);
+  for (const failure of workerFailures) {
+    log(`  SURVIVED job=${failure.jobId} ${failure.message}`);
+  }
 
   let failures = 0;
   for (const outcome of summary) {
