@@ -9,6 +9,7 @@ import {
   type AssetJobRunnerResult,
 } from "../lib/asset-jobs.ts";
 import { isAssetWorkerExecutable } from "../lib/asset-worker-activation.ts";
+import { buildGeneratedAssetAttemptPrefix, GENERATED_ASSETS_BUCKET } from "../lib/asset-binary.ts";
 import { buildRemotionAssetExecutor, cleanupRenderArtifacts, workerRenderDirectory } from "./asset-job-executor.ts";
 import { bundleRemotionProductionModule } from "./render.ts";
 
@@ -56,6 +57,10 @@ export type RemotionWorkerEvent =
   | { kind: "warning"; jobId: string; warning: string }
   | { kind: "completed"; jobId: string; assetId: string; attemptNumber: number }
   | { kind: "failed"; jobId: string; reason: string; message: string }
+  // Wave C2B-2 -- a WORKER-level failure, distinct from a JOB-level one. "failed" means a job reached
+  // a truthful terminal state; this means the worker could not get far enough to give it one. Keeping
+  // them apart is what stops an infrastructure outage reading like a content problem in the log.
+  | { kind: "worker-failure"; jobId: string; message: string }
   | { kind: "cleaned"; jobId: string; directory: string; ok: boolean };
 
 export type RemotionWorkerJobOutcome = {
@@ -98,15 +103,41 @@ export class RemotionBundleHost {
     if (this.#serveUrl) {
       return this.#serveUrl;
     }
+
     // The in-flight promise is cached, not just the result: two jobs arriving together must produce
     // one bundle, not two. The loop is serial today, so this is defensive rather than load-bearing --
     // and it is the kind of defence that costs one line and saves a duplicated 10 MB build the day
     // the loop stops being serial.
-    this.#building ??= this.#build().then((url) => {
-      this.#serveUrl = url;
-      this.#building = null;
-      return url;
-    });
+    //
+    // Wave C2B-2 -- A REJECTED BUILD NO LONGER POISONS THE HOST.
+    //
+    // The previous form was `this.#building ??= this.#build().then(...)`. When the build REJECTED,
+    // #building kept holding that rejected promise: `??=` never reassigns a non-null field, so every
+    // later caller -- for the rest of the process's life -- awaited the same settled rejection. One
+    // transient webpack failure (a locked file, a momentary out-of-memory, an antivirus scanner
+    // holding a handle) permanently bricked a daemon that was otherwise perfectly healthy.
+    //
+    // The fix is to clear the in-flight slot on BOTH settlement paths. On success the resolved URL is
+    // cached and reused forever; on failure nothing is cached at all, so the NEXT caller starts a
+    // genuinely fresh build. Concurrent first callers still share the single in-flight promise,
+    // because the slot is only cleared once that promise has settled -- which is the property the
+    // dedup depends on and the one a naive `catch` that reset eagerly would have broken.
+    if (!this.#building) {
+      const building = this.#build().then(
+        (url) => {
+          this.#serveUrl = url;
+          this.#building = null;
+          return url;
+        },
+        (err: unknown) => {
+          // Cleared, and #serveUrl is deliberately NOT written. A failed build must never leave a
+          // stale or partial serveUrl behind for a later job to render against.
+          this.#building = null;
+          throw err;
+        },
+      );
+      this.#building = building;
+    }
     return this.#building;
   }
 
@@ -144,7 +175,18 @@ export async function executeRemotionAssetJob(
     options.log?.(formatWorkerEvent(event));
   };
 
+  // Bundle FIRST, and the "claimed" line is emitted only once it is in hand.
+  //
+  // Wave C2B-2 moved this log out of the polling loop, where it fired BEFORE the bundle resolved: a
+  // bundle failure then printed "claimed job=X" for a job that was never claimed and never would be.
+  // In a wave about truthful operational behaviour, a log line that lies during an incident is
+  // exactly the wrong thing to leave in place.
+  //
+  // It still precedes the ATOMIC claim, which happens inside runAssetJobWithExecutors below -- so a
+  // lost claim race is reported afterwards as `failed reason=not-queued`, and that remains the honest
+  // sequence rather than something this log can pre-empt.
   const serveUrl = await bundleHost.serveUrl();
+  record({ kind: "claimed", jobId: job.id, workerType: job.workerType, assetKind: job.assetKind });
 
   const executor = buildRemotionAssetExecutor({
     scratchRoot: options.scratchRoot,
@@ -216,11 +258,14 @@ export async function runRemotionWorkerLoop(
   client: AssetJobExecutionClient,
   options: RemotionWorkerOptions,
   control: { shouldStop: () => boolean; onIdle?: () => void } = { shouldStop: () => false },
-): Promise<{ processed: RemotionWorkerJobOutcome[]; polls: number }> {
+): Promise<{ processed: RemotionWorkerJobOutcome[]; polls: number; workerFailures: Array<{ jobId: string; message: string }> }> {
   const bundleHost = new RemotionBundleHost(options.bundleBuild);
   const sleep = options.sleep ?? defaultSleep;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_WORKER_POLL_INTERVAL_MS;
   const processed: RemotionWorkerJobOutcome[] = [];
+  // Surfaced in the return value, not merely logged: a caller (the CLI, a test) must be able to see
+  // that cycles failed at the worker level even though no job outcome was produced.
+  const workerFailures: Array<{ jobId: string; message: string }> = [];
   let polls = 0;
 
   try {
@@ -261,8 +306,50 @@ export async function runRemotionWorkerLoop(
         continue;
       }
 
-      options.log?.(formatWorkerEvent({ kind: "claimed", jobId: job.id, workerType: job.workerType, assetKind: job.assetKind }));
-      const outcome = await executeRemotionAssetJob(client, job, bundleHost, options);
+      // --- the per-JOB error boundary ------------------------------------------------------------
+      //
+      // Wave C2B-2. Deliberately wrapped around ONE job's work and nothing else -- not the whole
+      // loop, not the whole process. A `try { forever } catch { ignore }` would keep the daemon alive
+      // by making every bug invisible, which is worse than crashing; this catches the work for a
+      // single cycle, reports it as a named worker-level failure, backs off, and lets the next poll
+      // decide for itself.
+      //
+      // WHAT THIS ACTUALLY PROTECTS AGAINST, measured rather than imagined: bundleHost.serveUrl()
+      // runs inside executeRemotionAssetJob and can reject (webpack failure, a locked file, an
+      // out-of-memory). Before this boundary that rejection propagated straight out of
+      // runRemotionWorkerLoop and terminated the process -- a transient infrastructure failure
+      // killing a worker that was otherwise healthy.
+      //
+      // NO JOB IS FALSELY COMPLETED HERE. The catch records a worker-level failure and pushes no
+      // outcome, because there is no truthful job outcome to push: see the claim-ordering note below
+      // for why the job's own state is already correct without this code touching it.
+      let outcome: RemotionWorkerJobOutcome;
+      try {
+        outcome = await executeRemotionAssetJob(client, job, bundleHost, options);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        options.log?.(formatWorkerEvent({ kind: "worker-failure", jobId: job.id, message }));
+        workerFailures.push({ jobId: job.id, message });
+
+        // CLAIM ORDERING, and it is why this branch does not touch the job at all.
+        //
+        // executeRemotionAssetJob resolves the bundle BEFORE calling runAssetJobWithExecutors, and
+        // the claim happens inside that runner. So anything that throws out of it -- which in
+        // practice means the bundle -- threw BEFORE the atomic claim, and the job is therefore still
+        // exactly what it was: QUEUED. Nothing was claimed, so nothing needs terminalizing, and
+        // marking it failed here would be inventing a failure the job never had.
+        //
+        // Once the claim succeeds, runAssetJobWithExecutors owns every path to a terminal state and
+        // returns an outcome rather than throwing. That is the property this branch relies on, and
+        // tests/remotion-worker-hardening.test.ts pins it so a future change to that ordering cannot
+        // silently make this comment wrong.
+        if (control.shouldStop()) {
+          break;
+        }
+        await sleep(pollIntervalMs);
+        continue;
+      }
+
       processed.push(outcome);
 
       // BACKOFF AFTER AN UNSUCCESSFUL OUTCOME.
@@ -291,7 +378,7 @@ export async function runRemotionWorkerLoop(
     await bundleHost.dispose();
   }
 
-  return { processed, polls };
+  return { processed, polls, workerFailures };
 }
 
 // --- crash recovery ------------------------------------------------------------------------------------
@@ -318,11 +405,17 @@ export async function runRemotionWorkerLoop(
 // produced nothing that was materialized (materialization is the last step before completion), so
 // there is no orphaned Asset -- only, possibly, orphaned storage objects if the crash landed between
 // upload and completion, which C2B must reconcile before live uploads begin.
+export type OrphanReconciliation =
+  | { attempted: false; reason: "listing-unavailable"; message: string }
+  | { attempted: true; prefix: string; found: string[]; removed: string[]; failed: string[]; message: string };
+
 export type StuckJobRecovery = {
   jobId: string;
+  attemptNumber: number;
   startedAt: string;
   recovered: boolean;
   message: string;
+  reconciliation?: OrphanReconciliation;
 };
 
 export const DEFAULT_STUCK_JOB_THRESHOLD_MS = 30 * 60 * 1000;
@@ -337,10 +430,92 @@ export function isStuckRunningJob(job: AssetJobRecord, now: number, thresholdMs:
   return Number.isFinite(startedAt) && now - startedAt > thresholdMs;
 }
 
+// --- orphan storage reconciliation -------------------------------------------------------------------
+//
+// THE SAFETY PROOF, and it comes from a transaction boundary rather than from a convention.
+//
+// materializeAssetJobFiles uploads every object FIRST, then makes exactly ONE database call:
+// complete_asset_job_with_files. That function is plpgsql, so it is one transaction, and inside it it
+// inserts the Asset, inserts the Asset Files, AND flips the job to 'completed' -- all or nothing.
+//
+// Therefore a job whose status is still 'running' has NO Asset row and NO Asset File rows. There is
+// no window in which those exist while the job is not terminal, because one commit produces both.
+// And every object an attempt uploads lives under a prefix derivable from job identity alone
+// (buildGeneratedAssetAttemptPrefix). Put together:
+//
+//   job.status === 'running'  =>  nothing under asset-jobs/<jobId>/attempt-<n>/ is a durable artifact
+//
+// That is what makes reconciliation possible with NO schema change and no new tracking table: the
+// durable fact needed to identify an orphan already exists, in the job row plus the path convention.
+//
+// WHAT IS DELIBERATELY NOT DONE. Nothing here matches on age alone, on a path merely resembling a job
+// id, or on a job being failed. It reconciles exactly one prefix, belonging to exactly one job that is
+// provably still running and provably stale, and it removes only the object names the storage layer
+// itself returned under that prefix.
+const ORPHAN_LISTING_LIMIT = 100;
+
+export async function reconcileOrphanObjectsForJob(client: AssetJobExecutionClient, job: AssetJobRecord): Promise<OrphanReconciliation> {
+  const bucket = client.storage.from(GENERATED_ASSETS_BUCKET);
+  if (typeof bucket.list !== "function") {
+    // A NAMED outcome, never a silent no-op. A client that cannot enumerate cannot be reconciled, and
+    // an operator must not read an empty report as "nothing to clean".
+    return { attempted: false, reason: "listing-unavailable", message: "This storage client cannot list objects, so orphans could not be enumerated." };
+  }
+
+  const prefix = buildGeneratedAssetAttemptPrefix({ assetJobId: job.id, attemptNumber: job.attemptCount });
+  const listed = await bucket.list(prefix, { limit: ORPHAN_LISTING_LIMIT });
+  if (listed.error) {
+    return { attempted: true, prefix, found: [], removed: [], failed: [], message: `Could not list ${prefix}: ${listed.error.message}` };
+  }
+
+  const found = (listed.data ?? [])
+    .map((entry) => entry.name)
+    // The listing returns names RELATIVE to the prefix. Rebuilding the full path here, rather than
+    // trusting anything path-shaped that came back, is what stops a surprising or hostile name from
+    // addressing an object outside this prefix.
+    .filter((name) => typeof name === "string" && name.length > 0 && !name.includes("/") && !name.includes(".."))
+    .map((name) => `${prefix}/${name}`);
+
+  if (found.length === 0) {
+    return { attempted: true, prefix, found: [], removed: [], failed: [], message: `No orphaned objects under ${prefix}.` };
+  }
+
+  const removed: string[] = [];
+  const failed: string[] = [];
+  for (const path of found) {
+    const result = await bucket.remove([path]);
+    if (result.error) {
+      failed.push(path);
+    } else {
+      removed.push(path);
+    }
+  }
+
+  return {
+    attempted: true,
+    prefix,
+    found,
+    removed,
+    failed,
+    message:
+      failed.length === 0
+        ? `Removed ${removed.length} orphaned object(s) under ${prefix}.`
+        : `Removed ${removed.length}, FAILED to remove ${failed.length} under ${prefix}.`,
+  };
+}
+
+export type RecoverStuckOptions = {
+  thresholdMs?: number;
+  now?: number;
+  // Opt-IN. Recovery that only terminalizes a job is strictly safe; recovery that also DELETES
+  // objects is not something an operator should get without having asked for it.
+  reconcileStorage?: boolean;
+};
+
 export async function recoverStuckRemotionJobs(
   client: AssetJobExecutionClient,
   jobs: AssetJobRecord[],
-  options: { thresholdMs?: number; now?: number } = {},
+  options: RecoverStuckOptions = {},
 ): Promise<StuckJobRecovery[]> {
   const thresholdMs = options.thresholdMs ?? DEFAULT_STUCK_JOB_THRESHOLD_MS;
   const now = options.now ?? Date.now();
@@ -350,10 +525,46 @@ export async function recoverStuckRemotionJobs(
     if (!isStuckRunningJob(job, now, thresholdMs)) {
       continue;
     }
+
+    // WORKER TYPE IS PART OF THE GATE, not an assumption about the caller's query. This helper is
+    // named for remotion and must never terminalize a static_renderer or generative_image job that
+    // happened to be in the list it was handed.
+    if (job.workerType !== "remotion") {
+      continue;
+    }
+
+    // RECONCILE BEFORE TERMINALIZING, and the order is load-bearing.
+    //
+    // The proof above -- "running implies no durable artifact" -- only holds WHILE the job is still
+    // running. Fail it first and the proof evaporates: a later run would see a `failed` job, could no
+    // longer tell its objects from a completed job's by status alone, and the orphan would become
+    // permanently unidentifiable.
+    //
+    // So: reconcile while the evidence is still provable, then terminalize. If reconciliation does
+    // NOT complete, the job is deliberately LEFT RUNNING and reported -- a stuck row a later run can
+    // still find beats a tidy row and an orphan nobody can identify any more.
+    let reconciliation: OrphanReconciliation | undefined;
+    if (options.reconcileStorage) {
+      reconciliation = await reconcileOrphanObjectsForJob(client, job);
+      const incomplete = reconciliation.attempted === false || reconciliation.failed.length > 0;
+      if (incomplete) {
+        recoveries.push({
+          jobId: job.id,
+          attemptNumber: job.attemptCount,
+          startedAt: job.startedAt,
+          recovered: false,
+          message: `Left running on purpose: storage reconciliation did not complete, so the orphan stays discoverable. ${reconciliation.message}`,
+          reconciliation,
+        });
+        continue;
+      }
+    }
+
     const message = `Asset Job was left running by a worker that did not finish it (started ${job.startedAt}, threshold ${thresholdMs}ms).`;
     const result = await failRunningAssetJob(client, job, message);
     recoveries.push({
       jobId: job.id,
+      attemptNumber: job.attemptCount,
       startedAt: job.startedAt,
       // failRunningAssetJob returns ok:false on SUCCESS by design -- the job did, in fact, fail.
       // "recovered" therefore means the terminal write landed, which is `reason === "failed"`.
@@ -361,6 +572,7 @@ export async function recoverStuckRemotionJobs(
       // (conflict/not-found) means the row moved underneath us; neither is a recovery.
       recovered: !result.ok && result.reason === "failed",
       message: result.ok ? "Asset Job reported completed instead of failed during recovery." : result.message,
+      reconciliation,
     });
   }
 
@@ -383,6 +595,8 @@ export function formatWorkerEvent(event: RemotionWorkerEvent): string {
       return `completed   job=${event.jobId} attempt=${event.attemptNumber} asset=${event.assetId}`;
     case "failed":
       return `failed      job=${event.jobId} reason=${event.reason} ${event.message}`;
+    case "worker-failure":
+      return `WORKER FAIL job=${event.jobId} ${event.message}`;
     case "cleaned":
       return `cleaned     job=${event.jobId} ${event.ok ? "removed" : "COULD NOT REMOVE"} ${event.directory}`;
   }

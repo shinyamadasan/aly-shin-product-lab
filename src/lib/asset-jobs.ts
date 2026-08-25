@@ -803,6 +803,35 @@ export async function listQueuedAssetJobs(client: AssetJobClient, limit = 1, wor
   }
 }
 
+// Wave C2B-2 -- the RUNNING counterpart of listQueuedAssetJobs, and the only new read this wave adds.
+//
+// Stale-running recovery needs to find jobs a crashed worker left behind, and nothing could: every
+// existing lister filters on 'queued'. Deliberately a sibling rather than a `status` parameter on the
+// queued one -- the queued lister is the hot path every worker poll runs, and widening it into a
+// general query would make an operator-only concern reachable from the polling loop by accident.
+//
+// It reads. It never writes, never claims, and never transitions anything. What to DO with a stale
+// running job is recoverStuckRemotionJobs' decision, not this function's.
+export async function listRunningAssetJobs(client: AssetJobClient, limit = 50, workerType?: AssetJobWorkerType): Promise<QueuedAssetJobsResult> {
+  let query = client.from("asset_jobs").select<AssetJobRow>("*").eq("status", "running");
+  if (workerType) {
+    query = query.eq("worker_type", workerType);
+  }
+  // Oldest first: the most stale job is the one an operator most wants to see, and a bounded limit
+  // then covers the worst offenders rather than an arbitrary slice.
+  const result = await query.order("started_at", { ascending: true }).limit(limit);
+
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+
+  try {
+    return { ok: true, jobs: (result.data ?? []).map(fromAssetJobRow) };
+  } catch (err) {
+    return { ok: false, reason: "failed", message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function listAssetJobsForCreativePackage(client: AssetJobClient, creativePackageId: string): Promise<CreativePackageAssetJobsResult> {
   const result = await client
     .from("asset_jobs")

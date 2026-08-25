@@ -498,6 +498,19 @@ export async function validateAssetCandidateBytes(candidate: GeneratedAssetFileC
   return { ok: true, inspected: { candidate, ...inspection.facts } };
 }
 
+// Wave C2B-2 -- the ATTEMPT PREFIX, extracted so it has exactly one definition.
+//
+// Every object a given attempt uploads lives under this prefix, and the prefix is derivable from job
+// identity ALONE -- no sha256, no bytes, no database row beyond the job itself. That property is what
+// makes orphan reconciliation possible without a schema change: a crashed worker leaves objects whose
+// full paths nobody recorded, but whose PREFIX is always reconstructable from the job it crashed on.
+//
+// buildGeneratedAssetObjectPath is defined in terms of this rather than repeating the layout, so the
+// listing prefix and the upload path can never drift apart.
+export function buildGeneratedAssetAttemptPrefix(args: { assetJobId: string; attemptNumber: number }): string {
+  return `asset-jobs/${args.assetJobId}/attempt-${args.attemptNumber}`;
+}
+
 export function buildGeneratedAssetObjectPath(args: { assetJobId: string; attemptNumber: number; sha256: string; extension: string }): string {
-  return `asset-jobs/${args.assetJobId}/attempt-${args.attemptNumber}/${args.sha256}.${args.extension}`;
+  return `${buildGeneratedAssetAttemptPrefix(args)}/${args.sha256}.${args.extension}`;
 }

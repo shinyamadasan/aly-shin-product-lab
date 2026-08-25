@@ -83,6 +83,24 @@ export async function resolveFfprobe(explicitPath?: string): Promise<FfprobeReso
 //
 // Three things together close it: -i names the argument explicitly, the path is resolved to an
 // absolute path first, and a leading "-" is rejected outright rather than escaped.
+// Wave C2B-2 -- a BOUNDED child, re-evaluated from the C2A review's P2 note.
+//
+// The runner has a per-job timeout, but that timeout only stops the worker WAITING. It cannot reach
+// inside a spawned process. So a wedged ffprobe kept running after the job was already terminal, and
+// on Windows it kept an open handle on the MP4 -- which is precisely the file the cleanup step then
+// tries to delete. A timed-out job could therefore leave both a live child and an undeletable
+// artifact behind.
+//
+// Node's execFile already implements exactly this, so no process-management machinery is added:
+// `timeout` bounds the wait and `killSignal` decides how the child dies. SIGKILL rather than SIGTERM
+// because a hung media probe is not going to honour a polite request, and on Windows the signal is
+// mapped to a hard terminate either way.
+//
+// 60 seconds is deliberately far above any real probe. A structural read of a ~1 MB MP4's box tree
+// completes in milliseconds; this is not a performance budget, it is the line past which the child is
+// definitionally stuck and must be reaped rather than waited on.
+export const FFPROBE_TIMEOUT_MS = 60_000;
+
 export const FFPROBE_BASE_ARGS = ["-v", "error", "-print_format", "json", "-show_format", "-show_streams"] as const;
 
 export function buildFfprobeArgs(filePath: string): string[] {
@@ -112,7 +130,7 @@ export async function probeVideoFile(filePath: string, options: { ffprobePath?: 
 
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync(resolution.executable, args, { maxBuffer: 8 * 1024 * 1024 }));
+    ({ stdout } = await execFileAsync(resolution.executable, args, { maxBuffer: 8 * 1024 * 1024, timeout: FFPROBE_TIMEOUT_MS, killSignal: "SIGKILL" }));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // ENOENT means no probe was reachable at all, which demands a different response from an
