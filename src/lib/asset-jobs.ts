@@ -18,6 +18,11 @@ import {
   type AssetJobAttemptProvenance,
 } from "./asset-job-attempts.ts";
 import { EXECUTABLE_ASSET_JOB_WORKER_TYPES, resolveProductionRoute, type ProductionRoute } from "./production-route.ts";
+import {
+  isActivationExecutableRoute,
+  validateRemotionShortVideoPackageForActivation,
+  type ProductionVideoActivation,
+} from "./production-video-activation.ts";
 
 export const ASSET_JOB_STATUSES = ["queued", "running", "completed", "failed"] as const;
 export type AssetJobStatus = (typeof ASSET_JOB_STATUSES)[number];
@@ -689,22 +694,14 @@ export async function getAssetJobById(client: AssetJobClient, id: string): Promi
 // The executable projection of a ProductionRoute: both halves already narrowed to the runtime types
 // the job-creation API accepts.
 //
-// Deliberately CONSTRUCTED, not asserted. The two values returned are the ones found INSIDE
-// EXECUTABLE_ASSET_JOB_WORKER_TYPES and EXECUTABLE_ASSET_KINDS, so their narrow types come from the
-// executable sets themselves -- there is no `as` here, and no hand-written type predicate whose body
-// TypeScript would have taken on trust. Widen either set and this widens with it; widen neither and
-// no route naming a still-unregistered future worker, or a still-unproducible asset kind, can yield
-// an ExecutableAssetJobRoute at all. (Those future workers are named in production-route.ts, never
-// here -- this module stays free of future-domain technology names, and a static test enforces it.)
+// Deliberately CONSTRUCTED, not asserted. Default executable image routes are still built from the
+// executable worker/kind sets. Video activation is different on purpose: it contributes exactly the
+// remotion + short_video route pair, never independent worker and kind widenings that could combine
+// into mixed routes.
 //
 // It lives in this module rather than in production-route.ts because it needs EXECUTABLE_ASSET_KINDS
 // as a VALUE, and production-route.ts imports from here type-only on purpose -- a value import in
 // that direction would close the runtime cycle both files' headers exist to prevent.
-export type ExecutableAssetJobRoute = {
-  workerType: AssetJobWorkerType;
-  assetKind: ExecutableAssetKind;
-};
-
 // The worker types the APPLICATION may name when creating a job, as opposed to the wider set the
 // WORKER RUNTIME may claim and execute. Wave C2A is the first wave where those two differ.
 //
@@ -715,10 +712,28 @@ export type ExecutableAssetJobRoute = {
 // stage earlier.
 export type AppCreatableAssetJobWorkerType = (typeof EXECUTABLE_ASSET_JOB_WORKER_TYPES)[number];
 
-export function toExecutableAssetJobRoute(route: ProductionRoute): ExecutableAssetJobRoute | null {
+export type ExecutableAssetJobRoute =
+  | {
+      workerType: AppCreatableAssetJobWorkerType;
+      assetKind: ExecutableAssetKind;
+    }
+  | {
+      workerType: "remotion";
+      assetKind: "short_video";
+    };
+
+export function toExecutableAssetJobRoute(route: ProductionRoute, activation?: ProductionVideoActivation): ExecutableAssetJobRoute | null {
   const workerType = EXECUTABLE_ASSET_JOB_WORKER_TYPES.find((candidate) => candidate === route.workerType);
   const assetKind = EXECUTABLE_ASSET_KINDS.find((candidate) => candidate === route.assetKind);
-  return workerType && assetKind ? { workerType, assetKind } : null;
+  if (workerType && assetKind) {
+    return { workerType, assetKind };
+  }
+
+  if (isActivationExecutableRoute(route, activation)) {
+    return { workerType: "remotion", assetKind: "short_video" };
+  }
+
+  return null;
 }
 
 // Unlike createCreativeJobForAcceptedOpportunity, there is no "return the existing job instead"
@@ -727,7 +742,7 @@ export function toExecutableAssetJobRoute(route: ProductionRoute): ExecutableAss
 export async function createAssetJobForReadyCreativePackage(
   client: AssetJobClient,
   creativePackageId: string,
-  options: { workerType?: AppCreatableAssetJobWorkerType; assetKind?: ExecutableAssetKind } = {},
+  options: { workerType?: AppCreatableAssetJobWorkerType; assetKind?: ExecutableAssetKind; activation?: ProductionVideoActivation } = {},
 ): Promise<AssetJobCreateResult> {
   const packageResult = await readCreativePackage(client, creativePackageId);
   if (!packageResult.ok) {
@@ -765,9 +780,14 @@ export async function createAssetJobForReadyCreativePackage(
     workerType: options.workerType ?? resolvedRoute.workerType,
     assetKind: options.assetKind ?? resolvedRoute.assetKind,
   };
-  const executableRoute = toExecutableAssetJobRoute(requestedRoute);
+  const executableRoute = toExecutableAssetJobRoute(requestedRoute, options.activation);
   if (!executableRoute) {
     return { ok: false, reason: "failed", message: `Production route is not executable yet: ${requestedRoute.workerType} + ${requestedRoute.assetKind}.` };
+  }
+
+  const activationValidation = validateRemotionShortVideoPackageForActivation(packageResult.creativePackage, options.activation);
+  if (!activationValidation.ok) {
+    return { ok: false, reason: "failed", message: activationValidation.message };
   }
 
   const { workerType, assetKind } = executableRoute;

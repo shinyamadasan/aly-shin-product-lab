@@ -1,6 +1,7 @@
 import { isCreativeFormat, type CreativeFormat } from "./creative-formats.ts";
 import { isCreativeProductionSource } from "./creative-production-guidance.ts";
 import type { AssetJobWorkerType, AssetKind } from "./asset-jobs.ts";
+import { isActivationExecutableRoute, type ProductionVideoActivation } from "./production-video-activation.ts";
 
 // Production MVP Wave A -- the Creative Package -> Production Route translation, in one module.
 //
@@ -131,10 +132,10 @@ const ROUTED_FORMATS: readonly CreativeFormat[] = ["photo", "reel"];
 // and the job-creation API must follow this one, not the wider one.
 export const EXECUTABLE_ASSET_JOB_WORKER_TYPES = ["external", "mock", "static_renderer", "generative_image", "manual_illustration"] as const satisfies readonly AssetJobWorkerType[];
 
-// Both halves matter. "short_video" has no executor AND no storage path (the bucket still rejects
-// video/mp4), so an otherwise-runnable worker paired with it is still not executable today.
-export function isProductionRouteExecutable(route: ProductionRoute): boolean {
-  return (EXECUTABLE_ASSET_JOB_WORKER_TYPES as readonly string[]).includes(route.workerType) && route.assetKind === "image";
+// Both halves matter. Default execution remains image-only for the app-creatable workers. C2B-3A's
+// trusted activation seam adds exactly remotion + short_video and no mixed pair.
+export function isProductionRouteExecutable(route: ProductionRoute, activation?: ProductionVideoActivation): boolean {
+  return ((EXECUTABLE_ASSET_JOB_WORKER_TYPES as readonly string[]).includes(route.workerType) && route.assetKind === "image") || isActivationExecutableRoute(route, activation);
 }
 
 // --- resolution -----------------------------------------------------------------------------------
