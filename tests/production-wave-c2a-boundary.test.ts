@@ -200,11 +200,15 @@ test("NOTHING the application can reach imports the worker activation set or the
   }
 });
 
-test("the production API route still refuses any worker type outside the two machine image workers", () => {
+test("the production API route still refuses browser-supplied worker types outside the two machine image workers", () => {
   const route = readFileSync(path.join(REPO_ROOT, "src", "app", "api", "production", "route.ts"), "utf8");
-  // The gate is a call to isProductionWorkerType, which is MACHINE_PRODUCTION_WORKER_TYPES' guard.
+  // The direct execution body path remains gated by isProductionWorkerType, which is
+  // MACHINE_PRODUCTION_WORKER_TYPES' guard. C2B-3B may mention remotion only in the separate
+  // creativePackageId queue path, where the server resolves and validates the exact route itself.
   assert.match(route, /isProductionWorkerType\(workerType\)/);
-  assert.doesNotMatch(route, /remotion/i);
+  assert.match(route, /body\.creativePackageId !== undefined/);
+  assert.match(route, /resolvedRoute\.workerType !== "remotion"/);
+  assert.doesNotMatch(route, /isProductionWorkerType\([\s\S]*remotion/);
 });
 
 // --- storage: untouched ------------------------------------------------------------------------------------

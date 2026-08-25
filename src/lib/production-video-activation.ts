@@ -12,9 +12,14 @@ export const PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW = {
 export type ProductionVideoActivation = typeof PRODUCTION_VIDEO_ACTIVATION_OFF | typeof PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW;
 
 export const MAX_WARM_OPEN_EXECUTABLE_SCENES = 2;
+export const PRODUCTION_REMOTION_SHORT_VIDEO_ENV = "PRODUCTION_REMOTION_SHORT_VIDEO";
 
 export function isRemotionShortVideoActivationEnabled(activation: ProductionVideoActivation = PRODUCTION_VIDEO_ACTIVATION_OFF): boolean {
   return activation.remotionShortVideo === true;
+}
+
+export function productionVideoActivationFromEnv(env: Record<string, string | undefined> = process.env): ProductionVideoActivation {
+  return env[PRODUCTION_REMOTION_SHORT_VIDEO_ENV] === "1" ? PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW : PRODUCTION_VIDEO_ACTIVATION_OFF;
 }
 
 export function isActivationExecutableRoute(route: ProductionRoute, activation: ProductionVideoActivation = PRODUCTION_VIDEO_ACTIVATION_OFF): boolean {

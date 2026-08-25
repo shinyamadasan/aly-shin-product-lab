@@ -146,6 +146,9 @@ test("PROP-026 component keeps Asset UI focused, read-only, and driven by Asset 
   assert.match(component, /No Asset has been materialized yet\./);
   assert.match(component, /This Asset has no Asset Files yet\./);
   assert.match(component, /Image could not be loaded after one automatic signed URL refresh\./);
+  assert.match(component, /PRODUCTION_IMAGE_DIMENSIONS/);
+  assert.match(component, /PRODUCTION_SHORT_VIDEO_DIMENSIONS/);
+  assert.match(component, /expectedDimensionsFor\(file\)/);
   assert.match(component, /requestCoordinator\.current\.beginMetadata\(\)/);
   assert.match(component, /requestCoordinator\.current\.isCurrentMetadata\(requestVersion\)/);
   assert.match(component, /requestCoordinator\.current\.beginSignedUrl\(key\)/);
@@ -153,6 +156,7 @@ test("PROP-026 component keeps Asset UI focused, read-only, and driven by Asset 
   assert.match(component, /requestCoordinator\.current\.unmount\(\)/);
   assert.doesNotMatch(component, /createAssetJobForReadyCreativePackage|runAssetJob|runMockAssetJob|runAssetJobWithExecutors|approve|reject|publish|asset_job_attempts|\.from\("asset_job_attempts"\)|storage\.list|\.list\(/);
   assert.doesNotMatch(component, /provider[A-Z]|\bprovider:|\bmodel[A-Z]|\bmodel:/);
+  assert.doesNotMatch(component, /ASSET_GENERATION_IMAGE_DIMENSIONS/);
 });
 
 // PROP-035 Slice 3: variant="ritual" hides three provenance/advisory presentation elements

@@ -21,6 +21,7 @@ import {
   isProductionWorkerType,
 } from "../src/lib/production-execution.ts";
 import { PRODUCTION_EXECUTOR_TIMEOUTS_MS } from "../src/lib/production-asset-executors.ts";
+import { PRODUCTION_VIDEO_ACTIVATION_OFF, PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW } from "../src/lib/production-video-activation.ts";
 import { authenticateOwnerWith, isProductionOwner, readAppRole, readBearerToken } from "../src/lib/production-auth.ts";
 import { fromCreativePackageRow, type CreativePackageRow } from "../src/lib/creative-packages.ts";
 
@@ -247,15 +248,34 @@ test("K: capture_new still routes to external, and the app still creates that jo
   assert.match(component, /External Creative Workspace/);
 });
 
-test("L: the owner cannot reach a remotion or short_video route through any of this", async () => {
-  for (const productionSource of ["template_only", "capture_new"]) {
-    const store = makeClient({ creativePackages: [v2PackageRow("reel", productionSource)] });
-    const created = await createAssetJobForReadyCreativePackage(store.client, "package-1");
-    assert.equal(created.ok, false, `reel:${productionSource} must not be queueable`);
-    assert.equal(store.jobs.length, 0);
+test("L: video Produce and Regenerate require the trusted activation state", async () => {
+  const offStore = makeClient({ creativePackages: [v2PackageRow("reel", "template_only")] });
+  const off = await createAssetJobForReadyCreativePackage(offStore.client, "package-1", {
+    activation: PRODUCTION_VIDEO_ACTIVATION_OFF,
+  });
+  assert.equal(off.ok, false);
+  assert.equal(offStore.jobs.length, 0);
+
+  const onStore = makeClient({ creativePackages: [v2PackageRow("reel", "template_only")] });
+  const produced = await createAssetJobForReadyCreativePackage(onStore.client, "package-1", {
+    activation: PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW,
+  });
+  const regenerated = await createAssetJobForReadyCreativePackage(onStore.client, "package-1", {
+    activation: PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW,
+  });
+
+  assert.equal(produced.ok, true);
+  assert.equal(regenerated.ok, true);
+  if (produced.ok && regenerated.ok) {
+    assert.notEqual(produced.job.id, regenerated.job.id);
+    assert.equal(produced.job.workerType, "remotion");
+    assert.equal(produced.job.assetKind, "short_video");
+    assert.equal(regenerated.job.workerType, "remotion");
+    assert.equal(regenerated.job.assetKind, "short_video");
   }
 
-  // And the machine worker vocabulary the UI and route accept contains neither.
+  // The synchronous execution vocabulary is still image-only. Remotion is queued for the local
+  // worker through the server-derived Creative Package path, not executed by this route handler.
   assert.deepEqual([...MACHINE_PRODUCTION_WORKER_TYPES], ["static_renderer", "generative_image"]);
   assert.equal(isMachineProductionWorkerType("remotion"), false);
   assert.equal(isProductionWorkerType("remotion"), false);
@@ -517,13 +537,13 @@ test("M: no client module reaches the server-only auth module, the route, or the
   }
 });
 
-test("M: the browser sends only a job id and a worker name -- never a model, endpoint or file path", () => {
+test("M: the browser sends only bounded production inputs -- never activation, model, endpoint or file path", () => {
   const component = readFileSync(new URL("../src/components/creative-package-production.tsx", import.meta.url), "utf8");
-  const body = /body:\s*JSON\.stringify\(\{([^}]*)\}\)/.exec(component)?.[1] ?? "";
-  assert.match(body, /assetJobId/);
-  assert.match(body, /workerType/);
+  const bodies = [...component.matchAll(/body:\s*JSON\.stringify\(\{([^}]*)\}\)/g)].map((match) => match[1]);
+  assert.ok(bodies.some((body) => /assetJobId/.test(body) && /workerType/.test(body)));
+  assert.ok(bodies.some((body) => /creativePackageId/.test(body) && !/workerType|assetKind|activation/.test(body)));
   for (const forbidden of ["model", "endpoint", "referenceImagePaths", "apiToken", "accountId", "prompt"]) {
-    assert.equal(body.includes(forbidden), false, `the browser must not be able to supply ${forbidden}`);
+    assert.equal(bodies.join("\n").includes(forbidden), false, `the browser must not be able to supply ${forbidden}`);
   }
 
   const route = readFileSync(new URL("../src/app/api/production/route.ts", import.meta.url), "utf8");
@@ -531,12 +551,33 @@ test("M: the browser sends only a job id and a worker name -- never a model, end
     .split("\n")
     .filter((line) => !line.trim().startsWith("//"))
     .join("\n");
-  // The route destructures exactly two fields from the body and validates both.
+  // Image execution still validates the old bounded pair, while video queueing validates only
+  // creativePackageId and derives workerType/assetKind/activation on the server.
   assert.match(statements, /const \{ assetJobId, workerType \} = body;/);
   assert.match(statements, /isProductionWorkerType\(workerType\)/);
-  for (const forbidden of ["body.model", "body.endpoint", "body.referenceImagePaths", "body.prompt"]) {
+  assert.match(statements, /creativePackageId/);
+  assert.match(statements, /productionVideoActivationFromEnv\(\)/);
+  assert.match(statements, /createAssetJobForReadyCreativePackage/);
+  assert.match(statements, /resolvedRoute\.workerType !== "remotion"/);
+  assert.match(statements, /resolvedRoute\.assetKind !== "short_video"/);
+  for (const forbidden of ["body.model", "body.endpoint", "body.referenceImagePaths", "body.prompt", "body.assetKind", "body.activation"]) {
     assert.equal(statements.includes(forbidden), false, `the route must not read ${forbidden} from the request`);
   }
+});
+
+test("M: template-only video routes render the owner production panel instead of the external workspace", () => {
+  const component = readFileSync(new URL("../src/components/creative-package-asset-create.tsx", import.meta.url), "utf8");
+  assert.match(component, /function isProductionPanelRoute\(route: ProductionRoute\): boolean/);
+  assert.match(component, /route\.workerType === "remotion" && route\.assetKind === "short_video"/);
+  assert.match(component, /<CreativePackageProduction creativePackageId=\{creativePackageId\} onProduced=\{onUploaded\} route=\{route\} \/>/);
+});
+
+test("M: the production card previews completed video assets as video, not as a broken image", () => {
+  const component = readFileSync(new URL("../src/components/creative-package-production.tsx", import.meta.url), "utf8");
+  assert.match(component, /previewFile\.mimeType === "video\/mp4"/);
+  assert.match(component, /<video[\s\S]*controls[\s\S]*playsInline[\s\S]*src=\{previewUrl\}/);
+  assert.match(component, /aspect-\[9\/16\] w-full max-w-\[220px\]/);
+  assert.match(component, /\{previewFile\.mimeType\}/);
 });
 
 test("the route runs on the Node runtime, is never cached, and declares a platform ceiling", () => {

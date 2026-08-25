@@ -66,6 +66,7 @@ type ProductionResponse = {
   status?: string;
   message?: string;
   assetId?: string;
+  assetJobId?: string;
   reason?: string;
 };
 
@@ -78,6 +79,9 @@ const SOURCE_KIND_BY_LABEL: Record<string, AssetSourceKind> = Object.fromEntries
 const SOURCE_KIND_SELECT_OPTIONS = ASSET_SOURCE_KINDS.map((kind) => SOURCE_KIND_LABELS[kind]);
 
 function describeRoute(route: ProductionRoute): string {
+  if (route.workerType === "remotion" && route.assetKind === "short_video") {
+    return "Deterministic video render queued for the local production worker.";
+  }
   return route.workerType === "static_renderer"
     ? "Deterministic template render -- no AI image generation."
     : "AI-generated illustration composed under the deterministic template.";
@@ -267,6 +271,8 @@ export function CreativePackageProduction({
     return job && job.status === "queued" && job.workerType === workerType ? job.id : null;
   }
 
+  const isActivatedVideoRoute = route.workerType === "remotion" && route.assetKind === "short_video";
+
   async function ensureJob(workerType: AppCreatableAssetJobWorkerType): Promise<string | null> {
     const reusable = reusableJobId(workerType);
     if (reusable) {
@@ -376,6 +382,55 @@ export function CreativePackageProduction({
     await settle(httpStatus, payload);
   }
 
+  async function queueVideoProduction() {
+    if (!client) {
+      return;
+    }
+    beginAction();
+
+    const token = await accessToken();
+    if (!token) {
+      setError("Your session has expired. Sign in again to run production.");
+      setPhase("idle");
+      return;
+    }
+
+    let payload: ProductionResponse = {};
+    let httpStatus = 0;
+    try {
+      const response = await fetch("/api/production", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ creativePackageId }),
+      });
+      httpStatus = response.status;
+      payload = (await response.json()) as ProductionResponse;
+    } catch {
+      setError("Production could not be reached. Check your connection and look at the job status before running it again.");
+      setPhase("idle");
+      return;
+    }
+
+    if (httpStatus !== 202) {
+      setError(payload.message ?? "Video production could not be queued.");
+      await loadLatest();
+      setPhase("idle");
+      return;
+    }
+
+    await loadLatest();
+    onProduced();
+    setPhase("idle");
+  }
+
+  function produceRoute() {
+    if (isActivatedVideoRoute) {
+      void queueVideoProduction();
+      return;
+    }
+    void produce(route.workerType === "static_renderer" ? "static_renderer" : "generative_image");
+  }
+
   // T2. The illustration already exists -- the owner made it in ChatGPT Images from the prompt above.
   // This uploads it and the SERVER composes it under the very same deterministic template a
   // Cloudflare generation goes through, so the finished post is identical in everything but who drew
@@ -460,7 +515,7 @@ export function CreativePackageProduction({
   const previewFile = files[0] ?? null;
   const origin = describeSourceKind(asset);
   const isDecided = asset?.status === "accepted" || asset?.status === "rejected";
-  const workerSupported = isMachineProductionWorkerType(route.workerType);
+  const workerSupported = isMachineProductionWorkerType(route.workerType) || isActivatedVideoRoute;
   const busy = phase === "producing";
 
   // A plain JSX-returning function, deliberately NOT a nested component. Declaring a component
@@ -599,14 +654,16 @@ export function CreativePackageProduction({
           {/* The REAL stored object from the Asset pipeline -- never a scratch file and never a
               locally reconstructed preview. Served through a short-lived signed URL because the
               bucket is private. */}
-          {previewUrl ? (
+          {previewUrl && previewFile.mimeType === "video/mp4" ? (
+            <video className="aspect-[9/16] w-full max-w-[220px] rounded-md border border-[#ead9c8] bg-black object-contain" controls playsInline src={previewUrl} />
+          ) : previewUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img alt="Produced asset" className="w-full max-w-[420px] rounded-md border border-[#ead9c8]" src={previewUrl} />
           ) : (
             <MessageBox message="The asset was produced and stored, but a preview link could not be created just now." tone="info" />
           )}
           <p className="break-words text-xs text-[#6f5a4c]">
-            {previewFile.width}x{previewFile.height} PNG -- {previewFile.storagePath}
+            {previewFile.width}x{previewFile.height} {previewFile.mimeType} -- {previewFile.storagePath}
           </p>
         </div>
       ) : null}
@@ -621,7 +678,7 @@ export function CreativePackageProduction({
             <X className="mr-1 inline" size={14} />
             Reject
           </SecondaryButton>
-          <SecondaryButton disabled={decisionBusy} onClick={() => produce(route.workerType === "static_renderer" ? "static_renderer" : "generative_image")}>
+          <SecondaryButton disabled={decisionBusy} onClick={produceRoute}>
             <RefreshCw className="mr-1 inline" size={14} />
             Regenerate
           </SecondaryButton>
@@ -647,7 +704,7 @@ export function CreativePackageProduction({
           <button
             className="inline-flex h-11 items-center gap-2 rounded-md border border-[#7aa789] bg-[#e9f3ed] px-3 text-sm font-semibold text-[#2e6b44] disabled:cursor-not-allowed disabled:opacity-50"
             disabled={!client || !workerSupported || busy}
-            onClick={() => produce(route.workerType === "static_renderer" ? "static_renderer" : "generative_image")}
+            onClick={produceRoute}
             type="button"
           >
             <ImagePlus size={15} />
