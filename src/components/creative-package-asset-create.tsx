@@ -32,6 +32,10 @@ const SOURCE_KIND_LABELS: Record<AssetSourceKind, string> = {
 const SOURCE_KIND_BY_LABEL: Record<string, AssetSourceKind> = Object.fromEntries(ASSET_SOURCE_KINDS.map((kind) => [SOURCE_KIND_LABELS[kind], kind]));
 const SOURCE_KIND_SELECT_OPTIONS = ["", ...ASSET_SOURCE_KINDS.map((kind) => SOURCE_KIND_LABELS[kind])];
 
+function isProductionPanelRoute(route: ProductionRoute): boolean {
+  return isProductionRouteExecutable(route) || (route.workerType === "remotion" && route.assetKind === "short_video");
+}
+
 // Read-only: buildAssetGenerationSpecForJob and renderAssetGenerationBrief never mutate or call an
 // RPC -- resolving a brief, for an existing job or one just created, can never claim it or start an
 // attempt. The job stays queued until a later upload step submits real image bytes.
@@ -131,7 +135,7 @@ export function CreativePackageAssetCreate({
       const resolvedRoute = packageResult.ok ? resolveProductionRoute(packageResult.creativePackage) : null;
       setRoute(resolvedRoute);
       // A machine route hands off entirely to the Production panel, which does its own loading.
-      if (resolvedRoute && resolvedRoute.workerType !== "external" && isProductionRouteExecutable(resolvedRoute)) {
+      if (resolvedRoute && resolvedRoute.workerType !== "external" && isProductionPanelRoute(resolvedRoute)) {
         setIsLoadingInitial(false);
         return;
       }
@@ -264,7 +268,7 @@ export function CreativePackageAssetCreate({
 
   // A machine route renders the Production panel instead of this one. Everything below stays exactly
   // the External Creative Workspace flow that capture_new packages have always used.
-  if (route && route.workerType !== "external" && isProductionRouteExecutable(route)) {
+  if (route && route.workerType !== "external" && isProductionPanelRoute(route)) {
     return <CreativePackageProduction creativePackageId={creativePackageId} onProduced={onUploaded} route={route} />;
   }
 

@@ -117,6 +117,17 @@ function failFirstThenRealBundle(logLine: (line: string) => void): () => Promise
 
 type WorkerStore = { client: AssetJobExecutionClient; describe: string; seededJobId?: string };
 
+function appRoleFromAccessToken(accessToken: string): string | null {
+  try {
+    const payload = JSON.parse(Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      app_metadata?: { app_role?: unknown };
+    };
+    return typeof payload.app_metadata?.app_role === "string" ? payload.app_metadata.app_role : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildMemoryStore(): WorkerStore {
   const store = createInMemoryAssetJobStore();
   const creativePackageId = store.seedCreativePackage(proofReelPackageContent());
@@ -129,15 +140,28 @@ function buildMemoryStore(): WorkerStore {
   return { client: store.client, describe: "in-memory proof store (no live Supabase, no live storage)", seededJobId: `${first}, ${second}` };
 }
 
-function buildSupabaseStore(): WorkerStore | { error: string } {
+async function buildSupabaseStore(): Promise<WorkerStore | { error: string }> {
   loadEnvFile(path.join(PROJECT_ROOT, ".env.production-workers.local"));
   const credentials = readSupabaseCredentials();
   if (!credentials.ok) {
     // Names only. Never values.
     return { error: `Missing Supabase credentials: ${credentials.missing.join(", ")}` };
   }
-  const client = createClient(credentials.credentials.url, credentials.credentials.anonKey) as unknown as AssetJobExecutionClient;
-  return { client, describe: "live Supabase asset_jobs" };
+  const client = createClient(credentials.credentials.url, credentials.credentials.anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+  const signedIn = await client.auth.signInWithPassword({
+    email: credentials.credentials.email,
+    password: credentials.credentials.password,
+  });
+  if (signedIn.error || !signedIn.data.session) {
+    return { error: `Supabase sign-in failed for production worker credentials: ${signedIn.error?.message ?? "no session returned"}` };
+  }
+  const appRole = appRoleFromAccessToken(signedIn.data.session.access_token);
+  if (appRole !== "creative_worker") {
+    return { error: `Production worker credentials authenticated as ${appRole ?? "no app_role"}, expected creative_worker.` };
+  }
+  return { client: client as unknown as AssetJobExecutionClient, describe: "live Supabase asset_jobs" };
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -164,7 +188,7 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const built = storeKind === "memory" ? buildMemoryStore() : buildSupabaseStore();
+  const built = storeKind === "memory" ? buildMemoryStore() : await buildSupabaseStore();
   if ("error" in built) {
     console.error(built.error);
     return 1;
@@ -178,6 +202,9 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   log(`store        ${built.describe}`);
+  if (storeKind === "supabase") {
+    log("auth         creative_worker");
+  }
   log(`scratch root ${scratchRoot}`);
   log(`poll every   ${pollIntervalMs}ms`);
   log(`node         ${process.version} on ${process.platform}/${process.arch}`);

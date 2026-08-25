@@ -24,7 +24,10 @@ import {
   isProductionWorkerType,
   isUpstreamProductionFailure,
 } from "@/lib/production-execution";
-import type { AssetJobExecutionClient } from "@/lib/asset-jobs";
+import { createAssetJobForReadyCreativePackage, type AssetJobExecutionClient } from "@/lib/asset-jobs";
+import { getCreativePackageById, type CreativePackageClient } from "@/lib/creative-packages";
+import { resolveProductionRoute } from "@/lib/production-route";
+import { productionVideoActivationFromEnv, validateRemotionShortVideoPackageForActivation } from "@/lib/production-video-activation";
 
 // Node runtime: satori, resvg and sharp are native modules, and the Supabase client runs here.
 // Not an edge isolate.
@@ -38,7 +41,7 @@ export const dynamic = "force-dynamic";
 // this is roughly an order of magnitude of headroom, not a tight fit.
 export const maxDuration = 60;
 
-type ProductionRequestBody = { assetJobId?: unknown; workerType?: unknown };
+type ProductionRequestBody = { assetJobId?: unknown; workerType?: unknown; creativePackageId?: unknown };
 
 // The public error contract. No PostgreSQL message, no table name, no stack, no Supabase auth error,
 // no provider response body, and never an environment VALUE.
@@ -69,6 +72,50 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const { assetJobId, workerType } = body;
+  if (body.creativePackageId !== undefined) {
+    if (typeof body.creativePackageId !== "string" || body.creativePackageId.trim().length === 0) {
+      return fail(400, "invalid", "A production request must name a Creative Package.");
+    }
+
+    const creativePackageId = body.creativePackageId.trim();
+    const activation = productionVideoActivationFromEnv();
+    const packageResult = await getCreativePackageById(auth.principal.client as unknown as CreativePackageClient, creativePackageId);
+    if (!packageResult.ok) {
+      return fail(packageResult.reason === "not-found" ? 409 : 400, "failed", packageResult.message);
+    }
+
+    const resolvedRoute = resolveProductionRoute(packageResult.creativePackage);
+    const activationValidation = validateRemotionShortVideoPackageForActivation(packageResult.creativePackage, activation);
+    if (!activationValidation.ok) {
+      return fail(400, "failed", activationValidation.message);
+    }
+    if (resolvedRoute.workerType !== "remotion" || resolvedRoute.assetKind !== "short_video") {
+      return fail(400, "failed", "This Creative Package does not resolve to the activated video production route.");
+    }
+
+    const created = await createAssetJobForReadyCreativePackage(
+      auth.principal.client as unknown as AssetJobExecutionClient,
+      creativePackageId,
+      { activation },
+    );
+    if (!created.ok) {
+      return fail(created.reason === "not-found" || created.reason === "not-ready" ? 409 : 400, "failed", created.message);
+    }
+    if (created.job.workerType !== "remotion" || created.job.assetKind !== "short_video") {
+      return fail(400, "failed", "This Creative Package does not resolve to the activated video production route.");
+    }
+
+    return Response.json(
+      {
+        status: "queued",
+        assetJobId: created.job.id,
+        workerType: created.job.workerType,
+        assetKind: created.job.assetKind,
+      },
+      { status: 202 },
+    );
+  }
+
   if (typeof assetJobId !== "string" || assetJobId.trim().length === 0) {
     return fail(400, "invalid", "A production request must name an Asset Job.");
   }
