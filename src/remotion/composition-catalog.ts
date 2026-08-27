@@ -1,9 +1,15 @@
+import {
+  CREATIVE_TEMPLATE_REEL_MAX_DURATION_SECONDS,
+  CREATIVE_TEMPLATE_REEL_MIN_DURATION_SECONDS,
+} from "../lib/creative-production-guidance.ts";
+
 // Production MVP Wave C1 -- what the Remotion module can render, stated once, in a pure module.
 //
-// PURE and DEPENDENCY-FREE on purpose. This is imported by three very different callers -- the
+// PURE and nearly dependency-free on purpose. This is imported by three very different callers -- the
 // browser bundle Remotion renders inside, the Node render entry point, and `node --test` -- and it
-// must behave identically in all three. It therefore imports no React, no `remotion`, and nothing
-// from src/lib that would drag a Supabase client or a native module into a webpack bundle.
+// must behave identically in all three. It therefore imports no React, no `remotion`, and only the
+// tiny production-guidance leaf from src/lib so D1 Template Reel duration readiness does not require
+// app code to import the Remotion module.
 //
 // WHY THE DIMENSIONS ARE RE-DECLARED RATHER THAN IMPORTED
 //
@@ -29,9 +35,9 @@ export const REMOTION_VERTICAL_HEIGHT = 1920;
 
 // The window the first composition was designed inside. Below six seconds the closing group has no
 // room to arrive without hurrying; above ten the held beats become dead air. Both bounds are creative
-// decisions about THIS composition, not a platform limit, which is why they live beside it.
-export const WARM_OPEN_MIN_DURATION_SECONDS = 6;
-export const WARM_OPEN_MAX_DURATION_SECONDS = 10;
+// decisions about THIS composition, not a platform limit.
+export const WARM_OPEN_MIN_DURATION_SECONDS = CREATIVE_TEMPLATE_REEL_MIN_DURATION_SECONDS;
+export const WARM_OPEN_MAX_DURATION_SECONDS = CREATIVE_TEMPLATE_REEL_MAX_DURATION_SECONDS;
 export const WARM_OPEN_DEFAULT_DURATION_SECONDS = 8;
 
 // The explicit, structured input the composition takes. JSON-serializable throughout, because
@@ -43,6 +49,10 @@ export const WARM_OPEN_DEFAULT_DURATION_SECONDS = 8;
 // translation, and that separation is what lets C2 wire the executor without editing any of the
 // markup below.
 export type WarmOpenProps = {
+  // Production-generated Template Reel V1 renders typography only. The old source-controlled
+  // food-and-coffee drawing remains available for demo/default renders, but it is not injected into
+  // package-driven output where it could imply the wrong product.
+  visualTreatment: "typography_only" | "hearth_illustration";
   // The small line above the headline. Short by construction -- an eyebrow, not a sentence.
   kicker: string;
   // The one line the video is actually about.
@@ -120,6 +130,7 @@ export function warmOpenMetadata(durationSeconds: number): WarmOpenCompositionMe
 // <Composition> so a test can assert they are renderable, and so the harness has something to render
 // without a Creative Package in hand.
 export const WARM_OPEN_DEFAULT_PROPS: WarmOpenProps = {
+  visualTreatment: "hearth_illustration",
   kicker: "Baked this morning",
   headline: "The kind of loaf that makes a room go quiet.",
   supportingLine: "Slow-proofed overnight. Out of the oven at seven.",

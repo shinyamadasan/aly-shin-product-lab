@@ -66,7 +66,7 @@ Critical invariant: storage and the worker must be ready before server video exe
 21. Inspect storage, database state, worker scratch cleanup, and RLS.
 22. Stop for owner visual acceptance.
 
-Technical pass is not creative acceptance. The owner must visually judge pacing, readability, composition, crop, typography, scene coverage, truncation, and rendering defects before Wave D.
+Technical pass is not creative acceptance. The owner must visually judge pacing, readability, composition, crop, typography, scene coverage, truncation, and rendering defects before rollout beyond the controlled proof.
 
 ## Rollback
 

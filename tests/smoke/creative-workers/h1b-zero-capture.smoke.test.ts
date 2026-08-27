@@ -217,7 +217,12 @@ test("one real generation on a zero-capture request produces an executable, came
     content.productionSource === "generate_visual" || content.productionSource === "template_only",
     `productionSource must be zero-capture, got ${String(content.productionSource)}`,
   );
-  assert.notEqual(content.format, "reel", "a zero-capture request must never resolve to Reel");
+  if (content.format === "reel") {
+    assert.equal(content.productionSource, "template_only", "a zero-capture Reel must use the Template Reel path");
+    assert.ok(Array.isArray(content.shots), "a Template Reel must carry ordered beats");
+    assert.ok(content.shots.length >= 1 && content.shots.length <= 2, "a Template Reel must be one or two beats");
+    assert.equal(content.spokenScript, null, "a Template Reel has no generated voice");
+  }
 
   // No framing anywhere: there is no camera to point.
   assert.doesNotMatch(JSON.stringify(content), /"framing":/, "a zero-capture package must carry no framing");

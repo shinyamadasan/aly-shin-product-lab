@@ -64,6 +64,112 @@ function facts(...values: Array<string | null | undefined>): string[] {
   return values.map((value) => nonEmpty(value)).filter((value): value is string => value !== null);
 }
 
+function normalizeForSubjectMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function singularizeSubjectTerm(value: string): string {
+  if (value.endsWith("s") && value.length > 1) {
+    return value.slice(0, -1);
+  }
+  return value;
+}
+
+function productAliases(productName: string): string[] {
+  const normalized = normalizeForSubjectMatch(productName);
+  if (normalized.length === 0) {
+    return [];
+  }
+  const singularFullName = normalized
+    .split(" ")
+    .map((term) => singularizeSubjectTerm(term))
+    .join(" ");
+  const aliases = new Set([normalized, singularFullName]);
+  const terms = normalized.split(" ");
+  if (terms.length === 1) {
+    aliases.add(singularizeSubjectTerm(terms[0]));
+  }
+  return [...aliases].filter((alias) => alias.length > 0);
+}
+
+function productMentionInText(text: string, products: Product[]): Product | null {
+  const normalizedText = ` ${normalizeForSubjectMatch(text)} `;
+  const matches = products
+    .map((product) => {
+      const name = nonEmpty(product.name);
+      if (name === null) {
+        return null;
+      }
+      const alias = productAliases(name)
+        .sort((a, b) => b.length - a.length)
+        .find((candidate) => normalizedText.includes(` ${candidate} `));
+      return alias === undefined ? null : { product, aliasLength: alias.length };
+    })
+    .filter((match): match is { product: Product; aliasLength: number } => match !== null);
+
+  if (matches.length === 0) {
+    return null;
+  }
+  return matches.sort((a, b) => b.aliasLength - a.aliasLength || a.product.id.localeCompare(b.product.id))[0].product;
+}
+
+const EXPLICIT_SUBJECT_PATTERNS: readonly RegExp[] = [
+  /\b(?:about|featuring|feature|promote|show|showing)\s+(.+?)(?=$|[.!?]|\s+(?:but|without|with|for|on|in|to|because)\b)/i,
+];
+
+const SUBJECT_FILLER_PATTERN = /^(?:sharing|splitting|cutting|breaking|showing|featuring|promoting)\s+/i;
+const SUBJECT_DETERMINER_PATTERN = /^(?:(?:our|the|a|an|one|this|that|some|single)\s+)+/i;
+const OPEN_ENDED_SUBJECTS = new Set(["content", "post", "reel", "story", "photo", "carousel", "idea", "something", "dessert", "desserts", "shareable", "today"]);
+
+function extractExplicitRequestSubject(text: string): string | null {
+  for (const pattern of EXPLICIT_SUBJECT_PATTERNS) {
+    const match = pattern.exec(text);
+    const rawSubject = match?.[1];
+    if (rawSubject === undefined) {
+      continue;
+    }
+    const subject = rawSubject
+      .replace(SUBJECT_FILLER_PATTERN, "")
+      .replace(SUBJECT_DETERMINER_PATTERN, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const normalized = normalizeForSubjectMatch(subject);
+    if (subject.length > 0 && !OPEN_ENDED_SUBJECTS.has(normalized)) {
+      return subject;
+    }
+  }
+  return null;
+}
+
+function explicitSubjectFromRequest(creativeInput: CreativeInput, products: Product[]): ResolvedCreativeGrounding | null {
+  const requestText = nonEmpty(creativeInput.requestText);
+  if (requestText === null) {
+    return null;
+  }
+
+  const explicitSubject = extractExplicitRequestSubject(requestText);
+  if (explicitSubject === null) {
+    return null;
+  }
+
+  const matchedProduct = productMentionInText(explicitSubject, products);
+  const productName = matchedProduct === null ? null : nonEmpty(matchedProduct.name);
+  return {
+    subject: explicitSubject,
+    subjectKind: matchedProduct === null ? "topic" : "product",
+    subjectSource: "stated",
+    subjectGrounding: null,
+    productId: matchedProduct?.id ?? null,
+    productName,
+    supportingFacts: [],
+  };
+}
+
 // Only three of the five recommendation types can honestly name a finished product, and the other
 // two say so themselves:
 //
@@ -185,6 +291,11 @@ export function resolveCreativeGrounding(input: ResolveCreativeGroundingInput): 
       productName,
       supportingFacts: facts(creativeInput.reason, creativeInput.evidenceSummary),
     };
+  }
+
+  const explicitRequestSubject = explicitSubjectFromRequest(creativeInput, products);
+  if (explicitRequestSubject !== null) {
+    return explicitRequestSubject;
   }
 
   // --- 2. An immediate-execution request, when something is capturable right now ------------------

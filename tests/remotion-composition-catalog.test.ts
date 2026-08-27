@@ -96,6 +96,7 @@ test("the default props are a complete, JSON-serializable, renderable input", ()
   assert.deepEqual(roundTripped, WARM_OPEN_DEFAULT_PROPS);
 
   assert.doesNotThrow(() => warmOpenDurationInFrames(WARM_OPEN_DEFAULT_PROPS.durationSeconds));
+  assert.equal(WARM_OPEN_DEFAULT_PROPS.visualTreatment, "hearth_illustration");
   for (const field of ["kicker", "headline", "brandMark", "cta"] as const) {
     assert.equal(typeof WARM_OPEN_DEFAULT_PROPS[field], "string");
     assert.ok(WARM_OPEN_DEFAULT_PROPS[field].length > 0, `${field} must not be empty`);

@@ -30,9 +30,18 @@ export const CREATE_NOW_FORMAT_OPTIONS: ReadonlyArray<{ value: CreateNowFormatCh
 ];
 
 export const CREATE_NOW_DEFAULT_FORMAT_CHOICE: CreateNowFormatChoice = CREATE_NOW_AI_FORMAT_CHOICE;
+export const CREATE_NOW_TEXT_FIELD_NAME = "text";
+export const CREATE_NOW_PRODUCT_FIELD_NAME = "productId";
+export const CREATE_NOW_FORMAT_FIELD_NAME = "create-now-format";
 
 export function toCreativeFormatHint(choice: CreateNowFormatChoice): CreativeFormat | null {
   return isCreativeFormat(choice) ? choice : null;
+}
+
+export function toCreateNowFormatChoice(value: FormDataEntryValue | null): CreateNowFormatChoice {
+  return typeof value === "string" && (value === CREATE_NOW_AI_FORMAT_CHOICE || isCreativeFormat(value))
+    ? value
+    : CREATE_NOW_DEFAULT_FORMAT_CHOICE;
 }
 
 // --- product -----------------------------------------------------------------------------------
@@ -65,8 +74,34 @@ export type CreateNowFormValues = {
 };
 
 export type CreateNowRequestResult = { ok: true; request: CreativeRequest } | { ok: false; message: string };
+export type CreateNowSubmittedFormValues = {
+  text: string;
+  productId: string;
+  formatChoice: CreateNowFormatChoice;
+};
 
 export const CREATE_NOW_EMPTY_TEXT_MESSAGE = "Type what you want to make first.";
+
+function stringField(value: FormDataEntryValue | null): string {
+  return typeof value === "string" ? value : "";
+}
+
+export function readCreateNowSubmittedFormValues(formData: Pick<FormData, "get">): CreateNowSubmittedFormValues {
+  return {
+    text: stringField(formData.get(CREATE_NOW_TEXT_FIELD_NAME)),
+    productId: stringField(formData.get(CREATE_NOW_PRODUCT_FIELD_NAME)),
+    formatChoice: toCreateNowFormatChoice(formData.get(CREATE_NOW_FORMAT_FIELD_NAME)),
+  };
+}
+
+export function buildCreateNowRequestFromSubmittedForm(formData: Pick<FormData, "get">, products: Product[]): CreateNowRequestResult {
+  const submitted = readCreateNowSubmittedFormValues(formData);
+  return buildCreateNowRequest({
+    text: submitted.text,
+    product: findSelectableCreateNowProduct(products, submitted.productId),
+    formatChoice: submitted.formatChoice,
+  });
+}
 
 // The only required field is text, and "required" means "has a non-whitespace character in it" --
 // nothing else about the owner's sentence is inspected, corrected or parsed. In particular no

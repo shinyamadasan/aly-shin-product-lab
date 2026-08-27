@@ -36,6 +36,7 @@ export function RemotionRoot() {
       fps={REMOTION_COMPOSITION_FPS}
       durationInFrames={warmOpenDurationInFrames(WARM_OPEN_DEFAULT_DURATION_SECONDS)}
       defaultProps={{
+        visualTreatment: "hearth_illustration",
         kicker: "Baked this morning",
         headline: "The kind of loaf that makes a room go quiet.",
         supportingLine: "Slow-proofed overnight. Out of the oven at seven.",

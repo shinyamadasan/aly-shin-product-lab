@@ -13,6 +13,12 @@ import type { CreativeInput } from "./creative-input.ts";
 //   wantsNoFreshCapture     -- "there will be no shoot at all". H1-B. Not a point on the effort
 //                              scale and not a time: a request for a smaller shoot is still a
 //                              request for a shoot, and "today" says when rather than whether.
+//   wantsNoReelCapture      -- "a selected Reel must not require new filming". It deliberately does
+//                              NOT mean no fresh photography.
+//   wantsRealWorldCapture   -- "the request asks to show actual/real product evidence". This is
+//                              not a general subject parser; it only prevents camera-less
+//                              Reel production from being offered for explicit proof/documentation
+//                              asks.
 //
 // The first two are built from one shared term list rather than two hand-maintained regexes, so they
 // can never drift into disagreeing about whether "quick" is an immediacy word. The simple-production
@@ -65,10 +71,9 @@ export function wantsImmediateExecution(input: CreativeInput): boolean {
 // require the photoAllowed/videoAllowed/capturePreference ontology H1-B explicitly does not build.
 //
 // PRECISION OVER RECALL, deliberately and asymmetrically. This is the only predicate in the file
-// that REMOVES capability: a true answer suppresses the H1-A current-subject override, removes
-// capture_new from the production vocabulary, removes Reel from the Stage 1 menu, and turns an
-// explicit formatHint of reel into a deterministic pre-generation refusal. The two errors therefore
-// cost wildly different amounts:
+// that REMOVES capability: a true answer suppresses the H1-A current-subject override and removes
+// capture_new from the production vocabulary, which now narrows Reel into the template-only path.
+// The two errors therefore cost wildly different amounts:
 //
 //   missed refusal  -- the owner gets a plan involving a camera and asks again. Cheap.
 //   false refusal   -- the system silently strips photography, and Reel, from a business whose
@@ -108,10 +113,9 @@ export function wantsImmediateExecution(input: CreativeInput): boolean {
 //
 // The medium distinction is the whole of R2. "I can't film today" removes video and says nothing
 // about photography; "No photos today" removes photography and says nothing about video. Reading
-// either as a total ban strips capture_new, Reel and the H1-A override on evidence that only ever
-// covered half the question. A single-medium restriction is a real constraint the owner expressed,
-// but it is not THIS constraint, and H1-B deliberately does not model it (see the limitation note
-// below).
+// either as a total ban strips capture_new and the H1-A override on evidence that only ever covered
+// half the question. A single-medium restriction is a real constraint the owner expressed, but it is
+// not THIS constraint, and H1-B deliberately does not model it (see the limitation note below).
 
 // The two media, kept apart on purpose: an all-capture refusal is recognisable precisely because it
 // names both, or refuses capture generically without naming either.
@@ -195,4 +199,51 @@ const NO_FRESH_CAPTURE_RULES: ReadonlyArray<{ name: string; pattern: RegExp }> =
 export function wantsNoFreshCapture(input: CreativeInput): boolean {
   const text = input.requestText ?? "";
   return NO_FRESH_CAPTURE_RULES.some((rule) => rule.pattern.test(text));
+}
+
+// --- D1: "no filming for this Reel" -------------------------------------------------------------
+//
+// H1-B's all-capture predicate must stay high-precision because it removes photography too. D1 adds
+// a narrower question for Reel: HAS THE OWNER CLEARLY SAID THIS SHOULD NOT USE NEW FILMED FOOTAGE?
+// This constrains Reel's capture_new source only; it is not used by the same-day photo override.
+const NO_REEL_CAPTURE_RULES: ReadonlyArray<{ name: string; pattern: RegExp }> = [
+  {
+    name: "zero-filming",
+    pattern: /\bzero[-\s]+(?:filming|footage|capture)\b/i,
+  },
+  {
+    name: "clause-initial-no-filming",
+    pattern: /\bno[-\s]+(?:filming|new[-\s]+footage|recording(?:[-\s]+new[-\s]+footage)?)\b/i,
+  },
+  {
+    name: "without-new-footage",
+    pattern: /\bwithout\s+(?:recording\s+)?(?:new[-\s]+)?(?:footage|filming)\b/i,
+  },
+  {
+    name: "dont-record-new-footage",
+    pattern: /(?:don'?t|do not)\s+(?:want to\s+|make me\s+)?(?:film|shoot|record|capture)\s+(?:anything|new[-\s]+footage)\b/i,
+  },
+];
+
+export function wantsNoReelCapture(input: CreativeInput): boolean {
+  const text = input.requestText ?? "";
+  return wantsNoFreshCapture(input) || NO_REEL_CAPTURE_RULES.some((rule) => rule.pattern.test(text));
+}
+
+// --- D1: "show the real thing" ------------------------------------------------------------------
+//
+// This predicate narrows only when the owner explicitly asks for the actual/real product evidence
+// that a deterministic graphic cannot truthfully provide. It is intentionally smaller than the
+// prompt's creative judgement: a Reel about "brownie cravings" can be template_only; a Reel showing
+// the "actual brownie texture" is capture_new if capture is available.
+const REAL_WORLD_CAPTURE_PATTERNS: readonly RegExp[] = [
+  /\b(?:actual|real)\b.{0,64}\b(?:appearance|look|looks?|texture|crumb|swirl|inside|center|centre|process|bake|baking|kitchen|counter|tray|person|people|customer|staff|location|event|product|brownies?|behind[-\s]?the[-\s]?scenes|proof|cut|cutting|break|breaking|pulling\s+apart|mixing|pouring|packaging)\b/i,
+  /\b(?:show|showing|prove|proving|document|documenting)\b.{0,64}\b(?:actual|real|really|in\s+real\s+life|proof|behind[-\s]?the[-\s]?scenes)\b/i,
+  /(?:^|[\s.,;:!?])(?:film|filming|shoot|shooting|record|recording|capture|capturing)\b.{0,64}\b(?:us|our|actual|real|brownies?|product|kitchen|location|event|customer|staff|cut|cutting|break|breaking|pulling\s+apart|bake|baking|mixing|pouring|packaging)\b/i,
+  /\bproof\b.{0,80}\b(?:really\s+looks?|looks?\s+like|actual|real|texture|process|event|product|brownies?)\b/i,
+];
+
+export function wantsRealWorldCapture(input: CreativeInput): boolean {
+  const text = input.requestText ?? "";
+  return REAL_WORLD_CAPTURE_PATTERNS.some((rule) => rule.test(text));
 }

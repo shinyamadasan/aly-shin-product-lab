@@ -130,6 +130,100 @@ test("a stated subject with no resolvable product is a topic, not an implied pro
   assert.equal(grounding.productName, null);
 });
 
+test("an explicit request product subject in prose outranks a different recommendation", () => {
+  const grounding = resolve({
+    creativeInput: buildCreativeInputFromRequest({ text: "Make a Reel about sharing one brownie." }),
+    recommendations: [recommendation({ explanation: "Blondies has never appeared in the Journey." })],
+    products: [product({ id: "brownies", name: "Brownies" }), product({ id: "blondies", name: "Blondies" })],
+  });
+
+  assert.equal(grounding.subject, "brownie");
+  assert.equal(grounding.productId, "brownies");
+  assert.equal(grounding.productName, "Brownies");
+  assert.equal(grounding.subjectKind, "product");
+  assert.equal(grounding.subjectSource, "stated");
+  assert.equal(grounding.subjectGrounding, null);
+  assert.notEqual(grounding.subject, "Blondies");
+});
+
+test("an explicit request for Blondies is preserved instead of being redirected to Brownies", () => {
+  const grounding = resolve({
+    creativeInput: buildCreativeInputFromRequest({ text: "Make a Reel about Blondies." }),
+    recommendations: [
+      recommendation({
+        id: "no_marketing_history:brownies",
+        title: "Introduce Brownies",
+        explanation: "Brownies has never appeared in the Journey.",
+        suggestedNextAction: "Create an introductory piece of content for Brownies.",
+        evidence: { productId: "brownies", productName: "Brownies", entryCount: 0 },
+      }),
+    ],
+    products: [product({ id: "brownies", name: "Brownies" }), product({ id: "blondies", name: "Blondies" })],
+  });
+
+  assert.equal(grounding.subject, "Blondies");
+  assert.equal(grounding.productId, "blondies");
+  assert.equal(grounding.productName, "Blondies");
+  assert.equal(grounding.subjectSource, "stated");
+});
+
+test("a generic dessert request still does not select a catalog product by text alone", () => {
+  const grounding = resolve({
+    creativeInput: buildCreativeInputFromRequest({ text: "Make a simple dessert Reel." }),
+    recommendations: [],
+    journal: [],
+    products: [product({ id: "brownies", name: "Brownies" }), product({ id: "blondies", name: "Blondies" })],
+  });
+
+  assert.equal(grounding.subjectKind, "brand");
+  assert.equal(grounding.productId, null);
+  assert.equal(grounding.productName, null);
+});
+
+test("an explicit non-product topic in prose is not replaced by a grounded product", () => {
+  const grounding = resolve({
+    creativeInput: buildCreativeInputFromRequest({ text: "Make a Reel about coffee." }),
+    recommendations: [
+      recommendation({
+        id: "no_marketing_history:brownies",
+        title: "Introduce Brownies",
+        explanation: "Brownies has never appeared in the Journey.",
+        suggestedNextAction: "Create an introductory piece of content for Brownies.",
+        evidence: { productId: "brownies", productName: "Brownies", entryCount: 0 },
+      }),
+    ],
+    products: [product({ id: "brownies", name: "Brownies" })],
+  });
+
+  assert.equal(grounding.subject, "coffee");
+  assert.equal(grounding.subjectKind, "topic");
+  assert.equal(grounding.productId, null);
+  assert.equal(grounding.productName, null);
+  assert.equal(grounding.subjectSource, "stated");
+});
+
+test("an explicit prose product subject beats unrelated recommendation and Journey context", () => {
+  const grounding = resolve({
+    creativeInput: buildCreativeInputFromRequest({ text: "Show our brownie in a simple Reel." }),
+    recommendations: [
+      recommendation({
+        id: "no_marketing_history:blondies",
+        title: "Introduce Blondies",
+        explanation: "Blondies has never appeared in the Journey.",
+        suggestedNextAction: "Create an introductory piece of content for Blondies.",
+        evidence: { productId: "blondies", productName: "Blondies", entryCount: 0 },
+      }),
+    ],
+    journal: [journeyEntry({ id: "journey-blondies", productId: "blondies", whatWasMade: "Tested Blondies with more brown butter" })],
+    products: [product({ id: "brownies", name: "Brownies" }), product({ id: "blondies", name: "Blondies" })],
+  });
+
+  assert.equal(grounding.subject, "brownie");
+  assert.equal(grounding.productId, "brownies");
+  assert.equal(grounding.productName, "Brownies");
+  assert.equal(grounding.subjectSource, "stated");
+});
+
 // ---- B, T: Opportunity-origin compatibility ----------------------------------------------------
 
 test("an Opportunity-backed job keeps the Opportunity's own subject and never re-selects", () => {

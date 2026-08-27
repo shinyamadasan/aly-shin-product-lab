@@ -83,6 +83,7 @@ export function warmOpenPropsFromProductionSpec(spec: ProductionShortVideoSpecV1
 
   return {
     props: {
+      visualTreatment: "typography_only",
       kicker: deriveKicker(spec),
       headline: spec.copy.headline,
       supportingLine: deriveSupportingLine(spec),

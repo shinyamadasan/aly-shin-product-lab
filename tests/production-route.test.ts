@@ -40,9 +40,8 @@ test("resolveProductionRoute maps every routed format x productionSource combina
     ["photo", "generate_visual", { workerType: "generative_image", assetKind: "image" }],
     ["photo", "template_only", { workerType: "static_renderer", assetKind: "image" }],
 
-    // Reel. capture_new is the only combination the stored contract permits TODAY; template_only is
-    // the synthetic future row that Wave D unlocks once a renderer exists. The table defines both
-    // now precisely so Wave D changes validators, not routing.
+    // Reel. capture_new stays the filmed path; template_only is the deterministic Template Reel
+    // path. generate_visual remains absent because there is no generated video source.
     ["reel", "capture_new", { workerType: "external", assetKind: "short_video" }],
     ["reel", "template_only", { workerType: "remotion", assetKind: "short_video" }],
   ];
@@ -190,7 +189,7 @@ test("the app-creatable worker set is a STRICT SUBSET of what the runner can cla
   }
 
   const workerOnly = ASSET_JOB_WORKER_TYPES.filter((workerType) => !(EXECUTABLE_ASSET_JOB_WORKER_TYPES as readonly string[]).includes(workerType));
-  assert.deepEqual([...workerOnly], ["remotion"], "the only worker the app may not create is the Remotion one, until C2B activates it");
+  assert.deepEqual([...workerOnly], ["remotion"], "the only worker the default app registry may not create is the server-gated Remotion one");
 });
 
 test("only future worker types stay outside the Asset Job worker vocabulary", () => {

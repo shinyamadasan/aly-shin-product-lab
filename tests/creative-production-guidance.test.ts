@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { buildCreativeInputFromRequest } from "../src/lib/creative-input.ts";
 import { CREATIVE_FORMATS, type CreativeFormat } from "../src/lib/creative-formats.ts";
-import { CREATIVE_FRAMINGS, CREATIVE_MOVEMENTS } from "../src/lib/creative-production-guidance.ts";
+import { CREATIVE_FRAMINGS, CREATIVE_MOVEMENTS, CREATIVE_TEMPLATE_REEL_SHOTS_MAX } from "../src/lib/creative-production-guidance.ts";
 import { buildCreativeBodyJsonSchema, validateCreativeBody, type CreativeProductionConstraint } from "../src/lib/creative-generation/contracts.ts";
 import { assembleCreativePackageV2 } from "../src/lib/creative-generation/assemble.ts";
 import {
@@ -215,11 +215,15 @@ test("A. the generation schema requires the new production keys on exactly the f
   assert.deepEqual(itemsOf("carousel", "slides").required, ["heading", "body", "visualDirection", "framing"]);
   assert.deepEqual(itemsOf("story", "frames").required, ["visualDirection", "text", "approxSeconds", "framing"]);
 
-  // A Reel is filmed whatever the request says, so its schema is capture-shaped with no constraint
-  // supplied at all -- productionSourcesForFormat narrows it on the format's own account.
+  // A capture-only Reel is still capture-shaped.
+  assert.deepEqual(
+    (buildCreativeBodyJsonSchema("reel", CAPTURE_ONLY).properties as Record<string, { items?: { required: string[] } }>).shots?.items?.required,
+    ["direction", "onScreenText", "approxSeconds", "framing", "movement"],
+  );
+  // The default D1 schema leaves framing conditional until productionSource is chosen.
   assert.deepEqual(
     (buildCreativeBodyJsonSchema("reel").properties as Record<string, { items?: { required: string[] } }>).shots?.items?.required,
-    ["direction", "onScreenText", "approxSeconds", "framing", "movement"],
+    ["direction", "onScreenText", "approxSeconds", "movement"],
   );
 
   // S6 adds nothing to Carousel beyond framing: no mediaType, no duration, no movement.
@@ -282,6 +286,34 @@ test("A. a reel shot's movement KEY is required even though its value may be nul
   void movement;
   assert.equal(validateCreativeBody("reel", reelBodyWithShot(withoutMovement)).ok, false, "an omitted movement key is not a decision");
   assert.equal(validateCreativeBody("reel", reelBodyWithShot({ ...withoutMovement, movement: null })).ok, true);
+});
+
+test("A. template-only Reel generation omits framing and is limited to two beats", () => {
+  const templateOnly: CreativeProductionConstraint = { formats: CREATIVE_FORMATS, productionSources: ["template_only"] };
+  const shots = (buildCreativeBodyJsonSchema("reel", templateOnly).properties as Record<string, { maxItems?: number; items: { required: string[]; properties: Record<string, unknown> } }>).shots;
+  assert.equal(shots.maxItems, CREATIVE_TEMPLATE_REEL_SHOTS_MAX);
+  assert.deepEqual(shots.items.required, ["direction", "onScreenText", "approxSeconds", "movement"]);
+  assert.equal("framing" in shots.items.properties, false);
+
+  const body = {
+    ...bodyFor("reel"),
+    productionSource: "template_only",
+    shots: [
+      { direction: "First typography beat.", onScreenText: "one bite", approxSeconds: 3, movement: null },
+      { direction: "Second reveal beat.", onScreenText: "gone", approxSeconds: 3, movement: null },
+    ],
+    spokenScript: null,
+    audioDirection: "Silent; no voiceover or music.",
+  };
+  assert.equal(validateCreativeBody("reel", body).ok, true);
+  assert.equal(
+    validateCreativeBody("reel", {
+      ...body,
+      shots: [...(body.shots as unknown[]), { direction: "Third beat.", onScreenText: "oops", approxSeconds: 2, movement: null }],
+    }).ok,
+    false,
+  );
+  assert.equal(validateCreativeBody("reel", { ...body, shots: [{ direction: "Beat.", onScreenText: null, approxSeconds: 6, framing: "close_up", movement: null }] }).ok, false);
 });
 
 test("A. reel approxSeconds must be an integer from 1 to 10, and is required per shot", () => {
@@ -733,7 +765,7 @@ test("E-A/R1. the artifact rule is PROMPT-ONLY -- it reaches no schema, validato
   }
 
   // And the generation contract still asks for exactly the S6 fields, unchanged by R1.
-  const reelShot = (buildCreativeBodyJsonSchema("reel").properties as Record<string, { items: { required: string[] } }>).shots.items.required;
+  const reelShot = (buildCreativeBodyJsonSchema("reel", CAPTURE_ONLY).properties as Record<string, { items: { required: string[] } }>).shots.items.required;
   assert.deepEqual(reelShot, ["direction", "onScreenText", "approxSeconds", "framing", "movement"]);
   assert.equal((buildCreativeBodyJsonSchema("reel").required as string[]).includes("targetDurationSeconds"), false);
   // Under the capture constraint S6 always assumed, Photo's framing is required exactly as it was.

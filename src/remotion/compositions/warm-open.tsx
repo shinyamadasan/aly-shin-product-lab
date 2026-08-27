@@ -40,7 +40,30 @@ const BEATS = {
   closing: { start: 0.5375, duration: 0.15, step: 0.03125 },
 } as const;
 
-export function WarmOpen({ kicker, headline, supportingLine, brandMark, cta }: WarmOpenProps) {
+function NeutralEditorialAccent() {
+  return (
+    <div
+      style={{
+        width: "100%",
+        height: 130,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        style={{
+          width: "72%",
+          height: 2,
+          backgroundColor: WARM_PALETTE.ink,
+          opacity: 0.14,
+        }}
+      />
+    </div>
+  );
+}
+
+export function WarmOpen({ visualTreatment, kicker, headline, supportingLine, brandMark, cta }: WarmOpenProps) {
   const { fps, durationInFrames } = useVideoConfig();
   const frame = useCurrentFrame();
 
@@ -65,9 +88,15 @@ export function WarmOpen({ kicker, headline, supportingLine, brandMark, cta }: W
 
   return (
     <VerticalCanvas>
-      <MediaFrame window={at(BEATS.plate)} totalDurationInFrames={durationInFrames}>
-        <HearthIllustration />
-      </MediaFrame>
+      {visualTreatment === "hearth_illustration" ? (
+        <MediaFrame window={at(BEATS.plate)} totalDurationInFrames={durationInFrames}>
+          <HearthIllustration />
+        </MediaFrame>
+      ) : (
+        <Reveal window={at(BEATS.plate)} riseFrom={18} style={{ width: "100%" }}>
+          <NeutralEditorialAccent />
+        </Reveal>
+      )}
 
       {/* The gap under the plate is the largest in the composition on purpose: it is the pause
           before the video says anything, and it is doing as much work as the type below it. */}

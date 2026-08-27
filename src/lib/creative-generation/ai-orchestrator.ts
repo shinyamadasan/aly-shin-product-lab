@@ -1,8 +1,9 @@
-import type { AiTextFailureReason, AiTextProvider, AiTextRequest } from "../ai/ai-text-provider.ts";
+import type { AiTextFailure, AiTextFailureReason, AiTextProvider, AiTextRequest } from "../ai/ai-text-provider.ts";
 import type { CreativeFormat } from "../creative-formats.ts";
 import type { CreativeBody, CreativeFormatDecision } from "./contracts.ts";
 import {
   buildUserFormatDecision,
+  findImpossibleSelectedFormatRequest,
   resolveCreativeProductionConstraint,
   validateCreativeBody,
   validateFormatDecision,
@@ -29,6 +30,15 @@ export type CreativeAiInvocationTraceEntry = {
   failureReason?: AiTextFailureReason;
   durationMs: number | null;
   action: CreativeAiTraceAction;
+  // Wave D1 R1. Present on PROVIDER failures only -- never on a success, and never on an
+  // orchestrator-side validation failure (there is no provider message to report when the model
+  // answered and the answer simply did not validate).
+  //
+  // Wave D1 lost a live regression to `process_error` and could not say why, because both providers
+  // already computed exactly the facts needed and this function dropped them on the floor. These
+  // two fields are that drop, undone.
+  message?: string;
+  diagnostics?: Record<string, unknown>;
 };
 
 export type CreativeAiOrchestratorOptions = {
@@ -54,6 +64,7 @@ export type CreativeAiOrchestrationFailure = {
   failedStage: CreativeAiStage;
   reason: AiTextFailureReason;
   trace: CreativeAiInvocationTraceEntry[];
+  message?: string;
 };
 
 export type CreativeAiOrchestrationResult = CreativeAiOrchestrationSuccess | CreativeAiOrchestrationFailure;
@@ -102,6 +113,20 @@ function validateFormatDecisionResult(value: unknown, constraint: CreativeProduc
 function validateBodyResult(format: CreativeFormat, value: unknown, constraint: CreativeProductionConstraint): ValidationResult<CreativeBody> {
   const validation = validateCreativeBody(format, value, constraint);
   return validation.ok ? { ok: true, value: validation.body } : { ok: false, reason: "schema_invalid" };
+}
+
+// R1. The only place a provider failure's own account of itself enters the trace.
+//
+// `message` is gated on the provider's explicit `messageSafe === true`. Absent is read as unsafe,
+// so a provider that says nothing gets nothing persisted -- the safe default, and the one a
+// future third provider inherits without having to know this rule exists. `diagnostics` needs no
+// gate: it is structured operational metadata by construction in both adapters (exit code, signal,
+// byte counts, errno) and never carries stream content.
+function providerFailureDetail(failure: AiTextFailure): Pick<CreativeAiInvocationTraceEntry, "message" | "diagnostics"> {
+  return {
+    ...(failure.messageSafe === true && failure.message ? { message: failure.message } : {}),
+    ...(failure.diagnostics ? { diagnostics: failure.diagnostics } : {}),
+  };
 }
 
 function fallbackAction(hasNextRoute: boolean, reason: AiTextFailureReason): CreativeAiTraceAction {
@@ -195,6 +220,7 @@ async function executeStage<T>(input: {
         failureReason: result.reason,
         durationMs,
         action: hasRetry ? "retry_same_provider" : fallbackAction(hasFallback, result.reason),
+        ...providerFailureDetail(result),
       });
 
       if (result.reason === "cancelled") {
@@ -261,6 +287,17 @@ export async function runCreativeGenerationWithProviders(
   } else {
     formatDecision = buildUserFormatDecision(input.context.creativeInput.formatHint);
     formatChosenBy = "user";
+  }
+
+  const impossibleBody = findImpossibleSelectedFormatRequest(input.context.creativeInput, formatDecision.format);
+  if (impossibleBody !== null) {
+    return {
+      ok: false,
+      failedStage: "creative_body",
+      reason: "schema_invalid",
+      trace,
+      message: impossibleBody.message,
+    };
   }
 
   const bodyResult = await executeStage({

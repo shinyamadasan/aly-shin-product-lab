@@ -228,6 +228,56 @@ test("C2B-3A ON review seam rejects a package the current composition would lose
   assert.deepEqual(inserted, []);
 });
 
+test("D1 ON review seam rejects template-only Reels that promise unsupported custom visual execution", async () => {
+  const inserted: Partial<AssetJobRow>[] = [];
+  const unsupported = {
+    ...reelContent(2),
+    headline: "The Brownie Split Test",
+    cta: "Which half are you taking?",
+    shots: [
+      {
+        direction: "Draw a rounded brownie and animate a dashed dividing line across it.",
+        onScreenText: "one brownie. two people.",
+        approxSeconds: 4,
+      },
+      {
+        direction: "Show the lopsided split diagram with yours/mine labels attached to the pieces.",
+        onScreenText: "somehow one half is always bigger.",
+        approxSeconds: 5,
+      },
+    ],
+    targetDurationSeconds: 9,
+  };
+
+  const created = await createAssetJobForReadyCreativePackage(clientForPackage(unsupported, inserted), "pkg-1", {
+    activation: PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW,
+  });
+
+  assert.equal(created.ok, false);
+  assert.match(created.ok ? "" : created.message, /cannot execute custom product visuals/);
+  assert.deepEqual(inserted, []);
+});
+
+test("D1 ON review seam rejects template-only Reels outside warm-open duration capability before clamp", async () => {
+  const inserted: Partial<AssetJobRow>[] = [];
+  const elevenSeconds = {
+    ...reelContent(2),
+    shots: [
+      { direction: "First typography beat introduces the setup.", onScreenText: "one", approxSeconds: 5 },
+      { direction: "Second text beat lands as the reveal.", onScreenText: "two", approxSeconds: 6 },
+    ],
+    targetDurationSeconds: 11,
+  };
+
+  const created = await createAssetJobForReadyCreativePackage(clientForPackage(elevenSeconds, inserted), "pkg-1", {
+    activation: PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW,
+  });
+
+  assert.equal(created.ok, false);
+  assert.match(created.ok ? "" : created.message, /total duration must be 6-10 seconds/);
+  assert.deepEqual(inserted, []);
+});
+
 test("C2B-3A ON review seam rejects reel + generate_visual before queue creation even with a caller-supplied image route", async () => {
   const inserted: Partial<AssetJobRow>[] = [];
   const created = await createAssetJobForReadyCreativePackage(clientForPackage(reelContent(2, "generate_visual"), inserted), "pkg-1", {
@@ -241,8 +291,8 @@ test("C2B-3A ON review seam rejects reel + generate_visual before queue creation
   assert.deepEqual(inserted, []);
 });
 
-test("C2B-3A does not expand Reel generator authoring", () => {
-  assert.deepEqual([...productionSourcesForFormat("reel")], ["capture_new"]);
+test("C2B-3A/D1 Reel generator authoring excludes generated visual sources", () => {
+  assert.deepEqual([...productionSourcesForFormat("reel")], ["capture_new", "template_only"]);
 });
 
 test("C2B-3A preview prepares signed MP4 video rendering without public URL storage", () => {

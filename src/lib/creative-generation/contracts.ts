@@ -5,6 +5,7 @@ import {
   CREATIVE_PRODUCTION_SOURCES,
   CREATIVE_SHOT_SECONDS_MAX,
   CREATIVE_SHOT_SECONDS_MIN,
+  CREATIVE_TEMPLATE_REEL_SHOTS_MAX,
   isCreativeFraming,
   isCreativeMovement,
   isCreativeProductionSource,
@@ -15,8 +16,10 @@ import {
   type CreativeProductionSource,
 } from "../creative-production-guidance.ts";
 import type { CreativeInput } from "../creative-input.ts";
-import { wantsNoFreshCapture } from "../creative-request-intent.ts";
+import { wantsNoFreshCapture, wantsNoReelCapture, wantsRealWorldCapture } from "../creative-request-intent.ts";
+import { genericEngagementBaitReason, requestInvitesDirectInteraction } from "../creative-engagement-policy.ts";
 import type { CreativeVisualBrief, PlatformVariantV2 } from "../creative-packages.ts";
+import { validateTemplateReelV1GeneratedBody } from "../template-reel-v1-capability.ts";
 
 // Content Creation MVP S3B -- the two model-independent generation contracts.
 //
@@ -33,20 +36,17 @@ import type { CreativeVisualBrief, PlatformVariantV2 } from "../creative-package
 
 // --- H1-B: the production constraint the owner's own words impose -------------------------------
 //
-// Two enums that were independent under S6 stop being independent here. A Reel is filmed, so an
-// owner who has said they will not film has not merely expressed a preference among production
-// sources -- they have removed a format. Rather than let the model discover that by returning
-// something impossible and failing validation, the constraint narrows the vocabulary BEFORE the
-// model is asked, in both stages.
+// Two enums that were independent under S6 stop being independent here. An owner who has said they
+// will not film or photograph has removed capture_new as a production source. The constraint narrows
+// the vocabulary BEFORE the model is asked, in both stages.
 //
 // Deliberately derived, never stored. No structured field was added to CreativeInput for this,
 // because no UI control exists that would set one; the only evidence is the owner's sentence, and it
 // is read in exactly one place (creative-request-intent.ts).
 
-// Reel is excluded and only Reel is excluded. That is not an oversight about Story: a Story FRAME
-// can be a still, so Story survives the constraint by choosing stills, whereas a Reel with no
-// footage is not a smaller Reel, it is nothing. See §10/§11 of the H1-B brief.
-export const ZERO_CAPTURE_FORMATS: readonly CreativeFormat[] = CREATIVE_FORMATS.filter((format) => format !== "reel");
+// D1: Reel is no longer excluded. A zero-capture Reel can now be a narrowly valid deterministic
+// template Reel; Stage 1 may still choose another format when that better fits the idea.
+export const ZERO_CAPTURE_FORMATS: readonly CreativeFormat[] = CREATIVE_FORMATS;
 
 export const ZERO_CAPTURE_PRODUCTION_SOURCES: readonly CreativeProductionSource[] = CREATIVE_PRODUCTION_SOURCES.filter(
   (source) => source !== "capture_new",
@@ -55,53 +55,102 @@ export const ZERO_CAPTURE_PRODUCTION_SOURCES: readonly CreativeProductionSource[
 export type CreativeProductionConstraint = {
   formats: readonly CreativeFormat[];
   productionSources: readonly CreativeProductionSource[];
+  reelProductionSourceExclusions?: readonly CreativeProductionSource[];
+  // D1 CTA repair. True only when the OWNER'S OWN request asked for a mechanic whose whole point is
+  // a reply -- a poll, a quiz, a vote, a contest. It rides on the constraint because this object is
+  // already "what this specific request permits", which is exactly the question being asked.
+  //
+  // Absent means absent: an ordinary request never sets it, so the engagement-bait guard below is on
+  // by default and stands down only when the owner asked for the interaction.
+  invitesDirectInteraction?: boolean;
 };
 
 export const UNCONSTRAINED_PRODUCTION: CreativeProductionConstraint = {
   formats: CREATIVE_FORMATS,
   productionSources: CREATIVE_PRODUCTION_SOURCES,
+  reelProductionSourceExclusions: [],
 };
 
 // Default behaviour is unchanged and unchanged by design: fresh capture stays allowed unless the
 // owner explicitly says otherwise, and silence is not a refusal.
 export function resolveCreativeProductionConstraint(creativeInput: CreativeInput): CreativeProductionConstraint {
-  return wantsNoFreshCapture(creativeInput)
-    ? { formats: ZERO_CAPTURE_FORMATS, productionSources: ZERO_CAPTURE_PRODUCTION_SOURCES }
-    : UNCONSTRAINED_PRODUCTION;
+  const invitesDirectInteraction = requestInvitesDirectInteraction(creativeInput.requestText);
+  const productionSources = wantsNoFreshCapture(creativeInput) ? ZERO_CAPTURE_PRODUCTION_SOURCES : CREATIVE_PRODUCTION_SOURCES;
+  const reelProductionSourceExclusions = new Set<CreativeProductionSource>();
+
+  if (wantsNoReelCapture(creativeInput)) {
+    reelProductionSourceExclusions.add("capture_new");
+  }
+  if (wantsNoFreshCapture(creativeInput)) {
+    reelProductionSourceExclusions.add("capture_new");
+  }
+  if (wantsRealWorldCapture(creativeInput)) {
+    reelProductionSourceExclusions.add("template_only");
+  }
+
+  if (productionSources === CREATIVE_PRODUCTION_SOURCES && reelProductionSourceExclusions.size === 0) {
+    // The shared frozen default is still returned for the ordinary case, so nothing about existing
+    // production behaviour changes. Only an interaction-inviting request needs its own object.
+    return invitesDirectInteraction ? { ...UNCONSTRAINED_PRODUCTION, invitesDirectInteraction } : UNCONSTRAINED_PRODUCTION;
+  }
+
+  return {
+    formats: ZERO_CAPTURE_FORMATS,
+    productionSources,
+    reelProductionSourceExclusions: [...reelProductionSourceExclusions],
+    ...(invitesDirectInteraction ? { invitesDirectInteraction } : {}),
+  };
 }
 
-// The per-format narrowing, applied on top of the request-level constraint. Reel forces capture_new
-// even with no constraint at all, because that is a property of the format rather than of the
-// request: this MVP has no video generation and no template-video renderer.
-//
-// The intersection is EMPTY for exactly one pair -- reel plus a zero-capture request -- and that
-// emptiness is the honest representation of an impossible combination rather than a special case.
+// The per-format narrowing, applied on top of the request-level constraint. Reel allows filmed
+// capture_new or deterministic template_only motion graphics. It still excludes generate_visual:
+// this system has no generated visual source for moving Reel footage.
 export function productionSourcesForFormat(
   format: CreativeFormat,
   constraint: CreativeProductionConstraint = UNCONSTRAINED_PRODUCTION,
 ): readonly CreativeProductionSource[] {
-  return format === "reel" ? constraint.productionSources.filter((source) => source === "capture_new") : constraint.productionSources;
+  const sources =
+    format === "reel"
+      ? constraint.productionSources.filter((source) => source === "capture_new" || source === "template_only")
+      : constraint.productionSources;
+
+  const reelExclusions = constraint.reelProductionSourceExclusions ?? [];
+  return format === "reel" && reelExclusions.length > 0
+    ? sources.filter((source) => !reelExclusions.includes(source))
+    : sources;
 }
 
 // H1-B §19 -- an explicitly hinted format that the request's own constraint makes impossible.
 //
-// Returned rather than worked around. "formatHint = reel" plus "I can't film anything" is a genuine
-// contradiction, and the two ways to resolve it silently are both dishonest: returning a Reel hands
-// the owner a plan they just said they cannot execute, and quietly substituting a Photo ignores the
-// format they explicitly asked for -- the exact failure formatHint exists to prevent. Refusing
-// before any model runs costs nothing and says what happened.
+// Returned rather than worked around when no existing production source can satisfy the hinted
+// format. D1 means "formatHint = reel" plus zero-capture is no longer automatically impossible,
+// because template_only can satisfy a suitable Reel without filming.
 export function findImpossibleFormatRequest(creativeInput: CreativeInput): { format: CreativeFormat; message: string } | null {
   const format = creativeInput.formatHint;
   if (format === null) {
     return null;
   }
+  return findImpossibleSelectedFormatRequest(creativeInput, format);
+}
+
+export function findImpossibleSelectedFormatRequest(
+  creativeInput: CreativeInput,
+  format: CreativeFormat,
+): { format: CreativeFormat; message: string } | null {
   const constraint = resolveCreativeProductionConstraint(creativeInput);
   if (productionSourcesForFormat(format, constraint).length > 0) {
     return null;
   }
+  if (format === "reel" && wantsNoReelCapture(creativeInput) && wantsRealWorldCapture(creativeInput)) {
+    return {
+      format,
+      message:
+        "This Reel asks to show real-world product/process proof while also requiring no new filming. Those requirements conflict. Allow filming, or change the concept to something that does not require real-world proof.",
+    };
+  }
   return {
     format,
-    message: `The request asks for ${format}, which requires filming, and also asks for no fresh photos or video. Choose a different format, or allow capture.`,
+    message: `The request asks for ${format}, but the request's production constraints leave no valid production source for that format. Choose a different format, or allow capture.`,
   };
 }
 
@@ -240,7 +289,7 @@ export type ReelCreativeBody = CreativeBodyCommon & {
     direction: string;
     onScreenText: string | null;
     approxSeconds: number;
-    framing: CreativeFraming;
+    framing?: CreativeFraming;
     // Required KEY, nullable VALUE. Requiring the key forces a decision per shot; allowing null lets
     // that decision be "no movement", which is the right answer most of the time.
     movement: CreativeMovement | null;
@@ -389,17 +438,17 @@ function formatSchemaProperties(allowed: readonly CreativeProductionSource[]): R
     shots: {
       type: "array",
       minItems: 1,
+      ...(allowed.length === 1 && allowed[0] === "template_only" ? { maxItems: CREATIVE_TEMPLATE_REEL_SHOTS_MAX } : {}),
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["direction", "onScreenText", "approxSeconds", "framing", "movement"],
-        properties: {
+        required: ["direction", "onScreenText", "approxSeconds", ...framingRequiredKeys(mode), "movement"],
+        properties: withFraming({
           direction: { type: "string", minLength: 1 },
           onScreenText: { type: ["string", "null"] },
           approxSeconds: SHOT_SECONDS_SCHEMA,
-          framing: FRAMING_SCHEMA,
           movement: MOVEMENT_SCHEMA,
-        },
+        }, mode),
       },
     },
     spokenScript: { type: ["string", "null"] },
@@ -581,6 +630,9 @@ function validateFormatFields(format: CreativeFormat, value: Record<string, unkn
   }
   if (format === "reel") {
     if (!Array.isArray(value.shots) || value.shots.length === 0) return "Reel body requires at least one shot.";
+    if (productionSource === "template_only" && value.shots.length > CREATIVE_TEMPLATE_REEL_SHOTS_MAX) {
+      return `Reel body template_only is limited to ${CREATIVE_TEMPLATE_REEL_SHOTS_MAX} shots for the current deterministic renderer.`;
+    }
     for (const shot of value.shots) {
       if (!isJsonObject(shot) || !isNonEmptyString(shot.direction) || !isNullableString(shot.onScreenText)) {
         return "Reel body shots require a non-empty direction and a string-or-null onScreenText.";
@@ -588,9 +640,8 @@ function validateFormatFields(format: CreativeFormat, value: Record<string, unkn
       if (!isCreativeShotSeconds(shot.approxSeconds)) {
         return "Reel body shots require an approxSeconds integer from 1 to 10.";
       }
-      if (!isCreativeFraming(shot.framing)) {
-        return "Reel body shots require a framing of close_up, medium, wide or overhead.";
-      }
+      const framing = framingError(shot.framing, productionSource, "Reel body shots");
+      if (framing !== null) return framing;
       // `in` rather than a truthiness check: the KEY must be present so the generator has actually
       // decided, but null is a legitimate and expected decision.
       if (!("movement" in shot) || !(shot.movement === null || isCreativeMovement(shot.movement))) {
@@ -598,7 +649,14 @@ function validateFormatFields(format: CreativeFormat, value: Record<string, unkn
       }
     }
     if (!isNullableString(value.spokenScript)) return "Reel body spokenScript must be a string or null.";
+    if (productionSource === "template_only" && value.spokenScript !== null) {
+      return "Reel body spokenScript must be null when productionSource is template_only: a deterministic template Reel has no voice.";
+    }
     if (!isNonEmptyString(value.audioDirection)) return "Reel body requires a non-empty audioDirection.";
+    if (productionSource === "template_only") {
+      const capability = validateTemplateReelV1GeneratedBody({ ...value, format, productionSource });
+      if (!capability.ok) return capability.message;
+    }
     return null;
   }
   if (format === "carousel") {
@@ -654,6 +712,19 @@ export function validateCreativeBody(
   for (const field of ["angle", "hook", "headline", "caption", "cta"] as const) {
     if (!isNonEmptyString(value[field])) {
       return { ok: false, reason: "malformed", message: `Creative body requires a non-empty ${field}.` };
+    }
+  }
+
+  // D1 CTA repair -- defence in depth, NOT the primary mechanism. The prompt's
+  // ORGANIC_ENGAGEMENT_DOCTRINE is what should prevent this; this catches only the most obvious
+  // imperative metric-seeking forms if the model reaches for one anyway, and it rejects exactly the
+  // way every other body rule here does, so S3C-D's single retry applies unchanged. It stands down
+  // entirely when the owner asked for an interactive mechanic, because a poll that may not ask a
+  // question is not a poll.
+  if (constraint.invitesDirectInteraction !== true) {
+    const baitReason = genericEngagementBaitReason(value.cta as string);
+    if (baitReason !== null) {
+      return { ok: false, reason: "malformed", message: `Creative body rejected: ${baitReason}` };
     }
   }
 

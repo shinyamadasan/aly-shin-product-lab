@@ -5,14 +5,18 @@ import { readFileSync } from "node:fs";
 import {
   CREATE_NOW_AI_FORMAT_CHOICE,
   CREATE_NOW_EMPTY_TEXT_MESSAGE,
+  CREATE_NOW_FORMAT_FIELD_NAME,
   CREATE_NOW_FORMAT_OPTIONS,
   CREATE_NOW_NO_PRODUCT_CHOICE,
   CREATE_NOW_PACKAGE_GRACE_LOOKS,
   CREATE_NOW_PACKAGE_PENDING_HEADLINE,
   CREATE_NOW_PACKAGE_PENDING_MESSAGE,
   CREATE_NOW_POLL_INTERVAL_MS,
+  CREATE_NOW_PRODUCT_FIELD_NAME,
+  CREATE_NOW_TEXT_FIELD_NAME,
   CREATE_NOW_WAITING_DETAIL,
   buildCreateNowRequest,
+  buildCreateNowRequestFromSubmittedForm,
   describeCreateNowProgress,
   describeCreateNowScreenProgress,
   findSelectableCreateNowProduct,
@@ -182,6 +186,14 @@ function values(overrides: Partial<{ text: string; product: Product | null; form
   return { text: "Give me something easy today", product: null, formatChoice: CREATE_NOW_AI_FORMAT_CHOICE as CreateNowFormatChoice, ...overrides };
 }
 
+function submittedFormValues(overrides: Partial<{ text: string; productId: string; formatChoice: CreateNowFormatChoice }> = {}) {
+  const formData = new FormData();
+  formData.set(CREATE_NOW_TEXT_FIELD_NAME, overrides.text ?? "Give me something easy today");
+  formData.set(CREATE_NOW_PRODUCT_FIELD_NAME, overrides.productId ?? CREATE_NOW_NO_PRODUCT_CHOICE);
+  formData.set(CREATE_NOW_FORMAT_FIELD_NAME, overrides.formatChoice ?? CREATE_NOW_AI_FORMAT_CHOICE);
+  return formData;
+}
+
 // --- A/B/C: the one required field ---------------------------------------------------------------
 
 test("A. a blank request cannot be submitted", () => {
@@ -266,6 +278,67 @@ test("D. no product is ever auto-selected -- the first catalog entry is not the 
   assert.equal(findSelectableCreateNowProduct(catalog, CREATE_NOW_NO_PRODUCT_CHOICE), null);
   const result = buildCreateNowRequest(values({ product: findSelectableCreateNowProduct(catalog, CREATE_NOW_NO_PRODUCT_CHOICE) }));
   assert.equal(result.ok === true && result.request.productId, undefined);
+});
+
+test("D. fresh Create Now submits no product context when the visible product control is still Let AI choose", () => {
+  const exactText = "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.";
+  const catalog = [product({ id: "cookies", name: "Cookies" }), product({ id: "brownies", name: "Brownies" })];
+  const result = buildCreateNowRequestFromSubmittedForm(
+    submittedFormValues({ text: exactText, productId: CREATE_NOW_NO_PRODUCT_CHOICE, formatChoice: "reel" }),
+    catalog,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.request, { text: exactText, formatHint: "reel" });
+
+  const grounding = resolveCreativeGrounding({
+    creativeInput: buildCreativeInputFromRequest(result.request),
+    recommendations: [competingRecommendation(product({ id: "cookies", name: "Cookies" }))],
+    journal: [],
+    products: catalog,
+    brandBible: BRAND_BIBLE,
+    now: Date.parse("2026-08-25T09:00:00.000Z"),
+  });
+  assert.equal(grounding.subject, "brownie");
+  assert.equal(grounding.subjectSource, "stated");
+  assert.equal(grounding.productId, "brownies");
+  assert.equal(grounding.productName, "Brownies");
+});
+
+test("D. explicit current product selection still submits structured product context", () => {
+  const catalog = [product({ id: "cookies", name: "Cookies" }), product({ id: "brownies", name: "Brownies" })];
+  const result = buildCreateNowRequestFromSubmittedForm(
+    submittedFormValues({ text: "Make a Reel about sharing these.", productId: "cookies", formatChoice: "reel" }),
+    catalog,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.request.text, "Make a Reel about sharing these.");
+  assert.equal(result.request.formatHint, "reel");
+  assert.equal(result.request.subject, "Cookies");
+  assert.equal(result.request.productId, "cookies");
+  assert.equal(result.request.productName, "Cookies");
+});
+
+test("D. stale internal product state cannot enter a fresh request when the submitted control says no product", () => {
+  const staleInternalProductId = "cookies";
+  const catalog = [product({ id: staleInternalProductId, name: "Cookies" }), product({ id: "brownies", name: "Brownies" })];
+  const result = buildCreateNowRequestFromSubmittedForm(
+    submittedFormValues({
+      text: "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.",
+      productId: CREATE_NOW_NO_PRODUCT_CHOICE,
+      formatChoice: "reel",
+    }),
+    catalog,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.request.productId, undefined);
+  assert.equal(result.request.productName, undefined);
+  assert.equal(result.request.subject, undefined);
 });
 
 test("D. paused products are not offered, matching the lifecycle the recommendation engine already enforces", () => {
@@ -802,6 +875,15 @@ test("X. a refresh reads ONE job by id and that job's own package -- never a lis
 
 test("X. refreshing only ever tracks the job currently on screen", () => {
   assert.match(createNowSource, /const refreshStatus = job !== null && job\.id === jobId \? job\.status : null;/);
+});
+
+test("D. submit builds the handoff from the visible form controls, not retained component product state", () => {
+  assert.match(createNowSource, /new FormData\(event\.currentTarget\)/);
+  assert.match(createNowSource, /buildCreateNowRequestFromSubmittedForm\(new FormData\(event\.currentTarget\), products\)/);
+  assert.match(createNowSource, /name=\{CREATE_NOW_TEXT_FIELD_NAME\}/);
+  assert.match(createNowSource, /name=\{CREATE_NOW_PRODUCT_FIELD_NAME\}/);
+  assert.match(createNowSource, /name=\{CREATE_NOW_FORMAT_FIELD_NAME\}/);
+  assert.doesNotMatch(createNowSource, /findSelectableCreateNowProduct\(products, productId\)/);
 });
 
 // --- Realtime / infrastructure restraint ---------------------------------------------------------

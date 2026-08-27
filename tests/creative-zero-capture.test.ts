@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import { buildCreativeInputFromOpportunity, buildCreativeInputFromRequest } from "../src/lib/creative-input.ts";
-import { wantsImmediateExecution, wantsNoFreshCapture, wantsSimpleProduction } from "../src/lib/creative-request-intent.ts";
+import { wantsImmediateExecution, wantsNoFreshCapture, wantsNoReelCapture, wantsRealWorldCapture, wantsSimpleProduction } from "../src/lib/creative-request-intent.ts";
 import { resolveCreativeGrounding, type ResolveCreativeGroundingInput } from "../src/lib/creative-subject-resolution.ts";
 import { CREATIVE_FORMATS, type CreativeFormat } from "../src/lib/creative-formats.ts";
 import { CREATIVE_PRODUCTION_SOURCES, type CreativeProductionSource } from "../src/lib/creative-production-guidance.ts";
@@ -105,8 +105,8 @@ test("B. silence, and ordinary requests, never imply no-fresh-capture", () => {
 // constrains HOW capture should happen, and two of them explicitly ASK for it.
 //
 // This predicate is the only one in the module that REMOVES capability, so a false positive here is
-// not a cosmetic miss -- it strips capture_new, strips Reel, and can hard-reject an explicit
-// formatHint before any model runs. Ambiguity must therefore leave capture allowed.
+// not a cosmetic miss -- it strips capture_new and narrows a Reel into the template-only path before
+// any model runs. Ambiguity must therefore leave capture allowed.
 test("B1. sentences that constrain HOW capture happens are not refusals of capture", () => {
   for (const text of [
     "Don't use the same photo as last time.",
@@ -124,7 +124,7 @@ test("B1. sentences that constrain HOW capture happens are not refusals of captu
 
 // H1-B-R2. The second half of the precision rule: a refusal of ONE medium is not a refusal of all
 // capture. Each sentence below is a genuine, clearly expressed restriction -- and each one leaves
-// the other medium fully capturable, so none of them may strip capture_new, Reel or the H1-A
+// the other medium fully capturable, so none of them may strip capture_new or the H1-A
 // override.
 test("R2. a restriction on one medium is not a ban on all fresh capture", () => {
   for (const text of [
@@ -172,6 +172,115 @@ test("A/B. the three intent questions stay distinct: effort, timing and producti
   assert.equal(wantsNoFreshCapture(easyToday), false);
 });
 
+test("D1. explicit real-world proof requests narrow production to capture_new when capture is available", () => {
+  for (const text of [
+    "Make a Reel showing the actual brownie texture.",
+    "Show the real Biscoff swirl inside the tray.",
+    "Document the actual baking process today.",
+    "Film us cutting the real brownie.",
+    "Show our real baking process.",
+    "Show the actual event.",
+    "Make a Reel of the real brownie break.",
+    "Make a Reel of the actual brownie cut.",
+    "Make a Reel showing the actual location event.",
+  ]) {
+    const input = buildCreativeInputFromRequest({ text, formatHint: "reel" });
+    assert.equal(wantsRealWorldCapture(input), true, `"${text}" asks for real-world proof`);
+    assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["capture_new"]);
+  }
+
+  for (const text of [
+    "Make a Reel about brownie cravings.",
+    "Make a two-beat joke about sharing dessert.",
+    "Make a funny Reel about corner pieces.",
+    "Compare middle brownie people versus corner brownie people.",
+    "Use the idea of breaking a brownie in half as the punchline.",
+    "Make a funny Reel about splitting one brownie.",
+    "Make a Reel about two people wanting the last brownie.",
+    "Use texture as a metaphor for the mood.",
+    "Make a doodle about coffee and brownies.",
+  ]) {
+    const input = buildCreativeInputFromRequest({ text, formatHint: "reel" });
+    assert.equal(wantsRealWorldCapture(input), false, `"${text}" leaves productionSource to the model`);
+    assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["capture_new", "template_only"]);
+  }
+});
+
+test("D1. selected Reel no-filming requests remove capture_new but not photography globally", () => {
+  for (const text of [
+    "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.",
+    "Make this with zero filming.",
+    "zero capture",
+    "zero-capture",
+    "No filming.",
+    "Make a no-filming Reel comparing corner-piece people and middle-piece people.",
+    "I don't want to film anything.",
+    "I do not want to film anything.",
+    "I don't want to shoot anything.",
+    "I don't want to record anything.",
+    "I don't want to capture new footage.",
+    "Don't make me shoot anything.",
+    "Make this without recording new footage.",
+    "Zero capture Reel.",
+  ]) {
+    const input = buildCreativeInputFromRequest({ text, formatHint: "reel" });
+    assert.equal(wantsNoReelCapture(input), true, `"${text}" rules out filmed Reel capture`);
+    assert.equal(wantsRealWorldCapture(input), false, `"${text}" must not imply real-world proof`);
+    assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["template_only"]);
+    assert.equal(findImpossibleFormatRequest(input), null, "template_only makes a zero-filming Reel satisfiable");
+  }
+
+  const noFilmingPhoto = buildCreativeInputFromRequest({ text: "No filming.", formatHint: "photo" });
+  assert.equal(wantsNoFreshCapture(noFilmingPhoto), false, "no filming alone must not remove fresh photography");
+  assert.deepEqual([...productionSourcesForFormat("photo", resolveCreativeProductionConstraint(noFilmingPhoto))], [...CREATIVE_PRODUCTION_SOURCES]);
+});
+
+test("D1. the owner-proof zero-capture brownie request stays template-only and keeps its explicit subject", () => {
+  const text = "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.";
+  const input = buildCreativeInputFromRequest({ text, formatHint: "reel" });
+  const grounding = resolve({
+    creativeInput: input,
+    recommendations: [
+      bananaBreadRecommendation({
+        id: "no_marketing_history:blondies",
+        title: "Introduce Blondies",
+        explanation: "Blondies has never appeared in the Journey.",
+        suggestedNextAction: "Create an introductory piece of content for Blondies.",
+        evidence: { productId: "blondies", productName: "Blondies", entryCount: 0 },
+      }),
+    ],
+    products: [product({ id: "brownies", name: "Brownies" }), product({ id: "blondies", name: "Blondies" })],
+  });
+
+  assert.equal(wantsNoReelCapture(input), true);
+  assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["template_only"]);
+  assert.equal(grounding.subject, "brownie");
+  assert.equal(grounding.productId, "brownies");
+  assert.equal(grounding.productName, "Brownies");
+  assert.equal(grounding.subjectSource, "stated");
+});
+
+test("D1. contradictory selected Reel proof/no-filming requests fail before body generation", () => {
+  for (const text of [
+    "No filming, but show the actual brownie texture.",
+    "Zero capture, but film us cutting the real brownie.",
+    "Don't shoot anything, but show our real baking process.",
+    "Make it without new footage, but show the actual event.",
+    "No filming, but I want proof of what the brownie really looks like.",
+  ]) {
+    const input = buildCreativeInputFromRequest({ text, formatHint: "reel" });
+    const constraint = resolveCreativeProductionConstraint(input);
+    const impossible = findImpossibleFormatRequest(input);
+
+    assert.equal(wantsNoReelCapture(input), true, `"${text}" rules out filmed Reel capture`);
+    assert.equal(wantsRealWorldCapture(input), true, `"${text}" requires real-world proof`);
+    assert.deepEqual([...productionSourcesForFormat("reel", constraint)], [], `"${text}" leaves no truthful Reel source`);
+    assert.notEqual(impossible, null, `"${text}" must be refused deterministically`);
+    assert.match(impossible?.message ?? "", /requirements conflict/i);
+    assert.match(impossible?.message ?? "", /Allow filming/i);
+  }
+});
+
 // =================================================================================================
 // C, D. the H1-A same-day override, gated
 // =================================================================================================
@@ -207,7 +316,7 @@ function todaysBake(): ContentJournalEntry {
   };
 }
 
-function bananaBreadRecommendation(): MarketingRecommendation {
+function bananaBreadRecommendation(overrides: Partial<MarketingRecommendation> = {}): MarketingRecommendation {
   return {
     id: "no_marketing_history:banana-bread",
     recommendationType: "no_marketing_history",
@@ -217,6 +326,7 @@ function bananaBreadRecommendation(): MarketingRecommendation {
     explanation: "Banana Bread has never appeared in the Journey.",
     suggestedNextAction: "Create an introductory piece of content for Banana Bread.",
     evidence: { productId: "banana-bread", productName: "Banana Bread", entryCount: 0 },
+    ...overrides,
   } as MarketingRecommendation;
 }
 
@@ -326,9 +436,14 @@ function bodyFor(format: CreativeFormat, productionSource: CreativeProductionSou
   if (format === "reel") {
     return {
       ...base,
-      shots: [{ direction: "Hands cutting the tray.", onScreenText: null, approxSeconds: 3, framing: "close_up", movement: null }],
+      shots: capturing
+        ? [{ direction: "Hands cutting the tray.", onScreenText: null, approxSeconds: 3, ...framing, movement: null }]
+        : [
+            { direction: "First typography beat introduces the setup.", onScreenText: "one square", approxSeconds: 3, movement: null },
+            { direction: "Second text beat lands the reveal.", onScreenText: "two opinions", approxSeconds: 3, movement: null },
+          ],
       spokenScript: null,
-      audioDirection: "Upbeat trending audio",
+      audioDirection: capturing ? "Upbeat trending audio" : "Silent; no voiceover or music.",
     };
   }
   if (format === "carousel") {
@@ -466,53 +581,44 @@ test("H/I. a zero-capture Story is still frames only -- there is no video genera
 // J, K. the format decision under a production constraint
 // =================================================================================================
 
-test("J. a zero-capture request with no formatHint can never select Reel", () => {
+test("J. a zero-capture request with no formatHint may still select Reel", () => {
   const zeroCapture = request(ZERO_CAPTURE_REQUEST);
   const constraint = resolveCreativeProductionConstraint(zeroCapture);
 
-  // Not offered in the Stage 1 schema.
+  // Offered in the Stage 1 schema because a suitable Reel can now be template_only.
   const schema = buildFormatDecisionJsonSchema(constraint);
   const offered = ((schema.properties as Record<string, { enum: string[] }>).format.enum);
-  assert.deepEqual(offered, ["photo", "carousel", "story"]);
-  assert.equal(offered.includes("reel"), false);
+  assert.deepEqual(offered, ["photo", "reel", "carousel", "story"]);
+  assert.equal(offered.includes("reel"), true);
 
-  // Not offered in the Stage 1 prompt either -- a format the request rules out is not on the menu.
+  // Offered in the Stage 1 prompt too, with the no-capture Reel limit stated.
   const decisionRequest = buildFormatDecisionRequest({ creativeInput: zeroCapture, grounding: grounding(), brandBible: BRAND_BIBLE });
-  assert.doesNotMatch(decisionRequest.user, /^- reel:/m);
+  assert.match(decisionRequest.user, /^- reel:/m);
+  assert.match(decisionRequest.user, /1-2 beat template Reel/);
   assert.match(decisionRequest.user, /^- photo:/m);
 
-  // And rejected by the validator if a model returns it anyway.
-  const rejected = validateFormatDecision({ format: "reel", formatRationale: "Video tells the story best." }, constraint);
-  assert.equal(rejected.ok, false);
-  if (rejected.ok) throw new Error("unreachable");
-  assert.equal(rejected.reason, "unsupported-format");
-
-  // Every other format remains selectable.
-  for (const format of ["photo", "carousel", "story"] as const) {
+  // Every format remains selectable. Stage 2 narrows productionSource.
+  for (const format of CREATIVE_FORMATS) {
     assert.equal(validateFormatDecision({ format, formatRationale: "Fits a zero-capture idea." }, constraint).ok, true);
   }
 
-  // A Reel is capture-only even with no constraint at all: that is a property of the format.
-  assert.deepEqual([...productionSourcesForFormat("reel")], ["capture_new"]);
-  assert.deepEqual([...productionSourcesForFormat("reel", constraint)], [], "reel plus zero capture is an empty set");
+  assert.deepEqual([...productionSourcesForFormat("reel")], ["capture_new", "template_only"]);
+  assert.deepEqual([...productionSourcesForFormat("reel", constraint)], ["template_only"], "reel plus zero capture authors a template Reel");
 });
 
-test("K. an explicit Reel hint plus a refusal of all fresh capture is refused, not silently resolved", () => {
+test("K. an explicit Reel hint plus a refusal of all fresh capture narrows to template_only", () => {
   // R2: the refusal has to cover ALL capture. "I can't film today" alone leaves photography
   // available and is handled by CASE C below, not here.
   const conflict = buildCreativeInputFromRequest({ text: "I can't take photos or videos today.", formatHint: "reel" });
 
   const impossible = findImpossibleFormatRequest(conflict);
-  assert.notEqual(impossible, null, "the contradiction must be detected before any generation");
-  assert.equal(impossible?.format, "reel");
-  // The message names both halves, so the owner learns what to change rather than just that it failed.
-  assert.match(impossible?.message ?? "", /reel/i);
-  assert.match(impossible?.message ?? "", /film/i);
+  assert.equal(impossible, null, "template_only makes the hinted zero-capture Reel satisfiable");
 
-  // The two silent resolutions are both refused: no Reel is produced, and no other format is
-  // substituted for the one the owner explicitly asked for.
+  // The silent downgrade is still refused: capture_new cannot validate under zero-capture, and no
+  // other format is substituted for the one the owner explicitly asked for.
   const body = validateCreativeBody("reel", bodyFor("reel", "capture_new"), resolveCreativeProductionConstraint(conflict));
   assert.equal(body.ok, false, "a Reel body cannot be validated for a request that forbids filming");
+  assert.equal(validateCreativeBody("reel", bodyFor("reel", "template_only"), resolveCreativeProductionConstraint(conflict)).ok, true);
 
   // Every non-conflicting hint still passes straight through.
   for (const format of CREATIVE_FORMATS) {
@@ -531,20 +637,22 @@ test("K. an explicit Reel hint plus a refusal of all fresh capture is refused, n
 // deterministic refusal: findImpossibleFormatRequest rejects the job BEFORE any grounding is loaded
 // or any model is called. These assert only the H1-B classification and the refusal decision --
 // never an AI outcome.
-test("B1/CASE A. a request that explicitly asks for fresh capture keeps its Reel hint", () => {
+test("B1/CASE A. a request that explicitly asks for fresh capture keeps capture_new available for its Reel hint", () => {
   const input = buildCreativeInputFromRequest({ text: "Don't use old photos — take a new one.", formatHint: "reel" });
 
   assert.equal(wantsNoFreshCapture(input), false, "this request ASKS for fresh capture");
   assert.equal(findImpossibleFormatRequest(input), null, "it must not be refused before generation");
   assert.deepEqual([...resolveCreativeProductionConstraint(input).formats], [...CREATIVE_FORMATS]);
-  assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["capture_new"]);
+  assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["capture_new", "template_only"]);
 });
 
 test("B1/CASE B. a request that limits how much to film keeps its Reel hint", () => {
   const input = buildCreativeInputFromRequest({ text: "Don't film the whole thing, just get one short clip.", formatHint: "reel" });
 
   assert.equal(wantsNoFreshCapture(input), false, "this constrains how much to film, not whether to film");
+  assert.equal(wantsNoReelCapture(input), false, "this still asks for one short filmed clip");
   assert.equal(findImpossibleFormatRequest(input), null, "it must not fail with unsupported_format_for_request");
+  assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["capture_new", "template_only"]);
 });
 
 // H1-B-R2. Single-medium restrictions must not reach the hard-refusal path either.
@@ -563,14 +671,13 @@ test("R2/CASE C. a single-medium restriction does not trigger the all-capture Re
   }
 });
 
-test("B1+R2/CONTROL. a clear refusal of ALL capture still makes a Reel hint a deterministic refusal", () => {
+test("B1+R2/CONTROL. a clear refusal of ALL capture now narrows a Reel hint to template_only", () => {
   for (const text of ["I can't take photos or videos today.", "I can't film or take photos today."]) {
     const input = buildCreativeInputFromRequest({ text, formatHint: "reel" });
 
     assert.equal(wantsNoFreshCapture(input), true, `"${text}" refuses all capture`);
-    const impossible = findImpossibleFormatRequest(input);
-    assert.notEqual(impossible, null, "the genuine contradiction must still be caught before generation");
-    assert.equal(impossible?.format, "reel");
+    assert.equal(findImpossibleFormatRequest(input), null, "template_only makes the Reel hint satisfiable");
+    assert.deepEqual([...productionSourcesForFormat("reel", resolveCreativeProductionConstraint(input))], ["template_only"]);
   }
 });
 
@@ -987,8 +1094,9 @@ test("T. Opportunity-backed generation is unchanged: no constraint, every format
   assert.deepEqual([...constraint.productionSources], [...CREATIVE_PRODUCTION_SOURCES]);
   assert.equal(findImpossibleFormatRequest(fromOpportunity), null);
 
-  // Reel remains selectable, and remains capture-only, for an Opportunity.
+  // Reel remains selectable, with both valid Reel production sources, for an Opportunity.
   assert.equal(validateFormatDecision({ format: "reel", formatRationale: "The process carries it." }, constraint).ok, true);
+  assert.deepEqual([...productionSourcesForFormat("reel", constraint)], ["capture_new", "template_only"]);
 
   // A capture Reel body still assembles into a valid package on the Opportunity path.
   const assembled = assembleCreativePackageV2({

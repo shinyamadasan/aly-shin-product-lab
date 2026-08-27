@@ -4,6 +4,7 @@ import {
   isCreativeMovement,
   isCreativeProductionSource,
   isCreativeShotSeconds,
+  CREATIVE_TEMPLATE_REEL_SHOTS_MAX,
   productionSourceRequiresFraming,
   type CreativeFraming,
   type CreativeMovement,
@@ -389,13 +390,13 @@ function validateFormatFields(
     //                   promise-nothing-can-keep this rule exists to prevent. Widening it here would
     //                   broaden a combination this slice has no evidence for.
     //
-    // WHAT MAKES A template_only REEL NARROW is almost entirely rules this format ALREADY has, which
-    // is why only one new check follows rather than a new sub-schema:
+    // WHAT MAKES A template_only REEL NARROW is almost entirely rules this format ALREADY has:
     //
     //   - at least one shot, each with a non-empty direction  (checked below, for every Reel)
     //   - framing FORBIDDEN on those shots                    (validateOptionalFraming already
     //     refuses framing whenever productionSource is not capture_new -- "there is no camera to
     //     frame" -- so a template_only Reel is already structurally camera-less)
+    //   - one or two shots only                               (checked below for template_only)
     //   - a positive targetDurationSeconds                    (checked below, for every Reel)
     //
     // Those three together already mean a template_only Reel is ordered, timed, camera-less visual
@@ -409,6 +410,12 @@ function validateFormatFields(
 
     if (!Array.isArray(value.shots) || value.shots.length === 0) {
       return { ok: false, message: "Creative Package v2 reel requires at least one shot." };
+    }
+    if (productionSource === "template_only" && value.shots.length > CREATIVE_TEMPLATE_REEL_SHOTS_MAX) {
+      return {
+        ok: false,
+        message: `Creative Package v2 template-only Reel is limited to ${CREATIVE_TEMPLATE_REEL_SHOTS_MAX} shots for the current deterministic renderer.`,
+      };
     }
     for (const shot of value.shots) {
       if (!isJsonObject(shot) || !isNonEmptyString(shot.direction) || !isNullableString(shot.onScreenText)) {

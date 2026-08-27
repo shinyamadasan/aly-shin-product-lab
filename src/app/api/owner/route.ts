@@ -31,6 +31,7 @@
 // this slice. Do not read this route as a data boundary.
 
 import { authenticateOwner, isProductionOwner } from "@/lib/production-auth-server";
+import { productionVideoActivationFromEnv } from "@/lib/production-video-activation";
 
 export const runtime = "nodejs";
 // Never cached: the answer depends entirely on the caller's own bearer token.
@@ -39,7 +40,7 @@ export const dynamic = "force-dynamic";
 // Same public error contract as /api/production: no auth error text, no environment VALUE, and
 // never the allowlist itself. A caller learns whether THEY are the owner and nothing else -- in
 // particular, not who is.
-function answer(status: number, body: { owner: boolean; reason: string }): Response {
+function answer(status: number, body: { owner: boolean; reason: string; production?: { remotionShortVideo: boolean } }): Response {
   return Response.json(body, { status });
 }
 
@@ -62,5 +63,9 @@ export async function GET(request: Request): Promise<Response> {
     return answer(403, { owner: false, reason: "forbidden" });
   }
 
-  return answer(200, { owner: true, reason: "owner" });
+  return answer(200, {
+    owner: true,
+    reason: "owner",
+    production: { remotionShortVideo: productionVideoActivationFromEnv().remotionShortVideo },
+  });
 }
