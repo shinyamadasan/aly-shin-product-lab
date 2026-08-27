@@ -1,5 +1,7 @@
 import type { ProductionRoute } from "./production-route.ts";
 import type { CreativePackageRecord } from "./creative-packages.ts";
+import { CREATIVE_TEMPLATE_REEL_SHOTS_MAX } from "./creative-production-guidance.ts";
+import { validateTemplateReelV1PackageContent } from "./template-reel-v1-capability.ts";
 
 export const PRODUCTION_VIDEO_ACTIVATION_OFF = {
   remotionShortVideo: false,
@@ -11,7 +13,7 @@ export const PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW = {
 
 export type ProductionVideoActivation = typeof PRODUCTION_VIDEO_ACTIVATION_OFF | typeof PRODUCTION_VIDEO_ACTIVATION_ON_FOR_REVIEW;
 
-export const MAX_WARM_OPEN_EXECUTABLE_SCENES = 2;
+export const MAX_WARM_OPEN_EXECUTABLE_SCENES = CREATIVE_TEMPLATE_REEL_SHOTS_MAX;
 export const PRODUCTION_REMOTION_SHORT_VIDEO_ENV = "PRODUCTION_REMOTION_SHORT_VIDEO";
 
 export function isRemotionShortVideoActivationEnabled(activation: ProductionVideoActivation = PRODUCTION_VIDEO_ACTIVATION_OFF): boolean {
@@ -53,6 +55,11 @@ export function validateRemotionShortVideoPackageForActivation(
 
   if (candidate.productionSource !== "template_only") {
     return { ok: true };
+  }
+
+  const capability = validateTemplateReelV1PackageContent(candidate);
+  if (!capability.ok) {
+    return capability;
   }
 
   const shotCount = Array.isArray(candidate.shots) ? candidate.shots.length : 0;

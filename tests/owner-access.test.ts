@@ -183,7 +183,8 @@ test("/api/owner authenticates first, then applies the existing owner rule", () 
 });
 
 test("/api/owner tells a caller only about itself", () => {
-  // No email, no allowlist, no auth error text, no user id in any response body.
+  // No email, no allowlist, no auth error text, no user id in any response body. The success body may
+  // additionally carry server-derived production capabilities, never environment values.
   // Asserted as an exact KEY SET rather than by forbidden substrings: "forbidden" contains "id",
   // and a check that can be tripped by its own vocabulary proves nothing.
   const bodies = [...ownerRouteSource.matchAll(/answer\(\d+, \{([^}]*)\}\)/g)].map((match) => match[1]);
@@ -194,8 +195,10 @@ test("/api/owner tells a caller only about itself", () => {
       .map((entry) => entry.split(":")[0].trim())
       .filter(Boolean)
       .sort();
-    assert.deepEqual(keys, ["owner", "reason"], `the response body must carry only owner and reason, got: ${body}`);
+    const isOwnerGrant = body.includes("owner: true");
+    assert.deepEqual(keys, isOwnerGrant ? ["owner", "production", "reason"] : ["owner", "reason"], `unexpected response keys: ${body}`);
   }
+  assert.match(ownerRouteSource, /productionVideoActivationFromEnv\(\)\.remotionShortVideo/);
 });
 
 // --- 6. existing owner flows are unchanged ----------------------------------------------------------------------

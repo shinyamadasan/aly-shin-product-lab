@@ -41,6 +41,10 @@ test("C2B-3B video queueing is server-derived from creativePackageId, never brow
 test("C2B-3B owner UI queues video with only creativePackageId and uses the same path for Regenerate", () => {
   const component = readFileSync(new URL("../src/components/creative-package-production.tsx", import.meta.url), "utf8");
   assert.match(component, /const isActivatedVideoRoute = route\.workerType === "remotion" && route\.assetKind === "short_video";/);
+  assert.match(component, /fetch\("\/api\/owner"/);
+  assert.match(component, /payload\.production\?\.remotionShortVideo === true/);
+  assert.match(component, /Video production is unavailable in this environment/);
+  assert.match(component, /const workerSupported = isMachineProductionWorkerType\(route\.workerType\) \|\| \(isActivatedVideoRoute && videoAvailable === true\);/);
   assert.match(component, /body:\s*JSON\.stringify\(\{\s*creativePackageId\s*\}\)/);
   assert.match(component, /function produceRoute\(\)/);
   assert.match(component, /onClick=\{produceRoute\}/);

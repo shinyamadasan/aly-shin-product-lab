@@ -107,6 +107,26 @@ function truncate(text: string, max = 300): string {
   return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
 }
 
+// Wave D1 R1. Deliberately duplicated from claude-cli-provider rather than shared: R1 is an
+// observability repair, and collapsing the two adapters' subprocess logic into a common wrapper is
+// a separate, larger change that this repair explicitly does not make. See the twin for the full
+// reasoning; in short, POSIX errno messages quote nothing, and Node's ERR_* argument-validation
+// messages echo the offending argv entry -- which here is the prompt.
+export function describeSpawnError(err: unknown): { errorCode: string | null; messageSafe: boolean } {
+  const code = err instanceof Error && typeof (err as NodeJS.ErrnoException).code === "string"
+    ? (err as NodeJS.ErrnoException).code as string
+    : null;
+  return { errorCode: code, messageSafe: code !== null && !code.startsWith("ERR_") };
+}
+
+// R1.1. Synthesized from the errno alone -- never from err.message, which libuv fills with the
+// resolved executable path. See the twin in claude-cli-provider for the full reasoning.
+export function describeSpawnFailure(errorCode: string | null): string {
+  return errorCode === null
+    ? "Failed to spawn Codex CLI: the spawn was rejected without an error code."
+    : `Failed to spawn Codex CLI: ${errorCode}`;
+}
+
 const USAGE_LIMIT_PATTERN = /usage limit|rate limit|quota|too many requests|out of (credits|tokens)|limit reached/i;
 const AUTHENTICATION_PATTERN = /not logged in|please log ?in|authentication|unauthenticated|unauthorized|invalid api key|oauth|credentials?|token (has )?expired|chatgpt auth/i;
 const SCHEMA_PATTERN = /schema|structured output|output-schema|does not match|validation/i;
@@ -151,12 +171,15 @@ export class CodexCliProvider implements AiTextProvider {
     const maxOutputBytes = this.options.maxOutputBytes ?? CODEX_CLI_DEFAULT_MAX_OUTPUT_BYTES;
     const binary = this.options.binary ?? "codex";
 
-    const fail = (reason: AiTextFailureReason, message: string, diagnostics: Record<string, unknown> = {}): AiTextFailure => ({
+    // Defaults to true: nearly every site below passes a literal this file authored. The sites
+    // that quote process output pass false explicitly.
+    const fail = (reason: AiTextFailureReason, message: string, diagnostics: Record<string, unknown> = {}, messageSafe = true): AiTextFailure => ({
       ok: false,
       reason,
       message,
       metadata: { providerId: this.providerId, model: requestedModel, durationMs: elapsed() },
       diagnostics,
+      messageSafe,
     });
 
     const usingRealSpawn = this.options.spawnFn === undefined;
@@ -221,7 +244,15 @@ export class CodexCliProvider implements AiTextProvider {
         child = spawnFn(executable, args, { shell: false, cwd: files.cwd });
         child.stdin?.end();
       } catch (err) {
-        settle(fail("process_error", `Failed to spawn the Codex CLI: ${err instanceof Error ? err.message : String(err)}`));
+        // R1: Wave D1's second failure came through here (3ms, non-ENOENT) and recorded nothing.
+        // R1.1: message synthesized from the errno alone -- see describeSpawnFailure.
+        const spawnError = describeSpawnError(err);
+        settle(fail(
+          "process_error",
+          describeSpawnFailure(spawnError.errorCode),
+          { errorCode: spawnError.errorCode },
+          spawnError.messageSafe,
+        ));
         return;
       }
 
@@ -254,7 +285,8 @@ export class CodexCliProvider implements AiTextProvider {
           settle(fail("provider_unavailable", "The Codex CLI was not found.", { executableResolved: false }));
           return;
         }
-        settle(fail("process_error", `The Codex CLI process failed: ${err.message}`, { code: err.code ?? null }));
+        // R1.1: synthesized, for the same reason as the synchronous throw above.
+        settle(fail("process_error", describeSpawnFailure(err.code ?? null), { errorCode: err.code ?? null }));
       });
 
       child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
@@ -273,15 +305,17 @@ export class CodexCliProvider implements AiTextProvider {
           settle({
             ok: false,
             reason: classifyProcessText(combined),
+            // UNSAFE MESSAGE: `detail` is a truncation of raw stdout+stderr.
             message: detail,
             metadata,
             diagnostics: safeDiagnostics,
+            messageSafe: false,
           });
           return;
         }
 
         if (!existsSync(files.outputPath)) {
-          settle({ ok: false, reason: "malformed_response", message: "The Codex CLI did not write a final message file.", metadata, diagnostics: safeDiagnostics });
+          settle({ ok: false, reason: "malformed_response", message: "The Codex CLI did not write a final message file.", metadata, diagnostics: safeDiagnostics, messageSafe: true });
           return;
         }
 
@@ -294,9 +328,12 @@ export class CodexCliProvider implements AiTextProvider {
             settle({
               ok: false,
               reason: "malformed_response",
+              // UNSAFE MESSAGE: measured on Node 24, V8's JSON.parse error quotes the first ten
+              // characters of the input -- here, the model's own final message.
               message: `The Codex CLI final structured message was not a JSON object: ${err instanceof Error ? err.message : String(err)}`,
               metadata,
               diagnostics: safeDiagnostics,
+              messageSafe: false,
             });
           }
           return;
@@ -304,7 +341,7 @@ export class CodexCliProvider implements AiTextProvider {
 
         const text = finalMessage.trim();
         if (text === "") {
-          settle({ ok: false, reason: "malformed_response", message: "The Codex CLI final message was empty.", metadata, diagnostics: safeDiagnostics });
+          settle({ ok: false, reason: "malformed_response", message: "The Codex CLI final message was empty.", metadata, diagnostics: safeDiagnostics, messageSafe: true });
           return;
         }
         settle({ ok: true, text, metadata });

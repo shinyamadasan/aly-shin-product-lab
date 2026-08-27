@@ -37,7 +37,12 @@ type ErrorLike = { code?: string; message: string };
 function v2PackageRow(format: string, productionSource: string): CreativePackageRow {
   const isCapture = productionSource === "capture_new";
   const formatFields: Record<string, unknown> = format === "reel"
-    ? { shots: [{ direction: "Board centred", onScreenText: "Mine.", approxSeconds: 3 }], targetDurationSeconds: 3, audioDirection: "Warm acoustic bed" }
+      ? {
+          shots: [{ direction: "Typography beat introduces the choice.", onScreenText: "Mine.", approxSeconds: 6 }],
+          targetDurationSeconds: 6,
+          spokenScript: null,
+          audioDirection: "Silent; no voiceover or music.",
+        }
     : isCapture
       ? { framing: "overhead" }
       : {

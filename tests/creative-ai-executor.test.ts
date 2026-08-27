@@ -94,6 +94,24 @@ function bodyFor(format: CreativeFormat = "photo"): Record<string, unknown> {
   return { ...common, frames: [{ visualDirection: "Blondies beside coffee.", text: "coffee pause", framing: "close_up", approxSeconds: null }], interaction: null };
 }
 
+function templateReelBody(): Record<string, unknown> {
+  return {
+    angle: "The one-brownie negotiation",
+    hook: "Two people. One brownie.",
+    headline: "One brownie, two negotiators",
+    caption: "One brownie, two people, and suddenly everyone has a strategy.",
+    cta: "Tell us how you split it.",
+    platformVariants: [{ platform: "instagram", caption: "Two people. One brownie.", hashtags: ["#brownies"] }],
+    productionSource: "template_only",
+    shots: [
+      { direction: "Large centered type introduces two people and one brownie.", onScreenText: "Two people. / One brownie.", approxSeconds: 4, movement: null },
+      { direction: "Second text beat lands the negotiation punchline.", onScreenText: "The negotiation begins.", approxSeconds: 4, movement: null },
+    ],
+    spokenScript: null,
+    audioDirection: "Silent; no voiceover, music, or sound design.",
+  };
+}
+
 // --- grounding fixtures -------------------------------------------------------------------------
 
 function product(overrides: Partial<Product> = {}): Product {
@@ -327,6 +345,87 @@ test("a stated formatHint skips the format-decision AI call entirely and produce
   // The trace contains only real invocations -- no synthetic entry for the decision that never ran.
   assert.equal(envelope.result.executionTrace.length, 1);
   assert.equal(envelope.result.executionTrace[0].stage, "creative_body");
+});
+
+test("an explicit prose brownie subject reaches the body prompt and assembled package despite a Blondies recommendation", async () => {
+  const { executor, claude } = makeExecutor({
+    groundingInputs: grounding({
+      recommendations: [recommendation()],
+      products: [product({ id: "brownies", name: "Brownies" }), product({ id: "blondies", name: "Blondies" })],
+    }),
+    claudeSteps: [
+      (request) => {
+        assert.match(request.systemPrompt ?? "", /preserve that subject/);
+        assert.match(request.userPrompt, /The owner wrote: "Make a zero-capture Reel about sharing one brownie\. I don't want to film anything\."/);
+        assert.match(request.userPrompt, /Subject: brownie/);
+        assert.match(request.userPrompt, /Product: Brownies/);
+        assert.doesNotMatch(request.userPrompt, /Subject: Blondies/);
+        assert.match(request.userPrompt, /template_only is the only valid source/);
+        return aiSuccess("claude-cli", CREATIVE_AI_CLAUDE_MODEL, templateReelBody());
+      },
+    ],
+  });
+
+  const result = await executor(
+    jobRecord(),
+    requestInput({ text: "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.", formatHint: "reel" }),
+    noSignal,
+  );
+
+  assert.equal(claude.calls.length, 1, "formatHint skips the format decision; only the body model is invoked");
+  const envelope = validateCreativeJobResultEnvelopeV2(result);
+  assert.equal(envelope.ok, true);
+  if (!envelope.ok) return;
+  assert.equal(envelope.result.content.subject, "brownie");
+  assert.equal(envelope.result.content.metadata.subjectSource, "stated");
+  assert.equal(envelope.result.content.metadata.subjectGrounding, null);
+  assert.equal(envelope.result.content.productionSource, "template_only");
+  assert.equal(envelope.result.content.metadata.formatChosenBy, "user");
+});
+
+test("a contradictory Reel proof/no-filming request fails before grounding or body AI", async () => {
+  const { executor, claude, codex, seenInputs } = makeExecutor({
+    claudeSteps: [],
+    codexSteps: [],
+  });
+
+  const result = await executor(
+    jobRecord(),
+    requestInput({ text: "No filming, but show the actual brownie texture.", formatHint: "reel" }),
+    noSignal,
+  );
+
+  assert.ok(isCreativeJobExecutorFailure(result));
+  if (!isCreativeJobExecutorFailure(result)) return;
+  assert.equal(result.code, "unsupported_format_for_request");
+  assert.match(result.message, /requirements conflict/i);
+  assert.match(result.message, /Allow filming/i);
+  assert.deepEqual(result.executionTrace, []);
+  assert.equal(seenInputs.length, 0, "grounding must not load after a request-level contradiction");
+  assert.equal(claude.calls.length, 0, "body provider must not be invoked");
+  assert.equal(codex.calls.length, 0, "fallback provider must not be invoked");
+});
+
+test("an AI-selected contradictory Reel fails after Stage 1 and before body AI", async () => {
+  const { executor, claude, codex, seenInputs } = makeExecutor({
+    claudeSteps: [aiSuccess("claude-cli", CREATIVE_AI_CLAUDE_MODEL, formatDecision("reel"))],
+    codexSteps: [],
+  });
+
+  const result = await executor(
+    jobRecord(),
+    requestInput({ text: "No filming, but show the actual brownie texture." }),
+    noSignal,
+  );
+
+  assert.ok(isCreativeJobExecutorFailure(result));
+  if (!isCreativeJobExecutorFailure(result)) return;
+  assert.equal(result.code, "ai_schema_invalid");
+  assert.match(result.message, /requirements conflict/i);
+  assert.equal(seenInputs.length, 1, "Stage 1 still needs grounding");
+  assert.equal(claude.calls.length, 1, "only the format-decision provider call should run");
+  assert.deepEqual(result.executionTrace.map((entry) => entry.stage), ["format_decision"]);
+  assert.equal(codex.calls.length, 0, "body fallback provider must not be invoked");
 });
 
 // --- §23 + §25 expected failure and mixed-provider trace ----------------------------------------

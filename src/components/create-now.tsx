@@ -5,13 +5,15 @@ import { Button, MessageBox } from "@/components/ui";
 import {
   CREATE_NOW_DEFAULT_FORMAT_CHOICE,
   CREATE_NOW_FORMAT_OPTIONS,
+  CREATE_NOW_FORMAT_FIELD_NAME,
   CREATE_NOW_JOB_SEARCH_PARAM,
   CREATE_NOW_NO_PRODUCT_CHOICE,
   CREATE_NOW_NO_PRODUCT_LABEL,
   CREATE_NOW_POLL_INTERVAL_MS,
-  buildCreateNowRequest,
+  CREATE_NOW_PRODUCT_FIELD_NAME,
+  CREATE_NOW_TEXT_FIELD_NAME,
+  buildCreateNowRequestFromSubmittedForm,
   describeCreateNowScreenProgress,
-  findSelectableCreateNowProduct,
   selectableCreateNowProducts,
   shouldRefreshCreateNowJob,
   type CreateNowFormatChoice,
@@ -359,7 +361,7 @@ export function CreateNow({
       return;
     }
 
-    const built = buildCreateNowRequest({ text, product: findSelectableCreateNowProduct(products, productId), formatChoice });
+    const built = buildCreateNowRequestFromSubmittedForm(new FormData(event.currentTarget), products);
     if (!built.ok) {
       setValidationMessage(built.message);
       return;
@@ -479,6 +481,7 @@ export function CreateNow({
             aria-invalid={validationMessage ? true : undefined}
             className="min-h-36 w-full rounded-md border border-[#d8c7b7] bg-white p-3 text-base"
             id="create-now-text"
+            name={CREATE_NOW_TEXT_FIELD_NAME}
             onChange={(event) => setText(event.target.value)}
             placeholder="Give me something easy today"
             rows={5}
@@ -495,6 +498,7 @@ export function CreateNow({
           Product — optional
           <select
             className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+            name={CREATE_NOW_PRODUCT_FIELD_NAME}
             onChange={(event) => setProductId(event.target.value)}
             value={productId}
           >
@@ -515,7 +519,7 @@ export function CreateNow({
                 <input
                   checked={formatChoice === option.value}
                   className="peer sr-only"
-                  name="create-now-format"
+                  name={CREATE_NOW_FORMAT_FIELD_NAME}
                   onChange={() => setFormatChoice(option.value)}
                   type="radio"
                   value={option.value}

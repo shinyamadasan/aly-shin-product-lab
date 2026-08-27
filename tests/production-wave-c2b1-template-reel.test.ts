@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { validateCreativePackageContentV2, isCreativePackageContentV2 } from "../src/lib/creative-package-content-v2.ts";
 import { buildProductionSpec } from "../src/lib/production-spec.ts";
+import { warmOpenPropsFromProductionSpec } from "../src/remotion/production-spec-bridge.ts";
 import { resolveProductionRoute, isProductionRouteExecutable, EXECUTABLE_ASSET_JOB_WORKER_TYPES, MACHINE_PRODUCTION_WORKER_TYPES } from "../src/lib/production-route.ts";
 import { EXECUTABLE_ASSET_KINDS, createAssetJobForReadyCreativePackage, toExecutableAssetJobRoute } from "../src/lib/asset-jobs.ts";
 import { productionSourcesForFormat } from "../src/lib/creative-generation/contracts.ts";
@@ -98,6 +99,23 @@ test("C: a contentless template_only Reel still fails -- shots are required as t
   assert.equal(blankDirection.ok, false);
 });
 
+test("C: a template_only Reel with more than two shots fails before production execution", () => {
+  const result = validateCreativePackageContentV2(
+    reelContent({
+      productionSource: "template_only",
+      shots: [
+        { direction: "First beat", onScreenText: "one", approxSeconds: 2 },
+        { direction: "Second beat", onScreenText: "two", approxSeconds: 2 },
+        { direction: "Third beat", onScreenText: "three", approxSeconds: 2 },
+      ],
+      targetDurationSeconds: 6,
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.ok ? "" : result.message, /limited to 2 shots/);
+});
+
 test("C: a template_only Reel still cannot carry camera framing", () => {
   // This falls out of validateOptionalFraming, which has ALWAYS refused framing on a non-capture
   // package ("there is no camera to frame"). C2B-1 adds no rule here; the assertion records that the
@@ -171,11 +189,8 @@ test("F: reel + generate_visual is STILL rejected -- this slice broadens nothing
   assert.match(result.ok === false ? result.message : "", /no generated visual source exists for a Reel/);
 });
 
-test("F: the GENERATOR still only ever chooses capture_new for a Reel", () => {
-  // The separation this slice depends on: a validator that MAY ACCEPT a shape is not a generator that
-  // WILL EMIT it. productionSourcesForFormat is the generation-side contract and C2B-1 does not touch
-  // it, so default authoring behaviour is unchanged. Wave D owns the owner-facing selection.
-  assert.deepEqual([...productionSourcesForFormat("reel")], ["capture_new"]);
+test("F: the generator may author capture_new or template_only for a Reel, but still not generate_visual", () => {
+  assert.deepEqual([...productionSourcesForFormat("reel")], ["capture_new", "template_only"]);
 });
 
 // --- G. the route -----------------------------------------------------------------------------------------
@@ -203,6 +218,44 @@ test("G: the now-valid package compiles into a ProductionSpecV1 the Remotion mod
       { direction: "Hands tearing the crust", text: "Slow-proofed overnight", approxSeconds: 4 },
     ],
   );
+});
+
+test("G: movement null does not block template_only Reel production compilation", () => {
+  const content = reelContent({
+    productionSource: "template_only",
+    shots: [
+      { direction: "First typography beat holds still.", onScreenText: "one bite", approxSeconds: 3, movement: null },
+      { direction: "Second reveal beat lands as text.", onScreenText: "fairly", approxSeconds: 4, movement: null },
+    ],
+    spokenScript: null,
+    targetDurationSeconds: 7,
+  });
+  const validation = validateCreativePackageContentV2(content);
+  assert.ok(validation.ok, validation.ok ? "" : validation.message);
+
+  const route = resolveProductionRoute({ content });
+  assert.deepEqual(route, { workerType: "remotion", assetKind: "short_video" });
+
+  const spec = buildProductionSpec({ id: "pkg-1", content } as unknown as CreativePackageRecord, { assetKind: "short_video" });
+  assert.equal(spec.assetKind, "short_video");
+  assert.deepEqual(spec.scenes, [
+    { direction: "First typography beat holds still.", text: "one bite", approxSeconds: 3 },
+    { direction: "Second reveal beat lands as text.", text: "fairly", approxSeconds: 4 },
+  ]);
+  assert.equal(JSON.stringify(spec).includes("movement"), false);
+
+  const bridged = warmOpenPropsFromProductionSpec(spec, { brandMark: "Aly & Pon" });
+  assert.deepEqual(bridged.props, {
+    visualTreatment: "typography_only",
+    kicker: "one bite",
+    headline: "The kind of loaf that makes a room go quiet.",
+    supportingLine: "fairly",
+    brandMark: "Aly & Pon",
+    cta: "Order the morning batch",
+    durationSeconds: 7,
+  });
+  assert.equal(JSON.stringify(bridged.props).includes("movement"), false);
+  assert.deepEqual(bridged.warnings, []);
 });
 
 // --- H / I / J. ACTIVATION IS STILL OFF ----------------------------------------------------------------------

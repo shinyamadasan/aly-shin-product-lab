@@ -255,6 +255,38 @@ function truncate(text: string, max = 300): string {
   return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
 }
 
+// Wave D1 R1. A rejected spawn arrives as one of two error families, and only one of them is safe
+// to quote.
+//
+//   POSIX errno  -- code is ENAMETOOLONG / EACCES / EFTYPE / ENOMEM ... and the message is a fixed
+//                   string built by libuv ("spawn ENAMETOOLONG", "spawn <path> EACCES"). No caller
+//                   data appears in it.
+//   ERR_* family -- Node's own argument validation, and its message ECHOES THE OFFENDING VALUE.
+//                   Measured on Node 24: passing an argv entry containing a NUL byte produces
+//                   "The argument 'args[2]' must be a string without null bytes. Received
+//                   'PROMPT\x00LEAK'" -- i.e. the prompt itself, inside the error message.
+//
+// The errno symbol is captured either way, because that is the single most useful fact about a
+// spawn refusal and it is never sensitive. Only the MESSAGE is withheld for the ERR_* family.
+export function describeSpawnError(err: unknown): { errorCode: string | null; messageSafe: boolean } {
+  const code = err instanceof Error && typeof (err as NodeJS.ErrnoException).code === "string"
+    ? (err as NodeJS.ErrnoException).code as string
+    : null;
+  return { errorCode: code, messageSafe: code !== null && !code.startsWith("ERR_") };
+}
+
+// R1.1. The ONLY text this adapter emits for a spawn refusal. Built from the errno symbol and
+// nothing else -- no err.message, no executable path, no argv, no prompt.
+//
+// The errno is a fixed vocabulary token from the OS (ENAMETOOLONG, EACCES, EFTYPE, ENOMEM ...), so
+// it can be quoted verbatim without carrying caller data. When there is no errno there is nothing
+// safe left to say, and the message says exactly that rather than guessing.
+export function describeSpawnFailure(errorCode: string | null): string {
+  return errorCode === null
+    ? "Failed to spawn Claude CLI: the spawn was rejected without an error code."
+    : `Failed to spawn Claude CLI: ${errorCode}`;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------------------------
@@ -285,16 +317,21 @@ export class ClaudeCliProvider implements AiTextProvider {
     const maxOutputBytes = this.options.maxOutputBytes ?? CLAUDE_CLI_DEFAULT_MAX_OUTPUT_BYTES;
     const binary = this.options.binary ?? "claude";
 
+    // `messageSafe` defaults to true because the overwhelming majority of call sites below pass a
+    // literal this file authored. The four sites that build a message out of process output pass
+    // false EXPLICITLY, so the unsafe cases are the ones that are visible in the diff.
     const fail = (
       reason: AiTextFailureReason,
       message: string,
       diagnostics: Record<string, unknown> = {},
+      messageSafe = true,
     ): AiTextFailure => ({
       ok: false,
       reason,
       message,
       metadata: { providerId: this.providerId, model, durationMs: elapsed() },
       diagnostics,
+      messageSafe,
     });
 
     // ---- 1. local configuration, before anything is spawned --------------------------------
@@ -361,7 +398,21 @@ export class ClaudeCliProvider implements AiTextProvider {
         // Closing stdin immediately avoids an observed multi-second "waiting for stdin" probe.
         child.stdin?.end();
       } catch (err) {
-        settle(fail("process_error", `Failed to spawn the Claude CLI: ${err instanceof Error ? err.message : String(err)}`));
+        // R1: this is the path Wave D1 actually took (5ms, non-ENOENT) and it used to record
+        // NOTHING -- no diagnostics argument at all, and a message the orchestrator threw away.
+        //
+        // R1.1: the message is now SYNTHESIZED from the errno alone, never built from err.message.
+        // libuv writes the resolved executable path into that string ("spawn C:\Users\<name>\...\
+        // claude.exe EACCES"), so forwarding it leaked a filesystem path and an OS username into a
+        // persisted field. The errno is the entire diagnostic value of a spawn refusal, and it
+        // still travels twice -- once here, once as diagnostics.errorCode.
+        const spawnError = describeSpawnError(err);
+        settle(fail(
+          "process_error",
+          describeSpawnFailure(spawnError.errorCode),
+          { errorCode: spawnError.errorCode },
+          spawnError.messageSafe,
+        ));
         return;
       }
 
@@ -406,7 +457,10 @@ export class ClaudeCliProvider implements AiTextProvider {
           settle(fail("provider_unavailable", "The Claude CLI was not found.", { executableResolved: false }));
           return;
         }
-        settle(fail("process_error", `The Claude CLI process failed: ${err.message}`, { code: err.code ?? null }));
+        // R1.1: same synthesis as the synchronous throw above, and for the same reason -- this is
+        // the branch that produced "spawn <full path to claude.exe> EACCES", and it was reaching
+        // the trace marked SAFE.
+        settle(fail("process_error", describeSpawnFailure(err.code ?? null), { errorCode: err.code ?? null }));
       });
 
       child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
@@ -431,7 +485,9 @@ export class ClaudeCliProvider implements AiTextProvider {
           const message = typeof envelope.result === "string" && envelope.result.trim() !== ""
             ? envelope.result
             : "The Claude CLI reported an error with no message.";
-          settle(fail(classifyMessage(message), truncate(message), diagnostics));
+          // UNSAFE MESSAGE: `message` here is envelope.result -- raw CLI stdout. It stays in the
+          // in-process result (the runner logs it, bounded, to a console) but must never be persisted.
+          settle(fail(classifyMessage(message), truncate(message), diagnostics, false));
           return;
         }
 
@@ -441,7 +497,8 @@ export class ClaudeCliProvider implements AiTextProvider {
           // collapsing into process_error.
           const combined = `${stdout}\n${stderr}`;
           const detail = truncate(combined) || `The Claude CLI exited with code ${code} and produced no output.`;
-          settle(fail(classifyMessage(combined), detail, diagnostics));
+          // UNSAFE MESSAGE: `detail` is a truncation of raw stdout+stderr.
+          settle(fail(classifyMessage(combined), detail, diagnostics, false));
           return;
         }
 
@@ -489,6 +546,7 @@ export class ClaudeCliProvider implements AiTextProvider {
           message: "The Claude CLI returned no structured output for a request that supplied a JSON schema.",
           metadata: { providerId: this.providerId, model: metadata.model, durationMs },
           diagnostics,
+          messageSafe: true,
         };
       }
       return { ok: true, text, structuredValue: structured, metadata };
@@ -501,6 +559,7 @@ export class ClaudeCliProvider implements AiTextProvider {
         message: "The Claude CLI response contained no usable result text.",
         metadata: { providerId: this.providerId, model: metadata.model, durationMs },
         diagnostics,
+        messageSafe: true,
       };
     }
 

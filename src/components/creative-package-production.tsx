@@ -70,6 +70,11 @@ type ProductionResponse = {
   reason?: string;
 };
 
+type OwnerCapabilityResponse = {
+  owner?: boolean;
+  production?: { remotionShortVideo?: boolean };
+};
+
 const SOURCE_KIND_LABELS: Record<AssetSourceKind, string> = {
   ai_generated: "AI-generated",
   photograph: "Photograph",
@@ -80,7 +85,7 @@ const SOURCE_KIND_SELECT_OPTIONS = ASSET_SOURCE_KINDS.map((kind) => SOURCE_KIND_
 
 function describeRoute(route: ProductionRoute): string {
   if (route.workerType === "remotion" && route.assetKind === "short_video") {
-    return "Deterministic video render queued for the local production worker.";
+    return "Template Reel render -- no filming required.";
   }
   return route.workerType === "static_renderer"
     ? "Deterministic template render -- no AI image generation."
@@ -155,12 +160,14 @@ export function CreativePackageProduction({
   // stays an owner-editable declaration rather than a value this app asserts -- only the owner knows
   // which tool actually made the file they are about to upload.
   const [sourceKindLabel, setSourceKindLabel] = useState(SOURCE_KIND_LABELS.ai_generated);
+  const [videoAvailable, setVideoAvailable] = useState<boolean | null>(null);
 
   const client = supabase as unknown as (AssetReadClient & AssetJobClient & AssetClient & AssetFileUrlClient) | null;
 
   // The manual path exists only where there is an illustration to outsource. A template_only package
   // routes to static_renderer and has no illustration at all, so it keeps the single Produce button.
   const supportsManual = route.workerType === "generative_image";
+  const isActivatedVideoRoute = route.workerType === "remotion" && route.assetKind === "short_video";
 
   const loadLatest = useCallback(async () => {
     if (!client) {
@@ -238,27 +245,6 @@ export function CreativePackageProduction({
     }
   }, [client, creativePackageId, supportsManual]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      if (!isSupabaseConfigured || !client) {
-        setError("Production requires the configured Supabase project.");
-        setPhase("idle");
-        return;
-      }
-      await loadLatest();
-      if (cancelled) {
-        return;
-      }
-      await loadPromptPackage();
-    }
-    load();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creativePackageId]);
-
   // Finds a queued job this action may reuse. Deliberately matches on WORKER TYPE as well as status:
   // a queued generative_image job left behind by a failed Cloudflare attempt must never be handed to
   // the manual composer, because the runner would look up its executor by the job's own worker type
@@ -270,8 +256,6 @@ export function CreativePackageProduction({
   function reusableJobId(workerType: AppCreatableAssetJobWorkerType): string | null {
     return job && job.status === "queued" && job.workerType === workerType ? job.id : null;
   }
-
-  const isActivatedVideoRoute = route.workerType === "remotion" && route.assetKind === "short_video";
 
   async function ensureJob(workerType: AppCreatableAssetJobWorkerType): Promise<string | null> {
     const reusable = reusableJobId(workerType);
@@ -300,6 +284,52 @@ export function CreativePackageProduction({
     const session = await supabase?.auth.getSession();
     return session?.data.session?.access_token ?? null;
   }
+
+  const loadVideoAvailability = useCallback(async () => {
+    if (!isActivatedVideoRoute) {
+      setVideoAvailable(null);
+      return;
+    }
+
+    const token = await accessToken();
+    if (!token) {
+      setVideoAvailable(false);
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/owner", { headers: { Authorization: `Bearer ${token}` } });
+      const payload = (await response.json()) as OwnerCapabilityResponse;
+      setVideoAvailable(response.ok && payload.owner === true && payload.production?.remotionShortVideo === true);
+    } catch {
+      setVideoAvailable(false);
+    }
+  }, [isActivatedVideoRoute]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!isSupabaseConfigured || !client) {
+        setError("Production requires the configured Supabase project.");
+        setPhase("idle");
+        return;
+      }
+      await loadLatest();
+      if (cancelled) {
+        return;
+      }
+      await loadPromptPackage();
+      if (cancelled) {
+        return;
+      }
+      await loadVideoAvailability();
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creativePackageId]);
 
   function beginAction() {
     setPhase("producing");
@@ -425,6 +455,10 @@ export function CreativePackageProduction({
 
   function produceRoute() {
     if (isActivatedVideoRoute) {
+      if (videoAvailable !== true) {
+        setError("Video production is unavailable in this environment. The Template Reel is still saved and ready for review.");
+        return;
+      }
       void queueVideoProduction();
       return;
     }
@@ -515,7 +549,7 @@ export function CreativePackageProduction({
   const previewFile = files[0] ?? null;
   const origin = describeSourceKind(asset);
   const isDecided = asset?.status === "accepted" || asset?.status === "rejected";
-  const workerSupported = isMachineProductionWorkerType(route.workerType) || isActivatedVideoRoute;
+  const workerSupported = isMachineProductionWorkerType(route.workerType) || (isActivatedVideoRoute && videoAvailable === true);
   const busy = phase === "producing";
 
   // A plain JSX-returning function, deliberately NOT a nested component. Declaring a component
@@ -610,7 +644,11 @@ export function CreativePackageProduction({
 
       {phase === "loading" ? <p className="mt-3 text-sm text-[#6f5a4c]">Checking for existing production...</p> : null}
 
-      {!workerSupported ? <MessageBox message="This package routes to a production worker that is not available yet." tone="info" /> : null}
+      {isActivatedVideoRoute && videoAvailable === null ? <MessageBox message="Checking video production availability..." tone="info" /> : null}
+      {isActivatedVideoRoute && videoAvailable === false ? (
+        <MessageBox message="Video production is unavailable in this environment. The Template Reel is still saved and ready for review." tone="info" />
+      ) : null}
+      {!isActivatedVideoRoute && !workerSupported ? <MessageBox message="This package routes to a production worker that is not available yet." tone="info" /> : null}
 
       {job ? (
         <div className="mt-3 flex flex-wrap gap-2">
@@ -678,7 +716,7 @@ export function CreativePackageProduction({
             <X className="mr-1 inline" size={14} />
             Reject
           </SecondaryButton>
-          <SecondaryButton disabled={decisionBusy} onClick={produceRoute}>
+          <SecondaryButton disabled={decisionBusy || !workerSupported} onClick={produceRoute}>
             <RefreshCw className="mr-1 inline" size={14} />
             Regenerate
           </SecondaryButton>

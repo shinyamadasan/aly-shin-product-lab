@@ -36,6 +36,7 @@ function shortVideoSpec(overrides: Partial<ProductionShortVideoSpecV1> = {}): Pr
 test("a short_video spec becomes renderable warm-open props", () => {
   const { props, clampedFrom, warnings } = warmOpenPropsFromProductionSpec(shortVideoSpec(), { brandMark: "Aly & Pon" });
 
+  assert.equal(props.visualTreatment, "typography_only");
   assert.equal(props.headline, "Sourdough, out at seven.");
   assert.equal(props.kicker, "Baked this morning");
   assert.equal(props.supportingLine, "Slow-proofed overnight");
