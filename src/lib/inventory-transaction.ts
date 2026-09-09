@@ -43,21 +43,3 @@ export function buildInventoryTransaction(params: BuildInventoryTransactionParam
     ...(params.actor !== undefined ? { actor: params.actor } : {}),
   };
 }
-
-// The Supabase insert-payload mirror of buildInventoryTransaction. `id` travels so repair/retry
-// paths can be idempotent; `created_at` still uses Postgres's own now() default server-side.
-export function toInventoryTransactionRow(transaction: InventoryTransaction) {
-  return {
-    id: transaction.id,
-    ingredient_id: transaction.ingredientId,
-    transaction_type: transaction.transactionType,
-    quantity_change: transaction.quantityChange,
-    quantity_before: transaction.quantityBefore,
-    quantity_after: transaction.quantityAfter,
-    source_type: transaction.sourceType,
-    source_id: transaction.sourceId,
-    note: transaction.note,
-    ...(transaction.reason !== undefined ? { reason: transaction.reason } : {}),
-    ...(transaction.actor !== undefined ? { actor: transaction.actor } : {}),
-  };
-}

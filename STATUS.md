@@ -122,3 +122,20 @@ on the bucket check first).
   the `product-lab.tsx` monolith).
 - Supply Inventory Loop Milestone 5: nothing outstanding — both localStorage and real-Supabase modes
   fully verified against actual database state.
+
+## 2026-09-09 — Selling Wave 0A stop point
+
+Implementation and target database authority tests complete on
+`feat/selling-wave-0a-raw-authority`. Existing 31 ingredient balances and 43 ledger rows are
+unchanged. Verified physical counts are still operator work. Hosted frontend deployment and
+interactive visual acceptance were not performed; no browser was connected. Do not run old
+frontend protected-write flows or restore old grants. Wave 0B is not authorized or started.
+Details: [SELLING_WAVE_0A.md](planning/SELLING_WAVE_0A.md).
+
+## 2026-09-09 — Selling Wave 0A approved for finalization
+
+Independent reviewer approved Wave 0A; user authorized committing the complete frontend,
+migrations, tests, and documentation together and pushing `feat/selling-wave-0a-raw-authority`.
+Final migration status matches remote with no pending SQL. Physical inventory reconciliation
+must happen before Wave 0B. Wave 0B: **NOT STARTED**. Needs human verification: hosted frontend
+availability and real-device interaction/visual acceptance; this finalization does not claim deployment.

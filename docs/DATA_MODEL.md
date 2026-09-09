@@ -329,3 +329,13 @@ using the same `isMissingTableError` graceful-degradation pattern as every other
 read from/written to `window.localStorage` otherwise. `saveBrandProfile` (`src/app/product-lab.tsx`)
 always upserts the single row (`is_active: true`) -- there is never a second row to create, and no
 delete path exists for a single-record settings surface.
+
+## Raw inventory authority — Selling Wave 0A
+
+Additive fields: `ingredients.inventory_reconciled_at`; `inventory_transactions.reason`,
+`actor`, and `reconciliation_snapshot`. No new domain tables. Snapshot contains the prior
+cache, latest ledger quantity/ID, unit/cost, prior verification timestamp and observed count.
+Ordinary cache/history writes are revoked; metadata uses column grants. Base-unit and posted
+import history triggers protect existing facts. The new `apply_raw_inventory_adjustment` RPC
+supports count, delta, and reversal operations atomically. See
+[Wave 0A](../planning/SELLING_WAVE_0A.md) for boundaries, permissions, and rollout limitations.

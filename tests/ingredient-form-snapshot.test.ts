@@ -74,10 +74,10 @@ test("a changed nearest expiration date is dirty", () => {
   assert.equal(isIngredientFormDirty(live, baseline), true);
 });
 
-test("a changed average unit cost is dirty", () => {
+test("a legacy average unit cost input cannot make metadata dirty", () => {
   const baseline = buildIngredientFormSnapshot(ingredientFormData());
   const live = buildIngredientFormSnapshot(ingredientFormData({ averageUnitCost: "98.50" }));
-  assert.equal(isIngredientFormDirty(live, baseline), true);
+  assert.equal(isIngredientFormDirty(live, baseline), false);
 });
 
 test("a changed notes field is dirty", () => {
@@ -88,10 +88,10 @@ test("a changed notes field is dirty", () => {
 
 test("changing a field then restoring its original value returns to clean", () => {
   const baseline = buildIngredientFormSnapshot(ingredientFormData());
-  const changed = buildIngredientFormSnapshot(ingredientFormData({ averageUnitCost: "150" }));
+  const changed = buildIngredientFormSnapshot(ingredientFormData({ notes: "New storage note" }));
   assert.equal(isIngredientFormDirty(changed, baseline), true);
 
-  const reverted = buildIngredientFormSnapshot(ingredientFormData({ averageUnitCost: "92" }));
+  const reverted = buildIngredientFormSnapshot(ingredientFormData({ notes: "Keep refrigerated." }));
   assert.equal(isIngredientFormDirty(reverted, baseline), false);
 });
 

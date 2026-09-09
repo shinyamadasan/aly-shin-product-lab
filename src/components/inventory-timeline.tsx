@@ -3,6 +3,7 @@ import type { InventoryTransaction } from "@/lib/product-lab-types";
 import type { LabState } from "@/lib/lab-state";
 import { stockAdjustmentReasonLabel } from "@/components/inventory-page";
 import { createMutationGuard } from "@/lib/mutation-guard";
+import { adjustmentSupersededByCount } from "@/lib/raw-inventory-authority";
 
 function formatDateLabel(iso: string) {
   const date = new Date(iso);
@@ -29,7 +30,7 @@ export function InventoryTimeline({ labState, reverseInventoryAdjustment }: { la
   const reverseGuardRef = useRef(createMutationGuard<string>());
 
   async function handleReverse(transaction: InventoryTransaction) {
-    if (reverseGuardRef.current.isActive(transaction.id)) {
+    if (reverseGuardRef.current.isActive(transaction.id) || adjustmentSupersededByCount(transaction, ingredientsById.get(transaction.ingredientId))) {
       return;
     }
     const reasonLabel = transaction.reason ? stockAdjustmentReasonLabel[transaction.reason] : "adjustment";
@@ -62,6 +63,7 @@ export function InventoryTimeline({ labState, reverseInventoryAdjustment }: { la
   });
 
   function sourceLabel(transaction: InventoryTransaction) {
+    if (transaction.reconciliationSnapshot) return "Verified physical count";
     if (transaction.sourceType === "purchase_import") {
       const purchaseImport = importsById.get(transaction.sourceId);
       return purchaseImport ? `Purchase -- ${purchaseImport.fileName}` : "Purchase";
@@ -95,7 +97,9 @@ export function InventoryTimeline({ labState, reverseInventoryAdjustment }: { la
               {group.entries.map((transaction) => {
                 const ingredient = ingredientsById.get(transaction.ingredientId);
                 const isIncrease = transaction.quantityChange >= 0;
-                const canReverse = transaction.transactionType === "adjustment" && !transaction.sourceId && !reversedTransactionIds.has(transaction.id);
+                const ordinaryAdjustment = transaction.transactionType === "adjustment" && !transaction.reconciliationSnapshot && !transaction.sourceId;
+                const superseded = ordinaryAdjustment && adjustmentSupersededByCount(transaction, ingredient);
+                const canReverse = ordinaryAdjustment && !superseded && !reversedTransactionIds.has(transaction.id);
                 return (
                   <div className="flex flex-wrap items-center gap-3 rounded-md border border-[#f0e4d8] px-3 py-2 text-sm" key={transaction.id}>
                     <span className={`w-24 shrink-0 font-semibold ${isIncrease ? "text-[#2e6b44]" : "text-[#8a3827]"}`}>
@@ -105,6 +109,10 @@ export function InventoryTimeline({ labState, reverseInventoryAdjustment }: { la
                     <span className="flex-1">{ingredient?.name ?? "Unknown ingredient"}</span>
                     <span className="capitalize text-[#6f5a4c]">{transaction.transactionType}</span>
                     <span className="text-[#6f5a4c]">{sourceLabel(transaction)}</span>
+                    <span className="text-[#6f5a4c]">Balance: {transaction.quantityBefore} → {transaction.quantityAfter}</span>
+                    {transaction.note ? <p className="w-full text-[#6f5a4c]">{transaction.note}</p> : null}
+                    {transaction.reconciliationSnapshot ? <p className="w-full text-[#6f5a4c]">Preserved before count: cache {transaction.reconciliationSnapshot.cache_quantity}; latest ledger {transaction.reconciliationSnapshot.latest_ledger_quantity ?? "none"}. Verified physical quantity: {transaction.reconciliationSnapshot.verified_quantity} {transaction.reconciliationSnapshot.base_unit}.</p> : null}
+                    {superseded ? <p className="w-full text-[#6f5a4c]">Cannot reverse: a later physical reconciliation superseded this adjustment.</p> : null}
                     {canReverse ? (
                       <button
                         className="h-8 rounded-md border border-[#d8c7b7] bg-white px-2 text-xs font-semibold text-[#8a3827] disabled:cursor-not-allowed disabled:opacity-60"
