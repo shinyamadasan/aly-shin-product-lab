@@ -117,11 +117,15 @@ function bodyFor(format: CreativeFormat, productionSource: CreativeProductionSou
       : { ...base, overlayText: null, visualBrief: VISUAL_BRIEF };
   }
   if (format === "reel") {
+    const shot =
+      productionSource === "capture_new"
+        ? { direction: "Hands cutting the tray.", onScreenText: null, approxSeconds: 3, framing: "close_up", movement: null }
+        : { direction: "A text beat introduces the choice.", onScreenText: "Corner or centre?", approxSeconds: 6, movement: null };
     return {
       ...base,
-      shots: [{ direction: "Hands cutting the tray.", onScreenText: null, approxSeconds: 3, framing: "close_up", movement: null }],
+      shots: [shot],
       spokenScript: null,
-      audioDirection: "Upbeat trending audio",
+      audioDirection: productionSource === "capture_new" ? "Upbeat trending audio" : "Silent; no voiceover or music.",
     };
   }
   if (format === "carousel") {
@@ -440,8 +444,8 @@ test("P1-G. no raw enum value reaches any owner-facing surface", () => {
 
   for (const format of CREATIVE_FORMATS) {
     for (const productionSource of CREATIVE_PRODUCTION_SOURCES) {
-      // Reel is capture-only, and a zero-capture request cannot produce one.
-      if (format === "reel" && productionSource !== "capture_new") continue;
+      // Reel now supports capture_new and a narrow template_only path, but never generate_visual.
+      if (format === "reel" && productionSource === "generate_visual") continue;
       const creativeInput = productionSource === "capture_new" ? request("Give me something easy today.") : request(ZERO_CAPTURE_REQUEST);
       const view = viewOf(format, productionSource, creativeInput);
 

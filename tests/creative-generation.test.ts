@@ -12,6 +12,7 @@ import {
   buildCreativeBodyJsonSchema,
   buildFormatDecisionJsonSchema,
   buildUserFormatDecision,
+  productionSourcesForFormat,
   validateCreativeBody,
   validateFormatDecision,
 } from "../src/lib/creative-generation/contracts.ts";
@@ -90,6 +91,20 @@ function bodyFor(format: CreativeFormat): Record<string, unknown> {
   }
   if (format === "carousel") return { ...base, slides: [{ heading: "What changed", body: "More brown butter.", visualDirection: "Cover shot", framing: "wide" }] };
   return { ...base, frames: [{ visualDirection: "Tray out of the oven", text: "Fresh out", framing: "medium", approxSeconds: null }], interaction: null };
+}
+
+function templateReelBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...commonBody(),
+    productionSource: "template_only",
+    shots: [
+      { direction: "First typography beat introduces the setup.", onScreenText: "one bite?", approxSeconds: 3, movement: null },
+      { direction: "Second text beat lands as the reveal.", onScreenText: "famous last words", approxSeconds: 3, movement: "push_in" },
+    ],
+    spokenScript: null,
+    audioDirection: "Silent; no voiceover or music.",
+    ...overrides,
+  };
 }
 
 function assemble(format: CreativeFormat, overrides: Record<string, unknown> = {}) {
@@ -208,6 +223,32 @@ test("the format-decision prompt renders deterministically and preserves the sup
   assert.doesNotMatch(request.user, /Write the angle/);
 });
 
+test("the generation prompts state that explicit request subjects must not be substituted", () => {
+  const context = {
+    creativeInput: buildCreativeInputFromRequest({ text: "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.", formatHint: "reel" }),
+    grounding: grounding({
+      subject: "brownie",
+      subjectKind: "product",
+      subjectSource: "stated",
+      subjectGrounding: null,
+      productId: "brownies",
+      productName: "Brownies",
+    }),
+    brandBible: BRAND_BIBLE,
+  };
+  const formatPrompt = buildFormatDecisionRequest(context);
+  const bodyPrompt = buildCreativeBodyRequest(context, { format: "reel", formatRationale: "User requested reel." }, ["instagram"]);
+
+  for (const prompt of [formatPrompt, bodyPrompt]) {
+    assert.match(prompt.system, /When the owner explicitly names the subject or product of the creative, preserve that subject/);
+    assert.match(prompt.system, /Do not substitute a different grounded product unless the owner asked you to choose/);
+    assert.match(prompt.user, /The owner wrote: "Make a zero-capture Reel about sharing one brownie\. I don't want to film anything\."/);
+    assert.match(prompt.user, /Subject: brownie/);
+    assert.match(prompt.user, /Product: Brownies/);
+    assert.match(prompt.user, /This subject was stated explicitly\. Do not substitute another subject\./);
+  }
+});
+
 // ---- §24: body schemas -------------------------------------------------------------------------
 
 test("a valid body is accepted for every format", () => {
@@ -240,6 +281,93 @@ test("missing or malformed format-specific data is rejected", () => {
   for (const [format, label, body] of cases) {
     assert.equal(validateCreativeBody(format, body).ok, false, `${format}: ${label} must be rejected`);
   }
+});
+
+test("D1: Reel source options allow capture_new and template_only while excluding generate_visual", () => {
+  assert.deepEqual([...productionSourcesForFormat("reel")], ["capture_new", "template_only"]);
+  assert.equal(validateCreativeBody("reel", bodyFor("reel")).ok, true, "capture_new Reel remains valid");
+  assert.equal(validateCreativeBody("reel", templateReelBody()).ok, true, "template_only Reel is now valid");
+  assert.equal(validateCreativeBody("reel", { ...templateReelBody(), productionSource: "generate_visual" }).ok, false);
+});
+
+test("D1: template_only Reel generation refuses non-production-ready shapes", () => {
+  assert.equal(validateCreativeBody("reel", { ...templateReelBody(), spokenScript: "Say this out loud." }).ok, false);
+  assert.equal(
+    validateCreativeBody("reel", {
+      ...templateReelBody(),
+      shots: [
+        { direction: "Beat one.", onScreenText: "one", approxSeconds: 2, movement: null },
+        { direction: "Beat two.", onScreenText: "two", approxSeconds: 2, movement: null },
+        { direction: "Beat three.", onScreenText: "three", approxSeconds: 2, movement: null },
+      ],
+    }).ok,
+    false,
+    "template_only Reel must fail instead of silently dropping shot 3",
+  );
+  assert.equal(validateCreativeBody("reel", { ...templateReelBody(), shots: [] }).ok, false);
+  assert.equal(
+    validateCreativeBody("reel", { ...templateReelBody(), shots: [{ direction: " ", onScreenText: null, approxSeconds: 2, movement: null }] }).ok,
+    false,
+  );
+  assert.equal(
+    validateCreativeBody("reel", { ...templateReelBody(), shots: [{ direction: "Beat.", onScreenText: null, approxSeconds: 0, movement: null }] }).ok,
+    false,
+  );
+  assert.equal(
+    validateCreativeBody("reel", {
+      ...templateReelBody(),
+      shots: [{ direction: "Beat.", onScreenText: null, approxSeconds: 2, framing: "close_up", movement: null }],
+    }).ok,
+    false,
+    "template_only Reel must not carry camera framing",
+  );
+  assert.equal(
+    validateCreativeBody("reel", {
+      ...templateReelBody(),
+      shots: [
+        {
+          direction: "Draw a rounded brownie and animate a dashed dividing line across it.",
+          onScreenText: "one brownie. two people.",
+          approxSeconds: 4,
+          movement: null,
+        },
+        {
+          direction: "Show the lopsided split diagram with yours/mine labels attached to the pieces.",
+          onScreenText: "somehow one half is always bigger.",
+          approxSeconds: 5,
+          movement: null,
+        },
+      ],
+    }).ok,
+    false,
+    "template_only Reel must not be persisted as production-ready when the visual joke relies on unsupported custom object/diagram execution",
+  );
+  assert.equal(
+    validateCreativeBody("reel", {
+      ...templateReelBody(),
+      shots: [
+        { direction: "First typography beat introduces the setup.", onScreenText: "one", approxSeconds: 6, movement: null },
+        { direction: "Second text beat lands as the reveal.", onScreenText: "two", approxSeconds: 5, movement: null },
+      ],
+    }).ok,
+    false,
+    "template_only Reel must author inside warm-open's duration capability rather than relying on clamp",
+  );
+});
+
+test("D1: template_only Reel assembles without truncation and capture_new is not forced away", () => {
+  const template = assemble("reel", { body: templateReelBody() });
+  assert.equal(template.ok, true, template.ok ? "" : template.message);
+  if (!template.ok || template.content.format !== "reel") throw new Error("unreachable");
+  assert.equal(template.content.productionSource, "template_only");
+  assert.equal(template.content.spokenScript, null);
+  assert.equal(template.content.shots.length, 2);
+  assert.deepEqual(template.content.shots.map((shot) => shot.onScreenText), ["one bite?", "famous last words"]);
+
+  const capture = assemble("reel", { body: bodyFor("reel") });
+  assert.equal(capture.ok, true, capture.ok ? "" : capture.message);
+  if (!capture.ok) throw new Error("unreachable");
+  assert.equal(capture.content.productionSource, "capture_new");
 });
 
 test("empty required creative strings are rejected", () => {
@@ -282,6 +410,51 @@ test("the body prompt names only the configured platforms, and asks for none whe
   assert.doesNotMatch(withPlatforms.user, /tiktok/);
 
   assert.match(buildCreativeBodyRequest(context, decision, []).user, /empty platformVariants array/);
+});
+
+test("D1: Reel prompt explains template_only authoring without treating captions as visual text", () => {
+  const request = buildCreativeBodyRequest(
+    { creativeInput: buildCreativeInputFromRequest({ text: "Make a simple Reel about sharing one brownie. I do not want to film or take photos.", formatHint: "reel" }), grounding: grounding(), brandBible: BRAND_BIBLE },
+    buildUserFormatDecision("reel"),
+    ["instagram"],
+  );
+
+  assert.match(request.user, /Choose productionSource from exactly these values: template_only\./);
+  assert.match(request.user, /1 or 2 shots only/);
+  assert.match(request.user, /spokenScript to null/);
+  assert.match(request.user, /Template Reel V1/);
+  assert.match(request.user, /Keep the public meaning fully in the rendered text fields/);
+  assert.match(request.user, /does not interpret prose as custom animation/);
+  assert.match(request.user, /Do not require custom diagrams, product-specific visuals, object drawings/);
+  assert.match(request.user, /6-10 total seconds/);
+  assert.match(request.user, /no voiceover.*music/);
+  assert.match(request.system, /For Reel, generate_visual is unsupported/);
+  assert.doesNotMatch(request.user, /caption.*on-screen text/i);
+});
+
+test("D1: capture-permitted Reel prompt keeps capture_new available and does not force template_only", () => {
+  const request = buildCreativeBodyRequest(
+    { creativeInput: buildCreativeInputFromRequest({ text: "Make a Reel about sharing brownies on a coffee break.", formatHint: "reel" }), grounding: grounding(), brandBible: BRAND_BIBLE },
+    buildUserFormatDecision("reel"),
+    ["instagram"],
+  );
+
+  assert.match(request.user, /Choose productionSource from exactly these values: capture_new, template_only\./);
+  assert.match(request.user, /Do not force every Reel to template_only/);
+  assert.match(request.user, /actual or real product appearance, texture, process, people, location, or behind-the-scenes proof, capture_new is mandatory/);
+  assert.match(request.user, /Use capture_new when real-world footage is load-bearing/);
+  assert.match(request.user, /Never use template_only to fake product documentation/);
+});
+
+test("D1: actual real-world proof narrows a Reel body to capture_new before the model writes it", () => {
+  const request = buildCreativeBodyRequest(
+    { creativeInput: buildCreativeInputFromRequest({ text: "Make a Reel showing the actual brownie texture.", formatHint: "reel" }), grounding: grounding(), brandBible: BRAND_BIBLE },
+    buildUserFormatDecision("reel"),
+    ["instagram"],
+  );
+
+  assert.match(request.user, /Choose productionSource from exactly these values: capture_new\./);
+  assert.doesNotMatch(request.user, /capture_new, template_only/);
 });
 
 test("the body prompt forbids inventing facts and marks business facts as data, not instructions", () => {
@@ -403,11 +576,18 @@ test("non-transactional engagement CTAs are allowed when commercial facts are ab
   );
 
   assert.match(request.system, /If commercial-action facts are not supplied/);
-  assert.match(request.system, /non-transactional CTA/);
-  assert.match(request.system, /engagement, reflection, preference, commenting, saving, sharing/);
+  assert.match(request.system, /make the CTA non-transactional/);
   assert.match(request.system, /Coffee or tea with yours\?/);
   assert.match(request.system, /Message us for delivery/);
   assert.match(request.system, /#deliveredtoyourdoor/);
+
+  // D1 CTA repair. This test previously also asserted the clause "...a non-transactional CTA about
+  // engagement, reflection, preference, commenting, saving, sharing, or interest" -- which is to say
+  // it PINNED the instruction that produced the engagement-bait CTA the owner rejected. The
+  // factuality requirement it exists to protect is unchanged and asserted above; what is now
+  // asserted instead is that the prescription is gone and the doctrine replaced it.
+  assert.doesNotMatch(request.system, /engagement, reflection, preference, commenting, saving, sharing/);
+  assert.match(request.system, /Organic engagement must be EARNED by the idea/i);
 });
 
 test("easy or quick request wording adds production-simplicity guidance only to execution", () => {

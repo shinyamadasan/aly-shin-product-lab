@@ -61,18 +61,21 @@ function candidate(bytes: Uint8Array, overrides: Partial<GeneratedAssetFileCandi
   };
 }
 
+// Wave C2A adds actualDurationMs to the inspected facts. For an image it is ALWAYS null, and
+// asserting it here rather than omitting it is the point: it records that an image cannot acquire a
+// duration, which is the other half of the video work.
 test("inspectAssetBytes decodes PNG, JPEG, and WebP facts separately from validation", async () => {
   assert.deepEqual(await inspectAssetBytes(png1080), {
     ok: true,
-    facts: { actualMimeType: "image/png", actualWidth: 1080, actualHeight: 1080, extension: "png", byteSize: png1080.length, sha256: await sha256Hex(png1080), bytes: png1080 },
+    facts: { actualMimeType: "image/png", actualWidth: 1080, actualHeight: 1080, actualDurationMs: null, extension: "png", byteSize: png1080.length, sha256: await sha256Hex(png1080), bytes: png1080 },
   });
   assert.deepEqual(await inspectAssetBytes(jpeg3x2), {
     ok: true,
-    facts: { actualMimeType: "image/jpeg", actualWidth: 3, actualHeight: 2, extension: "jpg", byteSize: jpeg3x2.length, sha256: await sha256Hex(jpeg3x2), bytes: jpeg3x2 },
+    facts: { actualMimeType: "image/jpeg", actualWidth: 3, actualHeight: 2, actualDurationMs: null, extension: "jpg", byteSize: jpeg3x2.length, sha256: await sha256Hex(jpeg3x2), bytes: jpeg3x2 },
   });
   assert.deepEqual(await inspectAssetBytes(webp3x2), {
     ok: true,
-    facts: { actualMimeType: "image/webp", actualWidth: 3, actualHeight: 2, extension: "webp", byteSize: webp3x2.length, sha256: await sha256Hex(webp3x2), bytes: webp3x2 },
+    facts: { actualMimeType: "image/webp", actualWidth: 3, actualHeight: 2, actualDurationMs: null, extension: "webp", byteSize: webp3x2.length, sha256: await sha256Hex(webp3x2), bytes: webp3x2 },
   });
 });
 

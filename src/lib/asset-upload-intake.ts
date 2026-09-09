@@ -1,7 +1,8 @@
-import { inspectAssetBytes } from "./asset-binary.ts";
-import { GENERATED_ASSET_MAX_FILE_SIZE_BYTES, type GeneratedAssetFileCandidate } from "./asset-generation-validation.ts";
+import { inspectMediaBytes } from "./asset-binary.ts";
+import { maxGeneratedAssetFileSizeBytes, type GeneratedAssetFileCandidate } from "./asset-generation-validation.ts";
+import type { AssetKind } from "./asset-jobs.ts";
 
-export type AssetUploadIntakeRejectionReason = "empty-bytes" | "file-too-large" | "invalid-binary" | "unsupported-mime";
+export type AssetUploadIntakeRejectionReason = "empty-bytes" | "file-too-large" | "invalid-binary" | "unsupported-mime" | "unsupported-video-codec";
 
 export type AssetUploadIntakeResult =
   | { ok: true; candidate: GeneratedAssetFileCandidate }
@@ -16,15 +17,26 @@ export type AssetUploadIntakeResult =
 // wrong-file-count check); mimeType/width/height/fileSizeBytes are always the actual, decoded facts
 // -- never a caller-declared or source-declared value (e.g. a browser File's own .type) -- so the
 // later declared-vs-actual anti-tamper check in asset-binary.ts can never disagree with itself.
-export async function buildAssetUploadCandidate(bytes: Uint8Array): Promise<AssetUploadIntakeResult> {
+// Wave C2A -- assetKind, defaulting to "image".
+//
+// The default is what keeps every existing caller (the browser file picker, the manual-illustration
+// composer, and the CLI import path) byte-identically unchanged: all three upload images, all three
+// pass nothing, and all three still get the exact PNG/JPEG/WebP behaviour and the exact 10 MiB
+// ceiling they have always had.
+//
+// What the parameter buys is that the kind now decides BOTH the decoder and the byte ceiling, in one
+// place, so a video can never be admitted through the image ceiling and an image can never be
+// admitted by the container parser.
+export async function buildAssetUploadCandidate(bytes: Uint8Array, assetKind: AssetKind = "image"): Promise<AssetUploadIntakeResult> {
   if (bytes.length === 0) {
     return { ok: false, reason: "empty-bytes", message: "The selected file is empty." };
   }
-  if (bytes.length > GENERATED_ASSET_MAX_FILE_SIZE_BYTES) {
-    return { ok: false, reason: "file-too-large", message: `The selected file exceeds the ${GENERATED_ASSET_MAX_FILE_SIZE_BYTES} byte limit.` };
+  const maxFileSizeBytes = maxGeneratedAssetFileSizeBytes(assetKind);
+  if (bytes.length > maxFileSizeBytes) {
+    return { ok: false, reason: "file-too-large", message: `The selected file exceeds the ${maxFileSizeBytes} byte limit.` };
   }
 
-  const inspection = await inspectAssetBytes(bytes);
+  const inspection = await inspectMediaBytes(bytes, assetKind);
   if (!inspection.ok) {
     return { ok: false, reason: inspection.reason, message: inspection.message };
   }
@@ -36,7 +48,9 @@ export async function buildAssetUploadCandidate(bytes: Uint8Array): Promise<Asse
       mimeType: inspection.facts.actualMimeType,
       width: inspection.facts.actualWidth,
       height: inspection.facts.actualHeight,
-      durationMs: null,
+      // Read out of the container, never declared. Still null for every image -- inspectAssetBytes
+      // returns null there by construction, so the image candidate shape is unchanged.
+      durationMs: inspection.facts.actualDurationMs,
       fileSizeBytes: inspection.facts.byteSize,
       bytes,
     },

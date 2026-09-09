@@ -402,7 +402,31 @@ export function isCreativeJobResultEnvelope(value: unknown): value is CreativeJo
 // only. No size limit is imposed here -- S3C-D already bounds invocation count (6 without a format
 // hint, 4 with one), and a second, differently-derived cap would be a competing bound, not a check.
 const EXECUTION_TRACE_REQUIRED_KEYS = ["stage", "providerId", "model", "invocationNumber", "providerInvocationNumber", "outcome", "durationMs", "action"] as const;
-const EXECUTION_TRACE_OPTIONAL_KEYS = ["failureReason"] as const;
+const EXECUTION_TRACE_OPTIONAL_KEYS = ["failureReason", "message", "diagnostics"] as const;
+
+// Wave D1 R1. `diagnostics` is the one nested object this validator admits, and admitting it
+// without a key allowlist would undo the whole point of the closed key set above -- an open
+// `Record<string, unknown>` is exactly the shape through which a prompt or a CLI log would arrive.
+//
+// So the nested object gets the same treatment as the outer one: a closed allowlist, scalars only.
+// Every entry below is a fact ABOUT a process, never a byte FROM one. Byte COUNTS are admitted;
+// byte CONTENT has no key to arrive under.
+const EXECUTION_TRACE_DIAGNOSTIC_KEYS = new Set([
+  "exitCode",         // number | null
+  "signal",           // string | null
+  "stdoutBytes",      // number   -- a COUNT, never the bytes
+  "stderrBytes",      // number   -- a COUNT, never the bytes
+  "finalOutputBytes", // number   -- written by adapters that capture a final-message file
+  "timeoutMs",        // number
+  "maxOutputBytes",   // number
+  "executableResolved", // boolean
+  "errorCode",        // string | null -- the errno symbol, e.g. "ENAMETOOLONG"
+]);
+
+// Adapters truncate their own messages to 300 characters and prepend a short literal label. 500
+// therefore accepts every message a current adapter can build, with room to spare, and rejects
+// anything that grew a new and unreviewed source of text.
+const EXECUTION_TRACE_MAX_MESSAGE_LENGTH = 500;
 const EXECUTION_TRACE_STAGES = new Set(["format_decision", "creative_body"]);
 const EXECUTION_TRACE_ACTIONS = new Set(["accepted", "retry_same_provider", "fallback", "stop"]);
 
@@ -447,6 +471,36 @@ function validateExecutionTraceEntry(entry: unknown): { ok: true } | { ok: false
   }
   if ("failureReason" in entry && typeof entry.failureReason !== "string") {
     return { ok: false, message: "Creative Job v2 executionTrace failureReason must be a string when present." };
+  }
+
+  // R1. Both fields describe a FAILURE. A success entry carrying either one means something
+  // upstream attached provider failure detail to an accepted invocation, which is a bug worth
+  // failing loudly on rather than persisting.
+  if (entry.outcome === "success" && ("message" in entry || "diagnostics" in entry)) {
+    return { ok: false, message: "Creative Job v2 executionTrace success entries must not carry message or diagnostics." };
+  }
+
+  if ("message" in entry) {
+    if (typeof entry.message !== "string" || entry.message.trim().length === 0) {
+      return { ok: false, message: "Creative Job v2 executionTrace message must be a non-empty string when present." };
+    }
+    if (entry.message.length > EXECUTION_TRACE_MAX_MESSAGE_LENGTH) {
+      return { ok: false, message: `Creative Job v2 executionTrace message must be at most ${EXECUTION_TRACE_MAX_MESSAGE_LENGTH} characters.` };
+    }
+  }
+
+  if ("diagnostics" in entry) {
+    if (!isJsonObject(entry.diagnostics)) {
+      return { ok: false, message: "Creative Job v2 executionTrace diagnostics must be an object when present." };
+    }
+    for (const [key, value] of Object.entries(entry.diagnostics)) {
+      if (!EXECUTION_TRACE_DIAGNOSTIC_KEYS.has(key)) {
+        return { ok: false, message: `Creative Job v2 executionTrace diagnostics must not carry unrecognized field: ${key}.` };
+      }
+      if (!(value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean")) {
+        return { ok: false, message: `Creative Job v2 executionTrace diagnostics field ${key} must be a scalar or null.` };
+      }
+    }
   }
 
   return { ok: true };
@@ -898,10 +952,34 @@ export async function runCreativeJobWithExecutors(
       return jobResult;
     }
     const reason = attemptOutcome === "timed_out" && jobResult.reason === "failed" ? ("timeout" as const) : jobResult.reason;
+
+    // R1.1 -- defense in depth on the FAILURE path.
+    //
+    // The success path below already runs every trace entry through
+    // validateCreativeJobResultEnvelopeV2 before persisting. This path did not: an executor's
+    // returned trace went straight to the RPC, so the closed key set, the diagnostics allowlist and
+    // the message bound never ran on the exact path a provider failure takes. CreativeJobExecutor is
+    // an injection seam and isCreativeJobExecutorFailure only checks Array.isArray, so this was the
+    // one inlet where an unvalidated object could reach the column.
+    //
+    // Same validator, same rules, no second sanitizer and no second bound -- validateExecutionTraceEntry
+    // stays the single canonical persistence boundary for trace shape.
+    //
+    // ALL-OR-NOTHING, matching the success path's existing convention exactly: if any entry fails,
+    // no trace is persisted and the column stays NULL. Dropping only the offending entries would
+    // leave a gap in invocationNumber and produce a history that reads as complete but is not, which
+    // is a worse artifact than an honest absence. In practice this never fires -- both shipped
+    // adapters emit only allowlisted scalars -- so its whole job is to bound what a future adapter
+    // can do.
+    const executionTrace =
+      failure.executionTrace !== undefined && failure.executionTrace.every((entry) => validateExecutionTraceEntry(entry).ok)
+        ? { executionTrace: failure.executionTrace }
+        : {};
+
     const attempt = await finishCreativeJobAttempt(client, attemptId, attemptOutcome, {
       errorCode: failure.errorCode ?? (attemptOutcome === "timed_out" ? "timeout" : "failed"),
       errorMessage: jobResult.message,
-      ...(failure.executionTrace === undefined ? {} : { executionTrace: failure.executionTrace }),
+      ...executionTrace,
     });
     return { ...jobResult, reason, attempt };
   }

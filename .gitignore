@@ -35,6 +35,7 @@ yarn-error.log*
 !.env.example
 !.env.advisor.local.example
 !.env.creative-workers.local.example
+!.env.production-workers.local.example
 
 # vercel
 .vercel
@@ -70,4 +71,22 @@ daily-advisor-session.log
 # snapshots, prompts, manifests, AI replies, lifted drafts), never committed. Mirrors the Daily
 # Advisor output/ convention above.
 /marketing-advisor/output/
+
+# Production MVP machine executors (Wave B) -- generated experiment/acceptance output. Same reasoning
+# as the four generated-output directories above: these are large local evidence trees (PNGs, raw
+# provider responses, review HTML) produced by the spike/acceptance harness for owner review, not
+# source. The accepted visual decisions they supported live in the review record, not in git.
+/outputs/
+
+# Wave B exploratory render spikes -- kept on local disk as owner evidence, excluded from the repo.
+# These four each carry their own private copy of the satori element types and compositions they were
+# exploring; all of that was superseded by src/lib/production-static-renderer.ts, and none of them
+# imports it. Retaining them would ship ~2,000 lines of dead alternative renderers alongside the real
+# one. render-owner-visual-correction.ts is deliberately NOT listed here -- it is the one harness that
+# drives the real renderer, and it stays tracked.
+/scripts/production-static-renderer/render-static-spike.ts
+/scripts/production-static-renderer/render-final-composition-spike.ts
+/scripts/production-static-renderer/render-reference-illustration-spike.ts
+/scripts/production-static-renderer/render-reference-model-spike.ts
+
 /.worktrees/

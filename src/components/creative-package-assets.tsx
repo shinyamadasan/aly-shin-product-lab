@@ -3,13 +3,13 @@
 import { ImageIcon, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { MessageBox, Tag } from "@/components/ui";
-import { ASSET_GENERATION_IMAGE_DIMENSIONS } from "@/lib/asset-generation-spec";
 import type { AssetFileRecord } from "@/lib/asset-files";
 import { createSignedUrlForAssetFile, type AssetFileUrlClient } from "@/lib/asset-file-urls";
 import { listAssetJobsForCreativePackageReadOnly, listOrderedAssetFilesForAssetReadOnly, readAssetForAssetJobReadOnly, type AssetReadClient } from "@/lib/asset-read-model";
 import { createAssetUiRequestCoordinator, shouldStartAutomaticImageRetry } from "@/lib/asset-ui-request-coordinator";
 import type { AssetJobRecord } from "@/lib/asset-jobs";
 import { isAssetContentV1, type AssetRecord } from "@/lib/assets";
+import { PRODUCTION_IMAGE_DIMENSIONS, PRODUCTION_SHORT_VIDEO_DIMENSIONS } from "@/lib/production-spec";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type CreativePackageAssetsClient = AssetReadClient & AssetFileUrlClient;
@@ -25,7 +25,7 @@ type SignedFileState = {
   error: string;
   isLoading: boolean;
   autoRetried: boolean;
-  imageFailed: boolean;
+  mediaFailed: boolean;
 };
 
 function formatDateTime(value: string): string {
@@ -76,12 +76,36 @@ function signedStateKey(file: AssetFileRecord): string {
   return file.id;
 }
 
+function previewKind(file: AssetFileRecord): "image" | "video" | "unsupported" {
+  if (file.mimeType.startsWith("image/")) return "image";
+  if (file.mimeType === "video/mp4") return "video";
+  return "unsupported";
+}
+
+function expectedDimensionsFor(file: AssetFileRecord): { width: number; height: number } | null {
+  const kind = previewKind(file);
+  if (kind === "image") return PRODUCTION_IMAGE_DIMENSIONS;
+  if (kind === "video") return PRODUCTION_SHORT_VIDEO_DIMENSIONS;
+  return null;
+}
+
 // Derived, not stored -- PROP-027's advisory dimension policy (asset-generation-validation.ts)
 // never persists a "warning" field anywhere; it only records the actual decoded width/height
-// (already on AssetFileRecord). Comparing those against the one canonical spec size here gives the
-// exact same fact the upload-time warning named, with no duplicate storage.
-function isOffSpec(width: number | null, height: number | null): boolean {
-  return width !== null && height !== null && (width !== ASSET_GENERATION_IMAGE_DIMENSIONS.width || height !== ASSET_GENERATION_IMAGE_DIMENSIONS.height);
+// (already on AssetFileRecord). Compare against the canonical dimensions for the rendered asset
+// kind, so a valid 1080x1920 Reel does not inherit the image-only 1080x1080 advisory.
+function offSpecMessage(file: AssetFileRecord): string | null {
+  const expected = expectedDimensionsFor(file);
+  if (!expected || file.width === null || file.height === null) return null;
+  if (file.width === expected.width && file.height === expected.height) return null;
+  return `Actual dimensions differ from the ${expected.width}x${expected.height} spec -- this is advisory only and does not affect Asset validity.`;
+}
+
+function mediaUnavailableMessage(file: AssetFileRecord): string {
+  return previewKind(file) === "video" ? "Video preview is not available." : "Image preview is not available.";
+}
+
+function automaticRefreshFailureMessage(file: AssetFileRecord): string {
+  return previewKind(file) === "video" ? "Media could not be loaded after one automatic signed URL refresh." : "Image could not be loaded after one automatic signed URL refresh.";
 }
 
 // variant "ritual" hides provenance/advisory presentation only (the Workspace/Source tags and the
@@ -134,7 +158,7 @@ export function CreativePackageAssets({
           error: "",
           isLoading: true,
           autoRetried: options.resetAutoRetry ? false : (current[key]?.autoRetried ?? false),
-          imageFailed: false,
+          mediaFailed: false,
         },
       }));
 
@@ -149,7 +173,7 @@ export function CreativePackageAssets({
           error: result.ok ? "" : result.message,
           isLoading: false,
           autoRetried: options.resetAutoRetry ? false : (current[key]?.autoRetried ?? false),
-          imageFailed: false,
+          mediaFailed: false,
         },
       }));
     }
@@ -220,7 +244,7 @@ export function CreativePackageAssets({
     if (!shouldStartAutomaticImageRetry(current)) {
       updateSignedFiles((state) => ({
         ...state,
-        [key]: { ...(state[key] ?? { url: "", error: "", isLoading: false, autoRetried: true }), imageFailed: true, autoRetried: true },
+        [key]: { ...(state[key] ?? { url: "", error: "", isLoading: false, autoRetried: true }), mediaFailed: true, autoRetried: true },
       }));
       return;
     }
@@ -231,7 +255,7 @@ export function CreativePackageAssets({
     }
     updateSignedFiles((state) => ({
       ...state,
-      [key]: { ...(state[key] ?? { url: "", error: "", isLoading: false, imageFailed: false }), autoRetried: true, isLoading: true, error: "" },
+      [key]: { ...(state[key] ?? { url: "", error: "", isLoading: false, mediaFailed: false }), autoRetried: true, isLoading: true, error: "" },
     }));
 
     if (!client) return;
@@ -246,7 +270,7 @@ export function CreativePackageAssets({
         error: result.ok ? "" : result.message,
         isLoading: false,
         autoRetried: true,
-        imageFailed: !result.ok,
+        mediaFailed: !result.ok,
       },
     }));
   }
@@ -279,15 +303,18 @@ export function CreativePackageAssets({
       <div className="mt-3 grid gap-3">
         {readyFiles.map((file) => {
           const signed = signedFiles[signedStateKey(file)];
+          const kind = previewKind(file);
           return (
             <div className="grid gap-2" key={file.id}>
-              {signed?.url && !signed.imageFailed ? (
+              {signed?.url && !signed.mediaFailed && kind === "image" ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img alt="Today's result" className="max-h-96 w-full rounded-md border border-[#ead9c8] object-contain" onError={() => void retryAfterImageFailure(file)} src={signed.url} />
+              ) : signed?.url && !signed.mediaFailed && kind === "video" ? (
+                <video className="aspect-[9/16] w-full max-w-[220px] rounded-md border border-[#ead9c8] bg-black object-contain" controls onError={() => void retryAfterImageFailure(file)} playsInline src={signed.url} />
               ) : (
-                <div className="grid min-h-32 place-items-center rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm text-[#6f5a4c]">{signed?.isLoading ? "Loading..." : "Image preview is not available."}</div>
+                <div className="grid min-h-32 place-items-center rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm text-[#6f5a4c]">{signed?.isLoading ? "Loading..." : mediaUnavailableMessage(file)}</div>
               )}
-              {signed?.error || signed?.imageFailed ? <MessageBox message={signed.error || "The image couldn't be loaded after one automatic retry."} tone="bad" /> : null}
+              {signed?.error || signed?.mediaFailed ? <MessageBox message={signed.error || automaticRefreshFailureMessage(file)} tone="bad" /> : null}
             </div>
           );
         })}
@@ -352,28 +379,37 @@ export function CreativePackageAssets({
 
                 {assetState.files.map((file) => {
                   const signed = signedFiles[signedStateKey(file)];
+                  const kind = previewKind(file);
+                  const dimensionWarning = offSpecMessage(file);
                   return (
                     <article className="rounded-md border border-[#ead9c8] bg-white p-3" key={file.id}>
                       <div className="grid gap-3">
-                        {signed?.url && !signed.imageFailed ? (
+                        {signed?.url && !signed.mediaFailed && kind === "image" ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img alt={`Generated Asset file ${file.position + 1}`} className="max-h-72 w-full rounded-md border border-[#ead9c8] object-contain" onError={() => void retryAfterImageFailure(file)} src={signed.url} />
+                        ) : signed?.url && !signed.mediaFailed && kind === "video" ? (
+                          <video
+                            aria-label={`Generated Asset file ${file.position + 1}`}
+                            className="aspect-[9/16] w-full max-w-[220px] rounded-md border border-[#ead9c8] bg-black object-contain"
+                            controls
+                            onError={() => void retryAfterImageFailure(file)}
+                            playsInline
+                            src={signed.url}
+                          />
                         ) : (
                           <div className="grid min-h-32 place-items-center rounded-md border border-[#ead9c8] bg-[#fffaf3] p-3 text-sm text-[#6f5a4c]">
-                            {signed?.isLoading ? "Loading signed image URL..." : "Image preview is not available."}
+                            {signed?.isLoading ? "Loading signed media URL..." : mediaUnavailableMessage(file)}
                           </div>
                         )}
 
-                        {(signed?.error || signed?.imageFailed) ? (
-                          <MessageBox message={signed.error || "Image could not be loaded after one automatic signed URL refresh."} tone="bad" />
+                        {(signed?.error || signed?.mediaFailed) ? (
+                          <MessageBox message={signed.error || automaticRefreshFailureMessage(file)} tone="bad" />
                         ) : null}
 
                         <div className="grid gap-3">
                           {metadataBlock("MIME", file.mimeType)}
                           {metadataBlock("Dimensions", file.width && file.height ? `${file.width} x ${file.height}` : "Not recorded")}
-                          {isOffSpec(file.width, file.height) ? (
-                            <MessageBox message={`Actual dimensions differ from the ${ASSET_GENERATION_IMAGE_DIMENSIONS.width}x${ASSET_GENERATION_IMAGE_DIMENSIONS.height} spec -- this is advisory only and does not affect Asset validity.`} tone="info" />
-                          ) : null}
+                          {dimensionWarning ? <MessageBox message={dimensionWarning} tone="info" /> : null}
                           {metadataBlock("File size", formatBytes(file.fileSizeBytes))}
                           {metadataBlock("File created", formatDateTime(file.createdAt))}
                         </div>

@@ -1,0 +1,149 @@
+-- Authorization: assign the app_metadata.app_role claim to a Supabase Auth user.
+--
+-- Introduced by Wave B for 'owner' and 'creative_worker'. Extended by SECURITY S1 with a third
+-- value, 'public_order', for the server-only website principal in .env.public-order.local.
+--
+-- ============================================================================================
+-- RUN THIS IN THE SUPABASE SQL EDITOR (Dashboard -> SQL Editor). OWNER EXECUTION ONLY.
+-- ============================================================================================
+--
+-- WHY THE SQL EDITOR AND NOT A SCRIPT.
+--
+-- Writing app_metadata requires either the Admin API (which needs the service-role key) or direct
+-- SQL against auth.users. The SQL Editor already runs with sufficient privilege, so this needs NO
+-- service-role key to exist on any developer machine, in any .env file, or in CI. That is the point:
+-- the most dangerous credential in a Supabase project is never created, copied or handled.
+--
+-- NO OWNER IDENTIFIER IS COMMITTED. Both placeholders below are filled in by you at run time and
+-- must not be saved back into this file or into git.
+--
+-- ============================================================================================
+-- STEP 1 -- LOOK BEFORE YOU WRITE. Confirm you are about to modify exactly the right user.
+-- ============================================================================================
+--
+-- Replace the placeholder with the owner's sign-in email. This is READ-ONLY.
+
+-- select id, email, raw_app_meta_data, last_sign_in_at
+-- from auth.users
+-- where email = 'REPLACE_WITH_OWNER_EMAIL';
+
+-- Expect EXACTLY ONE row. If you get zero, the email is wrong or the user does not exist.
+-- If you get more than one, stop and reconcile before continuing.
+
+-- ============================================================================================
+-- STEP 2 -- ASSIGN THE CLAIM.
+-- ============================================================================================
+--
+-- Uncomment, replace BOTH placeholders, and run.
+--
+--   REPLACE_WITH_EMAIL  the account's sign-in email
+--   REPLACE_WITH_ROLE   'owner'           for a Product Lab owner (a human). ONE OR MORE explicitly
+--                                         authorized accounts may hold this claim -- see below.
+--                       'creative_worker' for the advisor/worker automation account
+--                                         (the one in .env.advisor.local -- it runs the creative
+--                                          and asset workers and MUST keep write access, but must
+--                                          NOT be able to open the owner UI)
+--                       'public_order'    for the server-only website principal
+--                                         (the one in .env.public-order.local -- it renders the
+--                                          public menu and records public submissions, and must
+--                                          have NO creative-domain and NO business-data access)
+--
+-- Do NOT assign 'owner' to the worker or website account. Wave B originally instructed that the
+-- public-order account receive NO claim at all; SECURITY S1 supersedes that. Leaving it claimless
+-- is no longer the safe state -- once supabase-harden-product-lab-owner-data-rls.sql is applied, a
+-- claimless account cannot read the catalog, and the public ordering page stops working. The
+-- claim is what tells the database this account is the website and not one of the project's
+-- unexplained human accounts, which must continue to hold nothing.
+--
+-- ASSIGN 'public_order' BEFORE applying the S1 hardening migration. That file's preflight refuses
+-- to run until the claim exists, precisely so the wrong order is a clean error instead of an
+-- outage on the one customer-facing surface this project has.
+--
+-- The `||` merge preserves Supabase's own keys (provider, providers). A bare assignment would
+-- destroy them and can break sign-in.
+--
+-- The guard blocks the write unless exactly one user matches THAT EMAIL, so a typo'd email is a
+-- no-op rather than a silent miss. That check is about addressing the right row and is unrelated to
+-- how many owners exist -- one or more accounts may hold app_role = 'owner'.
+
+-- do $$
+-- declare
+--   target_email text := 'REPLACE_WITH_EMAIL';
+--   target_role  text := 'REPLACE_WITH_ROLE';
+--   matched      integer;
+--   existing_owners integer;
+-- begin
+--   if target_role not in ('owner', 'creative_worker', 'public_order') then
+--     raise exception 'Refusing to assign unrecognised app_role %. Use owner, creative_worker or public_order.', target_role;
+--   end if;
+--
+--   select count(*) into matched from auth.users where email = target_email;
+--   if matched <> 1 then
+--     raise exception 'Expected exactly 1 user for that email, found %. Nothing was changed.', matched;
+--   end if;
+--
+--   -- CO-OWNERS ARE ALLOWED. (SECURITY S1.2.)
+--   --
+--   -- This block used to REFUSE when another account already held 'owner'. That was a statement
+--   -- about company structure, not about authorization, and it is what made a co-owner
+--   -- impossible to add. `owner` is a role: every holder gets identical access, there is no
+--   -- seniority, and no policy anywhere in this schema counts owners or scopes a row to one.
+--   --
+--   -- It now NOTIFIES instead of refusing, so adding a co-owner is a deliberate act you see
+--   -- confirmed rather than one you have to defeat a guard to perform. The count is reported;
+--   -- no email, id or other identifier is read back or written down.
+--   if target_role = 'owner' then
+--     select count(*) into existing_owners from auth.users
+--      where raw_app_meta_data ->> 'app_role' = 'owner' and email <> target_email;
+--     if existing_owners > 0 then
+--       raise notice 'NOTE: % other account(s) already hold app_role = owner. This adds a CO-OWNER with identical access. If you meant to MOVE the claim, revoke the other with STEP 4.', existing_owners;
+--     end if;
+--   end if;
+--
+--   update auth.users
+--      set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || jsonb_build_object('app_role', target_role)
+--    where email = target_email;
+--
+--   raise notice 'Assigned app_role=% to 1 user.', target_role;
+-- end $$;
+
+-- ============================================================================================
+-- STEP 3 -- VERIFY.
+-- ============================================================================================
+--
+-- Shows who holds which claim across the whole project. Run it and confirm:
+--   * AT LEAST ONE 'owner', and that you can name every account holding it. More than one is
+--     allowed and is not an error -- but "allowed" is not "unexamined". Zero is a lockout.
+--   * the worker account is 'creative_worker'
+--   * the website account is 'public_order'
+--   * every remaining account has app_role NULL -- and that you can name why each one exists
+
+-- select email, raw_app_meta_data ->> 'app_role' as app_role
+-- from auth.users
+-- order by app_role nulls last, email;
+
+-- ============================================================================================
+-- STEP 4 -- REVOKE (only if you need to move or remove a claim).
+-- ============================================================================================
+
+-- update auth.users
+--    set raw_app_meta_data = raw_app_meta_data - 'app_role'
+--  where email = 'REPLACE_WITH_EMAIL';
+
+-- ============================================================================================
+-- STEP 5 -- REFRESH TOKENS. THIS IS REQUIRED, NOT OPTIONAL.
+-- ============================================================================================
+--
+-- app_metadata is stamped into the JWT when the token is ISSUED. An access token minted before
+-- STEP 2 does not gain the claim, and will keep being refused (or keep being allowed, after a
+-- revoke) until it is replaced.
+--
+--   Owner browser  : sign out of Product Lab and sign back in.
+--   Workers        : restart the creative worker, the asset worker and the Creative Prep task, so
+--                    each signs in again with signInWithPassword and receives a fresh token.
+--   Website        : nothing to do by hand. src/lib/supabase-server.ts holds its session only in
+--                    the memory of a warm serverless instance and calls signInWithPassword() on
+--                    every cold start, so the new claim arrives on its own. Redeploy only if you
+--                    want it immediately.
+--
+-- Only after this does the new authorization state take effect anywhere.

@@ -28,6 +28,13 @@ export type CreativeMovement = (typeof CREATIVE_MOVEMENTS)[number];
 export const CREATIVE_SHOT_SECONDS_MIN = 1;
 export const CREATIVE_SHOT_SECONDS_MAX = 10;
 
+// Current deterministic Reel production uses the warm-open composition, which expresses one hook
+// beat and one supporting/reveal beat. This is an authoring bound for template-only Reels, not a
+// platform rule and not a limit on filmed capture_new Reels.
+export const CREATIVE_TEMPLATE_REEL_SHOTS_MAX = 2;
+export const CREATIVE_TEMPLATE_REEL_MIN_DURATION_SECONDS = 6;
+export const CREATIVE_TEMPLATE_REEL_MAX_DURATION_SECONDS = 10;
+
 // Content Creation MVP H1-B -- HOW the visual gets made, which is a different question from what
 // format it is. S6 assumed the answer was always "point a phone at something real"; an owner who
 // says "I don't have time to take photos or videos" is telling us that assumption is wrong.

@@ -214,7 +214,15 @@ test("[static] no Campaign table/domain is referenced anywhere product-controls.
   }
 });
 
-test("[static] /content-studio's route wrapper is still unchanged", () => {
+// M2C2 pinned this route wrapper byte for byte to prove the milestone added no route logic. Wave B
+// adds exactly one thing to it -- resolving the pre-existing `?job=` parameter with the pre-existing
+// resolveCreateNowJobId, precisely as `/` already does -- so the assertion now pins the INVARIANT
+// M2C2 actually cared about: a thin wrapper that delegates to ProductLab under the content-studio
+// view and holds no domain logic of its own.
+test("[static] /content-studio's route wrapper is still a thin delegating wrapper", () => {
   const contentStudioPage = readFileSync(new URL("../src/app/content-studio/page.tsx", import.meta.url), "utf8");
-  assert.match(contentStudioPage, /return <ProductLab view="content-studio" \/>;/);
+  assert.match(contentStudioPage, /<ProductLab initialCreativeJobId=\{resolveCreateNowJobId\(job\)\} view="content-studio" \/>/);
+  for (const forbidden of ["campaign", "content_calendar", "publishing_job", "journey_entries"]) {
+    assert.doesNotMatch(contentStudioPage.toLowerCase(), new RegExp(forbidden));
+  }
 });

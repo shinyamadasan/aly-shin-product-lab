@@ -138,7 +138,7 @@ export function createCreativeAiExecutor(deps: CreativeAiExecutorDeps): Creative
       // trace rather than thrown. "timed_out" is used only when the AI itself reported a timeout.
       return expectedFailure({
         code: `ai_${orchestration.reason}`,
-        message: `Creative AI generation failed at the ${orchestration.failedStage} stage: ${orchestration.reason}.`,
+        message: orchestration.message ?? `Creative AI generation failed at the ${orchestration.failedStage} stage: ${orchestration.reason}.`,
         attemptOutcome: orchestration.reason === "timeout" ? "timed_out" : "failed",
         executionTrace: orchestration.trace,
       });

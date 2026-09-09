@@ -5,17 +5,21 @@ import { Button, MessageBox } from "@/components/ui";
 import {
   CREATE_NOW_DEFAULT_FORMAT_CHOICE,
   CREATE_NOW_FORMAT_OPTIONS,
+  CREATE_NOW_FORMAT_FIELD_NAME,
   CREATE_NOW_JOB_SEARCH_PARAM,
   CREATE_NOW_NO_PRODUCT_CHOICE,
   CREATE_NOW_NO_PRODUCT_LABEL,
   CREATE_NOW_POLL_INTERVAL_MS,
-  buildCreateNowRequest,
+  CREATE_NOW_PRODUCT_FIELD_NAME,
+  CREATE_NOW_TEXT_FIELD_NAME,
+  buildCreateNowRequestFromSubmittedForm,
   describeCreateNowScreenProgress,
-  findSelectableCreateNowProduct,
   selectableCreateNowProducts,
   shouldRefreshCreateNowJob,
   type CreateNowFormatChoice,
 } from "@/lib/create-now";
+import { CreativePackageAssetCreate } from "@/components/creative-package-asset-create";
+import { CreativePackageAssets } from "@/components/creative-package-assets";
 import { buildCreativePackageView, formatCreativePackageForClipboard, formatHashtags, type CreativePackageView } from "@/lib/creative-package-view";
 import { createCreativeJobFromRequest, getCreativeJobById, type CreativeJobClient, type CreativeJobRecord } from "@/lib/creative-jobs";
 import { getCreativePackageForJob, type CreativePackageClient } from "@/lib/creative-packages";
@@ -215,6 +219,20 @@ export function CreateNow({
   const [job, setJob] = useState<CreativeJobRecord | null>(null);
   const [jobError, setJobError] = useState("");
   const [packageView, setPackageView] = useState<CreativePackageView | null>(null);
+  // The package's ID, kept alongside its rendered view.
+  //
+  // Until now this screen showed a Creative Package and then dropped its identity on the floor, which
+  // is why production was unreachable from the path this owner actually uses: EVERY existing package
+  // is intent-origin (create-now), and the only two surfaces that rendered the production panel --
+  // Opportunities and Today -- are both opportunity-driven. A create-now package has no Opportunity
+  // and never will, so it appeared on neither.
+  //
+  // Nothing about origin semantics changes here and no Opportunity is fabricated to make one fit. The
+  // package is simply identified, which is all the existing production surface ever needed.
+  const [packageId, setPackageId] = useState<string | null>(null);
+  // Bumped when an asset is produced or uploaded, so the Assets list below refetches -- the same
+  // signal the other package surfaces use.
+  const [assetRefreshToken, setAssetRefreshToken] = useState(0);
   const [packageError, setPackageError] = useState("");
   // Counts the completed-job looks that found no package yet. Bounds the grace window in
   // shouldRefreshCreateNowJob, so waiting for a late package can never become an endless poll.
@@ -281,6 +299,7 @@ export function CreateNow({
 
       setPackageError("");
       setPackageView(built.view);
+      setPackageId(packageResult.creativePackage.id);
     }
 
     load(jobId, jobClient);
@@ -342,7 +361,7 @@ export function CreateNow({
       return;
     }
 
-    const built = buildCreateNowRequest({ text, product: findSelectableCreateNowProduct(products, productId), formatChoice });
+    const built = buildCreateNowRequestFromSubmittedForm(new FormData(event.currentTarget), products);
     if (!built.ok) {
       setValidationMessage(built.message);
       return;
@@ -379,6 +398,7 @@ export function CreateNow({
     setJob(null);
     setJobError("");
     setPackageView(null);
+    setPackageId(null);
     setPackageError("");
     setPackageMissCount(0);
     setText("");
@@ -416,6 +436,18 @@ export function CreateNow({
 
         {packageView ? <PackageView view={packageView} /> : null}
 
+        {/* The SAME entry component every other Creative Package surface renders, making the same
+            decision it makes there: it resolves this package's Production Route and shows either the
+            Production panel (template_only -> static_renderer, generate_visual -> generative_image)
+            or the External Creative Workspace upload panel (capture_new). No production logic is
+            duplicated here -- this screen only supplies the package id. */}
+        {packageId ? (
+          <>
+            <CreativePackageAssetCreate creativePackageId={packageId} onUploaded={() => setAssetRefreshToken((current) => current + 1)} />
+            <CreativePackageAssets creativePackageId={packageId} refreshSignal={assetRefreshToken} />
+          </>
+        ) : null}
+
         {/* On a failure this is the only thing left to do, so it is the screen's primary action. On
             success it stays quiet: the owner's next step is to go and use what they just got, not to
             immediately ask for more. */}
@@ -449,6 +481,7 @@ export function CreateNow({
             aria-invalid={validationMessage ? true : undefined}
             className="min-h-36 w-full rounded-md border border-[#d8c7b7] bg-white p-3 text-base"
             id="create-now-text"
+            name={CREATE_NOW_TEXT_FIELD_NAME}
             onChange={(event) => setText(event.target.value)}
             placeholder="Give me something easy today"
             rows={5}
@@ -465,6 +498,7 @@ export function CreateNow({
           Product — optional
           <select
             className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+            name={CREATE_NOW_PRODUCT_FIELD_NAME}
             onChange={(event) => setProductId(event.target.value)}
             value={productId}
           >
@@ -485,7 +519,7 @@ export function CreateNow({
                 <input
                   checked={formatChoice === option.value}
                   className="peer sr-only"
-                  name="create-now-format"
+                  name={CREATE_NOW_FORMAT_FIELD_NAME}
                   onChange={() => setFormatChoice(option.value)}
                   type="radio"
                   value={option.value}

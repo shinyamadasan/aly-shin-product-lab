@@ -41,8 +41,20 @@ type SupabaseErrorLike = {
 type QueryResult<T> = PromiseLike<{ data: T | null; error: SupabaseErrorLike | null }>;
 
 // No `from(...)`/`update(...)` here -- finishAssetJobAttempt's only interaction with this table
-// is the finish_asset_job_attempt RPC below, mirroring CreativeJobAttemptClient exactly. There is
-// no other writer of this table.
+// is the finish RPCs below, mirroring CreativeJobAttemptClient exactly. There is no other writer of
+// this table, and this file adds no direct-UPDATE path.
+//
+// TWO RPCs rather than one, and deliberately so -- the same shape creative-job-attempts.ts already
+// uses for finish_creative_job_attempt / finish_creative_job_attempt_with_trace.
+//
+// The original finish_asset_job_attempt is left exactly as it was, and an attempt with no provider
+// provenance still calls it byte for byte. That is what keeps this change safe to deploy in either
+// order: an installation that has not yet applied supabase-add-asset-job-attempt-provenance.sql
+// keeps finishing every external, mock and static_renderer attempt normally, because none of those
+// carries provenance and none of them reaches the new function.
+//
+// finish_asset_job_attempt_with_provenance is the additive provenance-aware sibling, and is the only
+// thing in this codebase that can write asset_job_attempts.provider / .model.
 export type AssetJobAttemptClient = {
   rpc(
     functionName: "finish_asset_job_attempt",
@@ -50,6 +62,31 @@ export type AssetJobAttemptClient = {
   ): {
     maybeSingle(): QueryResult<AssetJobAttemptRow>;
   };
+  rpc(
+    functionName: "finish_asset_job_attempt_with_provenance",
+    args: {
+      p_attempt_id: string;
+      p_outcome: string;
+      p_error_code: string | null;
+      p_error_message: string | null;
+      p_provider: string | null;
+      p_model: string | null;
+    },
+  ): {
+    maybeSingle(): QueryResult<AssetJobAttemptRow>;
+  };
+};
+
+// Which provider and which model an attempt actually used.
+//
+// Deliberately these two fields and nothing else: they are the only execution provenance
+// asset_job_attempts has columns for. The richer provenance the generative executor computes (prompt
+// digest, reference identities, transport attempt count) has no column and is deliberately not
+// smuggled in here -- see the SECURITY / PRIVACY note in
+// supabase-add-asset-job-attempt-provenance.sql.
+export type AssetJobAttemptProvenance = {
+  provider: string;
+  model: string;
 };
 
 export type AssetJobAttemptFinishResult =
@@ -111,16 +148,31 @@ export async function finishAssetJobAttempt(
   client: AssetJobAttemptClient,
   attemptId: string,
   outcome: Exclude<AssetJobAttemptStatus, "running">,
-  details: { errorCode?: string; errorMessage?: string } = {},
+  details: { errorCode?: string; errorMessage?: string; provenance?: AssetJobAttemptProvenance } = {},
 ): Promise<AssetJobAttemptFinishResult> {
-  const result = await client
-    .rpc("finish_asset_job_attempt", {
-      p_attempt_id: attemptId,
-      p_outcome: outcome,
-      p_error_code: outcome === "completed" ? null : (details.errorCode ?? "failed"),
-      p_error_message: outcome === "completed" ? null : (details.errorMessage ?? "Asset Job attempt failed."),
-    })
-    .maybeSingle();
+  const errorCode = outcome === "completed" ? null : (details.errorCode ?? "failed");
+  const errorMessage = outcome === "completed" ? null : (details.errorMessage ?? "Asset Job attempt failed.");
+
+  // Provenance present -> the provenance-aware RPC. Absent -> the original, unchanged call. An
+  // absent provenance is a real answer, not a gap to fill: it means no provider was contacted, and
+  // writing nulls through the wider function would say the same thing less clearly while making
+  // every external/mock/static_renderer attempt depend on a migration it does not need.
+  const result = await (details.provenance === undefined
+    ? client.rpc("finish_asset_job_attempt", {
+        p_attempt_id: attemptId,
+        p_outcome: outcome,
+        p_error_code: errorCode,
+        p_error_message: errorMessage,
+      })
+    : client.rpc("finish_asset_job_attempt_with_provenance", {
+        p_attempt_id: attemptId,
+        p_outcome: outcome,
+        p_error_code: errorCode,
+        p_error_message: errorMessage,
+        p_provider: details.provenance.provider,
+        p_model: details.provenance.model,
+      })
+  ).maybeSingle();
 
   if (result.error) {
     return { ok: false, ...dbErrorResult(result.error) };

@@ -8,6 +8,9 @@ import {
   fromAssetRow,
   getAssetForJob,
   isAssetContentV1,
+  ASSET_OWNER_DECISIONS,
+  ASSET_STATUSES,
+  isAssetOwnerDecision,
   isAssetStatus,
   runMockAssetJobAndMaterializeAsset,
   type AssetRunnerClient,
@@ -452,10 +455,41 @@ function makeClient(
   };
 }
 
-test("isAssetStatus accepts only generated in this milestone", () => {
-  assert.equal(isAssetStatus("generated"), true);
-  for (const status of ["queued", "completed", "failed", "approved", "rejected"]) {
-    assert.equal(isAssetStatus(status), false);
+test("the Asset review vocabulary is exactly what the pipeline writes plus what the OWNER decides", () => {
+  // "generated" is the pipeline's. "accepted"/"rejected" are the owner's, added in Wave B's owner
+  // workflow -- assets.status is plain text with no CHECK constraint, so this needed no migration.
+  assert.deepEqual([...ASSET_STATUSES], ["generated", "accepted", "rejected"]);
+  for (const status of ASSET_STATUSES) {
+    assert.equal(isAssetStatus(status), true);
+  }
+
+  // Still closed against everything else. "approved" in particular stays OUT: the deferred human
+  // review gate owns that word along with reviewed_by/reviewed_at/rejection_reason, and
+  // supabase-add-assets.sql still refuses those columns.
+  for (const status of ["queued", "completed", "failed", "approved", "draft", "published", "archived"]) {
+    assert.equal(isAssetStatus(status), false, `${status} must not be an Asset status`);
+  }
+});
+
+test("only the OWNER decisions are offered as decisions -- an Asset can never be returned to undecided", () => {
+  assert.deepEqual([...ASSET_OWNER_DECISIONS], ["accepted", "rejected"]);
+  assert.equal(isAssetOwnerDecision("accepted"), true);
+  assert.equal(isAssetOwnerDecision("rejected"), true);
+  // "generated" is a pipeline state, not a decision the owner may write back.
+  assert.equal(isAssetOwnerDecision("generated"), false);
+  for (const decision of ASSET_OWNER_DECISIONS) {
+    assert.equal(isAssetStatus(decision), true, "every owner decision must be a valid Asset status");
+  }
+});
+
+test("[static] nothing in the production pipeline can mark its own output accepted", () => {
+  // The ONLY writer of an owner decision is setAssetOwnerDecision, and it is called from the owner's
+  // UI. If an executor, the runner, or materialization ever gained the ability to set this, a machine
+  // would be declaring its own work visually accepted.
+  for (const file of ["../src/lib/asset-jobs.ts", "../src/lib/asset-file-materialization.ts", "../src/lib/production-execution.ts", "../src/lib/production-asset-executors.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.equal(source.includes("setAssetOwnerDecision"), false, `${file} must not decide acceptance`);
+    assert.doesNotMatch(source, /status:\s*"accepted"/, `${file} must not write an accepted status`);
   }
 });
 

@@ -625,3 +625,67 @@ cost. The database alone calculates and records supported raw adjustments and ve
 boundaries, retaining old discrepancies. Purchase/Bake/repair posting is explicitly blocked
 until Wave 0B; old absolute-balance RPC grants are revoked. Existing owner RLS is preserved.
 See [Wave 0A implementation and evidence](../planning/SELLING_WAVE_0A.md).
+
+## Template Reel Authoring (Wave D1)
+
+Wave D1 broadens the existing Content Generation pipeline only at the authoring contract: a Reel may
+now be either `capture_new` or a narrow `template_only` Template Reel. The generator still never
+authors `reel + generate_visual`, and no generative video, generative audio, publishing, editor,
+schema, or route-table change is part of this slice.
+
+**Authoring entry point:** Create Now (`src/lib/create-now.ts`, `src/components/create-now.tsx`) and
+accepted Opportunities both converge on the existing Creative Job path. A user `formatHint: "reel"`
+still skips the Stage 1 format-decision call; the Stage 2 body call is where `productionSource` is
+authored. `productionSourcesForFormat("reel")` returns `capture_new, template_only` when capture is
+available, and narrows to `template_only` when the request explicitly rules out all fresh capture.
+
+**Template Reel V1 executor boundary:** `template_only` Reels are deterministic, silent,
+text-led editorial motion packages: one or two authored beats, no camera `framing`,
+`spokenScript: null`, non-empty rendered text per beat, and an `audioDirection` that stays
+silent/no voiceover/no generated music. The active warm-open executor consumes the headline, first
+and second shot `onScreenText`, CTA, brand mark, and total duration. Hook, angle, shot directions,
+movement, and per-shot timing remain useful metadata, but they are not load-bearing rendered
+behavior. D1 Template Reel V1 does not execute product-specific visuals, arbitrary scene-direction
+prose, custom diagrams, object drawing, cinematic camera instructions, or per-shot movement. Current
+warm-open duration capability is 6-10 seconds, and generation/readiness catch out-of-range Template
+Reels before production instead of relying on Remotion clamping. Production-generated warm-open props
+render typography with neutral accents, not the source-controlled HearthIllustration fixture.
+
+**Template Reel V1 is not the visual ceiling (owner-recorded limitation).** The first live owner
+proof rendered cleanly and was still rejected on creative quality: a Reel about sharing one brownie
+contained no visual representation of the brownie at all. Typography-only execution is a deliberate
+truthfulness choice — it avoids counterfeiting product photography and avoids promising visuals the
+executor cannot make — but it is explicitly **not** the long-term Aly & Pon visual system, and it is
+not the creative-quality target. Some concepts genuinely need a picture, and Template Reel V1 cannot
+give them one.
+
+The gap is **D2 — expressive reusable visual execution**: a production-capability requirement for the
+next wave, not a defect in D1. D2 extends the deterministic Production Engine beyond typography-only
+so selected concepts can use reusable stylized visual treatments: stylized object/product
+illustration, doodle treatments, graphical comparisons and diagrams, and visual metaphor — reusable
+primitives, never a hardcoded product, never a proof-specific template, and never an interpreter for
+arbitrary scene prose. The brownie-sharing concept is D2's first acceptance case: can a structured,
+reusable primitive make a concept visibly about a brownie without pretending to be actual product
+photography? Restoring the old fixed cookie/bun illustration is expressly not the answer. Until that
+wave lands, treat typography-only as a truthful floor rather than the intended standard.
+
+**Organic engagement is earned, not requested (D1 CTA repair).** Public CTAs must add creative value
+instead of asking for a metric. The canonical Stage 2 prompt carries
+`ORGANIC_ENGAGEMENT_DOCTRINE` (`src/lib/creative-engagement-policy.ts`): a CTA may be a closing
+thought, punchline, identity statement, or unresolved tension, and a piece may simply end on its
+punchline. Generic solicitations ("tell us in the comments", "tag someone", "share this", "save this
+post", "follow for more") are prohibited, and the internal distribution objective — share, send,
+save, comment, follow — is a planning label that must never surface as public wording. Genuinely
+interactive concepts (poll, quiz, A/B choice, contest) and owner-requested mechanics may still invite
+a real answer, phrased as part of the idea. The prompt is the load-bearing mechanism;
+`genericEngagementBaitReason` is a narrow regression guard over the most obvious imperative forms,
+and it stands down when the owner's own request asked for the interaction.
+
+**Owner workflow:** a saved Template Reel renders as "Template Reel - No filming required" and shows
+beats to build rather than shots to record. The production panel checks server-owned owner capability
+state through `/api/owner`; when Remotion short-video activation is off, Produce and Regenerate are
+disabled with an honest unavailable message. Activation remains server-side and off by default, and
+video queueing still derives the route from `creativePackageId`, not browser-supplied route data.
+
+**Known remaining debt:** first-Produce idempotency remains the existing Asset Job workflow debt. D1
+does not add a new idempotency key, retry system, or automatic production job recovery.

@@ -5,14 +5,18 @@ import { readFileSync } from "node:fs";
 import {
   CREATE_NOW_AI_FORMAT_CHOICE,
   CREATE_NOW_EMPTY_TEXT_MESSAGE,
+  CREATE_NOW_FORMAT_FIELD_NAME,
   CREATE_NOW_FORMAT_OPTIONS,
   CREATE_NOW_NO_PRODUCT_CHOICE,
   CREATE_NOW_PACKAGE_GRACE_LOOKS,
   CREATE_NOW_PACKAGE_PENDING_HEADLINE,
   CREATE_NOW_PACKAGE_PENDING_MESSAGE,
   CREATE_NOW_POLL_INTERVAL_MS,
+  CREATE_NOW_PRODUCT_FIELD_NAME,
+  CREATE_NOW_TEXT_FIELD_NAME,
   CREATE_NOW_WAITING_DETAIL,
   buildCreateNowRequest,
+  buildCreateNowRequestFromSubmittedForm,
   describeCreateNowProgress,
   describeCreateNowScreenProgress,
   findSelectableCreateNowProduct,
@@ -182,6 +186,14 @@ function values(overrides: Partial<{ text: string; product: Product | null; form
   return { text: "Give me something easy today", product: null, formatChoice: CREATE_NOW_AI_FORMAT_CHOICE as CreateNowFormatChoice, ...overrides };
 }
 
+function submittedFormValues(overrides: Partial<{ text: string; productId: string; formatChoice: CreateNowFormatChoice }> = {}) {
+  const formData = new FormData();
+  formData.set(CREATE_NOW_TEXT_FIELD_NAME, overrides.text ?? "Give me something easy today");
+  formData.set(CREATE_NOW_PRODUCT_FIELD_NAME, overrides.productId ?? CREATE_NOW_NO_PRODUCT_CHOICE);
+  formData.set(CREATE_NOW_FORMAT_FIELD_NAME, overrides.formatChoice ?? CREATE_NOW_AI_FORMAT_CHOICE);
+  return formData;
+}
+
 // --- A/B/C: the one required field ---------------------------------------------------------------
 
 test("A. a blank request cannot be submitted", () => {
@@ -266,6 +278,67 @@ test("D. no product is ever auto-selected -- the first catalog entry is not the 
   assert.equal(findSelectableCreateNowProduct(catalog, CREATE_NOW_NO_PRODUCT_CHOICE), null);
   const result = buildCreateNowRequest(values({ product: findSelectableCreateNowProduct(catalog, CREATE_NOW_NO_PRODUCT_CHOICE) }));
   assert.equal(result.ok === true && result.request.productId, undefined);
+});
+
+test("D. fresh Create Now submits no product context when the visible product control is still Let AI choose", () => {
+  const exactText = "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.";
+  const catalog = [product({ id: "cookies", name: "Cookies" }), product({ id: "brownies", name: "Brownies" })];
+  const result = buildCreateNowRequestFromSubmittedForm(
+    submittedFormValues({ text: exactText, productId: CREATE_NOW_NO_PRODUCT_CHOICE, formatChoice: "reel" }),
+    catalog,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.request, { text: exactText, formatHint: "reel" });
+
+  const grounding = resolveCreativeGrounding({
+    creativeInput: buildCreativeInputFromRequest(result.request),
+    recommendations: [competingRecommendation(product({ id: "cookies", name: "Cookies" }))],
+    journal: [],
+    products: catalog,
+    brandBible: BRAND_BIBLE,
+    now: Date.parse("2026-08-25T09:00:00.000Z"),
+  });
+  assert.equal(grounding.subject, "brownie");
+  assert.equal(grounding.subjectSource, "stated");
+  assert.equal(grounding.productId, "brownies");
+  assert.equal(grounding.productName, "Brownies");
+});
+
+test("D. explicit current product selection still submits structured product context", () => {
+  const catalog = [product({ id: "cookies", name: "Cookies" }), product({ id: "brownies", name: "Brownies" })];
+  const result = buildCreateNowRequestFromSubmittedForm(
+    submittedFormValues({ text: "Make a Reel about sharing these.", productId: "cookies", formatChoice: "reel" }),
+    catalog,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.request.text, "Make a Reel about sharing these.");
+  assert.equal(result.request.formatHint, "reel");
+  assert.equal(result.request.subject, "Cookies");
+  assert.equal(result.request.productId, "cookies");
+  assert.equal(result.request.productName, "Cookies");
+});
+
+test("D. stale internal product state cannot enter a fresh request when the submitted control says no product", () => {
+  const staleInternalProductId = "cookies";
+  const catalog = [product({ id: staleInternalProductId, name: "Cookies" }), product({ id: "brownies", name: "Brownies" })];
+  const result = buildCreateNowRequestFromSubmittedForm(
+    submittedFormValues({
+      text: "Make a zero-capture Reel about sharing one brownie. I don't want to film anything.",
+      productId: CREATE_NOW_NO_PRODUCT_CHOICE,
+      formatChoice: "reel",
+    }),
+    catalog,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.request.productId, undefined);
+  assert.equal(result.request.productName, undefined);
+  assert.equal(result.request.subject, undefined);
 });
 
 test("D. paused products are not offered, matching the lifecycle the recommendation engine already enforces", () => {
@@ -804,6 +877,15 @@ test("X. refreshing only ever tracks the job currently on screen", () => {
   assert.match(createNowSource, /const refreshStatus = job !== null && job\.id === jobId \? job\.status : null;/);
 });
 
+test("D. submit builds the handoff from the visible form controls, not retained component product state", () => {
+  assert.match(createNowSource, /new FormData\(event\.currentTarget\)/);
+  assert.match(createNowSource, /buildCreateNowRequestFromSubmittedForm\(new FormData\(event\.currentTarget\), products\)/);
+  assert.match(createNowSource, /name=\{CREATE_NOW_TEXT_FIELD_NAME\}/);
+  assert.match(createNowSource, /name=\{CREATE_NOW_PRODUCT_FIELD_NAME\}/);
+  assert.match(createNowSource, /name=\{CREATE_NOW_FORMAT_FIELD_NAME\}/);
+  assert.doesNotMatch(createNowSource, /findSelectableCreateNowProduct\(products, productId\)/);
+});
+
 // --- Realtime / infrastructure restraint ---------------------------------------------------------
 
 test("no realtime, websocket, or second worker was introduced for S4", () => {
@@ -1118,4 +1200,81 @@ test("S4 added no second request contract: the request Create Now builds IS the 
   // And no second format vocabulary.
   assert.match(createNowLibSource, /from "\.\/creative-formats\.ts"/);
   assert.doesNotMatch(createNowLibSource, /"photo" \| "reel"/);
+});
+
+// --- create-now can reach Production (Wave B owner workflow) ------------------------------------------
+//
+// The gap these lock closed: EVERY Creative Package in the live project is intent-origin (create-now)
+// and has no Opportunity, while the only two surfaces that rendered the production panel --
+// Opportunities and Today -- are both opportunity-driven. The owner could create content and then had
+// no route to produce an asset from it.
+
+test("A: the create-now package result renders the production/asset surface", () => {
+  assert.match(createNowSource, /<CreativePackageAssetCreate\s+creativePackageId=\{packageId\}/);
+  assert.match(createNowSource, /<CreativePackageAssets\s+creativePackageId=\{packageId\}/);
+  // It needs the package's identity to do that, and must keep it alongside the rendered view.
+  assert.match(createNowSource, /setPackageId\(packageResult\.creativePackage\.id\)/);
+});
+
+test("B: reaching Production from create-now requires no Opportunity, and none is invented", () => {
+  // Same comment-stripped view the pre-existing fabrication guard uses, so prose in the file header
+  // that EXPLAINS the boundary is never mistaken for code that crosses it.
+  assert.doesNotMatch(createNowCode, /opportunit/i, "create-now's code must never reach for the Opportunity domain");
+
+  // Origin stays what it is: a direct request, created by its own function.
+  assert.match(createNowCode, /createCreativeJobFromRequest/);
+
+  // And the production surface is reached with nothing but the package id.
+  assert.match(createNowCode, /creativePackageId=\{packageId\}/);
+});
+
+test("C + D: Opportunities and Today still render the same surface, unchanged", () => {
+  const opportunitiesSource = readFileSync(new URL("../src/components/opportunities-page.tsx", import.meta.url), "utf8");
+  assert.match(opportunitiesSource, /<CreativePackageAssetCreate creativePackageId=\{selectedPackage\.id\}/);
+  assert.match(opportunitiesSource, /<CreativePackageAssets creativePackageId=\{selectedPackage\.id\}/);
+  assert.match(todayPageSource, /<CreativePackageAssetCreate creativePackageId=\{state\.candidate\.creativePackage\.id\}/);
+});
+
+test("E: production behaviour is REUSED, never duplicated into create-now", () => {
+  // create-now supplies a package id and nothing else. Every production decision -- which worker, how
+  // to execute, how to preview, what the owner may decide -- stays in the shared components.
+  for (const forbidden of [
+    "production-execution",
+    "production-asset-executors",
+    "production-static-renderer",
+    "production-auth-server",
+    "resolveProductionRoute",
+    "runAssetJobWithExecutors",
+    "createAssetJobForReadyCreativePackage",
+    "/api/production",
+    "setAssetOwnerDecision",
+  ]) {
+    assert.equal(createNowSource.includes(forbidden), false, `create-now must not reimplement production (${forbidden})`);
+  }
+});
+
+test("F: the owner's decisions live on the shared production surface create-now renders", () => {
+  const production = readFileSync(new URL("../src/components/creative-package-production.tsx", import.meta.url), "utf8");
+  for (const control of ["Accept", "Reject", "Regenerate"]) {
+    assert.ok(production.includes(control), `${control} must remain available on completed output`);
+  }
+  assert.match(production, /setAssetOwnerDecision/);
+});
+
+test("G: the external/manual upload path is untouched by this wiring", () => {
+  const entry = readFileSync(new URL("../src/components/creative-package-asset-create.tsx", import.meta.url), "utf8");
+  // capture_new still resolves to external and still gets the upload panel, byte for byte.
+  assert.match(entry, /External Creative Workspace/);
+  assert.match(entry, /createAssetJobForReadyCreativePackage\(\s*client,\s*creativePackageId,\s*\{\s*workerType:\s*"external",\s*assetKind:\s*"image"\s*\}\s*\)/);
+});
+
+test("H: create-now opens no route to a blocked worker or asset kind", () => {
+  for (const blocked of ["remotion", "short_video"]) {
+    assert.equal(createNowSource.includes(blocked), false, `create-now must not name ${blocked}`);
+  }
+});
+
+test("starting another creation clears the previous package's production surface", () => {
+  // Otherwise the panel for the package just created would linger over the next one.
+  assert.match(createNowSource, /setPackageView\(null\);\s*\n\s*setPackageId\(null\);/);
 });

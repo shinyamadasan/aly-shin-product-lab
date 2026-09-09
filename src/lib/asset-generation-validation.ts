@@ -1,4 +1,8 @@
 import type { AssetGenerationSpecV1 } from "./asset-generation-spec.ts";
+import type { ProductionSpecV1 } from "./production-spec.ts";
+// Type-only, for the same reason asset-jobs.ts imports back the other way type-only: a value import
+// here would close a cycle between the validator and the job module.
+import type { AssetKind } from "./asset-jobs.ts";
 
 export type GeneratedAssetFileCandidate = {
   position: number;
@@ -11,9 +15,56 @@ export type GeneratedAssetFileCandidate = {
 };
 
 export const GENERATED_ASSET_ALLOWED_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+
+// Production MVP Wave A. One member, deliberately: MP4/H.264 is the Production MVP video type, and a
+// list of containers nothing produces would be a promise about formats no executor emits. Wave C
+// adds the probe that checks these bytes are really what they claim; this constant only decides
+// which claim is admissible.
+//
+// NOTE the asymmetry with the storage layer: declaring video/mp4 admissible HERE does not make it
+// uploadable. The generated-assets bucket still rejects it until supabase-add-generated-assets-video.sql
+// is applied by the owner. Both gates must open before a video reaches storage, and Wave A opens
+// only this one.
+export const GENERATED_ASSET_ALLOWED_VIDEO_MIME_TYPES = ["video/mp4"] as const;
 export const GENERATED_ASSET_MIN_DIMENSION_PX = 256;
 export const GENERATED_ASSET_MAX_DIMENSION_PX = 4096;
 export const GENERATED_ASSET_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
+// Production MVP Wave C1 -- the PER-KIND byte ceiling, and the resolution of a mismatch Wave A left
+// open in writing.
+//
+// THE MISMATCH. GENERATED_ASSET_MAX_FILE_SIZE_BYTES above is 10 MB and has been since PROP-025. It
+// was sized for a single 1080x1080 still and it is the number the app's own upload boundary
+// (asset-upload-intake.ts) and byte inspector (asset-binary.ts) both enforce. Meanwhile
+// supabase-add-generated-assets-video.sql raises the STORAGE bucket to 50 MB so an MP4 can be
+// uploaded at all. Left as it was, the two gates disagreed: storage would accept a 20 MB Reel that
+// the application had already refused.
+//
+// WHY NOT SIMPLY RAISE THE ONE NUMBER. Raising GENERATED_ASSET_MAX_FILE_SIZE_BYTES to 50 MB would
+// have resolved the mismatch by giving every PNG a fivefold allowance it has no use for. A 1080x1080
+// still that arrives at 30 MB is not a large image, it is a wrong one -- a mis-exported TIFF-sized
+// PNG, a video renamed, or a provider returning something unexpected -- and the 10 MB ceiling is the
+// cheapest place that gets caught. A single global limit sized for the largest kind stops being a
+// limit for every smaller kind.
+//
+// SO THE LIMIT BECOMES PER KIND, with one canonical table.
+//
+//   image        10 MB, byte-identical to what has always shipped. Not a new number; the existing
+//                constant is referenced rather than retyped, so there is still exactly one 10 MB.
+//   short_video  50 MB, matching the ceiling supabase-add-generated-assets-video.sql sets on the
+//                bucket. Chosen so the application and storage refuse the same files: an app limit
+//                above the bucket's would surface as an opaque storage rejection after a full render.
+//
+// `satisfies` is load-bearing in the same way EXECUTABLE_ASSET_KINDS uses it: a kind added to
+// ASSET_KINDS without a limit here fails to compile, so no asset kind can ever fall back to a default.
+export const GENERATED_ASSET_MAX_FILE_SIZE_BYTES_BY_KIND = {
+  image: GENERATED_ASSET_MAX_FILE_SIZE_BYTES,
+  short_video: 50 * 1024 * 1024,
+} as const satisfies Record<AssetKind, number>;
+
+export function maxGeneratedAssetFileSizeBytes(assetKind: AssetKind): number {
+  return GENERATED_ASSET_MAX_FILE_SIZE_BYTES_BY_KIND[assetKind];
+}
 
 // Advisory, not a rejection reason: a candidate's declared dimensions differing from the spec's
 // requested dimensions no longer fails validation -- see validateGeneratedAssetCandidates below.
@@ -26,6 +77,10 @@ export type GeneratedAssetCandidateRejectionReason =
   | "wrong-file-count"
   | "unsupported-mime-type"
   | "duration-present-for-image"
+  // Wave A -- the video mirror of duration-present-for-image. A video candidate with no duration is
+  // not a video anyone can show; the two reasons stay distinct so a failure says which rule was
+  // broken rather than merely that duration was wrong.
+  | "duration-missing-for-video"
   | "empty-bytes"
   | "invalid-position";
 
@@ -56,23 +111,52 @@ function isGeneratedAssetFileCandidate(value: unknown): value is GeneratedAssetF
   );
 }
 
-export function validateGeneratedAssetCandidates(candidates: unknown, spec: AssetGenerationSpecV1): GeneratedAssetCandidateValidation {
+export function validateGeneratedAssetCandidates(
+  candidates: unknown,
+  spec: AssetGenerationSpecV1 | ProductionSpecV1,
+): GeneratedAssetCandidateValidation {
+  // Wave A -- the one branch that decides every kind-conditional rule below. AssetGenerationSpecV1
+  // carries the literal "image", so the legacy path resolves here exactly as it always did and every
+  // image rule and message below is byte-for-byte what it was.
+  const isVideo = spec.assetKind === "short_video";
+
   if (!Array.isArray(candidates) || !candidates.every(isGeneratedAssetFileCandidate)) {
     return { ok: false, reason: "malformed-candidates", message: "Generated asset candidates must be an array of file candidate metadata." };
   }
 
   if (candidates.length !== 1) {
-    return { ok: false, reason: "wrong-file-count", message: "Image asset generation must return exactly one file candidate." };
+    return {
+      ok: false,
+      reason: "wrong-file-count",
+      message: isVideo
+        ? "Short video asset generation must return exactly one file candidate."
+        : "Image asset generation must return exactly one file candidate.",
+    };
   }
 
   const [candidate] = candidates;
 
   if (candidate.position !== 0) {
-    return { ok: false, reason: "invalid-position", message: "Image asset generation candidate position must be 0." };
+    return {
+      ok: false,
+      reason: "invalid-position",
+      message: isVideo ? "Short video asset generation candidate position must be 0." : "Image asset generation candidate position must be 0.",
+    };
   }
 
-  if (!GENERATED_ASSET_ALLOWED_MIME_TYPES.includes(candidate.mimeType as (typeof GENERATED_ASSET_ALLOWED_MIME_TYPES)[number])) {
-    return { ok: false, reason: "unsupported-mime-type", message: "Image asset generation candidate mimeType is not supported." };
+  // Each kind admits its own MIME family and only its own. A PNG returned for a short_video job, or
+  // an MP4 returned for an image job, is an executor that produced the wrong thing -- not a
+  // near-miss to be tolerated, because everything downstream (bucket MIME allow-list, owner preview
+  // element, duration handling) branches on the kind having been honoured here.
+  const allowed: readonly string[] = isVideo ? GENERATED_ASSET_ALLOWED_VIDEO_MIME_TYPES : GENERATED_ASSET_ALLOWED_MIME_TYPES;
+  if (!allowed.includes(candidate.mimeType)) {
+    return {
+      ok: false,
+      reason: "unsupported-mime-type",
+      message: isVideo
+        ? "Short video asset generation candidate mimeType is not supported."
+        : "Image asset generation candidate mimeType is not supported.",
+    };
   }
 
   // Advisory: a real external source (a human's workspace, a camera, a future API with different
@@ -85,12 +169,35 @@ export function validateGeneratedAssetCandidates(candidates: unknown, spec: Asse
     );
   }
 
-  if (candidate.durationMs !== null) {
+  // The rule inverts on kind, and both halves are hard rejections. An image with a duration and a
+  // video without one are each a candidate whose own metadata contradicts what it claims to be.
+  if (isVideo) {
+    if (candidate.durationMs === null || !Number.isFinite(candidate.durationMs) || candidate.durationMs <= 0) {
+      return {
+        ok: false,
+        reason: "duration-missing-for-video",
+        message: "Short video asset generation candidates must include a positive durationMs.",
+      };
+    }
+  } else if (candidate.durationMs !== null) {
     return { ok: false, reason: "duration-present-for-image", message: "Image asset generation candidates must not include durationMs." };
   }
 
-  if (candidate.fileSizeBytes <= 0 || candidate.fileSizeBytes > GENERATED_ASSET_MAX_FILE_SIZE_BYTES) {
-    return { ok: false, reason: "empty-bytes", message: "Image asset generation candidate fileSizeBytes must be greater than 0 and within the maximum file size." };
+  // Wave C1 -- the per-kind bound Wave A's note above deferred to "Wave C entry work".
+  //
+  // The reason code, the accept/reject behaviour and both messages stay exactly as they were; only
+  // the BOUND is now looked up by kind. For an image that lookup returns GENERATED_ASSET_MAX_FILE_SIZE_BYTES
+  // itself, so this branch is byte-for-byte the behaviour it has always had for every asset that has
+  // ever been produced. What changed is that a short_video is no longer measured against a ceiling
+  // sized for a still.
+  if (candidate.fileSizeBytes <= 0 || candidate.fileSizeBytes > maxGeneratedAssetFileSizeBytes(spec.assetKind)) {
+    return {
+      ok: false,
+      reason: "empty-bytes",
+      message: isVideo
+        ? "Short video asset generation candidate fileSizeBytes must be greater than 0 and within the maximum file size."
+        : "Image asset generation candidate fileSizeBytes must be greater than 0 and within the maximum file size.",
+    };
   }
 
   return { ok: true, candidates, warnings };

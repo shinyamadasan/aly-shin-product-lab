@@ -128,6 +128,7 @@ const REEL_CAPTURE_LABEL = "Filmed on your phone";
 function productionLabel(format: CreativeFormat, productionSource: CreativeProductionSource | undefined): string | null {
   if (productionSource === undefined) return null;
   if (format === "reel" && productionSource === "capture_new") return REEL_CAPTURE_LABEL;
+  if (format === "reel" && productionSource === "template_only") return "Template Reel · No filming required";
   return PRODUCTION_LABELS[productionSource];
 }
 
@@ -269,9 +270,10 @@ function buildProduction(content: CreativePackageContentV2): CreativePackageView
   }
 
   if (content.format === "reel") {
+    const templateOnly = content.productionSource === "template_only";
     const sections: CreativePackageViewSection[] = [
       {
-        title: "Record these shots",
+        title: templateOnly ? "Build these beats" : "Record these shots",
         blocks: content.shots.map((shot, index) => {
           // "Do" and "Text on screen" separate the action from the caption burned into the frame.
           // direction is passed through verbatim: whatever framing or movement it happens to carry
@@ -287,7 +289,7 @@ function buildProduction(content: CreativePackageContentV2): CreativePackageView
           // A null movement contributes no part, so no shot ever displays "Static".
           return {
             title: joinTitleParts([
-              `Shot ${index + 1}`,
+              `${templateOnly ? "Beat" : "Shot"} ${index + 1}`,
               shot.approxSeconds === undefined ? null : `${shot.approxSeconds} sec`,
               framingLabel(shot.framing),
               shot.movement === undefined || shot.movement === null ? null : MOVEMENT_LABELS[shot.movement],
