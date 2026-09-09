@@ -332,6 +332,7 @@ export type InventoryTransactionRow = {
   note: string | null;
   reason: string | null;
   actor: string | null;
+  reconciliation_snapshot?: InventoryTransaction["reconciliationSnapshot"];
   created_at: string;
 };
 
@@ -351,5 +352,6 @@ export function mapInventoryTransactionRow(row: InventoryTransactionRow): Invent
     // models that as an optional field rather than an empty string.
     reason: (row.reason ?? undefined) as StockAdjustmentReason | undefined,
     actor: row.actor ?? null,
+    ...(row.reconciliation_snapshot ? { reconciliationSnapshot: row.reconciliation_snapshot } : {}),
   };
 }

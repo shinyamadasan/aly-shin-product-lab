@@ -616,3 +616,12 @@ by a successful catch-up leaves both entries) plus an overwritten `latest.json` 
 ready/no-op/benign-skip, `1` any condition meaning the selected Opportunity cannot become ready
 without an operator (failed job, suspected-stale job, unhealthy `started_at`, or a genuine operation
 error), `2` missing credentials, `3` lock held elsewhere.
+
+## Raw inventory authority — Selling Wave 0A
+
+The approved Wave 0A scope supersedes the earlier browser-authoritative inventory mutation
+contract in this document. Ingredient metadata no longer writes quantity or weighted-average
+cost. The database alone calculates and records supported raw adjustments and verified-count
+boundaries, retaining old discrepancies. Purchase/Bake/repair posting is explicitly blocked
+until Wave 0B; old absolute-balance RPC grants are revoked. Existing owner RLS is preserved.
+See [Wave 0A implementation and evidence](../planning/SELLING_WAVE_0A.md).

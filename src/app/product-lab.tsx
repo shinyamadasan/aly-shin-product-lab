@@ -39,6 +39,8 @@ import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
+import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
+import { ingredientMetadataPayload, rawAdjustmentArgs, RAW_POSTING_PAUSED } from "@/lib/raw-inventory-authority";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
 import type { OrdersTab } from "@/lib/orders-tabs";
 import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/components/purchase-import-wizard";
@@ -91,11 +93,10 @@ import { resolveTabChange } from "@/lib/inventory-tab-guard";
 import { areTastingFormSnapshotsEqual, buildTastingFormSnapshot, type TastingFormSnapshot } from "@/lib/tasting-form-snapshot";
 import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
-import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport, toSupplyEntryRow } from "@/lib/purchase-import-confirm";
+import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport } from "@/lib/purchase-import-confirm";
 import type { PurchaseImportRowDraft } from "@/lib/purchase-import";
 import { applyBakeConfirmation } from "@/lib/bake-confirm";
 import type { BakeDeduction } from "@/lib/bake-deduction";
-import { toInventoryTransactionRow } from "@/lib/inventory-transaction";
 import { applySupplyPurchaseEffect, planSupplyDelete, planSupplyEdit, repairMissingSupplyInventoryEffects, type SupplyRepairResult } from "@/lib/supply-inventory-effect";
 import { applyStockAdjustment, reverseStockAdjustment } from "@/lib/stock-adjustment";
 import { describeIngredientConstraintError } from "@/lib/inventory-errors";
@@ -519,6 +520,7 @@ export default function ProductLab({
         isActive: row.is_active ?? true,
         archivedAt: row.archived_at ?? "",
         baseUnitMigrationFlaggedReason: row.base_unit_migration_flagged_reason ?? null,
+        inventoryReconciledAt: row.inventory_reconciled_at ?? null,
       })),
       ingredientAliases: ingredientsMissing ? [] : (ingredientAliasResult.data ?? []).map((row) => ({
         id: row.id,
@@ -584,6 +586,7 @@ export default function ProductLab({
         createdAt: row.created_at ?? "",
         reason: row.reason ?? undefined,
         actor: row.actor ?? null,
+        reconciliationSnapshot: row.reconciliation_snapshot ?? null,
       })),
     });
   }
@@ -1491,14 +1494,15 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  // Manual "Log a Purchase" used to only write supply_entries -- it never updated
-  // ingredients.current_quantity/average_unit_cost or wrote a ledger row, unlike CSV import and
-  // Bake. applySupplyPurchaseEffect/planSupplyEdit (src/lib/supply-inventory-effect.ts) now decide
-  // the inventory-side effect the same way those two paths already do (converting into the
-  // ingredient's own canonical unit first); save_supply_with_inventory_effect (in
-  // supabase-add-manual-purchase-inventory-effect.sql) persists supply_entries, the ingredient
-  // update, and the ledger row together as one atomic transaction.
+  // Wave 0A blocks remote purchase posting until Wave 0B replaces its absolute-balance RPC.
+  // Existing calculations below remain available only to the local demo.
   async function saveSupply(formData: FormData) {
+    if (supabase && session) {
+      setMessage(RAW_POSTING_PAUSED);
+      setMessageTone("bad");
+      return;
+    }
+
     const supplyId = String(formData.get("id") || "");
     const ingredientId = String(formData.get("ingredientId") || "").trim();
     const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
@@ -1562,43 +1566,7 @@ export default function ProductLab({
       // shipped) -- ingredientUpdate/transactionUpsert stay null; only supply_entries changes.
     }
 
-    if (supabase && session) {
-      const { error } = await supabase.rpc("save_supply_with_inventory_effect", {
-        p_supply_id: supply.id,
-        p_is_new_supply: !supplyId,
-        p_supply: {
-          ingredient_id: supply.ingredientId || null,
-          ingredient_name: supply.ingredientName,
-          brand_name: supply.brandName,
-          supplier_name: supply.supplierName,
-          purchase_date: supply.purchaseDate,
-          pack_quantity: supply.packQuantity,
-          unit: supply.unit,
-          total_cost: supply.totalCost,
-          quality_rating: supply.qualityRating,
-          notes: supply.notes,
-        },
-        p_ingredient_update: ingredientUpdate ? { id: ingredientUpdate.id, current_quantity: ingredientUpdate.currentQuantity, average_unit_cost: ingredientUpdate.averageUnitCost } : null,
-        p_transaction_upsert: transactionUpsert ? toInventoryTransactionRow(transactionUpsert) : null,
-      });
-      const missingPurchaseColumn = Boolean(error && isMissingColumnError(error));
-      setMessage(
-        error
-          ? missingPurchaseColumn
-            ? `Purchase save failed because supply_entries is missing a required purchase column. Run supabase-add-supplies.sql in Supabase, then retry. Details: ${error.message}`
-            : `Purchase save failed: ${describeIngredientConstraintError(error)}`
-          : historicalCostWarning
-            ? `Purchase saved. ${historicalCostWarning}`
-            : "Purchase saved.",
-      );
-      setMessageTone(error ? "bad" : "good");
-      setIsSuppliesTableMissing(Boolean(error?.message.includes("supply_entries") || error?.message.includes("brand_name") || error?.message.includes("ingredient_id")));
-      if (!error) {
-        setEditingSupply(null);
-        await loadSupabaseData();
-      }
-      return;
-    }
+
 
     setLabState((current) => ({
       ...current,
@@ -1614,6 +1582,12 @@ export default function ProductLab({
   }
 
   async function deleteSupply(supplyId: string) {
+    if (supabase && session) {
+      setMessage(RAW_POSTING_PAUSED);
+      setMessageTone("bad");
+      return;
+    }
+
     const previousSupply = labState.supplies.find((entry) => entry.id === supplyId);
     const ingredient = previousSupply ? labState.ingredients.find((item) => item.id === previousSupply.ingredientId) : undefined;
 
@@ -1638,20 +1612,7 @@ export default function ProductLab({
       // "not-applied": nothing to reverse.
     }
 
-    if (supabase && session) {
-      const { error } = await supabase.rpc("delete_supply_with_inventory_effect", {
-        p_supply_id: supplyId,
-        p_ingredient_update: ingredientUpdate ? { id: ingredientUpdate.id, current_quantity: ingredientUpdate.currentQuantity, average_unit_cost: ingredientUpdate.averageUnitCost } : null,
-        p_transaction_id_to_remove: transactionIdToRemove,
-      });
-      setMessage(error ? `Purchase delete failed: ${describeIngredientConstraintError(error)}` : historicalCostWarning ? `Purchase deleted. ${historicalCostWarning}` : "Purchase deleted.");
-      setMessageTone(error ? "bad" : "good");
-      if (!error && editingSupply?.id === supplyId) {
-        setEditingSupply(null);
-      }
-      await loadSupabaseData();
-      return;
-    }
+
 
     setLabState((current) => ({
       ...current,
@@ -1683,6 +1644,12 @@ export default function ProductLab({
   // inventory before this fix). The summary this reports is for the operator to sanity-check
   // against physical stock before trusting the new numbers, not just a confirmation toast.
   async function repairSupplyInventoryEffects() {
+    if (supabase && session) {
+      setMessage(RAW_POSTING_PAUSED);
+      setMessageTone("bad");
+      return;
+    }
+
     const today = new Date().toISOString();
     const result = repairMissingSupplyInventoryEffects(labState.ingredients, labState.supplies, labState.inventoryTransactions, today);
 
@@ -1692,23 +1659,7 @@ export default function ProductLab({
       return;
     }
 
-    if (supabase && session) {
-      const { error } = await supabase.rpc("repair_supply_inventory_effects", {
-        p_ingredient_updates: result.changedIngredients.map((ingredient) => ({ id: ingredient.id, current_quantity: ingredient.currentQuantity, average_unit_cost: ingredient.averageUnitCost })),
-        p_transactions: result.transactions.map((transaction) => toInventoryTransactionRow(transaction)),
-      });
 
-      if (error) {
-        setMessage(`Repair failed: ${describeIngredientConstraintError(error)}`);
-        setMessageTone("bad");
-        return;
-      }
-
-      setMessage(describeSupplyRepairResult(result));
-      setMessageTone(result.unconvertible.length > 0 ? "bad" : "good");
-      await loadSupabaseData();
-      return;
-    }
 
     setLabState((current) => ({
       ...current,
@@ -1743,10 +1694,9 @@ export default function ProductLab({
     const { ingredient: updatedIngredient, transaction } = result;
 
     if (supabase && session) {
-      const { error } = await supabase.rpc("apply_inventory_adjustment", {
-        p_ingredient_update: { id: updatedIngredient.id, current_quantity: updatedIngredient.currentQuantity },
-        p_transaction: toInventoryTransactionRow(transaction),
-      });
+      const { error } = await supabase.rpc("apply_raw_inventory_adjustment", rawAdjustmentArgs(ingredient, labState.inventoryTransactions, {
+        quantity: transaction.quantityChange, mode: "delta", reason, note,
+      }));
 
       if (error) {
         setMessage(`Stock adjustment failed: ${describeIngredientConstraintError(error)}`);
@@ -1797,10 +1747,10 @@ export default function ProductLab({
     const { ingredient: updatedIngredient, transaction } = result;
 
     if (supabase && session) {
-      const { error } = await supabase.rpc("apply_inventory_adjustment", {
-        p_ingredient_update: { id: updatedIngredient.id, current_quantity: updatedIngredient.currentQuantity },
-        p_transaction: toInventoryTransactionRow(transaction),
-      });
+      const { error } = await supabase.rpc("apply_raw_inventory_adjustment", rawAdjustmentArgs(ingredient, labState.inventoryTransactions, {
+        quantity: 0, mode: "reverse", reason: originalTransaction.reason ?? "other",
+        note: `Reversal of ${originalTransaction.id}`, reverseId: originalTransaction.id,
+      }));
 
       if (error) {
         setMessage(`Reversal failed: ${describeIngredientConstraintError(error)}`);
@@ -1832,39 +1782,45 @@ export default function ProductLab({
   // id up front), so a caller that needs to act on the new ingredient immediately -- e.g. the CSV
   // importer's "Create New Item", which auto-assigns the current row to it -- doesn't have to wait
   // for a reload/refetch to learn the id.
+  async function reconcileRawInventory(ingredientId: string, quantity: number, note: string): Promise<boolean> {
+    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (!supabase || !session || !ingredient) return false;
+    const { error } = await supabase.rpc("apply_raw_inventory_adjustment", rawAdjustmentArgs(ingredient, labState.inventoryTransactions, {
+      quantity, mode: "count", reason: "stock_count_correction", note,
+    }));
+    setMessage(error ? `Count not recorded: ${describeIngredientConstraintError(error)}` : "Verified count recorded. Earlier balances and history were preserved.");
+    setMessageTone(error ? "bad" : "good");
+    await loadSupabaseData();
+    return !error;
+  }
+
   async function saveIngredient(formData: FormData): Promise<string | null> {
     const ingredientId = String(formData.get("id") || "");
     const savedId = ingredientId || crypto.randomUUID();
     const existingIngredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (existingIngredient && String(formData.get("baseUnit") || "g").trim() !== existingIngredient.baseUnit
+      && labState.inventoryTransactions.some((row) => row.ingredientId === ingredientId)) {
+      setMessage("Base unit cannot change after inventory history exists.");
+      setMessageTone("bad");
+      return null;
+    }
     const ingredient: Ingredient = {
       id: savedId,
       name: String(formData.get("name") || "").trim(),
       baseUnit: String(formData.get("baseUnit") || "g").trim() as Ingredient["baseUnit"],
       category: String(formData.get("category") || "").trim() as Ingredient["category"],
-      currentQuantity: Number(formData.get("currentQuantity") || 0),
+      currentQuantity: existingIngredient?.currentQuantity ?? 0,
       lowStockThreshold: Number(formData.get("lowStockThreshold") || 0),
       targetStockQuantity: Number(formData.get("targetStockQuantity") || 0),
       nearestExpirationDate: String(formData.get("nearestExpirationDate") || "").trim(),
-      averageUnitCost: Number(formData.get("averageUnitCost") || 0),
+      averageUnitCost: existingIngredient?.averageUnitCost ?? 0,
       notes: String(formData.get("notes") || "").trim(),
       isActive: existingIngredient?.isActive ?? true,
       archivedAt: existingIngredient?.archivedAt ?? "",
     };
 
     if (supabase && session) {
-      const payload = {
-        name: ingredient.name,
-        base_unit: ingredient.baseUnit,
-        category: ingredient.category || null,
-        current_quantity: ingredient.currentQuantity,
-        low_stock_threshold: ingredient.lowStockThreshold,
-        target_stock_quantity: ingredient.targetStockQuantity,
-        nearest_expiration_date: ingredient.nearestExpirationDate || null,
-        average_unit_cost: ingredient.averageUnitCost || null,
-        notes: ingredient.notes,
-        is_active: ingredient.isActive,
-        archived_at: ingredient.archivedAt || null,
-      };
+      const payload = ingredientMetadataPayload(ingredient);
       const query = ingredientId ? supabase.from("ingredients").update(payload).eq("id", ingredientId) : supabase.from("ingredients").insert({ id: savedId, ...payload });
       const { error } = await query;
       const missingCategoryColumn = isMissingColumnError(error) && Boolean(error?.message.includes("category"));
@@ -1872,7 +1828,7 @@ export default function ProductLab({
         error
           ? missingCategoryColumn
             ? `Ingredient save failed: run supabase-add-ingredient-category.sql once, then save again. (${error.message})`
-            : `Ingredient save failed. Run supabase-add-inventory.sql first if this is your first time: ${describeIngredientConstraintError(error)}`
+            : `Ingredient save failed: ${describeIngredientConstraintError(error)}`
           : "Ingredient saved."
       );
       setMessageTone(error ? "bad" : "good");
@@ -1943,6 +1899,12 @@ export default function ProductLab({
   }
 
   async function hardDeleteIngredient(ingredientId: string) {
+    if (supabase && session) {
+      setMessage("Permanent inventory deletion is disabled. Archive this ingredient to preserve its history.");
+      setMessageTone("bad");
+      return;
+    }
+
     const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
     if (!ingredient) {
       setMessage("Ingredient not found.");
@@ -1964,16 +1926,7 @@ export default function ProductLab({
       setMessageTone("bad");
       return;
     }
-    if (supabase && session) {
-      const { error } = await supabase.from("ingredients").delete().eq("id", ingredientId);
-      setMessage(error ? `Permanent delete failed: ${error.message}` : "Ingredient permanently deleted.");
-      setMessageTone(error ? "bad" : "good");
-      if (!error && editingIngredient?.id === ingredientId) {
-        setEditingIngredient(null);
-      }
-      await loadSupabaseData();
-      return;
-    }
+
     setLabState((current) => ({ ...current, ingredients: current.ingredients.filter((entry) => entry.id !== ingredientId) }));
     if (editingIngredient?.id === ingredientId) {
       setEditingIngredient(null);
@@ -2202,6 +2155,12 @@ export default function ProductLab({
   // this function on its own (nothing in loadSupabaseData calls it), so a reload cannot reapply
   // an already-confirmed import.
   async function confirmPurchaseImport(importId: string) {
+    if (supabase && session) {
+      setMessage(RAW_POSTING_PAUSED);
+      setMessageTone("bad");
+      return;
+    }
+
     const purchaseImport = labState.purchaseImports.find((item) => item.id === importId);
     if (!purchaseImport) {
       setMessage("Import not found.");
@@ -2248,37 +2207,7 @@ export default function ProductLab({
     const changedIngredientIds = new Set(transactions.map((transaction) => transaction.ingredientId));
     const changedIngredients = updatedIngredients.filter((ingredient) => changedIngredientIds.has(ingredient.id));
 
-    if (supabase && session) {
-      // One atomic Postgres transaction (confirm_purchase_import in supabase-add-inventory.sql /
-      // supabase-add-purchase-import-packages.sql) applies every ingredient update, every ledger
-      // insert, every supply_entries insert, and the import's status flip together -- replacing
-      // the sequential .update()/.insert() calls Milestones 2-4 used. The RPC persists exactly
-      // what applyPurchaseImportConfirmation/buildSupplyEntriesFromPurchaseImport already computed
-      // above; it does not recompute or re-derive any business rule.
-      const { error } = await supabase.rpc("confirm_purchase_import", {
-        p_import_id: importId,
-        p_ingredient_updates: changedIngredients.map((ingredient) => ({
-          id: ingredient.id,
-          current_quantity: ingredient.currentQuantity,
-          average_unit_cost: ingredient.averageUnitCost || null,
-          nearest_expiration_date: ingredient.nearestExpirationDate || null,
-        })),
-        p_transactions: transactions.map((transaction) => toInventoryTransactionRow(transaction)),
-        p_supply_entries: supplyEntries.map((entry) => toSupplyEntryRow(entry)),
-      });
 
-      if (error) {
-        setMessage(`Import confirm failed: ${describeIngredientConstraintError(error)}`);
-        setMessageTone("bad");
-        setIsPurchaseImportPackagesMissing(isMissingColumnError(error));
-        return;
-      }
-
-      setMessage("Purchase import confirmed. Inventory and supplier prices updated.");
-      setMessageTone("good");
-      await loadSupabaseData();
-      return;
-    }
 
     setLabState((current) => ({
       ...current,
@@ -2291,14 +2220,15 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  // The only place a bake can change `ingredients` quantities. Unlike purchase import, there is
-  // no persisted "draft" row to guard against reapplying on refresh -- a bake's selection
-  // (batch, multiplier, resolved rows) lives only in BakePage's own component state until this
-  // function is called, so a reload simply loses the in-progress selection with nothing to
-  // reapply. The re-entrancy risk this function does face is a fast double-click firing it twice
-  // before the first call's response lands -- guarded synchronously in BakePage itself
-  // (handleConfirm's isConfirming check), the same pattern used for Confirm Import.
+  // Remote Bake consumption is blocked in Wave 0A. The existing local demo calculation stays
+  // separate from database inventory; no production execution is introduced by this wave.
   async function confirmBake(batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean) {
+    if (supabase && session) {
+      setMessage(RAW_POSTING_PAUSED);
+      setMessageTone("bad");
+      return;
+    }
+
     const result = applyBakeConfirmation({ ingredients: labState.ingredients, deductions, batchId, batchLabel, multiplier, allowNegative, today: new Date().toISOString() });
 
     if ("error" in result) {
@@ -2311,37 +2241,7 @@ export default function ProductLab({
     const changedIngredientIds = new Set(transactions.map((transaction) => transaction.ingredientId));
     const changedIngredients = updatedIngredients.filter((ingredient) => changedIngredientIds.has(ingredient.id));
 
-    if (supabase && session) {
-      // One atomic Postgres transaction (confirm_bake in supabase-add-inventory.sql) applies
-      // every ingredient update and every ledger insert together -- replacing the sequential
-      // .update()/.insert() calls Milestones 2-4 used. The RPC persists exactly what
-      // applyBakeConfirmation already computed above; it does not recompute or re-derive any
-      // business rule (insufficient-stock checking stays entirely in applyBakeConfirmation).
-      const { error } = await supabase.rpc("confirm_bake", {
-        p_ingredient_updates: changedIngredients.map((ingredient) => ({ id: ingredient.id, current_quantity: ingredient.currentQuantity })),
-        p_transactions: transactions.map((transaction) => toInventoryTransactionRow(transaction)),
-      });
 
-      if (error) {
-        setMessage(`Bake confirm failed: ${describeIngredientConstraintError(error)}`);
-        setMessageTone("bad");
-        return;
-      }
-
-      const completedAt = new Date().toISOString();
-      const { error: completionError } = await supabase
-        .from("product_batches")
-        .update({ status: "completed", completed_at: completedAt })
-        .eq("id", batchId);
-      setMessage(
-        completionError
-          ? `Bake confirmed and inventory updated, but batch completion status could not be saved: ${completionError.message}. Do not confirm this bake again; the stock deduction already happened.`
-          : "Bake confirmed. Inventory updated and batch marked completed."
-      );
-      setMessageTone(completionError ? "bad" : "good");
-      await loadSupabaseData();
-      return;
-    }
 
     const completedAt = new Date().toISOString();
     setLabState((current) => ({
@@ -2987,7 +2887,10 @@ export default function ProductLab({
 
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
           {view === "inventory" ? (
+            <>
+            {supabase && session ? <><p role="status">{RAW_POSTING_PAUSED}</p><RawInventoryReconciliation labState={labState} reconcile={reconcileRawInventory} /></> : null}
             <InventoryWorkspace
+              postingPaused={Boolean(supabase && session)}
               adjustStock={adjustStock}
               cancelEditIngredient={cancelIngredientEdit}
               cancelEditSupply={cancelSupplyEdit}
@@ -3018,8 +2921,9 @@ export default function ProductLab({
               updatePurchaseImportHeader={updatePurchaseImportHeader}
               updatePurchaseImportRow={updatePurchaseImportRow}
             />
+            </>
           ) : null}
-          {view === "bake" ? <BakePage confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
+          {view === "bake" ? <BakePage postingPaused={Boolean(supabase && session)} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
@@ -5117,11 +5021,13 @@ function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingr
 }
 
 function PurchaseRecordRow({
+  postingPaused = false,
   deleteSupply,
   editSupply,
   isActive,
   supply,
 }: {
+  postingPaused?: boolean;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
   isActive?: boolean;
@@ -5166,8 +5072,8 @@ function PurchaseRecordRow({
         <p className="mt-1 font-semibold">{supply.qualityRating || 0}/5</p>
       </div>
       <div className="flex gap-2 lg:flex-col">
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editSupply(supply)} type="button">Edit</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(deleteMessage) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={postingPaused} title={postingPaused ? RAW_POSTING_PAUSED : undefined} onClick={() => !postingPaused && editSupply(supply)} type="button">Edit</button>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827] disabled:cursor-not-allowed disabled:opacity-50" disabled={postingPaused} title={postingPaused ? RAW_POSTING_PAUSED : undefined} onClick={() => !postingPaused && window.confirm(deleteMessage) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
       </div>
     </article>
   );
@@ -5375,6 +5281,7 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
 // here recomputes state; every tab renders the same components and callbacks that used to live
 // behind their own routes.
 function InventoryWorkspace({
+  postingPaused = false,
   initialTab,
   adjustStock,
   cancelEditIngredient,
@@ -5405,6 +5312,7 @@ function InventoryWorkspace({
   updatePurchaseImportRow,
   labState,
 }: {
+  postingPaused?: boolean;
   initialTab?: InventoryTab;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEditIngredient: () => void;
@@ -5591,9 +5499,10 @@ function InventoryWorkspace({
             </button>
           </div>
           {purchasesTab === "manual" ? (
-            <PurchaseLogPage cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
+            <PurchaseLogPage postingPaused={postingPaused} cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
           ) : (
             <PurchaseImportWizard
+              postingPaused={postingPaused}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
               discardPurchaseImport={discardPurchaseImport}
@@ -5637,6 +5546,7 @@ function supplyEditorKey(supply: SupplyEntry | null): string {
 }
 
 function PurchaseLogPage({
+  postingPaused = false,
   cancelEdit,
   deleteSupply,
   editSupply,
@@ -5648,6 +5558,7 @@ function PurchaseLogPage({
   saveSupply,
   supply,
 }: {
+  postingPaused?: boolean;
   cancelEdit: () => void;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
@@ -5764,7 +5675,8 @@ function PurchaseLogPage({
             Purchase database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
           </div>
         ) : null}
-        <form action={saveSupply} className="grid gap-3" key={supplyEditorKey(supply)} onChange={recomputeIsDirty} ref={formRef}>
+        {postingPaused ? <p role="status" className="mb-3 text-sm text-[#7a531d]">{RAW_POSTING_PAUSED}</p> : null}
+        <form action={postingPaused ? undefined : saveSupply} onSubmit={postingPaused ? (event) => event.preventDefault() : undefined} className="grid gap-3" key={supplyEditorKey(supply)} onChange={recomputeIsDirty} ref={formRef}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-3">
             <SupplyValuePicker label="Brand" name="brandName" onValueChange={bumpPickerNonce} options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
@@ -5780,7 +5692,7 @@ function PurchaseLogPage({
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
           <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." defaultValue={supply?.notes} />
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Button>{supply ? "Update purchase" : "Save purchase"}</Button>
+            <Button disabled={postingPaused}>{supply ? "Update purchase" : "Save purchase"}</Button>
             {supply ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
           </div>
         </form>
@@ -5804,9 +5716,11 @@ function PurchaseLogPage({
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("supplies-print-report")} type="button">Print</button>
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadPurchases} type="button">Download CSV</button>
               <button
-                className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]"
+                className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={postingPaused}
+                title={postingPaused ? RAW_POSTING_PAUSED : undefined}
                 onClick={() =>
-                  window.confirm(
+                  !postingPaused && window.confirm(
                     "Apply every Item's full purchase history to current stock and average cost, for any Item never touched by a purchase before? This can move stock quantities and costs -- check the result against physical stock afterward.",
                   )
                     ? repairSupplyInventoryEffects()
@@ -5852,13 +5766,13 @@ function PurchaseLogPage({
                       <p className="mt-1 font-semibold">{summary.purchaseCount} record{summary.purchaseCount === 1 ? "" : "s"}</p>
                     </div>
                     <div className="flex gap-2 lg:flex-col">
-                      <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => logPurchaseForIngredient(group.ingredient)} type="button">Log Purchase</button>
+                      <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={postingPaused} title={postingPaused ? RAW_POSTING_PAUSED : undefined} onClick={() => !postingPaused && logPurchaseForIngredient(group.ingredient)} type="button">Log Purchase</button>
                     </div>
                   </div>
                   <details className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3]">
                     <summary className="cursor-pointer p-3 text-sm font-semibold text-[#5f4a3d]">Purchase history</summary>
                     <div className="divide-y divide-[#ead9c8] bg-white">
-                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+                      {group.purchases.map((purchase) => <PurchaseRecordRow postingPaused={postingPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
                     </div>
                   </details>
                 </article>
@@ -5871,7 +5785,7 @@ function PurchaseLogPage({
                   <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">These purchase records do not resolve to a current Item. Records with unknown Item IDs are kept here and are not matched by name.</p>
                 </div>
                 <div className="divide-y divide-[#f0e4d8]">
-                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow postingPaused={postingPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
                 </div>
               </section>
             ) : null}
@@ -5879,7 +5793,7 @@ function PurchaseLogPage({
         ) : (
         <div className="divide-y divide-[#f0e4d8]">
           {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
-          {chronologicalPurchases.map((purchase) => <PurchaseRecordRow deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+          {chronologicalPurchases.map((purchase) => <PurchaseRecordRow postingPaused={postingPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
         </div>
         )}
       </div>

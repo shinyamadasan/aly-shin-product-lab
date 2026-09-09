@@ -15,31 +15,25 @@ test("B.1/B.4. the Inventory page reads the flag read-only via getFlaggedIngredi
 });
 
 test("a flagged ingredient's baseUnit is preserved via a hidden input, never resubmitted through the canonical-only <select>", () => {
-  assert.match(inventoryPageSource, /ingredient\?\.baseUnitMigrationFlaggedReason[\s\S]{0,1000}type="hidden"\s+value=\{ingredient\.baseUnit\}/);
+  assert.match(inventoryPageSource, /ingredient\.baseUnitMigrationFlaggedReason[\s\S]{0,1800}type="hidden"\s+value=\{ingredient\.baseUnit\}/);
 });
 
-// Every RPC/query call site that updates the ingredients table routes its error through
-// describeIngredientConstraintError, so a flagged-row failure surfaces the actionable message
-// (point 5) instead of raw Postgres text, everywhere this could occur -- not just the two new
-// stock-adjustment call sites.
-test("every ingredients-table mutation's error message is translated via describeIngredientConstraintError", () => {
-  const expectedCallSites = [
+test("Wave 0A retires client calls to legacy balance writers", () => {
+  for (const rpcName of [
     "save_supply_with_inventory_effect",
     "delete_supply_with_inventory_effect",
     "repair_supply_inventory_effects",
     "apply_inventory_adjustment",
-  ];
-  for (const rpcName of expectedCallSites) {
-    const rpcCallIndex = productLabSource.indexOf(`"${rpcName}"`);
-    assert.ok(rpcCallIndex !== -1, `expected an rpc call to ${rpcName}`);
-    const nearbyText = productLabSource.slice(rpcCallIndex, rpcCallIndex + 1500);
-    assert.match(nearbyText, /describeIngredientConstraintError/, `${rpcName}'s error handling should use describeIngredientConstraintError`);
+    "confirm_bake",
+    "confirm_purchase_import",
+  ]) {
+    assert.ok(!productLabSource.includes(`supabase.rpc("${rpcName}"`), `retired RPC ${rpcName} must not be called`);
   }
+});
 
-  // apply_inventory_adjustment is called from both adjustStock and reverseInventoryAdjustment --
-  // confirm both call sites (not just the first occurrence) are wrapped.
-  const adjustmentCallSites = [...productLabSource.matchAll(/"apply_inventory_adjustment"/g)];
-  assert.equal(adjustmentCallSites.length, 2, "expected exactly two apply_inventory_adjustment call sites (adjust + reverse)");
+test("supported adjustment, reversal, and count errors remain actionable", () => {
+  const adjustmentCallSites = [...productLabSource.matchAll(/"apply_raw_inventory_adjustment"/g)];
+  assert.equal(adjustmentCallSites.length, 3);
   for (const match of adjustmentCallSites) {
     const nearbyText = productLabSource.slice(match.index ?? 0, (match.index ?? 0) + 800);
     assert.match(nearbyText, /describeIngredientConstraintError/);

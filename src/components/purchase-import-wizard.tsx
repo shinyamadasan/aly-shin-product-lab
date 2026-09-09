@@ -1,6 +1,7 @@
 "use client";
 
 import { type ChangeEvent, useRef, useState } from "react";
+import { RAW_POSTING_PAUSED } from "@/lib/raw-inventory-authority";
 import { UploadCloud } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
 import type { Ingredient, PurchaseImportRow, PurchaseImportRowStatus } from "@/lib/product-lab-types";
@@ -83,6 +84,7 @@ function guessBaseUnitForRow(row: PurchaseImportRow): Ingredient["baseUnit"] {
 }
 
 export function PurchaseImportWizard({
+  postingPaused = false,
   confirmPurchaseImport,
   createPurchaseImportDraft,
   discardPurchaseImport,
@@ -95,6 +97,7 @@ export function PurchaseImportWizard({
   updatePurchaseImportHeader,
   updatePurchaseImportRow,
 }: {
+  postingPaused?: boolean;
   confirmPurchaseImport: (importId: string) => Promise<void>;
   createPurchaseImportDraft: (fileName: string, rows: PurchaseImportRowDraft[], importSupplierName: string, importReceiptNumber: string, importPurchaseDate: string) => Promise<string | null>;
   discardPurchaseImport: (importId: string) => void;
@@ -415,7 +418,7 @@ export function PurchaseImportWizard({
   // this, a fast double-click could fire confirmPurchaseImport twice while both still see the
   // import as "draft", double-applying a single import's inventory increase.
   async function handleConfirm() {
-    if (isConfirmingRef.current || !activeImportId) {
+    if (postingPaused || isConfirmingRef.current || !activeImportId) {
       return;
     }
     isConfirmingRef.current = true;
@@ -436,6 +439,7 @@ export function PurchaseImportWizard({
 
   return (
     <section className="space-y-5">
+      {postingPaused ? <p role="status" className="rounded-md bg-[#fff2d8] p-3 text-sm text-[#7a531d]">{RAW_POSTING_PAUSED} CSV drafts can still be prepared and edited.</p> : null}
       {isInventoryTableMissing ? (
         <div className="rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
           Inventory database fields are not ready yet. Run <strong>supabase-add-inventory.sql</strong> once, then try again.
@@ -519,7 +523,7 @@ export function PurchaseImportWizard({
                 <SecondaryButton onClick={() => (window.confirm("Discard this import? Every row assignment and quantity fix made during review will be lost.") ? discardPurchaseImport(activeImportId) : undefined)}>Discard</SecondaryButton>
                 <button
                   className="h-10 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={!readyToConfirm || isConfirming}
+                  disabled={postingPaused || !readyToConfirm || isConfirming}
                   onClick={handleConfirm}
                   type="button"
                 >

@@ -33,3 +33,11 @@ Delivered incrementally as 5 milestones; each one ships as its own working, test
 | Feature | Status | What it adds |
 |---|---|---|
 | PROP-034 — Daily Recommendation Readiness | Implemented, pending real-environment verification and Scheduled Task registration | A scheduled offline worker (`npm run creative-prep`) that advances the newest eligible Opportunity to a ready Creative Package before the owner opens the app, using a new deterministic, non-AI Creative Package initializer (`opportunity_brief` worker) instead of the placeholder `mock` worker or a paid AI API. Detects (never recovers) a suspiciously long-`running` Creative Job as a reporting-only failure signal. See `docs/ARCHITECTURE.md`'s "Daily Recommendation Readiness (PROP-034)" section and `planning/PROPOSALS.md`. |
+
+## Raw inventory authority — Selling Wave 0A
+
+Implemented: verified physical-count entry, preserved discrepancy history, metadata-only edits,
+base-unit protection, and owner-authorized raw adjustments. Database migration and live
+transactional tests complete; physical counts and hosted/visual UI acceptance remain pending.
+Purchase posting, purchase edits/repair and Bake consumption are intentionally unavailable
+until authorized Wave 0B work. See [Wave 0A](../planning/SELLING_WAVE_0A.md).

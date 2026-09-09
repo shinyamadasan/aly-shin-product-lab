@@ -110,7 +110,6 @@ function AdjustStockRow({
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [allowNegative, setAllowNegative] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   // A ref, not just isSubmitting state, guards re-entrancy -- the same reason Bake/Purchase
   // Import guard with a useRef, not just useState (see bake-page.tsx's isConfirmingRef): a fast
@@ -131,12 +130,11 @@ function AdjustStockRow({
 
     setIsSubmitting(true);
     try {
-      await guardRef.current.run(ingredient.id, () => adjustStock(ingredient.id, quantity, unit, reason, direction, note, allowNegative));
+      await guardRef.current.run(ingredient.id, () => adjustStock(ingredient.id, quantity, unit, reason, direction, note, false));
     } finally {
       setIsSubmitting(false);
     }
     setIsOpen(false);
-    setAllowNegative(false);
   }
 
   if (!isOpen) {
@@ -154,7 +152,7 @@ function AdjustStockRow({
         <option value="increase">Increase stock</option>
       </select>
       <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" defaultValue="household_use" name="reason">
-        {stockAdjustmentReasonOptions.map((option) => (
+        {stockAdjustmentReasonOptions.filter((option) => option !== "stock_count_correction").map((option) => (
           <option key={option} value={option}>
             {stockAdjustmentReasonLabel[option]}
           </option>
@@ -162,11 +160,8 @@ function AdjustStockRow({
       </select>
       <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="quantity" placeholder={`Quantity (${ingredient.baseUnit})`} step="0.01" type="number" />
       <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" defaultValue={ingredient.baseUnit} name="unit" placeholder="Unit" />
-      <input className="col-span-full h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="note" placeholder="Note (optional)" />
-      <label className="col-span-full flex items-center gap-2 text-xs font-medium text-[#6f5a4c]">
-        <input checked={allowNegative} onChange={(event) => setAllowNegative(event.target.checked)} type="checkbox" />
-        Allow negative stock and adjust anyway
-      </label>
+      <input className="col-span-full h-11 rounded-md border border-[#d8c7b7] bg-white px-3 text-base" name="note" placeholder="Reason note (required)" required />
+      <p className="col-span-full text-sm">For a physical count, use “Verify physical stock / correct a count” above. Negative balances are not allowed.</p>
       <div className="col-span-full flex gap-2">
         <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting} type="submit">{isSubmitting ? "Saving..." : "Save adjustment"}</button>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen(false)} type="button">Cancel</button>
@@ -244,14 +239,14 @@ export function InventoryPage({
         ) : null}
         {isInventoryTableMissing ? (
           <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
-            Inventory database fields are not ready yet. Run <strong>supabase-add-inventory.sql</strong> once, then save again.
+            Inventory is unavailable. Have the inventory setup checked before recording stock.
           </div>
         ) : null}
         <form action={saveIngredient} className="grid gap-3" key={ingredient?.id ?? "new-ingredient"} onChange={recomputeIsDirty} ref={formRef}>
           <input name="id" type="hidden" value={ingredient?.id ?? ""} />
           <div className="grid gap-3 sm:grid-cols-2">
             <Input name="name" label="Ingredient name" placeholder="Fresh Milk" defaultValue={ingredient?.name} ref={fieldRef} />
-            {ingredient?.baseUnitMigrationFlaggedReason ? (
+            {ingredient && (ingredient.baseUnitMigrationFlaggedReason || labState.inventoryTransactions.some((row) => row.ingredientId === ingredient.id)) ? (
               // Flagged rows keep whatever legacy base_unit the migration left them at (e.g. a
               // value outside g/ml/pcs) -- baseUnitOptions only offers the three canonical units,
               // so a normal <select> here would silently default to the first option and
@@ -260,7 +255,7 @@ export function InventoryPage({
               // current value exactly instead.
               <div className="grid gap-1 text-sm font-medium">
                 Base unit
-                <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-sm">{ingredient.baseUnit} (flagged, not editable here)</p>
+                <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-sm">{ingredient.baseUnit} (protected; not editable here)</p>
                 <input name="baseUnit" type="hidden" value={ingredient.baseUnit} />
               </div>
             ) : (
@@ -282,16 +277,15 @@ export function InventoryPage({
             <div className="grid gap-1 text-sm font-medium">
               Current quantity
               <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-base font-semibold">{ingredient.currentQuantity} {ingredient.baseUnit}</p>
-              <span className="text-xs font-normal leading-5 text-[#6f5a4c]">Locked once an ingredient exists -- later milestones change this through purchases and bakes, not a direct edit.</span>
-              <input name="currentQuantity" type="hidden" value={ingredient.currentQuantity} />
+              <span className="text-xs font-normal leading-5 text-[#6f5a4c]">Changed only through a supported inventory operation. Saving item details does not change stock.</span>
             </div>
           ) : (
-            <input name="currentQuantity" type="hidden" value={0} />
+            <p className="text-sm">New ingredients start at zero. Save the item, then record a verified physical opening count.</p>
           )}
           <LowStockThresholdField ingredient={ingredient} />
           <div className="grid gap-3 sm:grid-cols-2">
             <Input name="nearestExpirationDate" label="Nearest expiration date (optional)" type="date" defaultValue={ingredient?.nearestExpirationDate || undefined} />
-            <Input name="averageUnitCost" label="Average unit cost, PHP (optional)" type="number" step="0.01" placeholder="92" defaultValue={ingredient?.averageUnitCost || undefined} />
+            <div className="grid gap-1 text-sm"><span>Recorded average unit cost</span><p>{ingredient?.averageUnitCost ? `PHP ${ingredient.averageUnitCost}` : "Not recorded"}</p><span>Protected inventory value; not changed by item details or a quantity count.</span></div>
           </div>
           <Textarea name="notes" label="Notes" placeholder="Storage notes, brand preference, anything worth remembering." defaultValue={ingredient?.notes} />
           <div className="flex flex-col gap-2 sm:flex-row">

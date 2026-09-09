@@ -4,17 +4,20 @@ import { useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
 import { parseBatchIngredients } from "@/lib/batches";
+import { RAW_POSTING_PAUSED } from "@/lib/raw-inventory-authority";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { FormPanel, Tag } from "@/components/ui";
 
 export function BakePage({
+  postingPaused = false,
   confirmBake,
   isInventoryTableMissing,
   labState,
   saveIngredientAlias,
 }: {
+  postingPaused?: boolean;
   confirmBake: (batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean) => Promise<void>;
   isInventoryTableMissing: boolean;
   labState: LabState;
@@ -67,7 +70,7 @@ export function BakePage({
   const fullyResolved = isBakeFormulaFullyResolved(resolved);
   const deductions = isMultiplierValid && fullyResolved ? groupDeductionsByIngredient(resolved, multiplier) : [];
   const insufficient = getInsufficientDeductions(deductions, labState.ingredients);
-  const readyToConfirm = fullyResolved && isMultiplierValid && deductions.length > 0 && (allowNegative || insufficient.length === 0);
+  const readyToConfirm = !postingPaused && fullyResolved && isMultiplierValid && deductions.length > 0 && (allowNegative || insufficient.length === 0);
   const computedPieces = selectedBatch && isMultiplierValid && Number.isFinite(selectedBatch.usablePieces) ? Math.round(selectedBatch.usablePieces * multiplier * 100) / 100 : null;
 
   function handleAssign(row: ResolvedBakeRow, ingredientId: string) {
@@ -89,6 +92,7 @@ export function BakePage({
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+      {postingPaused ? <p className="xl:col-span-2" role="status">{RAW_POSTING_PAUSED}</p> : null}
       {isInventoryTableMissing ? (
         <div className="rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d] xl:col-span-2">
           Inventory database fields are not ready yet. Run <strong>supabase-add-inventory.sql</strong> once, then try again.

@@ -236,6 +236,7 @@ export type Ingredient = {
   // Inventory page so an operator can reconcile it by hand; the app never writes to or clears
   // this field itself.
   baseUnitMigrationFlaggedReason?: string | null;
+  inventoryReconciledAt?: string | null;
 };
 
 // "suggested" is a strong partial-name match -- unlike every other method here, it never resolves
@@ -338,6 +339,7 @@ export type InventoryTransaction = {
   // both undefined.
   reason?: StockAdjustmentReason;
   actor?: string | null;
+  reconciliationSnapshot?: { cache_quantity: number; latest_ledger_quantity: number | null; verified_quantity: number; base_unit: string } | null;
 };
 
 export type EquipmentCalculationMode = "depreciation" | "replacement-reserve" | "gas-burn-rate";

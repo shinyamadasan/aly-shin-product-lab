@@ -202,3 +202,27 @@ repo's own risk framework holds for human merge, which is in fact exactly what h
 merged PR #18 directly, not an autonomous auto-merge). Nothing found here changes that
 after the fact — reversible via git if ever needed, but the right gate for this category of change
 was, and remains, human review before merge, not `done`.
+
+## 2026-09-09 — Selling Wave 0A raw authority
+
+Self-review: scope remains Wave 0A; no generalized operation framework or later-wave domain
+model. Removed browser balance writes, preserved historical rows, retained existing owner
+authorization, and explicitly blocked unsafe legacy posting until Wave 0B.
+
+Evidence: 397 relevant tests; PostgreSQL 17 isolated assertions and rolled-back target-database
+assertions passed; typecheck and production build passed. Existing data hashes unchanged.
+New/changed implementation lint is clean except the unchanged pre-existing Bake selection
+effect error. No connected browser, so visual acceptance is unverified. No hosted frontend
+deployment or merge performed. Merge gate remains `approved` for schema/permission work.
+See [the complete evidence and restrictions](planning/SELLING_WAVE_0A.md).
+
+## 2026-09-09 — Selling Wave 0A independent approval and finalization
+
+Gate: `approved`. The user confirmed the independent verdict: **WAVE 0A APPROVED — safe to
+commit and proceed to operational reconciliation.** The reversal-boundary, migration-identity,
+and visible-lockout repairs are included. All local/remote migration versions match; the final
+CLI dry run reports the remote database up to date. Final diff review found no unrelated changes
+or Wave 0B implementation. Verification: 403 focused tests, isolated/live PostgreSQL authority
+assertions, typecheck, production build, and targeted repair lint passed as recorded in the report.
+Commit and branch push are authorized. Physical inventory reconciliation must happen before
+Wave 0B; Wave 0B is NOT STARTED. Hosted and real-device acceptance are not claimed.
