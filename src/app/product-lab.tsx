@@ -41,7 +41,10 @@ import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, In
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
-import { ingredientMetadataPayload, rawAdjustmentArgs, RAW_POSTING_PAUSED } from "@/lib/raw-inventory-authority";
+import {
+  confirmBakeArgs, ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
+  rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, updatePostedPurchaseMetadataArgs,
+} from "@/lib/raw-inventory-authority";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
 import type { OrdersTab } from "@/lib/orders-tabs";
 import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/components/purchase-import-wizard";
@@ -206,6 +209,10 @@ export default function ProductLab({
   const [isAuthLoading, setIsAuthLoading] = useState(isSupabaseConfigured);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
+  // One operation id per import, reused across a retry of the same confirm (see
+  // confirmPurchaseImport's own comment) -- an import id is never reused once confirmed, so
+  // entries are never cleaned up beyond the delete on success.
+  const csvConfirmOperationIdsRef = useRef(new Map<string, string>());
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
@@ -1562,29 +1569,31 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  // Wave 0A blocks remote purchase posting until Wave 0B replaces its absolute-balance RPC.
-  // Existing calculations below remain available only to the local demo.
-  async function saveSupply(formData: FormData) {
-    if (supabase && session) {
-      setMessage(RAW_POSTING_PAUSED);
-      setMessageTone("bad");
-      return;
-    }
-
+  // Wave 0B: a new remote purchase posts through post_raw_purchase (the database locks the
+  // ingredient, reads its own quantity/cost, and computes the result -- see that function's own
+  // comment). Editing an existing remote purchase is metadata-only once it has a ledger effect,
+  // which is always true for a Wave 0B-posted purchase; quantity/unit/cost/item stay historical
+  // fact, corrected with a stock adjustment instead. Local-demo calculations below are unchanged.
+  // Returns whether a genuinely NEW purchase was successfully saved (remote-posted or local-demo)
+  // -- the one case PurchaseLogPage's operationId should rotate for. false covers every other
+  // outcome: a failure (so a retry keeps the same operation id) and a metadata-only edit of an
+  // already-posted purchase (editing is not a new inventory-post operation and must not consume a
+  // fresh identity).
+  async function saveSupply(formData: FormData): Promise<boolean> {
     const supplyId = String(formData.get("id") || "");
     const ingredientId = String(formData.get("ingredientId") || "").trim();
     const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
     if (!ingredient) {
       setMessage("Choose an Item before saving this purchase.");
       setMessageTone("bad");
-      return;
+      return false;
     }
 
     const previousSupply = supplyId ? labState.supplies.find((entry) => entry.id === supplyId) : undefined;
     if (previousSupply && previousSupply.ingredientId && previousSupply.ingredientId !== ingredientId) {
       setMessage("Changing which Item a purchase belongs to isn't supported. Delete this purchase and log it again under the new Item.");
       setMessageTone("bad");
-      return;
+      return false;
     }
 
     const supply: SupplyEntry = {
@@ -1603,6 +1612,47 @@ export default function ProductLab({
     };
 
     const today = new Date().toISOString();
+
+    if (supabase && session) {
+      if (!previousSupply) {
+        const effect = applySupplyPurchaseEffect(ingredient, supply, supply.id, today);
+        if ("error" in effect) {
+          setMessage(effect.error);
+          setMessageTone("bad");
+          return false;
+        }
+        const operationId = String(formData.get("operationId") || "");
+        const { error } = await supabase.rpc("post_raw_purchase", postRawPurchaseArgs(supply, effect.transaction.quantityChange, operationId));
+        if (error) {
+          setMessage(`Purchase not posted: ${describeIngredientConstraintError(error)}`);
+          setMessageTone("bad");
+          return false;
+        }
+        setEditingSupply(null);
+        setMessage("Purchase posted.");
+        setMessageTone("good");
+        await loadSupabaseData();
+        return true;
+      }
+
+      if (postedPurchaseInventoryFieldsChanged(previousSupply, supply)) {
+        setMessage("Quantity, unit, cost, and Item can't be changed after a purchase is posted. Use a stock adjustment to correct the recorded balance instead.");
+        setMessageTone("bad");
+        return false;
+      }
+      const { error } = await supabase.rpc("update_posted_purchase_metadata", updatePostedPurchaseMetadataArgs(supply));
+      if (error) {
+        setMessage(`Purchase update failed: ${describeIngredientConstraintError(error)}`);
+        setMessageTone("bad");
+        return false;
+      }
+      setEditingSupply(null);
+      setMessage("Purchase details updated.");
+      setMessageTone("good");
+      await loadSupabaseData();
+      return false;
+    }
+
     let ingredientUpdate: Ingredient | null = null;
     let transactionUpsert: InventoryTransaction | null = null;
     let historicalCostWarning = "";
@@ -1612,7 +1662,7 @@ export default function ProductLab({
       if ("error" in effect) {
         setMessage(effect.error);
         setMessageTone("bad");
-        return;
+        return false;
       }
       ingredientUpdate = effect.ingredient;
       transactionUpsert = effect.transaction;
@@ -1621,7 +1671,7 @@ export default function ProductLab({
       if (plan.kind === "error") {
         setMessage(plan.message);
         setMessageTone("bad");
-        return;
+        return false;
       }
       if (plan.kind === "recalculated") {
         ingredientUpdate = plan.ingredient;
@@ -1647,11 +1697,12 @@ export default function ProductLab({
     setEditingSupply(null);
     setMessage(historicalCostWarning ? `Purchase saved locally. ${historicalCostWarning}` : "Purchase saved locally.");
     setMessageTone("good");
+    return !previousSupply;
   }
 
   async function deleteSupply(supplyId: string) {
     if (supabase && session) {
-      setMessage(RAW_POSTING_PAUSED);
+      setMessage(RAW_PURCHASE_DELETE_BLOCKED);
       setMessageTone("bad");
       return;
     }
@@ -1713,7 +1764,7 @@ export default function ProductLab({
   // against physical stock before trusting the new numbers, not just a confirmation toast.
   async function repairSupplyInventoryEffects() {
     if (supabase && session) {
-      setMessage(RAW_POSTING_PAUSED);
+      setMessage(RAW_REPAIR_BLOCKED);
       setMessageTone("bad");
       return;
     }
@@ -2224,8 +2275,25 @@ export default function ProductLab({
   // an already-confirmed import.
   async function confirmPurchaseImport(importId: string) {
     if (supabase && session) {
-      setMessage(RAW_POSTING_PAUSED);
-      setMessageTone("bad");
+      // Reused across a retry of the same import (a lost response, a second tab) so
+      // confirm_purchase_import_v2's idempotency claim sees the same operation id; a given
+      // import can only ever be meaningfully confirmed once, so there is no rotation case like
+      // Bake's (see bakeOperationIdRef's own comment in bake-page.tsx).
+      let operationId = csvConfirmOperationIdsRef.current.get(importId);
+      if (!operationId) {
+        operationId = crypto.randomUUID();
+        csvConfirmOperationIdsRef.current.set(importId, operationId);
+      }
+      const { error } = await supabase.rpc("confirm_purchase_import_v2", { p_operation_id: operationId, p_import_id: importId });
+      if (error) {
+        setMessage(`Import not confirmed: ${describeIngredientConstraintError(error)}`);
+        setMessageTone("bad");
+        return;
+      }
+      csvConfirmOperationIdsRef.current.delete(importId);
+      setMessage("Purchase import confirmed. Inventory and supplier prices updated.");
+      setMessageTone("good");
+      await loadSupabaseData();
       return;
     }
 
@@ -2288,13 +2356,37 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  // Remote Bake consumption is blocked in Wave 0A. The existing local demo calculation stays
-  // separate from database inventory; no production execution is introduced by this wave.
-  async function confirmBake(batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean) {
+  // Wave 0B: remote Bake consumption posts through confirm_bake_v2 -- the database locks every
+  // affected ingredient in one deterministic pass, requires a trusted opening count and
+  // sufficient stock for all of them, and applies every deduction together or none at all. Only
+  // raw ingredients move; this does not create finished stock (see that function's own comment).
+  async function confirmBake(batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean, operationId: string): Promise<boolean> {
     if (supabase && session) {
-      setMessage(RAW_POSTING_PAUSED);
-      setMessageTone("bad");
-      return;
+      const { error } = await supabase.rpc("confirm_bake_v2", confirmBakeArgs(batchId, batchLabel, multiplier, deductions, operationId));
+      if (error) {
+        setMessage(`Bake not confirmed: ${describeIngredientConstraintError(error)}`);
+        setMessageTone("bad");
+        return false;
+      }
+      // product_batches.completed_at is proof/version-lifecycle metadata ("this formula has been
+      // proven at least once"), not a per-production-run timestamp -- the same version is baked
+      // for real production many times over its life without ever needing a new version row.
+      // Setting it only the first time (when still null) preserves the original proof date; a real
+      // Bake never overwrites it on every subsequent run. A future wave's production execution
+      // concept is where individual real Bakes would get their own per-run record --
+      // inventory_transactions already is that record for raw consumption; this wave adds no new
+      // one for batch lifecycle.
+      const batch = labState.batches.find((item) => item.id === batchId);
+      if (!batch?.completedAt) {
+        const { error: batchError } = await supabase.from("product_batches").update({ completed_at: new Date().toISOString() }).eq("id", batchId);
+        setMessage(batchError ? `Bake confirmed, but marking the batch completed failed: ${batchError.message}` : "Bake confirmed. Inventory updated and batch marked completed.");
+        setMessageTone(batchError ? "bad" : "good");
+      } else {
+        setMessage("Bake confirmed. Inventory updated.");
+        setMessageTone("good");
+      }
+      await loadSupabaseData();
+      return true;
     }
 
     const result = applyBakeConfirmation({ ingredients: labState.ingredients, deductions, batchId, batchLabel, multiplier, allowNegative, today: new Date().toISOString() });
@@ -2302,7 +2394,7 @@ export default function ProductLab({
     if ("error" in result) {
       setMessage(result.error);
       setMessageTone("bad");
-      return;
+      return false;
     }
 
     const { ingredients: updatedIngredients, transactions } = result;
@@ -2320,6 +2412,7 @@ export default function ProductLab({
     }));
     setMessage("Bake confirmed locally. Inventory updated and batch marked completed.");
     setMessageTone("good");
+    return true;
   }
 
   async function saveEquipment(formData: FormData) {
@@ -2978,9 +3071,9 @@ export default function ProductLab({
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
           {view === "inventory" ? (
             <>
-            {supabase && session ? <><p role="status">{RAW_POSTING_PAUSED}</p><RawInventoryReconciliation labState={labState} reconcile={reconcileRawInventory} /></> : null}
+            {supabase && session ? <RawInventoryReconciliation labState={labState} reconcile={reconcileRawInventory} /> : null}
             <InventoryWorkspace
-              postingPaused={Boolean(supabase && session)}
+              deleteAndRepairPaused={Boolean(supabase && session)}
               adjustStock={adjustStock}
               cancelEditIngredient={cancelIngredientEdit}
               cancelEditSupply={cancelSupplyEdit}
@@ -3013,7 +3106,7 @@ export default function ProductLab({
             />
             </>
           ) : null}
-          {view === "bake" ? <BakePage postingPaused={Boolean(supabase && session)} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
+          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
@@ -5173,13 +5266,16 @@ function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingr
 }
 
 function PurchaseRecordRow({
-  postingPaused = false,
+  deleteAndRepairPaused = false,
   deleteSupply,
   editSupply,
   isActive,
   supply,
 }: {
-  postingPaused?: boolean;
+  // Wave 0B still does not restore deleting a posted purchase (see RAW_PURCHASE_DELETE_BLOCKED) --
+  // editing is unaffected: saveSupply itself now decides whether an edit is safe metadata-only or
+  // must be rejected for touching a posted purchase's quantity/unit/cost/item.
+  deleteAndRepairPaused?: boolean;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
   isActive?: boolean;
@@ -5224,8 +5320,8 @@ function PurchaseRecordRow({
         <p className="mt-1 font-semibold">{supply.qualityRating || 0}/5</p>
       </div>
       <div className="flex gap-2 lg:flex-col">
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={postingPaused} title={postingPaused ? RAW_POSTING_PAUSED : undefined} onClick={() => !postingPaused && editSupply(supply)} type="button">Edit</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827] disabled:cursor-not-allowed disabled:opacity-50" disabled={postingPaused} title={postingPaused ? RAW_POSTING_PAUSED : undefined} onClick={() => !postingPaused && window.confirm(deleteMessage) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editSupply(supply)} type="button">Edit</button>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827] disabled:cursor-not-allowed disabled:opacity-50" disabled={deleteAndRepairPaused} title={deleteAndRepairPaused ? RAW_PURCHASE_DELETE_BLOCKED : undefined} onClick={() => !deleteAndRepairPaused && window.confirm(deleteMessage) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
       </div>
     </article>
   );
@@ -5433,7 +5529,7 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
 // here recomputes state; every tab renders the same components and callbacks that used to live
 // behind their own routes.
 function InventoryWorkspace({
-  postingPaused = false,
+  deleteAndRepairPaused = false,
   initialTab,
   adjustStock,
   cancelEditIngredient,
@@ -5464,7 +5560,7 @@ function InventoryWorkspace({
   updatePurchaseImportRow,
   labState,
 }: {
-  postingPaused?: boolean;
+  deleteAndRepairPaused?: boolean;
   initialTab?: InventoryTab;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEditIngredient: () => void;
@@ -5487,7 +5583,7 @@ function InventoryWorkspace({
   isSuppliesTableMissing: boolean;
   repairSupplyInventoryEffects: () => void;
   reverseInventoryAdjustment: (transactionId: string) => Promise<void>;
-  saveSupply: (formData: FormData) => void;
+  saveSupply: (formData: FormData) => Promise<boolean>;
   supply: SupplyEntry | null;
   confirmPurchaseImport: (importId: string) => Promise<void>;
   createPurchaseImportDraft: (fileName: string, rows: PurchaseImportRowDraft[], importSupplierName: string, importReceiptNumber: string, importPurchaseDate: string) => Promise<string | null>;
@@ -5651,10 +5747,9 @@ function InventoryWorkspace({
             </button>
           </div>
           {purchasesTab === "manual" ? (
-            <PurchaseLogPage postingPaused={postingPaused} cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
+            <PurchaseLogPage deleteAndRepairPaused={deleteAndRepairPaused} cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
           ) : (
             <PurchaseImportWizard
-              postingPaused={postingPaused}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
               discardPurchaseImport={discardPurchaseImport}
@@ -5698,7 +5793,7 @@ function supplyEditorKey(supply: SupplyEntry | null): string {
 }
 
 function PurchaseLogPage({
-  postingPaused = false,
+  deleteAndRepairPaused = false,
   cancelEdit,
   deleteSupply,
   editSupply,
@@ -5710,7 +5805,10 @@ function PurchaseLogPage({
   saveSupply,
   supply,
 }: {
-  postingPaused?: boolean;
+  // Wave 0B still does not restore deleting a posted purchase or the legacy repair tool (see
+  // RAW_PURCHASE_DELETE_BLOCKED/RAW_REPAIR_BLOCKED); Save/Update always attempts -- saveSupply
+  // itself decides whether a remote edit is safe and surfaces any rejection.
+  deleteAndRepairPaused?: boolean;
   cancelEdit: () => void;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
@@ -5721,13 +5819,46 @@ function PurchaseLogPage({
   onDirtyChange?: (isDirty: boolean) => void;
   repairSupplyInventoryEffects: () => void;
   saveIngredient: (formData: FormData) => Promise<string | null>;
-  saveSupply: (formData: FormData) => void;
+  saveSupply: (formData: FormData) => Promise<boolean>;
   supply: SupplyEntry | null;
 }) {
   const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(supply?.id ?? null);
   // Captured once here since chronologicalPurchases.map() below shadows `supply` with its own
   // loop variable.
   const editingSupplyId = supply?.id ?? null;
+  // This whole component remounts (its own call site keys it by supplyEditorKey(supply)) whenever
+  // the target purchase changes, giving a fresh id for a genuinely different target. Within one
+  // mounted instance, a failed or uncertain submit leaves this unchanged -- a retry click reuses
+  // the same operation id, which is exactly what post_raw_purchase's idempotency claim needs to
+  // treat it as the same logical attempt. handleSaveSupply (below) explicitly rotates it after a
+  // successful NEW purchase post (saveSupply returning true) so the next deliberately distinct
+  // purchase logged through this same still-mounted form -- e.g. the default "Log purchase" form,
+  // which does not remount between two new purchases -- gets its own fresh identity instead of
+  // being rejected as a changed-payload replay of the first. A metadata-only edit of an existing
+  // purchase (saveSupply returning false on success) does not rotate anything -- editing is not a
+  // new inventory-post operation.
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  // Bounded UI feedback only (no persistence framework): this form previously gave no visual
+  // signal at all that a submit was in flight, unlike Bake/CSV confirm's existing "Confirming..."
+  // state -- see planning/SELLING_WAVE_0B.md's refresh-retry limitation for why that matters here.
+  // isSavingRef blocks a fast double-click the same way isConfirmingRef already does elsewhere;
+  // it is not the safety mechanism (post_raw_purchase's own idempotency claim is), just belt and
+  // suspenders against firing the request twice from one click.
+  const [isSaving, setIsSaving] = useState(false);
+  const isSavingRef = useRef(false);
+  async function handleSaveSupply(formData: FormData) {
+    if (isSavingRef.current) {
+      return;
+    }
+    isSavingRef.current = true;
+    setIsSaving(true);
+    const postedNewPurchase = await saveSupply(formData);
+    if (postedNewPurchase) {
+      setOperationId(crypto.randomUUID());
+    }
+    isSavingRef.current = false;
+    setIsSaving(false);
+  }
   const [purchaseView, setPurchaseView] = useState<"by-item" | "all">("by-item");
   const brandOptions = getUniqueSupplyValues(labState.supplies, "brandName");
   const supplierOptions = getUniqueSupplyValues(labState.supplies, "supplierName");
@@ -5827,9 +5958,9 @@ function PurchaseLogPage({
             Purchase database fields are not ready yet. Run the latest <strong>supabase-add-supplies.sql</strong> once, then save again.
           </div>
         ) : null}
-        {postingPaused ? <p role="status" className="mb-3 text-sm text-[#7a531d]">{RAW_POSTING_PAUSED}</p> : null}
-        <form action={postingPaused ? undefined : saveSupply} onSubmit={postingPaused ? (event) => event.preventDefault() : undefined} className="grid gap-3" key={supplyEditorKey(supply)} onChange={recomputeIsDirty} ref={formRef}>
+        <form action={handleSaveSupply} className="grid gap-3" key={supplyEditorKey(supply)} onChange={recomputeIsDirty} ref={formRef}>
           <input name="id" type="hidden" value={supply?.id ?? ""} />
+          <input name="operationId" type="hidden" value={operationId} />
           <div className="grid gap-3 sm:grid-cols-3">
             <SupplyValuePicker label="Brand" name="brandName" onValueChange={bumpPickerNonce} options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
             <SupplyIngredientField ingredients={labState.ingredients} initialIngredientId={supply?.ingredientId} initialIngredientName={supply?.ingredientName ?? ""} isLocked={Boolean(supply?.ingredientId && !supply.id)} onSelectionChange={bumpPickerNonce} saveIngredient={saveIngredient} />
@@ -5843,9 +5974,10 @@ function PurchaseLogPage({
           </div>
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
           <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." defaultValue={supply?.notes} />
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button disabled={postingPaused}>{supply ? "Update purchase" : "Save purchase"}</Button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Button disabled={isSaving}>{isSaving ? "Saving..." : supply ? "Update purchase" : "Save purchase"}</Button>
             {supply ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+            {isSaving ? <span className="text-sm text-[#6f5a4c]">Please don&apos;t refresh or close this tab until this finishes.</span> : null}
           </div>
         </form>
       </FormPanel>
@@ -5869,10 +6001,10 @@ function PurchaseLogPage({
               <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadPurchases} type="button">Download CSV</button>
               <button
                 className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={postingPaused}
-                title={postingPaused ? RAW_POSTING_PAUSED : undefined}
+                disabled={deleteAndRepairPaused}
+                title={deleteAndRepairPaused ? RAW_REPAIR_BLOCKED : undefined}
                 onClick={() =>
-                  !postingPaused && window.confirm(
+                  !deleteAndRepairPaused && window.confirm(
                     "Apply every Item's full purchase history to current stock and average cost, for any Item never touched by a purchase before? This can move stock quantities and costs -- check the result against physical stock afterward.",
                   )
                     ? repairSupplyInventoryEffects()
@@ -5918,13 +6050,13 @@ function PurchaseLogPage({
                       <p className="mt-1 font-semibold">{summary.purchaseCount} record{summary.purchaseCount === 1 ? "" : "s"}</p>
                     </div>
                     <div className="flex gap-2 lg:flex-col">
-                      <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50" disabled={postingPaused} title={postingPaused ? RAW_POSTING_PAUSED : undefined} onClick={() => !postingPaused && logPurchaseForIngredient(group.ingredient)} type="button">Log Purchase</button>
+                      <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => logPurchaseForIngredient(group.ingredient)} type="button">Log Purchase</button>
                     </div>
                   </div>
                   <details className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3]">
                     <summary className="cursor-pointer p-3 text-sm font-semibold text-[#5f4a3d]">Purchase history</summary>
                     <div className="divide-y divide-[#ead9c8] bg-white">
-                      {group.purchases.map((purchase) => <PurchaseRecordRow postingPaused={postingPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
                     </div>
                   </details>
                 </article>
@@ -5937,7 +6069,7 @@ function PurchaseLogPage({
                   <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">These purchase records do not resolve to a current Item. Records with unknown Item IDs are kept here and are not matched by name.</p>
                 </div>
                 <div className="divide-y divide-[#f0e4d8]">
-                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow postingPaused={postingPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
                 </div>
               </section>
             ) : null}
@@ -5945,7 +6077,7 @@ function PurchaseLogPage({
         ) : (
         <div className="divide-y divide-[#f0e4d8]">
           {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
-          {chronologicalPurchases.map((purchase) => <PurchaseRecordRow postingPaused={postingPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+          {chronologicalPurchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
         </div>
         )}
       </div>

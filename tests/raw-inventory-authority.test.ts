@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adjustmentSupersededByCount, ingredientMetadataPayload, latestInventoryMovement, rawAdjustmentArgs } from "../src/lib/raw-inventory-authority.ts";
-import type { Ingredient, InventoryTransaction } from "../src/lib/product-lab-types.ts";
+import {
+  adjustmentSupersededByCount, confirmBakeArgs, ingredientMetadataPayload, latestInventoryMovement,
+  postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs, rawAdjustmentArgs, updatePostedPurchaseMetadataArgs,
+} from "../src/lib/raw-inventory-authority.ts";
+import type { Ingredient, InventoryTransaction, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 const ingredient: Ingredient = { id: "sugar", name: "Sugar", baseUnit: "g", category: "ingredient", currentQuantity: 4000, averageUnitCost: 0.075, lowStockThreshold: 100, targetStockQuantity: 5000, nearestExpirationDate: "", notes: "", isActive: true };
 const movements: InventoryTransaction[] = [
@@ -42,4 +45,45 @@ test("reversal boundary hides old adjustments but retains post-count microsecond
   assert.equal(adjustmentSupersededByCount({ ...transaction, createdAt: "2026-09-09T05:00:00.123455-07:00" }, counted), true);
   assert.equal(adjustmentSupersededByCount(transaction, ingredient), false);
   assert.equal(adjustmentSupersededByCount(transaction, { ...counted, id: "egg" }), false);
+});
+
+const supply: SupplyEntry = {
+  id: "supply-1", ingredientId: "sugar", ingredientName: "Sugar", brandName: "Local", supplierName: "SM",
+  purchaseDate: "2026-09-09", createdAt: "2026-09-09T00:00:00Z", packQuantity: 1000, unit: "g", totalCost: 75,
+  qualityRating: 4, notes: "",
+};
+
+test("post_raw_purchase args carry the converted base-unit delta, never a computed ending balance", () => {
+  const args = postRawPurchaseArgs(supply, 1000, "op-1");
+  assert.equal(args.p_operation_id, "op-1");
+  assert.equal(args.p_ingredient_id, "sugar");
+  assert.equal(args.p_pack_quantity, 1000);
+  assert.equal(args.p_display_unit, "g");
+  assert.equal(args.p_base_quantity, 1000);
+  assert.equal(args.p_total_cost, 75);
+  for (const field of Object.keys(args)) assert.ok(!/quantity_after|average_unit_cost/.test(field), field);
+});
+
+test("update_posted_purchase_metadata args never carry an inventory-affecting field", () => {
+  const args = updatePostedPurchaseMetadataArgs(supply);
+  assert.equal(args.p_supply_id, "supply-1");
+  assert.equal(args.p_supplier_name, "SM");
+  for (const field of ["p_pack_quantity", "p_unit", "p_total_cost", "p_ingredient_id"]) assert.ok(!(field in args), field);
+});
+
+test("posted purchase edits are flagged unsafe exactly when quantity, unit, cost, or item changed", () => {
+  assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, brandName: "Callebaut", notes: "different" }), false);
+  assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, packQuantity: 2000 }), true);
+  assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, unit: "kg" }), true);
+  assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, totalCost: 80 }), true);
+  assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, ingredientId: "flour" }), true);
+});
+
+test("confirm_bake_v2 args carry a pre-resolved, snake_cased deduction list and no allow-negative escape", () => {
+  const args = confirmBakeArgs("batch-1", "Brownie v3", 2, [{ ingredientId: "sugar", quantity: 500 }, { ingredientId: "egg", quantity: 4 }], "op-2");
+  assert.equal(args.p_operation_id, "op-2");
+  assert.equal(args.p_batch_id, "batch-1");
+  assert.equal(args.p_multiplier, 2);
+  assert.deepEqual(args.p_deductions, [{ ingredient_id: "sugar", quantity: 500 }, { ingredient_id: "egg", quantity: 4 }]);
+  assert.ok(!("p_allow_negative" in args));
 });
