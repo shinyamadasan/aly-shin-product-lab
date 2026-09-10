@@ -4,21 +4,23 @@ import { useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
 import { parseBatchIngredients } from "@/lib/batches";
-import { RAW_POSTING_PAUSED } from "@/lib/raw-inventory-authority";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { FormPanel, Tag } from "@/components/ui";
 
 export function BakePage({
-  postingPaused = false,
+  remotePosting = false,
   confirmBake,
   isInventoryTableMissing,
   labState,
   saveIngredientAlias,
 }: {
-  postingPaused?: boolean;
-  confirmBake: (batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean) => Promise<void>;
+  // True whenever a Supabase session is present -- Wave 0B's database-authoritative confirm_bake_v2
+  // never accepts a negative-stock override (unlike the local-only demo checkbox below), so this
+  // hides that override and always sends operationId/false for allowNegative remotely.
+  remotePosting?: boolean;
+  confirmBake: (batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean, operationId: string) => Promise<boolean>;
   isInventoryTableMissing: boolean;
   labState: LabState;
   saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
@@ -51,6 +53,20 @@ export function BakePage({
   // very first line of a second, near-simultaneous invocation sees it before anything else runs.
   const isConfirmingRef = useRef(false);
 
+  // A stable operation id for the current (batch, multiplier) attempt -- a retry click after a
+  // failed/lost confirm reuses the same id (Wave 0B's confirm_bake_v2 treats that as the same
+  // logical Bake and applies it at most once); picking a different batch or multiplier, or a
+  // successful confirm (handleConfirm rotates it explicitly), is a genuinely new attempt and gets
+  // a fresh one. The "state updated conditionally during render" shape below -- not a ref, and not
+  // an effect -- is React's own documented pattern for deriving state from a changed prop/key.
+  const bakeOperationKey = `${selectedBatchId}:${multiplierText}`;
+  const [bakeOperationKeyState, setBakeOperationKeyState] = useState(bakeOperationKey);
+  const [bakeOperationId, setBakeOperationId] = useState(() => crypto.randomUUID());
+  if (bakeOperationKeyState !== bakeOperationKey) {
+    setBakeOperationKeyState(bakeOperationKey);
+    setBakeOperationId(crypto.randomUUID());
+  }
+
   useEffect(() => {
     if (batchesByProduct.length === 0) {
       return;
@@ -70,7 +86,10 @@ export function BakePage({
   const fullyResolved = isBakeFormulaFullyResolved(resolved);
   const deductions = isMultiplierValid && fullyResolved ? groupDeductionsByIngredient(resolved, multiplier) : [];
   const insufficient = getInsufficientDeductions(deductions, labState.ingredients);
-  const readyToConfirm = !postingPaused && fullyResolved && isMultiplierValid && deductions.length > 0 && (allowNegative || insufficient.length === 0);
+  // Remote confirms never accept a negative-stock override -- confirm_bake_v2 rejects insufficient
+  // stock unconditionally, so allowNegative can only ever help the local-only demo path.
+  const canOverrideNegative = !remotePosting;
+  const readyToConfirm = fullyResolved && isMultiplierValid && deductions.length > 0 && ((canOverrideNegative && allowNegative) || insufficient.length === 0);
   const computedPieces = selectedBatch && isMultiplierValid && Number.isFinite(selectedBatch.usablePieces) ? Math.round(selectedBatch.usablePieces * multiplier * 100) / 100 : null;
 
   function handleAssign(row: ResolvedBakeRow, ingredientId: string) {
@@ -84,7 +103,13 @@ export function BakePage({
     isConfirmingRef.current = true;
     setIsConfirming(true);
     const batchLabel = batchDisplayName(selectedBatch.productId, selectedBatch.batchVersion, labState.products);
-    await confirmBake(selectedBatch.id, batchLabel, multiplier, deductions, allowNegative);
+    const succeeded = await confirmBake(selectedBatch.id, batchLabel, multiplier, deductions, canOverrideNegative && allowNegative, bakeOperationId);
+    // On success, retire this operation id even though the (batch, multiplier) key hasn't
+    // changed -- baking the same batch at the same multiplier again is a genuinely separate real
+    // event, not a retry, and must not replay the first Bake's stored result.
+    if (succeeded) {
+      setBakeOperationId(crypto.randomUUID());
+    }
     isConfirmingRef.current = false;
     setIsConfirming(false);
     setAllowNegative(false);
@@ -92,7 +117,6 @@ export function BakePage({
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
-      {postingPaused ? <p className="xl:col-span-2" role="status">{RAW_POSTING_PAUSED}</p> : null}
       {isInventoryTableMissing ? (
         <div className="rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d] xl:col-span-2">
           Inventory database fields are not ready yet. Run <strong>supabase-add-inventory.sql</strong> once, then try again.
@@ -192,11 +216,14 @@ export function BakePage({
         ) : null}
 
         <div className="mt-5 flex flex-col gap-3">
-          {insufficient.length > 0 ? (
+          {insufficient.length > 0 && canOverrideNegative ? (
             <label className="flex items-center gap-2 text-sm font-medium text-[#8a3827]">
               <input checked={allowNegative} onChange={(event) => setAllowNegative(event.target.checked)} type="checkbox" />
               Allow negative stock and bake anyway
             </label>
+          ) : null}
+          {insufficient.length > 0 && !canOverrideNegative ? (
+            <p className="text-sm font-medium text-[#8a3827]">Insufficient stock blocks this Bake -- there is no override for a posted Bake.</p>
           ) : null}
           <button
             className="h-10 w-fit rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
