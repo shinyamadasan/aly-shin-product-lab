@@ -79,11 +79,13 @@ test("posted purchase edits are flagged unsafe exactly when quantity, unit, cost
   assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, ingredientId: "flour" }), true);
 });
 
-test("confirm_bake_v2 args carry a pre-resolved, snake_cased deduction list and no allow-negative escape", () => {
-  const args = confirmBakeArgs("batch-1", "Brownie v3", 2, [{ ingredientId: "sugar", quantity: 500 }, { ingredientId: "egg", quantity: 4 }], "op-2");
+test("confirm_bake_v3 args carry the batch, product, observed pieces, a pre-resolved snake_cased deduction list, and no allow-negative escape", () => {
+  const args = confirmBakeArgs("batch-1", "brownie", "Brownie v3", 2, 8, [{ ingredientId: "sugar", quantity: 500 }, { ingredientId: "egg", quantity: 4 }], "op-2");
   assert.equal(args.p_operation_id, "op-2");
   assert.equal(args.p_batch_id, "batch-1");
+  assert.equal(args.p_product_id, "brownie");
   assert.equal(args.p_multiplier, 2);
+  assert.equal(args.p_actual_pieces_produced, 8);
   assert.deepEqual(args.p_deductions, [{ ingredient_id: "sugar", quantity: 500 }, { ingredient_id: "egg", quantity: 4 }]);
   assert.ok(!("p_allow_negative" in args));
 });

@@ -85,12 +85,19 @@ export function updatePostedPurchaseMetadataArgs(supply: SupplyEntry) {
   };
 }
 
-export function confirmBakeArgs(batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], operationId: string) {
+// Wave 1: confirm_bake_v3 is the complete atomic production Bake -- raw consumption + one
+// production execution + finished-stock receipt + frozen cost, all in one transaction. The client
+// supplies the intent (which batch, which product, the multiplier, the pre-resolved deduction
+// list) plus the operator's observed usable-piece count, which is the authoritative finished
+// quantity; the recipe/version yield stays server-side reference only.
+export function confirmBakeArgs(batchId: string, productId: string, batchLabel: string, multiplier: number, actualPiecesProduced: number, deductions: BakeDeduction[], operationId: string) {
   return {
     p_operation_id: operationId,
     p_batch_id: batchId,
+    p_product_id: productId,
     p_batch_label: batchLabel,
     p_multiplier: multiplier,
+    p_actual_pieces_produced: actualPiecesProduced,
     p_deductions: deductions.map((deduction) => ({ ingredient_id: deduction.ingredientId, quantity: deduction.quantity })),
   };
 }

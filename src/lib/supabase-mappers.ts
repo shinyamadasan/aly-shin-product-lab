@@ -1,5 +1,7 @@
 import type {
   CostingSummary,
+  FinishedStockMovement,
+  FinishedStockMovementType,
   Ingredient,
   IngredientBaseUnit,
   IngredientCategory,
@@ -8,6 +10,7 @@ import type {
   InventoryTransactionType,
   Product,
   ProductBatch,
+  ProductionExecution,
   StockAdjustmentReason,
   TastingFeedback,
 } from "./product-lab-types";
@@ -353,5 +356,65 @@ export function mapInventoryTransactionRow(row: InventoryTransactionRow): Invent
     reason: (row.reason ?? undefined) as StockAdjustmentReason | undefined,
     actor: row.actor ?? null,
     ...(row.reconciliation_snapshot ? { reconciliationSnapshot: row.reconciliation_snapshot } : {}),
+  };
+}
+
+export type ProductionExecutionRow = {
+  id: string;
+  product_id: string;
+  product_batch_id: string;
+  batch_version_snapshot: string;
+  operation_id: string;
+  multiplier: number | string;
+  quantity_produced_pieces: number | string;
+  expected_pieces: number | string;
+  frozen_ingredient_cost_total: number | string;
+  frozen_cost_per_piece: number | string;
+  note: string | null;
+  completed_at: string;
+  created_at: string;
+};
+
+export function mapProductionExecutionRow(row: ProductionExecutionRow): ProductionExecution {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    productBatchId: row.product_batch_id,
+    batchVersionSnapshot: row.batch_version_snapshot ?? "",
+    operationId: row.operation_id,
+    multiplier: Number(row.multiplier ?? 0),
+    quantityProducedPieces: Number(row.quantity_produced_pieces ?? 0),
+    expectedPieces: Number(row.expected_pieces ?? 0),
+    frozenIngredientCostTotal: Number(row.frozen_ingredient_cost_total ?? 0),
+    frozenCostPerPiece: Number(row.frozen_cost_per_piece ?? 0),
+    note: row.note ?? "",
+    completedAt: row.completed_at ?? "",
+    createdAt: row.created_at ?? "",
+  };
+}
+
+export type FinishedStockMovementRow = {
+  id: string;
+  product_id: string;
+  production_execution_id: string | null;
+  movement_type: string;
+  on_hand_delta: number | string;
+  reserved_delta: number | string;
+  operation_id: string;
+  note: string | null;
+  created_at: string;
+};
+
+export function mapFinishedStockMovementRow(row: FinishedStockMovementRow): FinishedStockMovement {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    productionExecutionId: row.production_execution_id ?? null,
+    movementType: row.movement_type as FinishedStockMovementType,
+    onHandDelta: Number(row.on_hand_delta ?? 0),
+    reservedDelta: Number(row.reserved_delta ?? 0),
+    operationId: row.operation_id,
+    note: row.note ?? "",
+    createdAt: row.created_at ?? "",
   };
 }

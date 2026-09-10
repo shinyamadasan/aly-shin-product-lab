@@ -137,9 +137,12 @@ test("Wave 0B: manual purchase posting, CSV confirm, and Bake confirm call the n
   const confirmBake = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "confirmBake")[0];
   assert.ok(confirmBake);
   const confirmBakeText = confirmBake.getText();
-  assert.match(confirmBakeText, /supabase\.rpc\("confirm_bake_v2"/);
-  assert.doesNotMatch(confirmBakeText, /"confirm_bake"[^_]/);
-  assert.match(confirmBakeText, /product_batches/);
+  // Wave 1: the remote Bake is the complete atomic production event -- confirm_bake_v3, not the
+  // retired raw-consumption-only v2, and no separate product_batches update (the RPC folds it in).
+  assert.match(confirmBakeText, /supabase\.rpc\("confirm_bake_v3"/);
+  assert.doesNotMatch(confirmBakeText, /confirm_bake_v2/);
+  assert.doesNotMatch(confirmBakeText, /supabase\.from\("product_batches"\)/);
+  assert.match(confirmBakeText, /added to finished stock/);
 });
 
 test("deleteSupply and repairSupplyInventoryEffects stay refused remotely, with an accurate message", () => {
@@ -156,6 +159,32 @@ test("Bake hides the negative-stock override and passes a stable operation id wh
   const confirmBakeCall = nodes(bake, (node) => ts.isCallExpression(node) && node.expression.getText() === "confirmBake")[0];
   assert.ok(confirmBakeCall && ts.isCallExpression(confirmBakeCall));
   assert.match((confirmBakeCall as ts.CallExpression).getText(), /bakeOperationId/);
+});
+
+test("Wave 1: finished stock comes from an operator-entered observed count, distinct from the recipe's expected yield", () => {
+  // Expected yield is display-only guidance; the operator fills in the actual usable pieces.
+  assert.match(bake.text, /Expected from recipe/);
+  assert.match(bake.text, /Actual usable pieces produced/);
+  // The observed count must be a valid whole number >= 1 and is required before confirming --
+  // never silently defaulted to the projection.
+  assert.match(bake.text, /const \[actualPiecesText, setActualPiecesText\] = useState\(""\)/);
+  assert.match(bake.text, /isActualPiecesValid = [^;]*Number\.isInteger\(actualPieces\)[^;]*actualPieces >= 1/);
+  assert.match(bake.text, /readyToConfirm = [^;]*isActualPiecesValid/);
+  // It is part of the per-attempt operation key (a changed count is a new Bake, not a rewrite) and
+  // is passed to confirmBake / cleared on success.
+  assert.match(bake.text, /bakeOperationKey = `\$\{selectedBatchId\}:\$\{multiplierText\}:\$\{actualPiecesText\}`/);
+  assert.match(bake.text, /confirmBake\(selectedBatch\.id, selectedBatch\.productId, batchLabel, multiplier, actualPieces,/);
+  assert.match(bake.text, /setActualPiecesText\(""\)/);
+  // The cost disclosure is self-contained -- no pointer to a repo file the operator cannot open.
+  assert.match(bake.text, /Verify ingredient costs before relying on this/);
+  assert.doesNotMatch(bake.text, /Wave 1 plan/);
+});
+
+test("Wave 1: confirm_bake_v3 RPC args carry the operator's observed piece count", () => {
+  const authority = source("src/lib/raw-inventory-authority.ts");
+  assert.match(authority.text, /p_actual_pieces_produced: actualPiecesProduced/);
+  const confirmBake = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "confirmBake")[0];
+  assert.match(confirmBake.getText(), /confirmBakeArgs\(batchId, productId, batchLabel, multiplier, actualPieces, deductions, operationId\)/);
 });
 
 test("Wave 0B fix: purchase operation id rotates only after a successful NEW purchase, stays stable on failure or a metadata edit", async () => {
@@ -208,15 +237,13 @@ test("Wave 0B fix: saveSupply signals rotation only for a successfully posted NE
   assert.doesNotMatch(text, /setMessage\("Purchase details updated\."\);[\s\S]{0,80}return true;/, "the metadata-edit success path must not return true");
 });
 
-test("Wave 0B fix: a real Bake preserves an already-set completed_at and only sets it when null", () => {
+test("Wave 1: the remote Bake no longer touches product_batches from the client -- completed_at is set once inside confirm_bake_v3", () => {
   const confirmBake = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "confirmBake")[0];
-  const ifStatement = nodes(confirmBake, (node) => ts.isIfStatement(node) && node.expression.getText() === "!batch?.completedAt")[0] as ts.IfStatement;
-  assert.ok(ifStatement, "the completedAt guard must exist");
-  // The "then" branch (completedAt was null/empty) is the only place the update RPC is called.
-  assert.match(ifStatement.thenStatement.getText(), /supabase\.from\("product_batches"\)\.update/);
-  // The "else" branch (already completed) must not touch product_batches at all.
-  assert.ok(ifStatement.elseStatement, "an else branch must exist for the already-completed case");
-  assert.doesNotMatch(ifStatement.elseStatement!.getText(), /product_batches/);
+  const remoteBranch = confirmBake.getText().split("const result = applyBakeConfirmation")[0];
+  // No client-side product_batches read or write in the remote path -- the atomic RPC owns the
+  // one-time completed_at write now (verified in the Postgres smoke test).
+  assert.doesNotMatch(remoteBranch, /product_batches/);
+  assert.doesNotMatch(remoteBranch, /completed_at|completedAt/);
 });
 
 test("timeline excludes superseded adjustments and explains the boundary", () => {
