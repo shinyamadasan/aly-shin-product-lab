@@ -40,6 +40,12 @@ const statements = statementsOf(hardening);
 // The seven tables Wave B closed. S1 must not re-policy them.
 const WAVE_B_TABLES = ["creative_jobs", "creative_job_attempts", "creative_packages", "asset_jobs", "asset_job_attempts", "assets", "asset_files"];
 
+// Wave 1 (supabase/migrations/..._selling_wave_1_production_execution.sql) creates these
+// RLS-enabled from the start -- owner SELECT only, no write grant, writes solely through the
+// confirm_bake_v3 definer function. They post-date S1 and are hardened by their own migration,
+// exactly like the Wave B tables above.
+const WAVE_1_TABLES = ["production_executions", "finished_stock_movements"];
+
 // --- the claim is the same one the application reads --------------------------------------------
 
 test("S1 reuses Wave B's claim readers rather than restating the claim path", () => {
@@ -153,7 +159,7 @@ function hardenedTables(): string[] {
 }
 
 test("every table the application and workers touch is either hardened by S1 or owned by Wave B", () => {
-  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES]);
+  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES]);
   const uncovered = [...tablesReferencedInCode()].filter((table) => !covered.has(table)).sort();
   assert.deepEqual(uncovered, [], `these tables are used by the code but hardened by nobody: ${uncovered.join(", ")}`);
 });

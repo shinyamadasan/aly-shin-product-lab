@@ -34,6 +34,7 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { mapFinishedStockMovementRow, mapProductionExecutionRow } from "@/lib/supabase-mappers";
 import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
@@ -341,7 +342,7 @@ export default function ProductLab({
       return;
     }
 
-    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult] = await Promise.all([
+    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult, productionExecutionResult, finishedStockMovementResult] = await Promise.all([
       supabase.from("products").select("*").order("name", { ascending: true }),
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
@@ -361,6 +362,8 @@ export default function ProductLab({
       supabase.from("purchase_import_rows").select("*").order("row_index", { ascending: true }),
       supabase.from("inventory_transactions").select("*").order("created_at", { ascending: false }),
       supabase.from("brand_profiles").select("*").eq("is_active", true).limit(1).maybeSingle(),
+      supabase.from("production_executions").select("*").order("completed_at", { ascending: false }),
+      supabase.from("finished_stock_movements").select("*").order("created_at", { ascending: false }),
     ]);
 
     const supplyMissing = isMissingTableError(supplyResult.error);
@@ -663,6 +666,10 @@ export default function ProductLab({
         actor: row.actor ?? null,
         reconciliationSnapshot: row.reconciliation_snapshot ?? null,
       })),
+      // Wave 1: production_executions / finished_stock_movements ship together in the Wave 1
+      // migration -- one shared missing flag (same rationale as the inventory bundle above).
+      productionExecutions: isMissingTableError(productionExecutionResult.error) ? [] : (productionExecutionResult.data ?? []).map(mapProductionExecutionRow),
+      finishedStockMovements: isMissingTableError(finishedStockMovementResult.error) ? [] : (finishedStockMovementResult.data ?? []).map(mapFinishedStockMovementRow),
     });
   }
 
@@ -2356,39 +2363,33 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  // Wave 0B: remote Bake consumption posts through confirm_bake_v2 -- the database locks every
-  // affected ingredient in one deterministic pass, requires a trusted opening count and
-  // sufficient stock for all of them, and applies every deduction together or none at all. Only
-  // raw ingredients move; this does not create finished stock (see that function's own comment).
-  async function confirmBake(batchId: string, batchLabel: string, multiplier: number, deductions: BakeDeduction[], allowNegative: boolean, operationId: string): Promise<boolean> {
+  // Wave 1: a remote Bake is one atomic production event via confirm_bake_v3 -- raw consumption
+  // (the Wave 0B contract, folded in), one production_executions row, one finished_stock
+  // 'production_receipt', frozen raw production cost, and product_batches.completed_at set once if
+  // still null -- all in a single transaction. actualPieces is the operator's observed usable-piece
+  // count and is the authoritative finished quantity; the recipe/version yield and every cost value
+  // come from the locked database rows, not from this client. confirm_bake_v2 is no longer callable.
+  async function confirmBake(batchId: string, productId: string, batchLabel: string, multiplier: number, actualPieces: number, deductions: BakeDeduction[], allowNegative: boolean, operationId: string): Promise<boolean> {
     if (supabase && session) {
-      const { error } = await supabase.rpc("confirm_bake_v2", confirmBakeArgs(batchId, batchLabel, multiplier, deductions, operationId));
+      const { data, error } = await supabase.rpc("confirm_bake_v3", confirmBakeArgs(batchId, productId, batchLabel, multiplier, actualPieces, deductions, operationId));
       if (error) {
         setMessage(`Bake not confirmed: ${describeIngredientConstraintError(error)}`);
         setMessageTone("bad");
         return false;
       }
-      // product_batches.completed_at is proof/version-lifecycle metadata ("this formula has been
-      // proven at least once"), not a per-production-run timestamp -- the same version is baked
-      // for real production many times over its life without ever needing a new version row.
-      // Setting it only the first time (when still null) preserves the original proof date; a real
-      // Bake never overwrites it on every subsequent run. A future wave's production execution
-      // concept is where individual real Bakes would get their own per-run record --
-      // inventory_transactions already is that record for raw consumption; this wave adds no new
-      // one for batch lifecycle.
-      const batch = labState.batches.find((item) => item.id === batchId);
-      if (!batch?.completedAt) {
-        const { error: batchError } = await supabase.from("product_batches").update({ completed_at: new Date().toISOString() }).eq("id", batchId);
-        setMessage(batchError ? `Bake confirmed, but marking the batch completed failed: ${batchError.message}` : "Bake confirmed. Inventory updated and batch marked completed.");
-        setMessageTone(batchError ? "bad" : "good");
-      } else {
-        setMessage("Bake confirmed. Inventory updated.");
-        setMessageTone("good");
-      }
+      const pieces = Number((data as { quantity_produced_pieces?: number } | null)?.quantity_produced_pieces ?? 0);
+      const productName = labState.products.find((product) => product.id === productId)?.name ?? "finished stock";
+      setMessage(pieces > 0
+        ? `Bake confirmed. ${pieces} ${pieces === 1 ? "piece" : "pieces"} of ${productName} added to finished stock.`
+        : "Bake confirmed. Finished stock updated.");
+      setMessageTone("good");
       await loadSupabaseData();
       return true;
     }
 
+    // Local-only demo path: consumes raw stock in browser state and marks the batch completed, but
+    // creates no production execution or finished stock (it never touches the database), so the
+    // observed actualPieces count has nothing to record here.
     const result = applyBakeConfirmation({ ingredients: labState.ingredients, deductions, batchId, batchLabel, multiplier, allowNegative, today: new Date().toISOString() });
 
     if ("error" in result) {

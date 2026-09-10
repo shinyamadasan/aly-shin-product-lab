@@ -342,6 +342,50 @@ export type InventoryTransaction = {
   reconciliationSnapshot?: { cache_quantity: number; latest_ledger_quantity: number | null; verified_quantity: number; base_unit: string } | null;
 };
 
+// Wave 1: one row per successful real physical Bake. product_batches stays recipe/version truth;
+// this is the physical-run record. quantity and the frozen costs are historical facts -- a later
+// recipe edit never changes them. quantityProducedPieces is the operator's observed usable-piece
+// count; expectedPieces is round(usablePieces x multiplier) frozen at Bake time as reference only.
+export type ProductionExecution = {
+  id: string;
+  productId: string;
+  productBatchId: string;
+  batchVersionSnapshot: string;
+  operationId: string;
+  multiplier: number;
+  quantityProducedPieces: number;
+  expectedPieces: number;
+  frozenIngredientCostTotal: number;
+  frozenCostPerPiece: number;
+  note: string;
+  completedAt: string;
+  createdAt: string;
+};
+
+// Wave 1: 'production_receipt' only. 'reserve' | 'release' | 'fulfill' are Wave 2 and not yet
+// produced by anything.
+export type FinishedStockMovementType = "production_receipt" | "reserve" | "release" | "fulfill";
+
+export type FinishedStockMovement = {
+  id: string;
+  productId: string;
+  productionExecutionId: string | null;
+  movementType: FinishedStockMovementType;
+  onHandDelta: number;
+  reservedDelta: number;
+  operationId: string;
+  note: string;
+  createdAt: string;
+};
+
+export type FinishedStockBalance = {
+  productId: string;
+  productName: string;
+  onHandPieces: number;
+  reservedPieces: number;
+  availablePieces: number;
+};
+
 export type EquipmentCalculationMode = "depreciation" | "replacement-reserve" | "gas-burn-rate";
 
 export type EquipmentEntry = {
