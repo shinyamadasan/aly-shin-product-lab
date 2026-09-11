@@ -195,6 +195,30 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
   const [actionBusy, setActionBusy] = useState(false);
   const actionGuardRef = useRef(createMutationGuard<string>());
 
+  // Wave 2. Stable operation identity for confirm/complete/cancel-with-release -- the three
+  // transitions that now reserve, fulfill, or release physical stock through a DB-owned atomic
+  // RPC (see updateOrderStatus). A ref, not state: this is retry bookkeeping the page never
+  // renders from. Keyed by (orderId, to) rather than orderId alone, matching the same rule
+  // bake-page.tsx's bakeOperationId already follows -- a retry click for the SAME attempted
+  // transition reuses its id so the database treats it as one logical request; a genuinely
+  // different transition (or the SAME transition attempted again after this one already
+  // succeeded, via rotateTransitionOperationId) is a new attempt and gets a fresh one. Ids for
+  // transitions that never reach the RPC (-> ready, new -> cancelled) are simply never read.
+  const transitionOperationIdsRef = useRef(new Map<string, string>());
+
+  function getTransitionOperationId(orderId: string, to: OrderStatus): string {
+    const key = `${orderId}:${to}`;
+    const existing = transitionOperationIdsRef.current.get(key);
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    transitionOperationIdsRef.current.set(key, created);
+    return created;
+  }
+
+  function rotateTransitionOperationId(orderId: string, to: OrderStatus) {
+    transitionOperationIdsRef.current.delete(`${orderId}:${to}`);
+  }
+
   const runOrderAction = useCallback(
     async (orderId: string, action: () => Promise<{ ok: true; order: Order } | { ok: false; message: string }>) => {
       if (actionGuardRef.current.isActive(orderId)) {
@@ -564,7 +588,12 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
         onCancel={(reason) => {
           if (!client || !selectedOrder) return;
           const id = selectedOrder.id;
-          void runOrderAction(id, () => updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString() }));
+          void runOrderAction(id, async () => {
+            const operationId = getTransitionOperationId(id, "cancelled");
+            const result = await updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString(), operationId });
+            if (result.ok) rotateTransitionOperationId(id, "cancelled");
+            return result;
+          });
         }}
         onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
         onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
@@ -583,7 +612,12 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
         onStatusChange={(to) => {
           if (!client || !selectedOrder) return;
           const id = selectedOrder.id;
-          void runOrderAction(id, () => updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString() }));
+          void runOrderAction(id, async () => {
+            const operationId = getTransitionOperationId(id, to);
+            const result = await updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString(), operationId });
+            if (result.ok) rotateTransitionOperationId(id, to);
+            return result;
+          });
         }}
         order={selectedOrder}
       />

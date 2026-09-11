@@ -18,6 +18,11 @@ import { ORDER_STATUSES, type OrderLine, type OrderStatus } from "../src/lib/ord
 const NOW = "2026-08-09T06:00:00.000Z";
 const LATER = "2026-09-01T06:00:00.000Z";
 const ORDER_ID = "order-1";
+// Wave 2's reserve/release/fulfill RPCs stamp updated_at (and completed_at/cancelled_at) from the
+// database's own clock, never a client-supplied `now` -- there is no p_now argument. The stub's
+// rpc mock uses this sentinel in place of that server clock wherever a test needs a concrete,
+// distinguishable value for an RPC-routed transition.
+const STUB_SERVER_NOW = "2026-08-09T12:00:00.000Z";
 
 function orderRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -53,13 +58,16 @@ function line(overrides: Partial<OrderLine> = {}): OrderLine {
 
 type StubClient = OrdersClient & {
   updates: { payload: Record<string, unknown>; predicates: [string, string][] }[];
+  rpcCalls: { name: string; args: Record<string, unknown> }[];
   reads: number;
 };
 
 // `persisted` is what the database currently holds. `updateMatches` false simulates the conditional
-// update matching zero rows -- the order moved between the read and the write.
+// update matching zero rows (plain-update path) or the RPC's own wrong-current-status rejection
+// (Wave 2 RPC path) -- the order moved between the read and the write.
 function createStubClient({ persisted, updateMatches = true, afterConflict, error }: { persisted: Record<string, unknown> | null; updateMatches?: boolean; afterConflict?: Record<string, unknown>; error?: { code?: string; message: string } }): StubClient {
   const updates: { payload: Record<string, unknown>; predicates: [string, string][] }[] = [];
+  const rpcCalls: { name: string; args: Record<string, unknown> }[] = [];
   let reads = 0;
   let current = persisted;
 
@@ -106,8 +114,35 @@ function createStubClient({ persisted, updateMatches = true, afterConflict, erro
         },
       };
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    // Wave 2 stub: a minimal, faithful-enough simulation of the reserve/release/fulfill RPCs --
+    // faithful to THIS file's concerns (persisted-state decisions, conflict/error propagation,
+    // zero-payment-column leakage) rather than to Wave 2's own business rules (FIFO, insufficient
+    // stock, oversell prevention), which are proven separately against real Postgres in
+    // tests/smoke/postgres/selling-wave-2-order-reservation.smoke.test.ts.
+    rpc: (name: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ name, args: args as Record<string, unknown> });
+      if (error) return Promise.resolve({ data: null, error });
+      if (!current) return Promise.resolve({ data: null, error: { code: "22023", message: "Order not found" } });
+      if (!updateMatches) {
+        if (afterConflict) current = afterConflict;
+        return Promise.resolve({ data: null, error: { code: "23514", message: `This ${current?.status ?? "unknown"} order cannot be changed from here.` } });
+      }
+      const next: Record<string, unknown> = { ...current, updated_at: STUB_SERVER_NOW };
+      if (name === "confirm_order_with_reservation") next.status = "confirmed";
+      if (name === "complete_order_with_fulfillment") {
+        next.status = "completed";
+        next.completed_at = STUB_SERVER_NOW;
+      }
+      if (name === "cancel_order_with_release") {
+        next.status = "cancelled";
+        next.cancelled_at = STUB_SERVER_NOW;
+        next.cancel_reason = args.p_cancel_reason ?? null;
+      }
+      current = next;
+      return Promise.resolve({ data: current, error: null });
+    },
     updates,
+    rpcCalls,
     reads,
   };
 
@@ -129,7 +164,7 @@ test("every approved lifecycle transition persists", async () => {
 
   for (const [from, to] of approved) {
     const client = createStubClient({ persisted: orderRow({ status: from }) });
-    const result = await updateOrderStatus(client, { orderId: ORDER_ID, to, now: NOW });
+    const result = await updateOrderStatus(client, { orderId: ORDER_ID, to, now: NOW, operationId: `op-${from}-${to}` });
 
     assert.equal(result.ok, true, `${from} -> ${to} should persist`);
     if (!result.ok) continue;
@@ -145,12 +180,13 @@ test("every prohibited lifecycle transition is rejected without a write", async 
       if (allowed.has(`${from}>${to}`)) continue;
 
       const client = createStubClient({ persisted: orderRow({ status: from }) });
-      const result = await updateOrderStatus(client, { orderId: ORDER_ID, to, now: NOW });
+      const result = await updateOrderStatus(client, { orderId: ORDER_ID, to, now: NOW, operationId: `op-${from}-${to}` });
 
       assert.equal(result.ok, false, `${from} -> ${to} must be rejected`);
       if (result.ok) continue;
       assert.equal(result.reason, "invalid-transition");
       assert.equal(client.updates.length, 0, `${from} -> ${to} must not write`);
+      assert.equal(client.rpcCalls.length, 0, `${from} -> ${to} must not call a reservation RPC`);
     }
   }
 });
@@ -164,44 +200,70 @@ test("terminal orders expose no forward lifecycle action", () => {
 
 test("confirmed -> completed remains valid, without passing through ready", async () => {
   const client = createStubClient({ persisted: orderRow({ status: "confirmed" }) });
-  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "completed", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "completed", now: NOW, operationId: "op-confirmed-completed" });
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.order.status, "completed");
 });
 
-test("completing writes completed_at alongside the status", async () => {
+// Wave 2: completing an order fulfills its reservation through complete_order_with_fulfillment,
+// not a plain client update -- so what is asserted here moved from the update payload to the RPC
+// call and its response. completed_at now comes from the RPC's own (server-clock) response, never
+// from the caller's `now`.
+test("completing calls the fulfillment RPC and returns completed_at alongside the status", async () => {
   const client = createStubClient({ persisted: orderRow({ status: "ready" }) });
-  await updateOrderStatus(client, { orderId: ORDER_ID, to: "completed", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "completed", now: NOW, operationId: "op-complete-1" });
 
-  const payload = client.updates[0].payload;
-  assert.equal(payload.status, "completed");
-  assert.equal(payload.completed_at, NOW);
-  assert.equal(payload.cancelled_at, null);
-  assert.equal(payload.updated_at, NOW);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.order.status, "completed");
+  assert.equal(result.order.completedAt, STUB_SERVER_NOW);
+  assert.equal(result.order.cancelledAt, null);
+  assert.equal(client.updates.length, 0, "no plain table update happens for this transition");
+  assert.deepEqual(client.rpcCalls[0], { name: "complete_order_with_fulfillment", args: { p_operation_id: "op-complete-1", p_order_id: ORDER_ID } });
 });
 
-test("cancelling writes cancelled_at and the reason", async () => {
+// Wave 2: cancelling a RESERVED order (confirmed/ready) releases through
+// cancel_order_with_release. cancelled_at and the reason now come from the RPC's response.
+test("cancelling a reserved order calls the release RPC with the reason and returns cancelled_at", async () => {
   const client = createStubClient({ persisted: orderRow({ status: "confirmed" }) });
-  await updateOrderStatus(client, { orderId: ORDER_ID, to: "cancelled", cancelReason: "customer changed their mind", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "cancelled", cancelReason: "customer changed their mind", now: NOW, operationId: "op-cancel-1" });
 
-  const payload = client.updates[0].payload;
-  assert.equal(payload.status, "cancelled");
-  assert.equal(payload.cancelled_at, NOW);
-  assert.equal(payload.cancel_reason, "customer changed their mind");
-  assert.equal(payload.completed_at, null);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.order.status, "cancelled");
+  assert.equal(result.order.cancelledAt, STUB_SERVER_NOW);
+  assert.equal(result.order.cancelReason, "customer changed their mind");
+  assert.equal(result.order.completedAt, null);
+  assert.deepEqual(client.rpcCalls[0], { name: "cancel_order_with_release", args: { p_operation_id: "op-cancel-1", p_order_id: ORDER_ID, p_cancel_reason: "customer changed their mind" } });
+});
+
+// Wave 2: cancelling a `new` order has nothing reserved to release, so it stays on the plain
+// update path -- unchanged from Wave 1.
+test("cancelling a NEW order (nothing reserved) still uses the plain update, not the release RPC", async () => {
+  const client = createStubClient({ persisted: orderRow({ status: "new" }) });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "cancelled", cancelReason: "duplicate order", now: NOW, operationId: "op-cancel-new" });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.order.status, "cancelled");
+  assert.equal(result.order.cancelledAt, NOW);
+  assert.equal(client.rpcCalls.length, 0, "new -> cancelled must not call the release RPC");
+  assert.equal(client.updates[0].payload.cancelled_at, NOW);
 });
 
 test("a lifecycle update writes ZERO payment columns", async () => {
-  // The single most important property of S3: cancelling a paid order leaves it paid.
+  // The single most important property of S3: cancelling a paid order leaves it paid. Cancelling a
+  // CONFIRMED order now goes through the release RPC, whose only arguments are the operation id,
+  // order id and cancel reason -- there is no payload for a payment column to leak into.
   const client = createStubClient({ persisted: orderRow({ status: "confirmed", payment_status: "paid", paid_at: NOW, paid_amount: 480, payment_method: "gcash" }) });
-  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "cancelled", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "cancelled", now: NOW, operationId: "op-cancel-paid" });
 
   assert.equal(result.ok, true);
-  const payload = client.updates[0].payload;
+  const rpcArgs = client.rpcCalls[0].args;
   for (const paymentColumn of ["payment_status", "payment_method", "paid_at", "paid_amount", "refunded_at"]) {
-    assert.equal(Object.hasOwn(payload, paymentColumn), false, `lifecycle update must not carry ${paymentColumn}`);
+    assert.equal(Object.hasOwn(rpcArgs, paymentColumn), false, `the release RPC call must not carry ${paymentColumn}`);
   }
   if (!result.ok) return;
   assert.equal(result.order.paymentStatus, "paid", "a cancelled order stays paid until a refund is recorded");
@@ -214,17 +276,18 @@ test("the transition is decided from the PERSISTED order, not the caller's stale
   // The UI still shows "new" but the order is already confirmed. new -> confirmed would be valid
   // against the stale copy; against the persisted row it is a no-op and must be rejected.
   const client = createStubClient({ persisted: orderRow({ status: "confirmed" }) });
-  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW, operationId: "op-stale-confirm" });
 
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.reason, "invalid-transition");
   assert.equal(client.updates.length, 0);
+  assert.equal(client.rpcCalls.length, 0);
 });
 
 test("the update is guarded on the expected current status", async () => {
   const client = createStubClient({ persisted: orderRow({ status: "confirmed" }) });
-  await updateOrderStatus(client, { orderId: ORDER_ID, to: "ready", now: NOW });
+  await updateOrderStatus(client, { orderId: ORDER_ID, to: "ready", now: NOW, operationId: "op-ready-1" });
 
   assert.deepEqual(client.updates[0].predicates, [
     ["id", ORDER_ID],
@@ -239,7 +302,7 @@ test("a conditional update matching zero rows reports a conflict and overwrites 
     afterConflict: orderRow({ status: "cancelled", cancelled_at: NOW }),
   });
 
-  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "ready", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "ready", now: NOW, operationId: "op-ready-2" });
 
   assert.equal(result.ok, false);
   if (result.ok) return;
@@ -306,7 +369,7 @@ test("a payment update is guarded on the expected payment_status", async () => {
 
 test("a missing order is reported as not-found, not as a failure", async () => {
   const client = createStubClient({ persisted: null });
-  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW, operationId: "op-missing-1" });
 
   assert.equal(result.ok, false);
   if (result.ok) return;
@@ -315,7 +378,7 @@ test("a missing order is reported as not-found, not as a failure", async () => {
 
 test("a missing table degrades rather than looking like a business failure", async () => {
   const client = createStubClient({ persisted: orderRow(), error: { code: "42P01", message: "relation does not exist" } });
-  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW, operationId: "op-missing-table" });
 
   assert.equal(result.ok, false);
   if (result.ok) return;
@@ -324,7 +387,7 @@ test("a missing table degrades rather than looking like a business failure", asy
 
 test("a failed update leaves the persisted order unchanged", async () => {
   const client = createStubClient({ persisted: orderRow({ status: "confirmed" }), error: { message: "network blip" } });
-  await updateOrderStatus(client, { orderId: ORDER_ID, to: "ready", now: NOW });
+  await updateOrderStatus(client, { orderId: ORDER_ID, to: "ready", now: NOW, operationId: "op-ready-3" });
 
   const after = await getOrderDetail(createStubClient({ persisted: orderRow({ status: "confirmed" }) }), ORDER_ID);
   assert.equal(after.ok, true);
@@ -450,7 +513,7 @@ test("an unpaid order cannot have its payment record corrected", async () => {
 
 test("cancelling a paid order leaves gross revenue unchanged", async () => {
   const client = createStubClient({ persisted: orderRow({ status: "confirmed", payment_status: "paid", paid_at: NOW, paid_amount: 480 }) });
-  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "cancelled", now: LATER });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "cancelled", now: LATER, operationId: "op-cancel-revenue" });
 
   assert.equal(result.ok, true);
   if (!result.ok) return;
@@ -536,18 +599,19 @@ test("the mutation guard collapses a synchronous duplicate lifecycle action", as
 
   const act = () => {
     if (guard.isActive(ORDER_ID)) return Promise.resolve(undefined);
-    return guard.run(ORDER_ID, () => updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW }));
+    return guard.run(ORDER_ID, () => updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW, operationId: "op-guard-double-click" }));
   };
 
   await Promise.all([act(), act()]);
-  assert.equal(client.updates.length, 1, "a double-click must produce exactly one update");
+  // Wave 2: confirming calls the reserve RPC, not a plain table update.
+  assert.equal(client.rpcCalls.length, 1, "a double-click must produce exactly one reservation call");
 });
 
 test("the guard releases after a failed action so a retry is possible", async () => {
   const client = createStubClient({ persisted: orderRow({ status: "new" }), error: { message: "network blip" } });
   const guard = createMutationGuard<string>();
 
-  await guard.run(ORDER_ID, () => updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW }));
+  await guard.run(ORDER_ID, () => updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW, operationId: "op-guard-retry" }));
   assert.equal(guard.isActive(ORDER_ID), false);
 });
 

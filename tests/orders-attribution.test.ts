@@ -30,6 +30,10 @@ const ORDER_ID = "order-1";
 const NOW = "2026-08-10T06:00:00.000Z";
 const V1 = "2026-08-09T06:00:00.000Z";
 const V2 = "2026-08-09T09:00:00.000Z";
+// Wave 2's reserve/release/fulfill RPCs stamp updated_at from the database's own clock
+// (clock_timestamp()), never a client-supplied time. The stub's rpc mock uses this sentinel in
+// place of that server clock so its output is still distinguishable from V1/V2.
+const STUB_SERVER_NOW = "2026-08-09T12:00:00.000Z";
 
 function order(overrides: Partial<Order> = {}): Order {
   return {
@@ -133,7 +137,19 @@ function createStubClient({ persisted }: { persisted: Record<string, unknown> | 
         },
       };
     },
-    rpc: () => Promise.resolve({ data: null, error: null }),
+    // Wave 2 stub: a minimal, faithful-enough simulation of the reserve/release/fulfill RPCs for
+    // this file's one purpose (proving updated_at is a version shared across every write path,
+    // lifecycle transitions included) -- not a re-test of Wave 2's own business rules, which live
+    // in tests/smoke/postgres/selling-wave-2-order-reservation.smoke.test.ts against real Postgres.
+    rpc: (name: string, args: Record<string, unknown>) => {
+      if (!current) return Promise.resolve({ data: null, error: { code: "22023", message: "Order not found" } });
+      const next: Record<string, unknown> = { ...current, updated_at: STUB_SERVER_NOW };
+      if (name === "confirm_order_with_reservation") next.status = "confirmed";
+      if (name === "complete_order_with_fulfillment") { next.status = "completed"; next.completed_at = STUB_SERVER_NOW; }
+      if (name === "cancel_order_with_release") { next.status = "cancelled"; next.cancelled_at = STUB_SERVER_NOW; next.cancel_reason = args.p_cancel_reason ?? null; }
+      current = next;
+      return Promise.resolve({ data: current, error: null });
+    },
     updates,
     persisted: () => current,
   };
@@ -222,9 +238,13 @@ test("a stale attribution edit after a LIFECYCLE mutation advanced the version c
   // form rendered before it. The lifecycle move runs through the real repository function.
   const client = createStubClient({ persisted: orderRow({ status: "new", source: "facebook" }) });
 
-  const confirmed = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: V2 });
+  const confirmed = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: V2, operationId: "op-confirm-1" });
   assert.equal(confirmed.ok, true, "the lifecycle move itself must land");
-  assert.equal(client.persisted()?.updated_at, V2, "and it advances the row version");
+  // Wave 2: confirming now moves through the reserve RPC, whose stub simulation stamps its own
+  // server-clock sentinel rather than echoing the caller's `now` (the real function uses
+  // clock_timestamp(), never a client-supplied time) -- so the assertion is "the version moved",
+  // not "it became V2".
+  assert.notEqual(client.persisted()?.updated_at, V1, "and it advances the row version");
 
   const stale = await updateOrderAttribution(client, { orderId: ORDER_ID, expectedUpdatedAt: V1, source: "instagram", sourceRef: "POST-184", now: NOW });
 
