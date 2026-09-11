@@ -35,7 +35,7 @@ import {
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { mapFinishedStockMovementRow, mapProductionExecutionRow } from "@/lib/supabase-mappers";
-import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, FinishedStockExceptionType, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
@@ -44,7 +44,7 @@ import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
 import {
   confirmBakeArgs, ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
-  rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, updatePostedPurchaseMetadataArgs,
+  rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, recordFinishedStockExceptionArgs, updatePostedPurchaseMetadataArgs,
 } from "@/lib/raw-inventory-authority";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
 import type { OrdersTab } from "@/lib/orders-tabs";
@@ -2416,6 +2416,40 @@ export default function ProductLab({
     return true;
   }
 
+  // Wave 3: record a physical finished-stock exception (damage, giveaway, or a found-fewer count
+  // correction) via record_finished_stock_exception. All three are FIFO-deducted from currently
+  // unreserved stock by the database -- this client never chooses a lot for them, and
+  // quantityDelta is always negative (the database rejects a positive one before writing
+  // anything). There is no local-only demo path: finished stock only exists once a real Bake has
+  // posted through the database, so an exception has nothing to act on without a connected
+  // session.
+  //
+  // POST-REVIEW FIX: a positive ("found more than recorded") correction is deliberately not
+  // offered here -- see recordFinishedStockExceptionArgs' own header for why (cost conservation).
+  async function recordFinishedStockException(productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string): Promise<boolean> {
+    if (!supabase || !session) {
+      setMessage("Finished-stock exceptions require a connected database session.");
+      setMessageTone("bad");
+      return false;
+    }
+
+    const { data, error } = await supabase.rpc("record_finished_stock_exception", recordFinishedStockExceptionArgs(productId, exceptionType, quantityDelta, note, operationId));
+    if (error) {
+      setMessage(`Exception not recorded: ${describeIngredientConstraintError(error)}`);
+      setMessageTone("bad");
+      return false;
+    }
+
+    const productName = labState.products.find((product) => product.id === productId)?.name ?? "this product";
+    const pieces = Math.abs(quantityDelta);
+    const verb = exceptionType === "damage" ? "recorded as damaged" : exceptionType === "giveaway" ? "recorded as given away" : "removed after a count correction";
+    setMessage(`${pieces} ${productName} ${pieces === 1 ? "piece" : "pieces"} ${verb}.`);
+    setMessageTone("good");
+    void data;
+    await loadSupabaseData();
+    return true;
+  }
+
   async function saveEquipment(formData: FormData) {
     const equipmentId = String(formData.get("id") || "");
     const equipment: EquipmentEntry = {
@@ -3107,7 +3141,7 @@ export default function ProductLab({
             />
             </>
           ) : null}
-          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} saveIngredientAlias={saveIngredientAlias} /> : null}
+          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} recordFinishedStockException={recordFinishedStockException} saveIngredientAlias={saveIngredientAlias} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">

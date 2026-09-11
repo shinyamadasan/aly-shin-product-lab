@@ -46,6 +46,13 @@ const WAVE_B_TABLES = ["creative_jobs", "creative_job_attempts", "creative_packa
 // exactly like the Wave B tables above.
 const WAVE_1_TABLES = ["production_executions", "finished_stock_movements"];
 
+// Wave 3 (supabase/migrations/..._selling_wave_3_finished_stock_exceptions_and_cogs.sql) adds
+// public.order_raw_cogs -- a `security_invoker = true` VIEW, not a table. It carries no RLS
+// policies of its own by design: security_invoker means every query against it re-evaluates the
+// CALLER's own RLS on order_stock_allocations (Wave 2) and production_executions (Wave 1), both
+// already owner-SELECT-only, so the view grants no authority beyond what those already enforce.
+const WAVE_3_VIEWS = ["order_raw_cogs"];
+
 // --- the claim is the same one the application reads --------------------------------------------
 
 test("S1 reuses Wave B's claim readers rather than restating the claim path", () => {
@@ -159,7 +166,7 @@ function hardenedTables(): string[] {
 }
 
 test("every table the application and workers touch is either hardened by S1 or owned by Wave B", () => {
-  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES]);
+  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...WAVE_3_VIEWS]);
   const uncovered = [...tablesReferencedInCode()].filter((table) => !covered.has(table)).sort();
   assert.deepEqual(uncovered, [], `these tables are used by the code but hardened by nobody: ${uncovered.join(", ")}`);
 });

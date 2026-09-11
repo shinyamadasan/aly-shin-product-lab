@@ -1,5 +1,5 @@
 import type { BakeDeduction } from "./bake-deduction.ts";
-import type { Ingredient, InventoryTransaction, SupplyEntry } from "./product-lab-types.ts";
+import type { FinishedStockExceptionType, Ingredient, InventoryTransaction, SupplyEntry } from "./product-lab-types.ts";
 
 // Wave 0A's original blanket pause covered every posting path. Wave 0B restores purchase
 // posting, CSV confirm, and Bake consumption through database-authoritative mutations; only
@@ -99,6 +99,31 @@ export function confirmBakeArgs(batchId: string, productId: string, batchLabel: 
     p_multiplier: multiplier,
     p_actual_pieces_produced: actualPiecesProduced,
     p_deductions: deductions.map((deduction) => ({ ingredient_id: deduction.ingredientId, quantity: deduction.quantity })),
+  };
+}
+
+// Wave 3: record_finished_stock_exception is the single narrow writer for damage, giveaway, and
+// correction. All three are always a negative quantityDelta -- the database FIFO-deducts from
+// currently unreserved stock automatically and never lets the operator choose a lot.
+//
+// POST-REVIEW FIX: a positive ("found more than recorded") correction is NOT supported -- it let
+// an operator attribute extra pieces to an existing production execution with no cost basis of
+// its own, which could inflate that execution's fulfilled raw COGS beyond what the Bake actually
+// cost. The database rejects a positive quantityDelta before writing anything; this client never
+// offers the option. p_production_execution_id is always null -- the RPC signature is unchanged
+// from before the fix (kept, not trimmed, since the database still validates it), but no caller
+// in this codebase ever supplies one anymore.
+export function recordFinishedStockExceptionArgs(
+  productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number,
+  note: string, operationId: string,
+) {
+  return {
+    p_operation_id: operationId,
+    p_product_id: productId,
+    p_exception_type: exceptionType,
+    p_quantity_delta: quantityDelta,
+    p_production_execution_id: null,
+    p_note: note || null,
   };
 }
 

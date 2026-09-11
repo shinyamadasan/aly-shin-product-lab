@@ -8,6 +8,7 @@ import type {
   InventoryTransaction,
   InventoryTransactionSourceType,
   InventoryTransactionType,
+  OrderRawCogs,
   Product,
   ProductBatch,
   ProductionExecution,
@@ -416,5 +417,36 @@ export function mapFinishedStockMovementRow(row: FinishedStockMovementRow): Fini
     operationId: row.operation_id,
     note: row.note ?? "",
     createdAt: row.created_at ?? "",
+  };
+}
+
+// Wave 3: public.order_raw_cogs -- one row per order with at least one FULFILLED stock-tracked
+// allocation. Absent entirely for an order with none (new/confirmed/ready, cancelled, or 100%
+// manual lines) -- there is no zero row to map, the caller's lookup simply finds nothing.
+export type OrderRawCogsRow = {
+  order_id: string;
+  fulfilled_pieces: number | string;
+  raw_production_cogs: number | string;
+  lots: Array<{
+    production_execution_id: string;
+    product_id: string;
+    fulfilled_pieces: number | string;
+    frozen_cost_per_piece: number | string;
+    lot_raw_cogs: number | string;
+  }>;
+};
+
+export function mapOrderRawCogsRow(row: OrderRawCogsRow): OrderRawCogs {
+  return {
+    orderId: row.order_id,
+    fulfilledPieces: Number(row.fulfilled_pieces ?? 0),
+    rawProductionCogs: Number(row.raw_production_cogs ?? 0),
+    lots: (row.lots ?? []).map((lot) => ({
+      productionExecutionId: lot.production_execution_id,
+      productId: lot.product_id,
+      fulfilledPieces: Number(lot.fulfilled_pieces ?? 0),
+      frozenCostPerPiece: Number(lot.frozen_cost_per_piece ?? 0),
+      lotRawCogs: Number(lot.lot_raw_cogs ?? 0),
+    })),
   };
 }

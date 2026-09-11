@@ -34,3 +34,11 @@ export function deriveFinishedStockBalances(
 export function sortProductionHistory(executions: ProductionExecution[]): ProductionExecution[] {
   return [...executions].sort((a, b) => b.completedAt.localeCompare(a.completedAt) || b.createdAt.localeCompare(a.createdAt));
 }
+
+// Wave 3: exception history (damage/giveaway/correction), newest-first, for the minimal operator
+// audit view -- section 28's "no charts, no warehouse dashboard" scope.
+export function sortFinishedStockExceptionHistory(movements: FinishedStockMovement[]): FinishedStockMovement[] {
+  return movements
+    .filter((movement) => movement.movementType === "damage" || movement.movementType === "giveaway" || movement.movementType === "correction")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}

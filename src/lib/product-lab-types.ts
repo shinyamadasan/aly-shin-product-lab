@@ -362,9 +362,13 @@ export type ProductionExecution = {
   createdAt: string;
 };
 
-// Wave 1: 'production_receipt' only. 'reserve' | 'release' | 'fulfill' are Wave 2 and not yet
-// produced by anything.
-export type FinishedStockMovementType = "production_receipt" | "reserve" | "release" | "fulfill";
+// Wave 1: 'production_receipt'. Wave 2: 'reserve' | 'release' | 'fulfill'. Wave 3: 'damage' |
+// 'giveaway' | 'correction' -- physical finished-stock exceptions recorded through
+// record_finished_stock_exception, always lot-linked and never touching reserved_delta.
+export type FinishedStockMovementType = "production_receipt" | "reserve" | "release" | "fulfill" | "damage" | "giveaway" | "correction";
+
+// Wave 3: the three exception types an operator can record against physical finished stock.
+export type FinishedStockExceptionType = "damage" | "giveaway" | "correction";
 
 export type FinishedStockMovement = {
   id: string;
@@ -384,6 +388,27 @@ export type FinishedStockBalance = {
   onHandPieces: number;
   reservedPieces: number;
   availablePieces: number;
+};
+
+// Wave 3: one lot's contribution to a fulfilled order's raw-production COGS, from the
+// public.order_raw_cogs view.
+export type OrderRawCogsLot = {
+  productionExecutionId: string;
+  productId: string;
+  fulfilledPieces: number;
+  frozenCostPerPiece: number;
+  lotRawCogs: number;
+};
+
+// Wave 3: derived raw-production (ingredient-only) COGS for a FULFILLED order, from
+// public.order_raw_cogs -- never packaging, labor, utilities, delivery, or payment fees. Absent
+// entirely (no row) for an order with no fulfilled stock-tracked pieces (new/confirmed/ready,
+// cancelled, or 100% manual lines).
+export type OrderRawCogs = {
+  orderId: string;
+  fulfilledPieces: number;
+  rawProductionCogs: number;
+  lots: OrderRawCogsLot[];
 };
 
 export type EquipmentCalculationMode = "depreciation" | "replacement-reserve" | "gas-burn-rate";
