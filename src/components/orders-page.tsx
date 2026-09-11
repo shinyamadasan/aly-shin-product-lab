@@ -31,7 +31,8 @@ import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
 import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type FulfillmentMethod, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
-import { listCustomers, listOrderLines, listOrders, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
+import { listCustomers, listOrderLines, listOrderRawCogs, listOrders, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
+import type { OrderRawCogs } from "@/lib/product-lab-types";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import type { LabState } from "@/lib/lab-state";
 import { supabase } from "@/lib/supabase";
@@ -90,6 +91,9 @@ function sourceLabel(source: OrderSource): string {
 export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChange }: { initialOrdersTab?: OrdersTab; labState: LabState; onDirtyChange: (isDirty: boolean) => void }) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [linesByOrderId, setLinesByOrderId] = useState<Map<string, OrderLine[]>>(new Map());
+  // Wave 3: derived raw-production COGS per order, keyed by order id. Supplementary -- see
+  // listOrderRawCogs' own header for why a failure to read it never blocks the rest of this page.
+  const [rawCogsByOrderId, setRawCogsByOrderId] = useState<Map<string, OrderRawCogs>>(new Map());
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -176,6 +180,14 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
       setCustomers(customerResult.customers);
       setLoadedAtMs(Date.now());
       setIsLoading(false);
+
+      // Supplementary, loaded after the page is already usable and never gating it: a caller that
+      // cannot read order_raw_cogs (RLS, or a pre-Wave-3 database) still gets a fully working
+      // Orders page, just without the COGS figure.
+      const cogsResult = await listOrderRawCogs(client, orderResult.orders.filter((order) => order.status === "completed").map((order) => order.id));
+      if (!cancelled && cogsResult.ok) {
+        setRawCogsByOrderId(cogsResult.cogsByOrderId);
+      }
     }
 
     void loadAll();
@@ -609,6 +621,7 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
         }}
         onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
         onRefund={() => runPaymentAction({ kind: "refund" })}
+        rawCogs={selectedOrder ? rawCogsByOrderId.get(selectedOrder.id) ?? null : null}
         onStatusChange={(to) => {
           if (!client || !selectedOrder) return;
           const id = selectedOrder.id;
@@ -832,6 +845,7 @@ function OrderDetailPanel({
   onEditFulfillment,
   onMarkPaid,
   onRefund,
+  rawCogs,
   onStatusChange,
   order,
 }: {
@@ -847,6 +861,11 @@ function OrderDetailPanel({
   onEditFulfillment: (fulfillment: { expectedUpdatedAt: string; fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
   onMarkPaid: (method: PaymentMethod) => void;
   onRefund: () => void;
+  // Wave 3: derived raw-production COGS for a COMPLETED order, null for every other status (there
+  // is nothing fulfilled to cost yet) and null when it simply has no fulfilled stock-tracked lines
+  // (a 100% manual/hand-priced order). Ingredient cost only -- see its own render below for the
+  // exact wording; never labelled as total cost or profit.
+  rawCogs: OrderRawCogs | null;
   onStatusChange: (to: OrderStatus) => void;
   order: Order | null;
 }) {
@@ -944,6 +963,29 @@ function OrderDetailPanel({
           </div>
         ) : null}
         {order.refundedAt ? <p className="text-xs">Refunded {formatWhen(order.refundedAt)}</p> : null}
+
+        {/* Wave 3. Ingredient cost only -- never packaging, labor, utilities, delivery, or payment
+            fees, and never presented as profit or a full cost figure. Absent (rawCogs null) for
+            anything that isn't a completed order with at least one fulfilled stock-tracked line;
+            no zero placeholder is shown for those, since "not applicable" and "zero cost" are
+            different facts. */}
+        {order.status === "completed" && rawCogs ? (
+          <div className="rounded-md bg-[#f7f2ea] p-3 text-xs text-[#5f4a3d]">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold">Raw production COGS</span>
+              <span className="font-semibold">{formatPeso(rawCogs.rawProductionCogs)}</span>
+            </div>
+            <p className="mt-1">{rawCogs.fulfilledPieces} fulfilled piece{rawCogs.fulfilledPieces === 1 ? "" : "s"} · avg {formatPeso(rawCogs.fulfilledPieces > 0 ? rawCogs.rawProductionCogs / rawCogs.fulfilledPieces : 0)}/piece</p>
+            <p className="mt-1 text-[#8a3827]">Ingredient cost only, frozen at the exact production run(s) that supplied this order -- not packaging, labor, utilities, delivery, or payment fees, and not a profit figure.</p>
+            {rawCogs.lots.length > 1 ? (
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {rawCogs.lots.map((lot) => (
+                  <li key={lot.productionExecutionId}>{lot.fulfilledPieces} pcs @ {formatPeso(lot.frozenCostPerPiece)}/pc = {formatPeso(lot.lotRawCogs)}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
 
         {divergence.state === "diverged" ? (
           // Informational only. A changed order total is NOT evidence that money moved, so there is

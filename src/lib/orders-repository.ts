@@ -13,6 +13,8 @@ import { buildCustomerPayload, buildOrderLinePayload, buildOrderPayload, mapCust
 import { applyOrderTransition, applyPaymentCorrection, applyPaymentReceived, applyPaymentRecordCorrection, applyRefund } from "./orders/transitions.ts";
 import { validateCustomerForSave, validateOrderForSave } from "./orders/validation.ts";
 import type { Customer, CustomerRow, FulfillmentMethod, Order, OrderLine, OrderLineRow, OrderRow, OrderSource, OrderStatus, PaymentMethod } from "./orders/types.ts";
+import { mapOrderRawCogsRow, type OrderRawCogsRow } from "./supabase-mappers.ts";
+import type { OrderRawCogs } from "./product-lab-types.ts";
 
 type SupabaseErrorLike = {
   code?: string;
@@ -99,6 +101,10 @@ export type OrdersClient = {
   from(table: "orders"): OrdersTable;
   from(table: "order_lines"): ReadOnlyTable;
   from(table: "customers"): CustomerTable;
+  // Wave 3: public.order_raw_cogs is a derived, security_invoker VIEW (never a client-written
+  // table) -- read-only for the same reason order_lines is: there is no legitimate direct write,
+  // it only ever changes as a side effect of complete_order_with_fulfillment.
+  from(table: "order_raw_cogs"): ReadOnlyTable;
   rpc(name: "save_order", args: SaveOrderArgs): PromiseLike<{ data: unknown; error: SupabaseErrorLike | null }>;
   rpc(name: "save_public_order_once", args: SavePublicOrderOnceArgs): PromiseLike<{ data: { created: boolean } | null; error: SupabaseErrorLike | null }>;
   // Wave 2: the three reservation-consequential transitions. Each returns the resulting `orders`
@@ -210,6 +216,35 @@ export async function listOrderLines(client: OrdersClient, orderIds: string[]): 
   }
 
   return { ok: true, linesByOrderId };
+}
+
+export type OrderRawCogsResult = { ok: true; cogsByOrderId: Map<string, OrderRawCogs> } | OrdersFailure;
+
+const ORDER_RAW_COGS_COLUMNS = ["order_id", "fulfilled_pieces", "raw_production_cogs", "lots"].join(",");
+
+// Wave 3: derived raw-production COGS for whichever of the given orders have at least one
+// FULFILLED stock-tracked allocation -- an order with none (new/confirmed/ready, cancelled, or
+// 100% manual lines) simply has no entry in the returned map, matching listOrderLines' own
+// "nothing to report" shape. Treated as supplementary, not load-bearing: a caller that cannot
+// read this view (e.g. it predates Wave 3's migration) still gets every order and line; it just
+// shows no COGS figure, exactly like a stale reader of any other new column would.
+export async function listOrderRawCogs(client: OrdersClient, orderIds: string[]): Promise<OrderRawCogsResult> {
+  if (orderIds.length === 0) {
+    return { ok: true, cogsByOrderId: new Map() };
+  }
+
+  const result = await client.from("order_raw_cogs").select<OrderRawCogsRow>(ORDER_RAW_COGS_COLUMNS).in("order_id", orderIds);
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+
+  const cogsByOrderId = new Map<string, OrderRawCogs>();
+  for (const row of result.data ?? []) {
+    const cogs = mapOrderRawCogsRow(row);
+    cogsByOrderId.set(cogs.orderId, cogs);
+  }
+
+  return { ok: true, cogsByOrderId };
 }
 
 export async function listCustomers(client: OrdersClient): Promise<CustomerListResult> {

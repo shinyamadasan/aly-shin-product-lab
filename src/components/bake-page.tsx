@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
+import type { FinishedStockExceptionType } from "@/lib/product-lab-types";
 import { parseBatchIngredients } from "@/lib/batches";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
-import { deriveFinishedStockBalances, sortProductionHistory } from "@/lib/finished-stock";
+import { deriveFinishedStockBalances, sortFinishedStockExceptionHistory, sortProductionHistory } from "@/lib/finished-stock";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { FormPanel, Tag } from "@/components/ui";
 
@@ -15,15 +16,19 @@ export function BakePage({
   confirmBake,
   isInventoryTableMissing,
   labState,
+  recordFinishedStockException,
   saveIngredientAlias,
 }: {
   // True whenever a Supabase session is present -- Wave 0B's database-authoritative confirm_bake_v2
   // never accepts a negative-stock override (unlike the local-only demo checkbox below), so this
-  // hides that override and always sends operationId/false for allowNegative remotely.
+  // hides that override and always sends operationId/false for allowNegative remotely. Wave 3's
+  // exception recording has no local-only path at all (there is no local finished stock to act on),
+  // so it reuses the same flag to hide the form entirely when there is no connected session.
   remotePosting?: boolean;
   confirmBake: (batchId: string, productId: string, batchLabel: string, multiplier: number, actualPieces: number, deductions: BakeDeduction[], allowNegative: boolean, operationId: string) => Promise<boolean>;
   isInventoryTableMissing: boolean;
   labState: LabState;
+  recordFinishedStockException: (productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>;
   saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
 }) {
   const batchesByProduct = labState.products
@@ -295,17 +300,28 @@ export function BakePage({
         </div>
       </div>
 
-      <FinishedStockPanel labState={labState} />
+      <FinishedStockPanel labState={labState} recordFinishedStockException={remotePosting ? recordFinishedStockException : null} />
     </section>
   );
 }
 
 // Wave 1: minimal operator view of finished stock and production history. Pieces only -- no
 // packaging configuration, no warehouse concepts. reserved is always 0 in Wave 1.
-function FinishedStockPanel({ labState }: { labState: LabState }) {
+// Wave 3: adds a small form to record damage/giveaway/correction against a product's currently
+// unreserved stock, and a minimal append-only history of those exceptions. recordFinishedStockException
+// is null when there is no connected session (matches confirmBake's local-only gating) -- the form
+// hides itself entirely rather than offering an action that cannot work.
+function FinishedStockPanel({
+  labState,
+  recordFinishedStockException,
+}: {
+  labState: LabState;
+  recordFinishedStockException: ((productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>) | null;
+}) {
   const balances = deriveFinishedStockBalances(labState.products, labState.finishedStockMovements)
     .filter((balance) => balance.onHandPieces !== 0 || labState.productionExecutions.some((execution) => execution.productId === balance.productId));
   const history = sortProductionHistory(labState.productionExecutions).slice(0, 20);
+  const exceptionHistory = sortFinishedStockExceptionHistory(labState.finishedStockMovements).slice(0, 20);
   const productName = (id: string) => labState.products.find((product) => product.id === id)?.name ?? id;
 
   return (
@@ -374,6 +390,163 @@ function FinishedStockPanel({ labState }: { labState: LabState }) {
           </div>
         </>
       ) : null}
+
+      {recordFinishedStockException ? (
+        <FinishedStockExceptionForm
+          balances={balances}
+          recordFinishedStockException={recordFinishedStockException}
+        />
+      ) : null}
+
+      {exceptionHistory.length > 0 ? (
+        <>
+          <h3 className="mt-6 text-lg font-semibold">Finished-stock exceptions</h3>
+          <p className="mt-1 text-xs text-[#6f5a4c]">Damage and giveaways always come from currently unreserved stock; a customer&apos;s reservation is never touched. A correction reconciles a physical count either direction.</p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                  <th className="pb-2 pr-4">When</th>
+                  <th className="pb-2 pr-4">Product</th>
+                  <th className="pb-2 pr-4">Type</th>
+                  <th className="pb-2 pr-4 text-right">Pieces</th>
+                  <th className="pb-2">Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {exceptionHistory.map((movement) => (
+                  <tr key={movement.id} className="border-t border-[#f0e4d8]">
+                    <td className="py-2 pr-4 text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</td>
+                    <td className="py-2 pr-4 font-semibold">{productName(movement.productId)}</td>
+                    <td className="py-2 pr-4"><Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag></td>
+                    <td className="py-2 pr-4 text-right font-semibold">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta}</td>
+                    <td className="py-2 text-[#6f5a4c]">{movement.note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// Wave 3: the minimal operator form for recording a damage, giveaway, or found-fewer count
+// correction against a product's finished stock. All three always draw from currently unreserved
+// stock only, FIFO oldest-lot-first, decided by the database -- this form never asks the operator
+// to choose a lot.
+//
+// POST-REVIEW FIX: a "found more than recorded" positive correction is NOT offered here. It let
+// an operator attribute extra pieces to an existing production execution with no cost basis of
+// its own, which could inflate that execution's fulfilled raw COGS beyond what the Bake actually
+// cost -- see raw-inventory-authority.ts's recordFinishedStockExceptionArgs for the full
+// reasoning. The database rejects a positive quantity before writing anything regardless; this
+// form simply never lets the operator ask for it.
+function FinishedStockExceptionForm({
+  balances,
+  recordFinishedStockException,
+}: {
+  balances: ReturnType<typeof deriveFinishedStockBalances>;
+  recordFinishedStockException: (productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>;
+}) {
+  const [productId, setProductId] = useState(() => balances[0]?.productId ?? "");
+  const [exceptionType, setExceptionType] = useState<FinishedStockExceptionType>("damage");
+  const [quantityText, setQuantityText] = useState("");
+  const [note, setNote] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+
+  // Derived-during-render reset (React's documented pattern for "adjust state when a prop
+  // changes"), not an effect: if the previously selected product drops out of the balance list
+  // (fully consumed/exceptioned to zero on-hand-and-never-baked-again), fall back to the first
+  // available one rather than leaving a stale selection.
+  if (!balances.some((balance) => balance.productId === productId) && balances.length > 0) {
+    setProductId(balances[0].productId);
+  }
+
+  const quantity = Number(quantityText);
+  const isQuantityValid = quantityText.trim() !== "" && Number.isInteger(quantity) && quantity >= 1;
+  const readyToSubmit = Boolean(productId) && isQuantityValid;
+
+  async function handleSubmit() {
+    if (isSubmittingRef.current || !readyToSubmit) {
+      return;
+    }
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    const succeeded = await recordFinishedStockException(productId, exceptionType, -quantity, note, operationId);
+    if (succeeded) {
+      setQuantityText("");
+      setNote("");
+      setOperationId(crypto.randomUUID());
+    }
+    isSubmittingRef.current = false;
+    setIsSubmitting(false);
+  }
+
+  if (balances.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-6 rounded-md border border-[#eaded2] p-4">
+      <h3 className="text-lg font-semibold">Record a finished-stock exception</h3>
+      <p className="mt-1 text-xs text-[#6f5a4c]">Damage, giveaways, and count corrections only ever remove currently unreserved pieces -- a customer&apos;s active reservation is never touched. A count correction reduces finished stock to reflect pieces the physical count no longer shows; it does not adjust the historical Bake.</p>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label className="grid gap-1 text-sm font-medium">
+          Product
+          <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setProductId(event.target.value)} value={productId}>
+            {balances.map((balance) => (
+              <option key={balance.productId} value={balance.productId}>
+                {balance.productName} (available {balance.availablePieces})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1 text-sm font-medium">
+          Type
+          <select
+            className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+            onChange={(event) => setExceptionType(event.target.value as FinishedStockExceptionType)}
+            value={exceptionType}
+          >
+            <option value="damage">Damage</option>
+            <option value="giveaway">Giveaway / sample</option>
+            <option value="correction">Count correction (found fewer than recorded)</option>
+          </select>
+        </label>
+      </div>
+
+      <label className="mt-3 grid gap-1 text-sm font-medium">
+        Pieces
+        <input
+          className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+          inputMode="numeric"
+          min="1"
+          onChange={(event) => setQuantityText(event.target.value)}
+          step="1"
+          type="number"
+          value={quantityText}
+        />
+        {quantityText.trim() !== "" && !isQuantityValid ? <span className="text-xs font-normal text-[#8a3827]">Enter a whole number of at least 1.</span> : null}
+      </label>
+
+      <label className="mt-3 grid gap-1 text-sm font-medium">
+        Note (optional)
+        <input className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setNote(event.target.value)} type="text" value={note} />
+      </label>
+
+      <button
+        className="mt-4 h-10 w-fit rounded-md bg-[#8a3827] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={!readyToSubmit || isSubmitting}
+        onClick={handleSubmit}
+        type="button"
+      >
+        {isSubmitting ? "Recording..." : "Record exception"}
+      </button>
     </div>
   );
 }
