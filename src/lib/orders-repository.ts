@@ -101,6 +101,12 @@ export type OrdersClient = {
   from(table: "customers"): CustomerTable;
   rpc(name: "save_order", args: SaveOrderArgs): PromiseLike<{ data: unknown; error: SupabaseErrorLike | null }>;
   rpc(name: "save_public_order_once", args: SavePublicOrderOnceArgs): PromiseLike<{ data: { created: boolean } | null; error: SupabaseErrorLike | null }>;
+  // Wave 2: the three reservation-consequential transitions. Each returns the resulting `orders`
+  // row (to_jsonb of the updated row server-side), the same wire shape as OrderRow, or an error --
+  // never both. See src/lib/orders-repository.ts's runReservationRpc for how the error is read.
+  rpc(name: "confirm_order_with_reservation", args: { p_operation_id: string; p_order_id: string }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
+  rpc(name: "cancel_order_with_release", args: { p_operation_id: string; p_order_id: string; p_cancel_reason: string | null }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
+  rpc(name: "complete_order_with_fulfillment", args: { p_operation_id: string; p_order_id: string }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
 };
 
 export type SaveOrderArgs = {
@@ -307,21 +313,88 @@ async function reportConflict(client: OrdersClient, orderId: string, what: strin
   };
 }
 
+// Wave 2. Reads a reserve/release/fulfill RPC's response into the same OrderUpdateResult shape
+// updateOrderStatus already returns for the plain-update path, so orders-page.tsx's call sites
+// need no branching of their own on which path a transition took.
+//
+// The three functions raise with a specific SQLSTATE for every rejection they can produce
+// (inventory_private.claim_mutation and the migration's own functions -- see
+// supabase/migrations/20260910181827_selling_wave_2_order_reservation.sql):
+//   42501 -- not authorized (not signed in / not the owner).
+//   22023 -- bad input, including "order not found".
+//   23514 -- a business rule rejected it: wrong current status for this transition (a stale or
+//            duplicate click, since applyOrderTransition already screened the OBVIOUS illegal
+//            moves before this ever ran), insufficient stock, or an invalid piece snapshot.
+//   55P03 -- another call with the same operation id is still in flight.
+// A wrong-current-status rejection is reported as a conflict (re-reading the real current order,
+// exactly like the plain-update path's zero-rows case) rather than invalid-transition, because by
+// the time the database says this the order has already moved since this caller last read it --
+// the same situation reportConflict exists for, just detected one layer deeper.
+async function runReservationRpc(client: OrdersClient, pending: PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>, orderId: string): Promise<OrderUpdateResult> {
+  const { data, error } = await pending;
+  if (error) {
+    if (error.code === "23514" && /has no active reservation|cannot be confirmed from here/i.test(error.message)) {
+      return reportConflict(client, orderId, "it");
+    }
+    if (error.code === "23514") {
+      return { ok: false, reason: "invalid-transition", message: error.message };
+    }
+    if (error.code === "55P03") {
+      return { ok: false, reason: "failed", message: "This order is still being processed from a moment ago. Wait a moment and try again." };
+    }
+    if (error.code === "22023" && /not found/i.test(error.message)) {
+      return { ok: false, reason: "not-found", message: "That order no longer exists. Refresh and try again." };
+    }
+    return { ok: false, ...dbErrorResult(error) };
+  }
+  if (!data) {
+    return { ok: false, reason: "failed", message: "The server did not confirm this change. Refresh and try again." };
+  }
+
+  return { ok: true, order: mapOrderRow(data) };
+}
+
 // Advance the order's lifecycle. Writes status and its matching timestamp together, and NOTHING to
 // any payment field -- cancelling a paid order leaves it paid until a refund is actually recorded.
-export async function updateOrderStatus(client: OrdersClient, { orderId, to, cancelReason = "", now }: { orderId: string; to: OrderStatus; cancelReason?: string; now: string }): Promise<OrderUpdateResult> {
+//
+// Wave 2: confirming, completing, and cancelling a RESERVED order (confirmed/ready -> cancelled)
+// move physical finished stock, so those three go through a DB-owned atomic contract (reserve,
+// fulfill, or release together with the status write, in one transaction) instead of the plain
+// conditional update below -- see runReservationRpc and the Wave 2 migration. `operationId` is the
+// idempotency identity for those three; it is ignored for the transitions that stay on the plain
+// update path (new -> cancelled has nothing reserved to release; -> ready moves no stock at all).
+export async function updateOrderStatus(
+  client: OrdersClient,
+  { orderId, to, cancelReason = "", now, operationId }: { orderId: string; to: OrderStatus; cancelReason?: string; now: string; operationId: string },
+): Promise<OrderUpdateResult> {
   const before = await getOrderDetail(client, orderId);
   if (!before.ok) {
     return { ok: false, reason: before.reason, message: before.message };
   }
 
   // The transition is decided by the pure domain layer against the PERSISTED order, so the rules
-  // live in exactly one place and a stale UI cannot smuggle an invalid move through.
+  // live in exactly one place and a stale UI cannot smuggle an invalid move through. This still
+  // runs first for the RPC-routed transitions below: it is what turns an obviously illegal move
+  // (e.g. completed -> confirmed) into a same-tick rejection with zero network round trip, exactly
+  // as it always has.
   const transition = applyOrderTransition(before.order, to, now, cancelReason);
   if (!transition.ok) {
     return { ok: false, reason: "invalid-transition", message: transition.message, currentOrder: before.order };
   }
 
+  if (to === "confirmed") {
+    return runReservationRpc(client, client.rpc("confirm_order_with_reservation", { p_operation_id: operationId, p_order_id: orderId }), orderId);
+  }
+  if (to === "completed") {
+    return runReservationRpc(client, client.rpc("complete_order_with_fulfillment", { p_operation_id: operationId, p_order_id: orderId }), orderId);
+  }
+  if (to === "cancelled" && (before.order.status === "confirmed" || before.order.status === "ready")) {
+    return runReservationRpc(client, client.rpc("cancel_order_with_release", { p_operation_id: operationId, p_order_id: orderId, p_cancel_reason: cancelReason || null }), orderId);
+  }
+
+  // No stock effect for this transition (new -> cancelled: nothing was ever reserved; -> ready:
+  // reservation already happened at confirm and does not repeat). The existing plain
+  // optimistic-concurrency update is correct and unchanged from Wave 1.
   const payload: OrderLifecycleUpdate = {
     status: transition.order.status,
     completed_at: transition.order.completedAt,
