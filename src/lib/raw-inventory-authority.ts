@@ -85,6 +85,30 @@ export function updatePostedPurchaseMetadataArgs(supply: SupplyEntry) {
   };
 }
 
+// Cost Baseline Repair: certify_ingredient_cost_baseline is the cost-side mirror of
+// rawAdjustmentArgs above -- same optimistic-concurrency shape, but writes only
+// average_unit_cost + cost_reconciled_at, never current_quantity or inventory_reconciled_at.
+//
+// p_expected_current_cost is taken from expectedCurrentCost, NOT from ingredient.averageUnitCost:
+// the client-side Ingredient type coerces a null DB average_unit_cost to 0 at load time (see
+// product-lab.tsx's ingredient row mapping), which would make a genuinely-zero cost and a
+// never-set cost indistinguishable here -- exactly the kind of silent conflation this whole
+// repair exists to eliminate. Callers must pass the RAW value from a fresh read (null included),
+// not the lossy display type, so a stale/wrong guess can never slip past the database's own
+// optimistic-concurrency check.
+export function certifyIngredientCostBaselineArgs(ingredient: Ingredient, movements: InventoryTransaction[], input: {
+  certifiedUnitCost: number; evidenceNote: string; expectedCurrentCost: number | null;
+}) {
+  return {
+    p_ingredient_id: ingredient.id,
+    p_certified_unit_cost: input.certifiedUnitCost,
+    p_evidence_note: input.evidenceNote,
+    p_expected_current_cost: input.expectedCurrentCost,
+    p_expected_quantity: ingredient.currentQuantity,
+    p_expected_latest_id: latestInventoryMovement(ingredient.id, movements)?.id ?? null,
+  };
+}
+
 // Wave 1: confirm_bake_v3 is the complete atomic production Bake -- raw consumption + one
 // production execution + finished-stock receipt + frozen cost, all in one transaction. The client
 // supplies the intent (which batch, which product, the multiplier, the pre-resolved deduction

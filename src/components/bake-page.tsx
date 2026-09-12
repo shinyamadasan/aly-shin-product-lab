@@ -98,6 +98,17 @@ export function BakePage({
   const fullyResolved = isBakeFormulaFullyResolved(resolved);
   const deductions = isMultiplierValid && fullyResolved ? groupDeductionsByIngredient(resolved, multiplier) : [];
   const insufficient = getInsufficientDeductions(deductions, labState.ingredients);
+  // Cost Baseline Repair: mirrors confirm_bake_v3's own server-side guard so a Bake that will be
+  // rejected for an uncertified cost baseline is caught here first, not after a round-trip. The
+  // database remains authoritative -- this is convenience only, proactively surfacing the same
+  // ingredient names the server would refuse on. A non-null, positive averageUnitCost is not
+  // enough on its own; costReconciledAt is what confirm_bake_v3 actually requires.
+  const uncertifiedCostIngredientNames = Array.from(new Set(
+    deductions
+      .map((deduction) => labState.ingredients.find((item) => item.id === deduction.ingredientId))
+      .filter((ingredient) => ingredient && (!ingredient.costReconciledAt || !ingredient.averageUnitCost || ingredient.averageUnitCost <= 0))
+      .map((ingredient) => ingredient!.name),
+  ));
   // Remote confirms never accept a negative-stock override -- confirm_bake_v2 rejects insufficient
   // stock unconditionally, so allowNegative can only ever help the local-only demo path.
   const canOverrideNegative = !remotePosting;
@@ -108,7 +119,13 @@ export function BakePage({
     : null;
   const actualPieces = Number(actualPiecesText);
   const isActualPiecesValid = actualPiecesText.trim() !== "" && Number.isInteger(actualPieces) && actualPieces >= 1;
-  const readyToConfirm = fullyResolved && isMultiplierValid && isActualPiecesValid && deductions.length > 0 && ((canOverrideNegative && allowNegative) || insufficient.length === 0);
+  // remotePosting mirrors canOverrideNegative's own reasoning: the local-only demo path never
+  // reaches the database guard at all (see confirmBake's local branch, which has no cost concept),
+  // so this precheck is meaningless there and would only block a workflow the server was never
+  // going to reject.
+  const readyToConfirm = fullyResolved && isMultiplierValid && isActualPiecesValid && deductions.length > 0
+    && ((canOverrideNegative && allowNegative) || insufficient.length === 0)
+    && (!remotePosting || uncertifiedCostIngredientNames.length === 0);
 
   function handleAssign(row: ResolvedBakeRow, ingredientId: string) {
     saveIngredientAlias(row.ingredientName, ingredientId, "bake");
@@ -261,6 +278,11 @@ export function BakePage({
           {insufficient.length > 0 && !canOverrideNegative ? (
             <p className="text-sm font-medium text-[#8a3827]">Insufficient stock blocks this Bake -- there is no override for a posted Bake.</p>
           ) : null}
+          {remotePosting && uncertifiedCostIngredientNames.length > 0 ? (
+            <p className="text-sm font-medium text-[#8a3827]">
+              Cannot confirm this Bake. Cost baseline is not certified for: {uncertifiedCostIngredientNames.join(", ")}. Quantity may already be reconciled, but cost still needs a Certify Cost action in Inventory -- Items before this Bake can post. There is no override.
+            </p>
+          ) : null}
           <button
             className="h-10 w-fit rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
             disabled={!readyToConfirm || isConfirming}
@@ -284,8 +306,9 @@ export function BakePage({
             }
             const resultingQuantity = ingredient.currentQuantity - deduction.quantity;
             const isShort = resultingQuantity < 0;
+            const isCostUncertified = remotePosting && (!ingredient.costReconciledAt || !ingredient.averageUnitCost || ingredient.averageUnitCost <= 0);
             return (
-              <div className={`rounded-md border p-3 ${isShort ? "border-[#f3c9c0] bg-[#fde6df]" : "border-[#f0e4d8]"}`} key={deduction.ingredientId}>
+              <div className={`rounded-md border p-3 ${isShort || isCostUncertified ? "border-[#f3c9c0] bg-[#fde6df]" : "border-[#f0e4d8]"}`} key={deduction.ingredientId}>
                 <p className="font-semibold">{ingredient.name}</p>
                 <p className="text-[#6f5a4c]">
                   Current: {ingredient.currentQuantity} {ingredient.baseUnit} -- Needs: {deduction.quantity.toFixed(2)} {ingredient.baseUnit}
@@ -294,6 +317,7 @@ export function BakePage({
                   Resulting: {resultingQuantity.toFixed(2)} {ingredient.baseUnit}
                   {isShort ? " -- insufficient stock" : ""}
                 </p>
+                {isCostUncertified ? <p className="font-semibold text-[#8a3827]">Cost baseline not certified</p> : null}
               </div>
             );
           })}
