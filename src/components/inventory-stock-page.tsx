@@ -53,7 +53,17 @@ export function InventoryStockPage({ goToManageItems, labState }: { goToManageIt
                     <p className="font-semibold">{item.targetStockQuantity} {item.baseUnit}</p>
                     <div>
                       <p className="font-semibold">PHP {value.toFixed(2)}</p>
-                      <p className="text-[#6f5a4c]">{item.averageUnitCost ? `@ PHP ${item.averageUnitCost.toFixed(2)}` : "No cost set"}</p>
+                      {/* Cost Baseline Repair: a non-null, positive averageUnitCost is not evidence
+                          this cost is trustworthy on its own (see certify_ingredient_cost_baseline's
+                          own comment) -- "No cost set" alone would misleadingly imply a merely-
+                          uncertified positive cost, or a genuinely missing one with real purchase
+                          history sitting unused, are both fine. costReconciledAt is the only signal
+                          that distinguishes "certified" from "present but never verified". */}
+                      <p className={item.costReconciledAt ? "text-[#6f5a4c]" : "font-semibold text-[#b3441f]"}>
+                        {item.costReconciledAt
+                          ? `@ PHP ${item.averageUnitCost.toFixed(2)} (certified)`
+                          : "Cost baseline not certified"}
+                      </p>
                     </div>
                   </article>
                 );

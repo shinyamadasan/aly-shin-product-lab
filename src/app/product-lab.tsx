@@ -43,7 +43,7 @@ import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
 import {
-  confirmBakeArgs, ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
+  certifyIngredientCostBaselineArgs, confirmBakeArgs, ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
   rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, recordFinishedStockExceptionArgs, updatePostedPurchaseMetadataArgs,
 } from "@/lib/raw-inventory-authority";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
@@ -599,6 +599,7 @@ export default function ProductLab({
         archivedAt: row.archived_at ?? "",
         baseUnitMigrationFlaggedReason: row.base_unit_migration_flagged_reason ?? null,
         inventoryReconciledAt: row.inventory_reconciled_at ?? null,
+        costReconciledAt: row.cost_reconciled_at ?? null,
       })),
       ingredientAliases: ingredientsMissing ? [] : (ingredientAliasResult.data ?? []).map((row) => ({
         id: row.id,
@@ -1843,6 +1844,54 @@ export default function ProductLab({
     }));
     setMessage("Stock adjustment recorded locally.");
     setMessageTone("good");
+  }
+
+  // Cost Baseline Repair: certifies an ingredient's average_unit_cost against real evidence the
+  // owner has reviewed. Remote-only (owner action, always against the live database) -- there is
+  // no local-demo fallback, matching apply_raw_inventory_adjustment's own remote-only shape for
+  // the same reason: this is a database-authoritative fact, not client display state.
+  //
+  // Fetches average_unit_cost fresh, directly, rather than from labState.ingredients: the client
+  // Ingredient type coerces a null DB value to 0 at load time (see loadSupabaseData's ingredient
+  // mapping), which would make "never certified, cost genuinely unknown" and "certified cost is
+  // exactly zero" indistinguishable to the optimistic-concurrency check below -- exactly the kind
+  // of silent conflation this repair exists to eliminate. A stale read here still fails safely:
+  // the database's own expected-value check rejects it, same as every other RPC in this file.
+  async function certifyIngredientCostBaseline(ingredientId: string, certifiedUnitCost: number, evidenceNote: string): Promise<boolean> {
+    if (!supabase || !session) {
+      setMessage("Certifying a cost baseline requires a live connection.");
+      setMessageTone("bad");
+      return false;
+    }
+    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    if (!ingredient) {
+      setMessage("Item not found.");
+      setMessageTone("bad");
+      return false;
+    }
+
+    const { data: freshRow, error: fetchError } = await supabase
+      .from("ingredients").select("average_unit_cost").eq("id", ingredientId).single();
+    if (fetchError || !freshRow) {
+      setMessage("Could not read the current cost before certifying. Reload and try again.");
+      setMessageTone("bad");
+      return false;
+    }
+    const expectedCurrentCost = (freshRow as { average_unit_cost: number | null }).average_unit_cost;
+
+    const { error } = await supabase.rpc("certify_ingredient_cost_baseline", certifyIngredientCostBaselineArgs(
+      ingredient, labState.inventoryTransactions, { certifiedUnitCost, evidenceNote, expectedCurrentCost },
+    ));
+    if (error) {
+      setMessage(`Cost baseline not certified: ${describeIngredientConstraintError(error)}`);
+      setMessageTone("bad");
+      return false;
+    }
+
+    setMessage(`Cost baseline certified for ${ingredient.name}.`);
+    setMessageTone("good");
+    await loadSupabaseData();
+    return true;
   }
 
   // Reverses an adjustment by submitting another one (see reverseStockAdjustment's own comment) --
@@ -3111,6 +3160,7 @@ export default function ProductLab({
               deleteAndRepairPaused={Boolean(supabase && session)}
               adjustStock={adjustStock}
               cancelEditIngredient={cancelIngredientEdit}
+              certifyIngredientCostBaseline={certifyIngredientCostBaseline}
               cancelEditSupply={cancelSupplyEdit}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
@@ -5568,6 +5618,7 @@ function InventoryWorkspace({
   initialTab,
   adjustStock,
   cancelEditIngredient,
+  certifyIngredientCostBaseline,
   deleteIngredient,
   editIngredient,
   hardDeleteIngredient,
@@ -5599,6 +5650,7 @@ function InventoryWorkspace({
   initialTab?: InventoryTab;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEditIngredient: () => void;
+  certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
   hardDeleteIngredient: (ingredientId: string) => void;
@@ -5806,7 +5858,7 @@ function InventoryWorkspace({
       {tab === "history" ? <InventoryTimeline labState={labState} reverseInventoryAdjustment={reverseInventoryAdjustment} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
+        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} certifyIngredientCostBaseline={certifyIngredientCostBaseline} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
       ) : null}
     </div>
   );

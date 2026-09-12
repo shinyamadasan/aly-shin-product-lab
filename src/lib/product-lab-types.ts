@@ -237,6 +237,11 @@ export type Ingredient = {
   // this field itself.
   baseUnitMigrationFlaggedReason?: string | null;
   inventoryReconciledAt?: string | null;
+  // Cost Baseline Repair: set only by inventory_private.certify_ingredient_cost_baseline. A
+  // non-null, positive averageUnitCost is NOT evidence this ingredient's cost is trustworthy on
+  // its own -- see that migration's own comment. Null means the cost has not been owner-certified
+  // against real purchase evidence, regardless of what averageUnitCost currently shows.
+  costReconciledAt?: string | null;
 };
 
 // "suggested" is a strong partial-name match -- unlike every other method here, it never resolves
