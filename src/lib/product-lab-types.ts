@@ -344,7 +344,15 @@ export type InventoryTransaction = {
   // both undefined.
   reason?: StockAdjustmentReason;
   actor?: string | null;
-  reconciliationSnapshot?: { cache_quantity: number; latest_ledger_quantity: number | null; verified_quantity: number; base_unit: string } | null;
+  reconciliationSnapshot?: {
+    cache_quantity: number;
+    latest_ledger_quantity: number | null;
+    latest_ledger_id: string | null;
+    base_unit: string;
+    average_unit_cost: number | null;
+    previous_reconciled_at: string | null;
+    verified_quantity: number;
+  } | null;
 };
 
 // Wave 1: one row per successful real physical Bake. product_batches stays recipe/version truth;

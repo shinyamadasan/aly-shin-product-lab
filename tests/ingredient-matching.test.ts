@@ -100,9 +100,10 @@ test("findExactMatch and findNormalizedMatch ignore inactive ingredients", () =>
 
 test("resolveIngredientReference prefers a saved alias over an exact name match", () => {
   const milk = ingredient({ id: "exact-match-id", name: "Alaska Fresh Milk" });
+  const aliasTarget = ingredient({ id: "alias-match-id", name: "Fresh Milk" });
   const savedAlias = alias({ rawText: "Alaska Fresh Milk", ingredientId: "alias-match-id" });
 
-  const result = resolveIngredientReference("Alaska Fresh Milk", [milk], [savedAlias]);
+  const result = resolveIngredientReference("Alaska Fresh Milk", [milk, aliasTarget], [savedAlias]);
 
   assert.equal(result.ingredientId, "alias-match-id");
   assert.equal(result.method, "alias");

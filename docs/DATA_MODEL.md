@@ -231,6 +231,15 @@ type InventoryTransaction = {
   quantityChange: number; quantityBefore: number; quantityAfter: number;
   sourceType: InventoryTransactionSourceType; sourceId: string; note: string; createdAt: string;
   reason?: StockAdjustmentReason; actor?: string | null;
+  reconciliationSnapshot?: {
+    cache_quantity: number;
+    latest_ledger_quantity: number | null;
+    latest_ledger_id: string | null;
+    base_unit: string;
+    average_unit_cost: number | null;
+    previous_reconciled_at: string | null;
+    verified_quantity: number;
+  } | null;
 };
 ```
 

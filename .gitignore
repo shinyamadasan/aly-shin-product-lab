@@ -75,6 +75,10 @@ daily-advisor-session.log
 # Advisor output/ convention above.
 /marketing-advisor/output/
 
+# Claude Inventory Operator V1A -- transient preview/apply artifacts bind local approval state.
+# Product Lab's ledger and mutation receipts remain authoritative; these files are never committed.
+/.inventory-operator/
+
 # Production MVP machine executors (Wave B) -- generated experiment/acceptance output. Same reasoning
 # as the four generated-output directories above: these are large local evidence trees (PNGs, raw
 # provider responses, review HTML) produced by the spike/acceptance harness for owner review, not
