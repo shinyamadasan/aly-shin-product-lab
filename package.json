@@ -21,6 +21,7 @@
     "creative-ai:worker": "node scripts/creative-workers/background-worker.ts",
     "marketing-advisor": "node scripts/marketing-advisor/run.ts",
     "postgres:smoke": "node --test tests/smoke/postgres/*.test.ts",
+    "inventory-operator": "node scripts/inventory-operator/run.ts",
     "remotion:render": "node scripts/remotion/render-warm-open.ts",
     "remotion:worker": "node scripts/asset-workers/remotion-worker.ts"
   },

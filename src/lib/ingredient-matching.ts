@@ -4,6 +4,20 @@ import { findReliableBrandForItem } from "./purchase-history.ts";
 
 export type IngredientMatch = { ingredientId: string | null; method: MatchMethod };
 
+export type IngredientMatchCandidate = {
+  ingredientId: string;
+  ingredientName: string;
+  isActive: boolean;
+  reason: "alias" | "exact" | "normalized" | "strong_partial" | "shared_token";
+};
+
+export type DetailedIngredientMatch = {
+  status: "matched" | "suggestion" | "ambiguous" | "unmatched" | "inactive_alias";
+  ingredientId: string | null;
+  method: MatchMethod;
+  candidates: IngredientMatchCandidate[];
+};
+
 function normalizeRawText(value: string) {
   return value.trim().toLowerCase();
 }
@@ -13,7 +27,8 @@ export function findAliasMatch(rawText: string, aliases: IngredientAlias[]): str
   if (!target) {
     return null;
   }
-  return aliases.find((alias) => normalizeRawText(alias.rawText) === target)?.ingredientId ?? null;
+  const targetIds = [...new Set(aliases.filter((alias) => normalizeRawText(alias.rawText) === target).map((alias) => alias.ingredientId))];
+  return targetIds.length === 1 ? targetIds[0] : null;
 }
 
 export function findExactMatch(rawText: string, ingredients: Ingredient[]): string | null {
@@ -21,7 +36,8 @@ export function findExactMatch(rawText: string, ingredients: Ingredient[]): stri
   if (!target) {
     return null;
   }
-  return ingredients.find((ingredient) => ingredient.isActive && normalizeRawText(ingredient.name) === target)?.id ?? null;
+  const matches = ingredients.filter((ingredient) => ingredient.isActive && normalizeRawText(ingredient.name) === target);
+  return matches.length === 1 ? matches[0].id : null;
 }
 
 export function findNormalizedMatch(rawText: string, ingredients: Ingredient[]): string | null {
@@ -29,7 +45,8 @@ export function findNormalizedMatch(rawText: string, ingredients: Ingredient[]):
   if (!target) {
     return null;
   }
-  return ingredients.find((ingredient) => ingredient.isActive && normalizeIngredientName(ingredient.name) === target)?.id ?? null;
+  const matches = ingredients.filter((ingredient) => ingredient.isActive && normalizeIngredientName(ingredient.name) === target);
+  return matches.length === 1 ? matches[0].id : null;
 }
 
 function isSubset(smaller: Set<string>, larger: Set<string>) {
@@ -219,28 +236,77 @@ export function suggestBrandFromKnownBrands(rawText: string, supplies: SupplyEnt
 // different on purpose: it pre-fills the picker but the caller must still land the row on
 // "pending", never "matched", so an unresolved row always requires the operator to confirm it --
 // never a guess applied above some confidence threshold.
+export function resolveIngredientReferenceDetailed(
+  rawText: string,
+  ingredients: Ingredient[],
+  aliases: IngredientAlias[],
+  supplies: SupplyEntry[] = [],
+): DetailedIngredientMatch {
+  const rawTarget = normalizeRawText(rawText);
+  const aliasMatches = aliases.filter((alias) => normalizeRawText(alias.rawText) === rawTarget);
+  if (aliasMatches.length > 0) {
+    const aliasTargetIds = [...new Set(aliasMatches.map((alias) => alias.ingredientId))];
+    const candidates = aliasTargetIds.flatMap((id) => {
+      const ingredient = ingredients.find((item) => item.id === id);
+      return ingredient ? [{ ingredientId: ingredient.id, ingredientName: ingredient.name, isActive: ingredient.isActive, reason: "alias" as const }] : [];
+    });
+    if (aliasTargetIds.length === 1 && candidates.length === 1 && candidates[0].isActive) {
+      return { status: "matched", ingredientId: candidates[0].ingredientId, method: "alias", candidates };
+    }
+    if (candidates.length > 0 && candidates.every((candidate) => !candidate.isActive)) {
+      return { status: "inactive_alias", ingredientId: null, method: "none", candidates };
+    }
+    return { status: "ambiguous", ingredientId: null, method: "none", candidates };
+  }
+
+  const exactCandidates = ingredients.filter((ingredient) => ingredient.isActive && normalizeRawText(ingredient.name) === rawTarget);
+  if (exactCandidates.length === 1) {
+    const candidate = exactCandidates[0];
+    return { status: "matched", ingredientId: candidate.id, method: "exact", candidates: [{ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "exact" }] };
+  }
+  if (exactCandidates.length > 1) {
+    return { status: "ambiguous", ingredientId: null, method: "none", candidates: exactCandidates.map((candidate) => ({ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "exact" })) };
+  }
+
+  const normalizedTarget = normalizeIngredientName(rawText);
+  const normalizedCandidates = ingredients.filter((ingredient) => ingredient.isActive && normalizeIngredientName(ingredient.name) === normalizedTarget);
+  if (normalizedTarget && normalizedCandidates.length === 1) {
+    const candidate = normalizedCandidates[0];
+    return { status: "matched", ingredientId: candidate.id, method: "normalized", candidates: [{ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "normalized" }] };
+  }
+  if (normalizedCandidates.length > 1) {
+    return { status: "ambiguous", ingredientId: null, method: "none", candidates: normalizedCandidates.map((candidate) => ({ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "normalized" })) };
+  }
+
+  const partialTrace = traceFindPartialMatch(rawText, ingredients, supplies);
+  const strongCandidates = partialTrace.passingCandidateIds.map((id) => ingredients.find((ingredient) => ingredient.id === id)!).filter(Boolean);
+  if (strongCandidates.length === 1) {
+    const candidate = strongCandidates[0];
+    return { status: "suggestion", ingredientId: candidate.id, method: "suggested", candidates: [{ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "strong_partial" }] };
+  }
+  if (strongCandidates.length > 1) {
+    return { status: "ambiguous", ingredientId: null, method: "none", candidates: strongCandidates.map((candidate) => ({ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "strong_partial" })) };
+  }
+
+  // A shared single token is useful clarification context but is never strong enough to match.
+  // This is what makes a bare "Biscoff" visibly ambiguous between Spread and Biscuit without
+  // silently upgrading weak word overlap into an automatic match.
+  const targetWords = new Set(normalizedTarget.split(" ").filter(Boolean));
+  const weakCandidates = ingredients.filter((ingredient) => ingredient.isActive && normalizeIngredientName(ingredient.name).split(" ").some((word) => targetWords.has(word)));
+  if (weakCandidates.length > 1) {
+    return { status: "ambiguous", ingredientId: null, method: "none", candidates: weakCandidates.map((candidate) => ({ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "shared_token" })) };
+  }
+  return {
+    status: "unmatched",
+    ingredientId: null,
+    method: "none",
+    candidates: weakCandidates.map((candidate) => ({ ingredientId: candidate.id, ingredientName: candidate.name, isActive: true, reason: "shared_token" })),
+  };
+}
+
 export function resolveIngredientReference(rawText: string, ingredients: Ingredient[], aliases: IngredientAlias[], supplies: SupplyEntry[] = []): IngredientMatch {
-  const aliasMatch = findAliasMatch(rawText, aliases);
-  if (aliasMatch) {
-    return { ingredientId: aliasMatch, method: "alias" };
-  }
-
-  const exactMatch = findExactMatch(rawText, ingredients);
-  if (exactMatch) {
-    return { ingredientId: exactMatch, method: "exact" };
-  }
-
-  const normalizedMatch = findNormalizedMatch(rawText, ingredients);
-  if (normalizedMatch) {
-    return { ingredientId: normalizedMatch, method: "normalized" };
-  }
-
-  const partialMatch = findPartialMatch(rawText, ingredients, supplies);
-  if (partialMatch) {
-    return { ingredientId: partialMatch, method: "suggested" };
-  }
-
-  return { ingredientId: null, method: "none" };
+  const detailed = resolveIngredientReferenceDetailed(rawText, ingredients, aliases, supplies);
+  return { ingredientId: detailed.ingredientId, method: detailed.method };
 }
 
 // Pure payload builder -- an alias is "raw text -> ingredient id" regardless of whether the raw

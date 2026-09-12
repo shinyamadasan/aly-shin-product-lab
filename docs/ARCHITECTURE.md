@@ -617,14 +617,35 @@ ready/no-op/benign-skip, `1` any condition meaning the selected Opportunity cann
 without an operator (failed job, suspected-stale job, unhealthy `started_at`, or a genuine operation
 error), `2` missing credentials, `3` lock held elsewhere.
 
-## Raw inventory authority — Selling Wave 0A
+## Raw inventory authority — Selling Waves 0A–3 and Cost Baseline Repair
 
-The approved Wave 0A scope supersedes the earlier browser-authoritative inventory mutation
-contract in this document. Ingredient metadata no longer writes quantity or weighted-average
-cost. The database alone calculates and records supported raw adjustments and verified-count
-boundaries, retaining old discrepancies. Purchase/Bake/repair posting is explicitly blocked
-until Wave 0B; old absolute-balance RPC grants are revoked. Existing owner RLS is preserved.
-See [Wave 0A implementation and evidence](../planning/SELLING_WAVE_0A.md).
+The shipped database authority supersedes the earlier browser-authoritative inventory mutation
+contract in this document. Ingredient metadata cannot write quantity or weighted-average cost.
+Wave 0B is complete: owner-only, mutation-receipted purchase and Bake posting are restored through
+narrow database functions; Wave 1–3 add production execution, finished-stock reservation/order
+flows, exceptions, and raw COGS. Cost Baseline Repair adds independent `cost_reconciled_at`
+certification and makes a positive physical count clear that certification while shrinkage and
+exact recounts preserve it. Repair still proceeds forward through verified counts rather than by
+rewriting history. See the `SELLING_WAVE_*` planning records and
+`supabase/migrations/20260912090000_cost_baseline_repair.sql`.
+
+## Claude Inventory Operator V1A
+
+The project-scoped Claude Code skill at `.claude/skills/product-lab-inventory/SKILL.md` turns a
+user-supplied physical-count source into structured intent only. `scripts/inventory-operator/run.ts`
+owns the deterministic command surface and `scripts/inventory-operator/core.ts` owns pure matching,
+normalization, preview hashing, and approval binding. Transient ignored preview artifacts are not
+authoritative records.
+
+The short approval code binds an exact preview but does not prove human consent; the project skill
+must wait for a new owner message containing the code. `public.apply_inventory_physical_count_batch`
+is the one new backend capability. It is an
+authenticated invoker wrapper over a private, owner-checking batch function. The private function
+claims `mutation_receipts`, orders rows by ingredient UUID, and delegates each count to the existing
+`inventory_private.apply_raw_inventory_adjustment`; it does not reproduce count semantics. A single
+exception rolls back the receipt and every row. The operator then reads each ingredient and ledger
+transaction back before it can report verified success. Full usage, authentication, failure, and
+duplicate contracts are in [Claude Inventory Operator V1A](INVENTORY_OPERATOR.md).
 
 ## Template Reel Authoring (Wave D1)
 
