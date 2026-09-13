@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "ask": [
+      "mcp__product_lab__inventory_count_apply"
+    ]
+  }
+}

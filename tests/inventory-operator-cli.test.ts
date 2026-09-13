@@ -220,13 +220,13 @@ test("inventory operator CLI boundary", async (t) => {
     }
   });
 
-  await t.test("missing preview artifact fails before authentication or mutation", async () => {
+  await t.test("missing preview artifact fails after apply-time authentication and before mutation", async () => {
     const beforeAuth = authRequests;
     const beforeRpc = rpcRequests;
     const result = await runCli(["inventory:count-apply", "--preview-id", "pc_00000000000000000000", "--approval-code", "0000-0000"], url);
     assert.equal(result.code, 1);
     assert.match(result.stderr, /ENOENT/);
-    assert.equal(authRequests, beforeAuth);
+    assert.equal(authRequests, beforeAuth + 1);
     assert.equal(rpcRequests, beforeRpc);
   });
 

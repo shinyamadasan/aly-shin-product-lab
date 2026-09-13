@@ -7,7 +7,10 @@ export type ProductLabErrorCode =
   | "authentication_failed"
   | "authorization_failed"
   | "read_failed"
-  | "state_error";
+  | "state_error"
+  | "preview_error"
+  | "apply_failed"
+  | "verification_failed";
 
 export class ProductLabError extends Error {
   readonly code: ProductLabErrorCode;

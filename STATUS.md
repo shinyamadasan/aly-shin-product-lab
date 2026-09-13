@@ -10,17 +10,49 @@ below and `REVIEW.md`. PROP-027 (External Creative Workspace as the first real A
 is **implemented and fully verified on `feat/prop-027`** (commits `5354ddd`..`f5d4976`,
 2026-08-05) but **not yet merged to `main`** — see "Last shipped" below,
 `MARKETING_MODULE.md`'s implementation record, and `planning/PROPOSALS.md`'s PROP-027 entry.
-**Active task:** Product Lab MCP Slice 1 is approved after targeted re-review on
-`feat/product-lab-mcp-slice-1` and authorized to proceed through commit and PR. Merge still requires
-normal checks and explicit human authorization. No merge, deployment, or production access has
-been performed. PROP-028 remains **not started** and is not authorized by this work.
+**Active task:** Product Lab MCP Slice 2 reviewer fixes are implemented locally on
+`feat/product-lab-mcp-slice-2-inventory-count`, pending targeted re-review. The shared MCP still
+implements the existing V1A physical-count preview/apply/verify workflow. Claude retains guarded
+Apply. After the owner trusted the repository, real installed Codex 0.147.0 acceptance proved that
+its human reviewer and per-tool prompt prevent Apply until separate owner and tool approvals.
+No migration, production operation, commit, push, PR, merge, or deployment has been performed.
+PROP-028 remains **not started** and is not authorized by this work.
 **Owner:** —
-**Blockers:** no P0/P1 blocker remains for Slice 1. Normal PR checks and human merge authorization
-remain; a controlled real-data read remains an owner step for rollout. PROP-027's separate
-Storage-bucket and physical-phone checks also remain under "Needs human verification" below.
+**Blockers:** targeted re-review and human merge authorization remain. PostgreSQL smoke could not
+run because no local PostgreSQL or running Docker engine is available. The current registry audit
+reports six dependency advisories (five high, one critical); dependency upgrades are outside this
+strict Findings 1–3 repair. PROP-027's separate Storage-bucket and
+physical-phone checks also remain under "Needs human verification" below.
 
 ## Last shipped
 
+- **2026-09-13 — Product Lab MCP Slice 2 reviewer fixes implemented locally, not committed:**
+  verification now reports `cost_reconciled_at` from authoritative ingredient read-back and a
+  regression proves a tampered local apply artifact cannot falsify it. Unit/static test names now
+  claim only approval-code/payload and configuration-declaration coverage. Installed Codex 0.147.0
+  inspection found no managed requirements. After the owner trusted the repository, a real
+  loopback acceptance showed Preview, a new exact-code owner message, a human Apply tool prompt,
+  zero execution before tool approval, exactly one reconciliation event after approval, and a
+  successful authoritative Verify. Codex Apply is enabled with a human `user` reviewer and per-tool
+  `prompt`; Claude Apply remains under `permissions.ask`.
+  The MCP server surface, V1A rules, RPC, schema, transactionality, and database are unchanged.
+  Validation: focused MCP/Slice 1/V1A tests 40/40; full suite 3657/3658 with zero failures and one
+  pre-existing skip; typecheck, changed-file lint, 22-page production build, and `git diff --check`
+  passed. The current `npm audit` reports six dependency advisories (five high, one critical);
+  dependency changes are outside the reviewer's strict Findings 1–3 scope. Ready for targeted
+  re-review.
+- **2026-09-13 — Product Lab MCP Slice 2 implemented locally, not committed:** the shared MCP now
+  exposes V1A's batch-native `inventory_count_preview`, `inventory_count_apply`, and
+  `inventory_count_verify` beside the two Slice 1 read tools. CLI and MCP use one extracted
+  application service; matching, normalization, hashing, approval binding, the existing atomic
+  RPC, mutation receipts, stale guards, cost-certification rules, and read-back verification remain
+  authoritative. Apply accepts only preview ID plus approval code, revalidates owner auth, and has
+  a Claude `ask` client rule; the reviewer fix adds Codex's human reviewer. Focused tests passed 40/40; full suite
+  passed 3657/3658 with one pre-existing skip; typecheck, changed-file lint, 22-page production
+  build, zero-vulnerability npm audit, and `git diff --check` passed. PostgreSQL smoke was
+  unavailable because Docker Desktop's engine is stopped and `psql` is absent. No database change,
+  production read/write, commit, push, PR, merge, or deployment occurred. Ready for independent
+  review.
 - **2026-09-13 — Product Lab MCP Slice 1 targeted re-review approved:** all four requested findings
   are resolved and no P0/P1 blocker remains. Two accepted P2 notes remain: the legacy CLI list does
   not expose MCP truncation metadata, and MCP intentionally omits the CLI's optional global
@@ -125,10 +157,9 @@ Storage-bucket and physical-phone checks also remain under "Needs human verifica
 
 ## Needs human verification
 
-- **Product Lab MCP Slice 1:** review normal PR checks and explicitly authorize merge. For the first
-  controlled real-data read, set the three documented Product Lab environment variables in the
-  launching shell, trust/approve the project MCP configuration in each client, confirm tool
-  discovery, and compare one ingredient result. Do not perform any write as part of this check.
+- **Product Lab MCP Slice 2:** perform targeted re-review of the Codex human-review configuration,
+  real installed-client acceptance evidence, authoritative `cost_reconciled_at` read-back, and
+  corrected test claims. Do not perform a live physical count or production write during review.
 - **Confirm the `generated-assets` Storage bucket via the Supabase dashboard directly** (or a
   service-role check) — agent tooling could not conclusively confirm it either way through
   authenticated-role API access on 2026-08-05 (see above). PROP-027's own frozen spec named this a
