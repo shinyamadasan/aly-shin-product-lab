@@ -1,0 +1,7 @@
+[mcp_servers.product_lab]
+command = "node"
+args = ["scripts/product-lab-mcp/server.ts"]
+cwd = "."
+env_vars = ["PRODUCT_LAB_SUPABASE_URL", "PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY", "PRODUCT_LAB_OWNER_ACCESS_TOKEN"]
+enabled_tools = ["inventory_list", "ingredient_inspect"]
+default_tools_approval_mode = "auto"
