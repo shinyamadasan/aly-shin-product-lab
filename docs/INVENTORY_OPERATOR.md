@@ -9,7 +9,11 @@ source file/table -> Claude structures intent -> deterministic preview -> exact 
 -> owner-only atomic batch RPC -> apply_raw_inventory_adjustment -> read-back verification
 ```
 
-Claude may interpret source text and ask clarifying questions. It cannot create ingredients or aliases, change the normalized plan after approval, or submit arbitrary SQL/RPC calls through the operator. Ambiguous or suggested matches block automatic progression; Claude must not proceed unless the owner explicitly resolves the match through the controlled workflow. The CLI validates the final resolved match but cannot prove who supplied `match_name`. The database remains the inventory authority.
+Claude may interpret source text and ask clarifying questions. It cannot create ingredients or aliases, change the normalized plan after approval, or submit arbitrary SQL/RPC calls through the operator. Ambiguous or suggested matches block automatic progression; Claude must not proceed unless the owner explicitly resolves the match through the controlled workflow. The shared V1A service validates the final resolved match but cannot prove who supplied `match_name`. The database remains the inventory authority.
+
+`scripts/product-lab/inventory-count-service.ts` is the shared application entry point for preview,
+apply, and verify. The Inventory Operator CLI is a developer/debug shell over that service; Product
+Lab MCP exposes the same service to Codex and Claude. Neither client owns an inventory workflow.
 
 The batch RPC sorts ingredient UUIDs before locking and delegates every row to `inventory_private.apply_raw_inventory_adjustment`. That existing authority owns stale quantity/latest-movement/base-unit checks, ledger and reconciliation snapshots, nonnegative balances, owner authorization, and cost-certification effects. The batch wrapper adds only whole-file transactionality and `mutation_receipts` replay protection.
 

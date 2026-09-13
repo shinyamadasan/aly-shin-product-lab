@@ -647,18 +647,34 @@ exception rolls back the receipt and every row. The operator then reads each ing
 transaction back before it can report verified success. Full usage, authentication, failure, and
 duplicate contracts are in [Claude Inventory Operator V1A](INVENTORY_OPERATOR.md).
 
-## Product Lab MCP Slice 1
+## Product Lab MCP Slices 1–2
 
 Codex and Claude Code launch the same local stdio server at
-`scripts/product-lab-mcp/server.ts`. Its adapter registers exactly two read-only tools,
-`inventory_list` and `ingredient_inspect`, and delegates all authentication, operation-specific
-loading, matching, unit normalization, and evidence shaping to `scripts/product-lab/read-service.ts`.
+`scripts/product-lab-mcp/server.ts`. Slice 1's `inventory_list` and `ingredient_inspect` delegate
+all authentication, operation-specific loading, matching, unit normalization, and evidence shaping
+to `scripts/product-lab/read-service.ts`.
 Inventory listing is a counted, limited ingredient-only query. Inspection resolves against
 paginated minimal name/alias state before issuing bounded evidence queries for a safe match. The existing
-Inventory Operator CLI calls that same read service for inventory state and matching; its guarded
-write workflow remains separate and unchanged. The MCP has no generic database surface and no path
-to the CLI's apply orchestration. Registration, credential handoff, schemas, bounds, and client
-instructions are documented in [Product Lab MCP Slice 1](PRODUCT_LAB_MCP.md).
+Inventory Operator CLI calls that same read service for inventory state and matching.
+
+Slice 2 adds only `inventory_count_preview`, `inventory_count_apply`, and
+`inventory_count_verify`. The CLI and MCP both call
+`scripts/product-lab/inventory-count-service.ts`; that service owns transient preview artifacts and
+the V1A orchestration previously embedded in the CLI runner. It delegates matching, normalization,
+hashing, approval binding, and RPC argument construction to `scripts/inventory-operator/core.ts`,
+and delegates the sole mutation to the existing `public.apply_inventory_physical_count_batch` RPC.
+Apply creates a fresh authenticated client, so preview-time authentication is never reused. It
+returns `applied_unverified`; only the shared read-back verifier can return `verified`.
+
+The MCP has no generic database surface and no other mutation category. Claude's project settings
+carry an explicit ask rule for `inventory_count_apply`. In a trusted checkout, Codex's project
+config enables all five tools, selects the human `user` approvals reviewer, and gives Apply a
+per-tool `prompt`. An installed Codex 0.147.0 loopback rehearsal proved that the prompt blocked the
+RPC until a separate human tool approval, then allowed exactly one reconciliation event followed
+by successful authoritative verification. CLI overrides outrank project config, so operators must
+not use `--approve-for-me` or override `approvals_reviewer` for Product Lab Apply. Registration,
+credential handoff, schemas, batch behavior, approval boundary, and client instructions are
+documented in [Product Lab MCP Slices 1–2](PRODUCT_LAB_MCP.md).
 
 ## Template Reel Authoring (Wave D1)
 

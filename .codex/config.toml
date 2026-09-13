@@ -1,7 +1,12 @@
+approvals_reviewer = "user"
+
 [mcp_servers.product_lab]
 command = "node"
 args = ["scripts/product-lab-mcp/server.ts"]
 cwd = "."
 env_vars = ["PRODUCT_LAB_SUPABASE_URL", "PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY", "PRODUCT_LAB_OWNER_ACCESS_TOKEN"]
-enabled_tools = ["inventory_list", "ingredient_inspect"]
+enabled_tools = ["inventory_list", "ingredient_inspect", "inventory_count_preview", "inventory_count_apply", "inventory_count_verify"]
 default_tools_approval_mode = "auto"
+
+[mcp_servers.product_lab.tools.inventory_count_apply]
+approval_mode = "prompt"

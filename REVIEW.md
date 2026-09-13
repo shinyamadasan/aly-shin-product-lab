@@ -317,3 +317,81 @@ remain non-authoritative in both paths.
 
 **Merge gate: `approved`.** Commit and PR are authorized. Merge still requires normal PR checks and
 explicit human authorization. No production read/write, deployment, or Slice 2 work is authorized.
+
+## 2026-09-13 — Product Lab MCP Slice 2 implementation self-review
+
+**Scope:** expose the existing Inventory Operator V1A physical-count preview/apply/verify workflow
+through the shared Product Lab MCP. The MCP surface is exactly the two Slice 1 reads plus three
+physical-count tools. No new inventory rule, database migration, RPC, generic write surface, other
+mutation category, provider-specific server, or production operation is included.
+
+**Architecture and code-health verdict:** would ship for independent review. The orchestration that
+previously lived in `scripts/inventory-operator/run.ts` is extracted once into
+`scripts/product-lab/inventory-count-service.ts`; CLI and MCP both call it. V1A core still owns
+matching, unit conversion, deterministic preview/hash/operation identity, approval binding, and RPC
+arguments. The existing `public.apply_inventory_physical_count_batch` remains the sole mutation and
+continues to delegate business semantics to the private raw inventory authority. The same shared
+verifier reads exact ingredient/ledger state back and is the only path that reports `verified`.
+
+**Approval and security verdict:** Apply's schema contains only `preview_id` and `approval_code`.
+It creates a fresh authenticated client before loading/applying the artifact, so preview-time auth
+is never reused. Tests reject expired and non-owner tokens, secret/service-role keys, wrong/missing
+approval, extra payload fields, missing/tampered previews, stale state, and verification mismatch.
+Public MCP failures are stable and sanitized; stderr contains only an internal category. Codex has
+a per-tool `prompt` override and Claude has an explicit project `ask` rule. Both server instructions
+and the Claude workflow require a new owner message containing the exact approval code between
+Preview and Apply.
+
+**Verification:** 40/40 focused MCP/Slice 1/V1A tests passed. Full `npm test` passed 3657/3658
+(0 failures, 1 pre-existing skip). Typecheck and changed-file lint passed. The production build
+compiled and generated all 22 pages. `npm audit` reports 0 vulnerabilities. Codex accepted the
+tool-specific approval configuration and the Claude settings JSON parsed successfully.
+`git diff --check` passed. PostgreSQL smoke was unavailable: `psql` is absent and Docker Desktop's
+Linux engine is not running. No test was silently counted as a database pass.
+
+**Production boundary:** no Product Lab credentials were used; production reads and writes are both
+zero. No migration, deployment, commit, push, PR, or merge was performed.
+
+**Merge gate: `approved`.** This intentionally exposes one live mutation category, even though it
+is narrow, owner-authenticated, preview-bound, client-approved, stale-guarded, atomic, idempotent,
+and verified. Hold for independent code/security review and explicit human merge authorization.
+
+## 2026-09-13 — Product Lab MCP Slice 2 independent-review fixes
+
+**Input verdict:** `BLOCKED` with one P1 and two P2 findings. The architecture and mutation scope
+were accepted. This pass changes only the Codex approval proof/configuration, authoritative verify
+output, test claims, and their documentation.
+
+**Finding 1 — resolved:** the owner explicitly trusted the Product Lab repository. Installed Codex
+0.147.0 reported no managed configuration requirements. Project config now declares the human
+`user` approvals reviewer, enables all five Product Lab tools, and gives
+`inventory_count_apply` a per-tool `prompt`. A real installed-client acceptance against a loopback
+fixture returned Preview `pc_1730a493c05f6769fb67` and approval code `1730-A493`, stopped for a new
+owner message, then displayed a human tool prompt containing the exact preview and code. Fixture
+instrumentation proved zero mutations before tool approval. After the owner's separate approval,
+exactly one reconciliation event executed and authoritative Verify returned `verified` with zero
+failures. Static tests claim only the declarations. CLI overrides outrank project config, so
+`--approve-for-me` and `approvals_reviewer = "auto_review"` overrides are forbidden for Apply.
+
+**Finding 2 — resolved:** Verify now returns each reconciliation row's `cost_reconciled_at` from
+the authoritative ingredient read-back. The regression tampers the stored local Apply artifact to
+contain a false 1999 timestamp and proves Verify still returns the authoritative `null` value.
+
+**Finding 3 — resolved:** the flow test now claims only approval-code and payload boundaries. The
+static client-config test says the Codex and Claude files *declare* their approval settings; it does
+not claim that parsing those files proves effective client behavior. Runtime behavior is recorded
+separately from the installed-client acceptance above.
+
+**Validation:** focused MCP/Slice 1/V1A tests passed 40/40. Full `npm test` passed 3657/3658 with
+zero failures and one pre-existing skip. Typecheck, changed-file lint, and the production build are
+clean; the build generated all 22 static pages. The current registry `npm audit` reports six
+dependency advisories (five high, one critical). No dependency change was made because the reviewer
+limited this repair to Findings 1–3; the audit result remains visible rather than being counted as
+a pass. PostgreSQL smoke remains unavailable because `psql` is absent and Docker Desktop's Linux
+engine is not running. No database smoke is claimed.
+
+**Production boundary:** the acceptance used only a loopback fixture and fake credentials. No
+production read/write, migration, deployment, commit, push, PR, or merge was performed.
+
+**Merge gate:** the three requested findings are resolved and ready for targeted re-review. The
+dependency audit remains a separate repository-level blocker for release handling.
