@@ -21,6 +21,7 @@ Delivered incrementally as 5 milestones; each one ships as its own working, test
 | M4 — Expiration, Dashboard cards | Done | Expiration-status badge (Expired / Expires today / Expires soon within 3 days / Good / none) on the Inventory page, rendered as its own badge next to — never merged with — the stock-status pill. Dashboard gains 3 summary cards: Low stock, Out of stock, Expiring, all driven by one `getInventorySummaryCounts()` call. |
 | M5 — RPC atomicity | Done | Purchase and Bake confirmations use database-authoritative, atomic, concurrency-safe, mutation-receipted functions. |
 | Claude Inventory Operator V1A | Implemented locally; production rollout blocked pending independent review and owner authorization | Claude Code structures a supplied physical count, while a deterministic owner-authenticated CLI performs safe matching/unit normalization, exact preview + approval binding, one atomic/idempotent batch count through the existing raw inventory authority, and authoritative read-back verification. No purchases, ingredient creation, OCR, browser automation, or AI API. |
+| Product Lab MCP Slice 1 | Approved after independent targeted re-review; pending PR and human-authorized merge | One local stdio server gives Codex and Claude Code the same two owner-authenticated, read-only tools: bounded inventory listing and guarded single-ingredient inspection with recent purchase-cost and inventory-movement evidence. No generic database access and no mutation tools. |
 
 ## Brand Foundation
 

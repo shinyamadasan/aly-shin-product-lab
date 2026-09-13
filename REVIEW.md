@@ -226,3 +226,94 @@ or Wave 0B implementation. Verification: 403 focused tests, isolated/live Postgr
 assertions, typecheck, production build, and targeted repair lint passed as recorded in the report.
 Commit and branch push are authorized. Physical inventory reconciliation must happen before
 Wave 0B; Wave 0B is NOT STARTED. Hosted and real-device acceptance are not claimed.
+
+## 2026-09-12 — Product Lab MCP Slice 1 implementation self-review
+
+**Scope:** one local stdio server shared by Codex and Claude Code, with exactly two read-only tools:
+`inventory_list` and `ingredient_inspect`. The implementation extracts V1A's authentication and
+read-state loading into a shared Product Lab service while leaving the existing Inventory Operator
+CLI as a separate guarded developer/debug workflow. Project-local client configuration and an
+operator handoff are included; no schema, browser UI, deployment, or production operation is in
+scope.
+
+**Verdict:** ready for independent review. Tool discovery exposes exactly the requested two tools,
+both adapters delegate to the shared application service, and structured outputs are bounded to
+500 inventory rows plus five recent purchase and five recent movement records per inspection.
+The existing conservative matcher remains authoritative: an ambiguous name such as `Biscoff`
+selects nothing, and suggestions, inactive aliases, and unknown names disclose no ingredient
+evidence. Authoritative nullable average cost remains nullable. Purchase evidence includes entered
+and normalized quantities, unit cost, and source/import linkage where Product Lab stores it.
+
+**Security and parity evidence:** the common auth boundary rejects secret/service-role keys before
+network access, validates the bearer token with `auth.getUser`, and requires the owner app role.
+The MCP imports no write service and exposes no generic SQL or RPC surface. Transport tests cover
+valid, expired/invalid, non-owner, and privileged-key cases. In a separate manual rehearsal, real
+Codex and Claude Code processes discovered and invoked the same server against a controlled loopback Product Lab fixture
+and returned the same canonical ingredient and quantity. That rehearsal touched no production
+system. Repository verification passed: focused and V1A regression tests, typecheck, scoped lint,
+production build, `npm audit` (0 vulnerabilities), and `git diff --check`.
+
+**Operational caveat:** project-local MCP configuration is intentionally inert until the checkout
+is trusted in Codex or approved in Claude Code, and the clients must inherit the three Product Lab
+environment variables. The owner access token is short-lived and must not be persisted. A first
+controlled production read remains an explicit owner/reviewer step; no production read or write was
+performed here.
+
+**Merge gate: `approved`.** This adds an authenticated path to live business data even though it is
+strictly read-only. Hold for independent human review and merge authorization. No commit, push, PR,
+merge, or deployment was performed.
+
+## 2026-09-13 — Product Lab MCP Slice 1 independent-review fixes
+
+**Input verdict:** `APPROVED WITH FIXES`. Architecture and the unreachable-write boundary were
+accepted; the reviewer requested four targeted corrections only. No redesign or Slice 2 work was
+performed.
+
+**Finding 1 — resolved:** MCP operations no longer call the CLI-oriented full-state loader.
+`inventory_list` issues one ingredient-only query selecting exactly its response columns, requests
+an exact count, orders by name then id, and applies a server-side limit of 500.
+`ingredient_inspect` paginates minimal ingredient-name and alias rows in 1000-row pages, returns
+without querying evidence on every non-match/unsafe match, then filters detail, purchase, movement,
+and direct source-link reads to the selected ingredient. Purchase and movement reads each apply a
+server-side limit of five. The optional purchase-history relaxation in V1A can only create an
+unsafe suggestion, never a safe match, so MCP does not globally read supply history merely to
+enrich that hint; the existing CLI retains the full V1A matching path unchanged.
+
+**Finding 2 — resolved:** the automated parity case is now named protocol-client parity and claims
+only what it runs: two independent MCP SDK clients receiving equivalent structured results. The
+earlier real Codex/Claude check is documented separately as a manual controlled loopback rehearsal.
+
+**Finding 3 — resolved:** movement notes were removed from the service result and MCP schema.
+Backend/auth/internal messages are mapped to stable public `configuration_error`,
+`authentication_error`, or `read_failed` responses. Stderr receives only a safe internal category;
+tests prove raw backend detail, access tokens, and project keys cross neither channel.
+
+**Finding 4 — resolved:** the operator guide now distinguishes a CLI launched from prepared
+PowerShell from an already-running IDE/desktop host, and tells the operator to obtain a fresh token,
+update the launching environment, and restart the MCP process/client/host after expiry. No token
+persistence or refresh machinery was added.
+
+**Evidence:** 72/72 focused MCP/read-query/V1A regression tests passed. Full `npm test` passed
+3656/3657 with 0 failures and 1 pre-existing skip. Typecheck and changed-file lint are clean;
+production build generated all 22 pages; `npm audit` reports 0 vulnerabilities; `git diff --check`
+is clean. PostgreSQL/Docker smoke suites are outside `npm test` and were not run because this change
+adds no schema or database-write behavior. No production read or write was performed.
+
+**Merge gate: `approved`.** The four requested fixes are complete and the branch is ready for
+targeted re-review. Authenticated business-data access remains human-merge territory. No commit,
+push, PR, merge, or deployment was performed.
+
+## 2026-09-13 — Product Lab MCP Slice 1 targeted re-review approval
+
+**Verdict: `APPROVED`.** The independent targeted re-review confirms all four findings are resolved,
+no P0/P1 blocker remains, and Slice 1 may proceed to commit and PR after normal checks. Architecture
+and scope remain locked; no redesign or Slice 2 work is authorized.
+
+**Accepted non-blocking P2 notes:** the legacy CLI's `inventory:list` output does not expose
+`total`/`truncated` metadata when the shared server-bounded list exceeds 500 rows. MCP inspection
+also omits the CLI's optional supply-history enrichment for unsafe suggestions so it never performs
+a global supply read. Exact, alias, normalized, and ambiguity decisions remain shared; suggestions
+remain non-authoritative in both paths.
+
+**Merge gate: `approved`.** Commit and PR are authorized. Merge still requires normal PR checks and
+explicit human authorization. No production read/write, deployment, or Slice 2 work is authorized.

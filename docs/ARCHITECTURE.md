@@ -647,6 +647,19 @@ exception rolls back the receipt and every row. The operator then reads each ing
 transaction back before it can report verified success. Full usage, authentication, failure, and
 duplicate contracts are in [Claude Inventory Operator V1A](INVENTORY_OPERATOR.md).
 
+## Product Lab MCP Slice 1
+
+Codex and Claude Code launch the same local stdio server at
+`scripts/product-lab-mcp/server.ts`. Its adapter registers exactly two read-only tools,
+`inventory_list` and `ingredient_inspect`, and delegates all authentication, operation-specific
+loading, matching, unit normalization, and evidence shaping to `scripts/product-lab/read-service.ts`.
+Inventory listing is a counted, limited ingredient-only query. Inspection resolves against
+paginated minimal name/alias state before issuing bounded evidence queries for a safe match. The existing
+Inventory Operator CLI calls that same read service for inventory state and matching; its guarded
+write workflow remains separate and unchanged. The MCP has no generic database surface and no path
+to the CLI's apply orchestration. Registration, credential handoff, schemas, bounds, and client
+instructions are documented in [Product Lab MCP Slice 1](PRODUCT_LAB_MCP.md).
+
 ## Template Reel Authoring (Wave D1)
 
 Wave D1 broadens the existing Content Generation pipeline only at the authoring contract: a Reel may

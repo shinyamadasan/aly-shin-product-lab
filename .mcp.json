@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "product_lab": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PROJECT_DIR:-.}/scripts/product-lab-mcp/server.ts"
+      ],
+      "env": {
+        "PRODUCT_LAB_SUPABASE_URL": "${PRODUCT_LAB_SUPABASE_URL}",
+        "PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY": "${PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY}",
+        "PRODUCT_LAB_OWNER_ACCESS_TOKEN": "${PRODUCT_LAB_OWNER_ACCESS_TOKEN}"
+      }
+    }
+  }
+}

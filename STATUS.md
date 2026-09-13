@@ -10,18 +10,44 @@ below and `REVIEW.md`. PROP-027 (External Creative Workspace as the first real A
 is **implemented and fully verified on `feat/prop-027`** (commits `5354ddd`..`f5d4976`,
 2026-08-05) but **not yet merged to `main`** — see "Last shipped" below,
 `MARKETING_MODULE.md`'s implementation record, and `planning/PROPOSALS.md`'s PROP-027 entry.
-**Active task:** None — PROP-027's code is done; what remains is human-only (Storage bucket
-confirmation, then the mobile acceptance test) plus the branch merge decision. PROP-028 (the
-approve/reject review gate) is named as the next milestone on the roadmap but is **not started**
-and not authorized yet.
+**Active task:** Product Lab MCP Slice 1 is approved after targeted re-review on
+`feat/product-lab-mcp-slice-1` and authorized to proceed through commit and PR. Merge still requires
+normal checks and explicit human authorization. No merge, deployment, or production access has
+been performed. PROP-028 remains **not started** and is not authorized by this work.
 **Owner:** —
-**Blockers:** none for further coding. Two items need the owner's attention outside agent tooling
-before PROP-027 can be considered fully done, not just code-complete — see "Needs human
-verification" below (Storage bucket confirmation; the physical-phone acceptance test, which depends
-on the bucket check first).
+**Blockers:** no P0/P1 blocker remains for Slice 1. Normal PR checks and human merge authorization
+remain; a controlled real-data read remains an owner step for rollout. PROP-027's separate
+Storage-bucket and physical-phone checks also remain under "Needs human verification" below.
 
 ## Last shipped
 
+- **2026-09-13 — Product Lab MCP Slice 1 targeted re-review approved:** all four requested findings
+  are resolved and no P0/P1 blocker remains. Two accepted P2 notes remain: the legacy CLI list does
+  not expose MCP truncation metadata, and MCP intentionally omits the CLI's optional global
+  purchase-history suggestion enrichment. Neither affects safe match selection or the read-only
+  boundary. Commit and PR are authorized; merge remains human-authorized. No production change was
+  performed.
+- **2026-09-13 — Product Lab MCP Slice 1 independent-review fixes complete, not merged:** replaced
+  MCP's coarse full-state reads with operation-specific Supabase queries. Inventory listing now
+  selects only returned ingredient columns with exact count, deterministic ordering, and a
+  server-side 500 limit. Inspection paginates minimal ingredient/alias matching state, returns
+  before evidence reads on unsafe/unmatched input, and filters both evidence queries to the safely
+  selected ingredient with server-side limits of five. Movement notes are omitted; public tool
+  errors are stable and sanitized; IDE/desktop environment inheritance and token-restart behavior
+  are documented; automated parity is correctly named protocol-client parity. Verified: 72/72
+  focused/V1A tests, full suite 3656/3657 (0 failures, 1 pre-existing skip), typecheck, changed-file
+  lint, production build, `npm audit` with 0 vulnerabilities, and `git diff --check`. No production
+  read/write or release operation was performed. Ready for targeted re-review.
+- **2026-09-12 — Product Lab MCP Slice 1 implemented locally, not merged:** one shared local stdio
+  server now exposes exactly `inventory_list` and `ingredient_inspect` to Codex and Claude Code.
+  Both tools reuse V1A authentication, matching, unit conversion, and Product Lab reads; reject
+  privileged project keys; require a validated owner token; return bounded structured facts; and
+  expose no write or generic database surface. Automated service/transport/auth/protocol-client
+  parity coverage,
+  typecheck, scoped lint, production build, and a controlled loopback rehearsal through both real
+  clients passed. No production read, production write, deployment, commit, push, PR, or merge was
+  performed. The branch is ready for independent review; see `docs/PRODUCT_LAB_MCP.md` and
+  `REVIEW.md`.
 - **2026-08-05 — PROP-027, External Creative Workspace as the first real Asset Job executor**
   (branch `feat/prop-027`, commits `5354ddd`..`f5d4976`, not yet merged to `main`): fills the Asset
   Job pipeline's existing executor slot with a human working in any external creative workspace
@@ -99,6 +125,10 @@ on the bucket check first).
 
 ## Needs human verification
 
+- **Product Lab MCP Slice 1:** review normal PR checks and explicitly authorize merge. For the first
+  controlled real-data read, set the three documented Product Lab environment variables in the
+  launching shell, trust/approve the project MCP configuration in each client, confirm tool
+  discovery, and compare one ingredient result. Do not perform any write as part of this check.
 - **Confirm the `generated-assets` Storage bucket via the Supabase dashboard directly** (or a
   service-role check) — agent tooling could not conclusively confirm it either way through
   authenticated-role API access on 2026-08-05 (see above). PROP-027's own frozen spec named this a

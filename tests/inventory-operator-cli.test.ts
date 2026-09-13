@@ -49,8 +49,8 @@ function runCli(args: string[], url: string, overrides: Record<string, string> =
   });
 }
 
-function json(res: ServerResponse, status: number, value: unknown) {
-  res.writeHead(status, { "content-type": "application/json" });
+function json(res: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}) {
+  res.writeHead(status, { "content-type": "application/json", ...headers });
   res.end(JSON.stringify(value));
 }
 
@@ -116,7 +116,7 @@ test("inventory operator CLI boundary", async (t) => {
       const rows = idFilter?.startsWith("in.(")
         ? ingredients.filter((row) => idFilter.includes(row.id))
         : ingredients;
-      return json(res, 200, rows);
+      return json(res, 200, rows, { "content-range": `0-${rows.length - 1}/${rows.length}` });
     }
     if (url.pathname === "/rest/v1/ingredient_aliases" || url.pathname === "/rest/v1/supply_entries") {
       return json(res, 200, []);
