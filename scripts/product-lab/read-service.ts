@@ -500,3 +500,10 @@ export function createProductLabReadService(env: NodeJS.ProcessEnv = process.env
   };
   return new ProductLabReadService(createSupabaseReadSource(client));
 }
+
+// Remote-request variant: the caller already authenticated the owner once for this HTTP exchange
+// (see scripts/product-lab-mcp/remote-auth.ts) and hands over the resulting client directly. No
+// process-global env token, no second auth.getUser round trip.
+export function createProductLabReadServiceForClient(client: SupabaseClient): ProductLabReadService {
+  return new ProductLabReadService(createSupabaseReadSource(async () => client));
+}
