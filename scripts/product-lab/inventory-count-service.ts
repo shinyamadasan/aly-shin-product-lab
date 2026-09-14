@@ -11,7 +11,11 @@ import {
   type PhysicalCountIntent,
 } from "../inventory-operator/core.ts";
 import { authenticatedProductLabClient, ProductLabError } from "./auth.ts";
-import { createProductLabReadService, type ProductLabReadService } from "./read-service.ts";
+import {
+  createProductLabReadService,
+  createProductLabReadServiceForClient,
+  type ProductLabReadService,
+} from "./read-service.ts";
 
 export type InventoryCountApplyRow = {
   ingredient_id: string;
@@ -109,6 +113,66 @@ export function createInventoryCountArtifactStore(
       const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
       await writeFile(temporary, `${JSON.stringify(artifact, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       await rename(temporary, target);
+    },
+  };
+}
+
+const PREVIEW_TABLE = "product_lab_mcp_previews";
+
+// Durable, owner-scoped preview storage for the remote MCP path (Slice 2.1A). Backs the exact same
+// InventoryCountArtifactStore contract as the local filesystem store above, so InventoryCountService
+// and the preview/apply/verify business flow it implements do not change: only where the artifact
+// lives differs. See supabase/migrations/20260914120000_product_lab_mcp_durable_previews.sql for the
+// table, its RLS (owner-scoped by auth.uid(), never an open-ended write surface), and retention notes.
+//
+// `client` here is always a request-scoped, already-authenticated Supabase client (see
+// scripts/product-lab-mcp/remote-auth.ts); RLS -- not this code -- is what makes "owner A cannot
+// read/use owner B's preview" true. This store performs no bespoke authorization of its own.
+export function createDurableInventoryCountArtifactStore(client: SupabaseClient): InventoryCountArtifactStore {
+  return {
+    async read(previewId) {
+      if (!/^pc_[a-f0-9]{20}$/.test(previewId)) {
+        throw new ProductLabError("preview_error", "Invalid preview id");
+      }
+      const { data, error } = await client
+        .from(PREVIEW_TABLE)
+        .select("preview,apply_result,verified_at,expires_at")
+        .eq("preview_id", previewId)
+        .maybeSingle();
+      if (error) {
+        throw new ProductLabError("preview_error", `Unable to load preview artifact: ${error.message}`);
+      }
+      if (!data) {
+        throw new ProductLabError("preview_error", "Preview not found");
+      }
+      if (data.expires_at && new Date(data.expires_at as string).getTime() < Date.now()) {
+        throw new ProductLabError("preview_error", "Preview has expired; run inventory_count_preview again");
+      }
+      return {
+        preview: data.preview as CountPreview,
+        apply_result: (data.apply_result ?? undefined) as InventoryCountApplyResult | undefined,
+        verified_at: (data.verified_at ?? undefined) as string | undefined,
+      };
+    },
+    async save(artifact) {
+      const row = {
+        preview_id: artifact.preview.preview_id,
+        payload_hash: artifact.preview.payload_hash,
+        operation_id: artifact.preview.operation_id,
+        preview: artifact.preview,
+        apply_result: artifact.apply_result ?? null,
+        verified_at: artifact.verified_at ?? null,
+      };
+      // Composite conflict target -- matches the table's (owner_id, preview_id) primary key. owner_id
+      // is never part of `row` (it is database-owned, default auth.uid()); Postgres resolves that
+      // default before evaluating the conflict target, so this still correctly detects a collision
+      // against THIS caller's own prior row and never against another owner's row with the same
+      // content-derived preview_id (see the migration's own commentary on why a global
+      // `primary key (preview_id)` was wrong).
+      const { error } = await client.from(PREVIEW_TABLE).upsert(row, { onConflict: "owner_id,preview_id" });
+      if (error) {
+        throw new ProductLabError("preview_error", `Unable to save preview artifact: ${error.message}`);
+      }
     },
   };
 }
@@ -310,5 +374,18 @@ export function createInventoryCountService(
     createProductLabReadService(env),
     () => authenticatedProductLabClient(env),
     createInventoryCountArtifactStore(previewDirectory),
+  );
+}
+
+// Remote-request variant: one already-authenticated owner client backs the read state, the apply/
+// verify client, and the durable artifact store for this single HTTP exchange. Mirrors apply()'s own
+// "never reuse preview-time auth" intent at the granularity the remote transport actually offers: one
+// fresh, per-request client for the whole exchange, exactly as createMcpHandler constructs one fresh
+// server instance per HTTP request (see scripts/product-lab-mcp/remote-auth.ts).
+export function createInventoryCountServiceForClient(client: SupabaseClient): InventoryCountService {
+  return new InventoryCountService(
+    createProductLabReadServiceForClient(client),
+    () => Promise.resolve(client),
+    createDurableInventoryCountArtifactStore(client),
   );
 }
