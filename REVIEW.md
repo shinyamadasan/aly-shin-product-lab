@@ -395,3 +395,38 @@ production read/write, migration, deployment, commit, push, PR, or merge was per
 
 **Merge gate:** the three requested findings are resolved and ready for targeted re-review. The
 dependency audit remains a separate repository-level blocker for release handling.
+
+## 2026-09-14 — Product Lab Netlify Migration Slice 1: platform-neutral origin policy + Node pin
+
+**Scope:** `scripts/product-lab-mcp/origin-policy.ts` (Host/Origin allowlist logic), 17 tests in
+`tests/product-lab-mcp-origin-policy.test.ts` (rewritten to cover local/production-like/Netlify/
+Vercel-regression matrix), `.nvmrc` (new) + `package.json` `engines.node` (Node version pin). No
+change to `src/app/api/mcp/route.ts`, auth, OAuth, or any Supabase-facing code.
+
+**Verdict:** Sound. The prior implementation gated localhost trust on `!env.VERCEL` — correct only
+by accident, since that condition is also true for every *other* platform's production deployment.
+The fix gates on `NODE_ENV !== "production"` instead, a signal Next.js itself sets identically
+regardless of host (verified against Next's own deploying-to-platforms doc and Vercel's own
+Functions runtime behavior, not assumed), so no non-Vercel production environment can inherit
+localhost trust the way the bug allowed. Netlify's build-time `URL` var is parsed down to a bare
+hostname before being trusted (Vercel's equivalent vars are already bare; Netlify's is a full URL
+and would never have matched a real Host header otherwise) and is documented as best-effort, not
+load-bearing, because Netlify does not guarantee build-scoped vars reach a Function at request time
+(confirmed by fetching Netlify's own current docs, not assumed) — `PRODUCT_LAB_MCP_PUBLIC_HOSTNAME`
+remains the mechanism an operator should actually rely on. All 17 origin-policy tests pass, full
+suite 3702/3703 (1 pre-existing skip, 0 fail), typecheck/lint/build clean, `npm audit` unchanged at
+the known 6 pre-existing advisories.
+
+**Not rubber-stamped:** the existing Vercel-regression test fixtures (`{ VERCEL: "1" }` alone) were
+themselves only ever realistic under the old buggy gate — a real Vercel deployment always sets
+`NODE_ENV=production` alongside `VERCEL=1`. Those fixtures were corrected to include both, which is
+a fixture fix, not a behavior relaxation: a bare `VERCEL=1` with no `NODE_ENV` is not a shape any
+real Vercel deployment produces, so no live Vercel environment loses protection from this change.
+
+**Production boundary:** no Supabase configuration, DNS, OAuth registration, migration, or
+production inventory mutation was touched. No deployment cutover; Vercel remains canonical.
+
+**Merge gate: `approved`** — red-zone, held for human merge. This changes production Host/Origin
+access-control logic for an authenticated MCP endpoint; the task that produced this change
+explicitly stops short of merging (PR only) pending independent review and a real Netlify trial
+deployment.
