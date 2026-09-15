@@ -60,7 +60,16 @@ export async function GET(request: Request): Promise<Response> {
     );
   }
 
-  const resourceServerUrl = new URL(request.url);
+  // The resource URL this metadata advertises is security-sensitive (RFC 9728) and must not be
+  // derived from inbound Host/X-Forwarded-Host headers, which are attacker-controlled. When an
+  // operator has configured the deployment's public hostname (see origin-policy.ts, which uses the
+  // same variable for Host/Origin allowlisting), that trusted value wins over whatever hostname
+  // `request.url` happened to carry -- e.g. Netlify's underlying site hostname on a custom domain.
+  // Falling back to `request.url` keeps local/dev and platforms without an explicit override working.
+  const publicHostname = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+  const resourceServerUrl = publicHostname
+    ? new URL(`https://${publicHostname}/api/mcp`)
+    : new URL(request.url);
   resourceServerUrl.pathname = "/api/mcp";
   resourceServerUrl.search = "";
 

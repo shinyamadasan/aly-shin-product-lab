@@ -297,6 +297,72 @@ test("Product Lab remote MCP endpoint (Slice 2.1A)", async (t) => {
     const response = await wellKnown.GET(new Request("http://mcp.test/.well-known/something-else"));
     assert.equal(response.status, 404);
   });
+
+  await t.test("a configured public hostname wins over the underlying request URL's hostname", async () => {
+    const previous = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = "app.alyandpon.com";
+    try {
+      const response = await wellKnown.GET(
+        new Request("https://elegant-bombolone-754d65.netlify.app/.well-known/oauth-protected-resource/api/mcp"),
+      );
+      assert.equal(response.status, 200);
+      const body = await response.json() as { resource: string };
+      assert.equal(body.resource, "https://app.alyandpon.com/api/mcp");
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previous;
+    }
+  });
+
+  await t.test("an arbitrary inbound Host/X-Forwarded-Host header cannot override the configured hostname", async () => {
+    const previous = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = "app.alyandpon.com";
+    try {
+      const response = await wellKnown.GET(
+        new Request("http://mcp.test/.well-known/oauth-protected-resource/api/mcp", {
+          headers: { host: "attacker.example", "x-forwarded-host": "attacker.example" },
+        }),
+      );
+      assert.equal(response.status, 200);
+      const body = await response.json() as { resource: string };
+      assert.equal(body.resource, "https://app.alyandpon.com/api/mcp");
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previous;
+    }
+  });
+
+  await t.test("with no configured public hostname, the request URL's own hostname is used (local/dev fallback)", async () => {
+    const previous = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    try {
+      const response = await wellKnown.GET(
+        new Request("http://localhost:3000/.well-known/oauth-protected-resource/api/mcp"),
+      );
+      assert.equal(response.status, 200);
+      const body = await response.json() as { resource: string };
+      assert.equal(body.resource, "http://localhost:3000/api/mcp");
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previous;
+    }
+  });
+
+  await t.test("authorization_servers still names the Supabase OAuth server when a public hostname is configured", async () => {
+    const previous = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = "app.alyandpon.com";
+    try {
+      const response = await wellKnown.GET(
+        new Request("https://elegant-bombolone-754d65.netlify.app/.well-known/oauth-protected-resource/api/mcp"),
+      );
+      assert.equal(response.status, 200);
+      const body = await response.json() as { authorization_servers: string[] };
+      assert.ok(Array.isArray(body.authorization_servers) && body.authorization_servers.length > 0);
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previous;
+    }
+  });
 });
 
 test("Product Lab MCP durable preview store RLS shape (Slice 2.1A)", async () => {
