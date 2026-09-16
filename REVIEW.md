@@ -430,3 +430,81 @@ production inventory mutation was touched. No deployment cutover; Vercel remains
 access-control logic for an authenticated MCP endpoint; the task that produced this change
 explicitly stops short of merging (PR only) pending independent review and a real Netlify trial
 deployment.
+
+## 2026-09-16 — Daily Bakery Ops V2 Slice 1: Product Lab MCP purchases
+
+**Scope:** three new MCP tools (`purchase_preview`, `purchase_apply`, `purchase_verify`) on
+`feat/product-lab-mcp-daily-ops-purchases-v2` (base `d9ffe79`, latest reviewed `main`). New:
+`scripts/purchase-operator/core.ts` (deterministic preview/hash/approval logic, mirroring
+`scripts/inventory-operator/core.ts`'s V1A pattern), `scripts/product-lab/purchase-service.ts`
+(preview-artifact persistence + apply/verify orchestration, mirroring
+`inventory-count-service.ts`), `supabase/migrations/20260916100000_product_lab_mcp_purchase_previews.sql`
+(one new table, no RPC), `.claude/skills/product-lab-purchases/SKILL.md`, and test/config updates.
+Changed: `scripts/product-lab-mcp/mcp-server.ts` (3 tool registrations + a domain-aware error
+mapper), `src/app/api/mcp/route.ts` (wires the new service into the remote factory),
+`.claude/settings.json`/`.codex/config.toml`/`.gitignore` (tool-approval + ignore entries), and the
+tool-count assertions in the two existing MCP protocol test files. No file outside this list was
+touched; Bake, orders, exceptions, daily reads, OAuth/transport, and Netlify config are unchanged.
+
+**Design decision — no new RPC.** `inventory_private.confirm_purchase_import_v2` reads persisted
+`purchase_imports`/`purchase_import_rows`, not an arbitrary payload. Rather than adding a wrapper
+RPC, `purchase_apply` writes those rows directly under their EXISTING owner-only RLS
+(`supabase-harden-product-lab-owner-data-rls.sql`'s TIER 1 list already covers both tables) and
+then calls the existing, unmodified `confirm_purchase_import_v2` — confirmed safe by inspection
+before any code was written (see the design-approval exchange earlier in this thread) and then
+proven against a real, disposable Postgres container (below), not just asserted. Both
+`purchase_imports.id` and each `purchase_import_rows.id` are deterministically derived from the
+already-approved, already-hashed preview content, so a retried apply recomputes identical ids
+instead of needing a stored pointer.
+
+**A real bug the Postgres smoke test caught and a mocked test could not:** the first apply-bridge
+draft used `.upsert(..., { ignoreDuplicates: true })` for the retry-safety story above. Against
+real Postgres, retrying `purchase_apply` after a *successful* first attempt failed with "Posted
+purchase history is read-only" — `inventory_private.protect_posted_import`'s BEFORE INSERT trigger
+fires for a row even when `ON CONFLICT DO NOTHING` will discard it, so a retried insert against an
+already-confirmed import's rows hit the read-only guard before the conflict was ever evaluated.
+Fixed by checking for the import's existence before inserting anything, skipping straight to the
+(idempotent, `claim_mutation`-backed) RPC call when it already exists. This is the reason a real
+disposable-database smoke test was added and actually run for this migration, not deferred as a
+documented gap the way an earlier slice's smoke test was (see the 2026-09-13 entry above).
+
+**Verification:** `tests/purchase-operator.test.ts` (21 unit tests: matching, unit conversion,
+hashing determinism, occasion-identity collision avoidance, approval/stale/tamper guards, all
+blocking conditions). `tests/product-lab-mcp-purchases.test.ts` (7 protocol tests over the stdio
+transport with a mocked Supabase HTTP layer: schema shape, single- and multi-item preview→apply→
+verify, no mutation during preview, replay/idempotency, atomicity on a mid-flight rejection, and
+verify detecting an authoritative-state mismatch instead of trusting the apply artifact).
+`tests/smoke/postgres/product-lab-mcp-purchases.smoke.test.ts` (7 tests against a disposable
+`postgres:17-alpine` container running the real migration chain through
+`20260910022601_selling_wave_0b_safe_mutations.sql` plus the new migration: the real RLS insert
+path, same-ingredient summing, atomic all-or-nothing rejection, the idempotent-retry fix above,
+non-owner rejection, and the new preview table's `pu_` check constraint + owner-row isolation under
+a colliding content-derived `preview_id` from two different owner accounts) — run with
+`RUN_POSTGRES_SMOKE=1`, all 7 passing. Full `npm test`: 3743/3744 passing (1 pre-existing skip
+unrelated to this change), typecheck clean, changed-file lint clean (one pre-existing unrelated
+lint error in `src/components/bake-page.tsx`, confirmed present with this branch's changes stashed
+out, not introduced here), and the production build compiles all 27 routes cleanly.
+
+**Not rubber-stamped:** the small hashing/deterministic-id helpers (`sha256Hex`, `stableJson`,
+`approvalCodeForHash`, the `operationIdForOccurrence`/`operationIdForOccasion` bit-twiddling
+pattern) are duplicated, not extracted into a shared module, between
+`scripts/inventory-operator/core.ts` and `scripts/purchase-operator/core.ts`. This was a deliberate
+call, not an oversight: extracting them would mean editing V1A's already-shipped, already-reviewed
+physical-count file for a slice explicitly scoped to purchases only, for the sake of ~20 lines of
+stable, unlikely-to-diverge generic utility. Each duplicate carries an explicit "mirrors/generalizes
+X" comment rather than silently copying.
+
+**Live rehearsal:** not yet performed. Requires independent review and deployment first, per
+`docs/PRODUCT_LAB_MCP.md`'s Production boundary (updated in this change to name the new migration
+explicitly) and this task's own instructions.
+
+**Production boundary:** the Postgres smoke test ran only against a disposable, auto-removed local
+Docker container (`postgres:17-alpine`), never any real project. No production read/write,
+migration application, deployment, push, or merge was performed. Docker Desktop was started to run
+the smoke test (with explicit confirmation first) and left running afterward, since unrelated
+projects were already depending on it; no container from this work was left behind.
+
+**Merge gate: `approved`** — red-zone, held for human merge. This adds a real, MCP-reachable
+inventory-mutating path (`purchase_apply`) touching production purchase/inventory authority. Do not
+self-approve; hold for independent code/security review, then a live purchase rehearsal against
+production, before merge.

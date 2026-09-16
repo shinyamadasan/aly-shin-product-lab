@@ -79,6 +79,10 @@ daily-advisor-session.log
 # Product Lab's ledger and mutation receipts remain authoritative; these files are never committed.
 /.inventory-operator/
 
+# Product Lab MCP purchases (Daily Bakery Ops V2, Slice 1) -- same reasoning as
+# .inventory-operator/ above: transient local preview/apply artifacts, never committed.
+/.purchase-operator/
+
 # Production MVP machine executors (Wave B) -- generated experiment/acceptance output. Same reasoning
 # as the four generated-output directories above: these are large local evidence trees (PNGs, raw
 # provider responses, review HTML) produced by the spike/acceptance harness for owner review, not

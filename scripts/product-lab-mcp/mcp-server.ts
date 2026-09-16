@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { ProductLabError } from "../product-lab/auth.ts";
 import { createInventoryCountService, type InventoryCountService } from "../product-lab/inventory-count-service.ts";
+import { createPurchaseService, type PurchaseService } from "../product-lab/purchase-service.ts";
 import { createProductLabReadService, type ProductLabReadService } from "../product-lab/read-service.ts";
 
 const nullableText = z.string().nullable();
@@ -198,6 +199,105 @@ export const inventoryCountVerifyOutputSchema = z.object({
   reconciliation_rows: z.array(countVerificationRowSchema),
 });
 
+const purchaseItemInputSchema = z.object({
+  raw_name: z.string(),
+  quantity: z.number().optional(),
+  unit: z.string().optional(),
+  total_price: z.number().optional(),
+}).strict();
+
+export const purchasePreviewInputSchema = z.object({
+  kind: z.literal("purchase"),
+  occasion_id: z.string().trim().min(1),
+  source_note: z.string().optional(),
+  items: z.array(purchaseItemInputSchema).min(1),
+}).strict();
+
+const purchaseMatchCandidateSchema = z.object({
+  ingredientId: z.string(),
+  ingredientName: z.string(),
+  isActive: z.boolean(),
+  reason: z.enum(["alias", "exact", "normalized", "strong_partial", "shared_token"]),
+});
+
+const purchasePreviewRowSchema = z.object({
+  row_number: z.number().int().positive(),
+  raw_name: z.string(),
+  canonical_ingredient_id: nullableText,
+  canonical_ingredient_name: nullableText,
+  match_status: z.enum(["matched", "suggestion", "ambiguous", "unmatched", "inactive_alias"]),
+  match_type: z.enum(["alias", "exact", "normalized", "suggested", "manual", "none"]),
+  match_candidates: z.array(purchaseMatchCandidateSchema),
+  current_quantity: z.number().nullable(),
+  base_unit: nullableText,
+  current_average_unit_cost: z.number().nullable(),
+  current_inventory_reconciled_at: nullableText,
+  entered_quantity: z.number().nullable(),
+  entered_unit: nullableText,
+  total_price: z.number().nullable(),
+  converted_quantity: z.number().nullable(),
+  note: nullableText,
+  errors: z.array(z.string()),
+});
+
+export const purchasePreviewOutputSchema = z.object({
+  version: z.literal(1),
+  kind: z.literal("purchase_preview"),
+  preview_id: z.string(),
+  approval_code: z.string(),
+  payload_hash: z.string(),
+  operation_id: z.string(),
+  occasion_id: z.string(),
+  source_note: nullableText,
+  rows: z.array(purchasePreviewRowSchema),
+  can_apply: z.boolean(),
+  errors: z.array(z.string()),
+  created_at: z.string(),
+});
+
+const purchaseApplyRowSchema = z.object({
+  ingredient_id: z.string(),
+  ingredient_name: z.string(),
+  base_unit: z.string(),
+  quantity_before: z.union([z.number(), z.string()]),
+  quantity_after: z.union([z.number(), z.string()]),
+  quantity_change: z.union([z.number(), z.string()]),
+  transaction_id: z.string(),
+});
+
+export const purchaseApplyOutputSchema = z.object({
+  status: z.literal("applied_unverified"),
+  preview_id: z.string(),
+  operation_id: z.string(),
+  payload_hash: z.string(),
+  import_id: z.string(),
+  transaction_ids: z.array(z.string()),
+  rows: z.array(purchaseApplyRowSchema),
+});
+
+const purchaseVerificationRowSchema = z.object({
+  ingredient: z.string(),
+  before: z.number(),
+  after: z.number(),
+  delta: z.number(),
+  unit: z.string(),
+  transaction_id: z.string(),
+  total_price_added: z.number(),
+});
+
+export const purchaseVerifyOutputSchema = z.object({
+  status: z.literal("verified"),
+  preview_id: z.string(),
+  occasion_id: z.string(),
+  operation_id: z.string(),
+  payload_hash: z.string(),
+  import_id: z.string(),
+  ingredients_touched: z.number().int().nonnegative(),
+  total_spent: z.number(),
+  failures: z.literal(0),
+  purchase_rows: z.array(purchaseVerificationRowSchema),
+});
+
 function success(value: object) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
@@ -205,7 +305,12 @@ function success(value: object) {
   };
 }
 
-function failure(error: unknown) {
+// preview_error/apply_failed/verification_failed are shared ProductLabErrorCode categories (both
+// inventory-count-service.ts and purchase-service.ts throw them), but the public-facing code/message
+// must name which domain failed -- "Inventory count was not applied" would be a false statement for
+// a failed purchase. `domain` selects the correct public vocabulary; it never changes the internal
+// category, only the words a caller sees.
+function failure(error: unknown, domain: "inventory" | "purchase" = "inventory") {
   const internalCode = error instanceof ProductLabError ? error.code : "internal_error";
   process.stderr.write(`Product Lab MCP tool failed: ${internalCode}\n`);
   const detail = internalCode === "configuration_error"
@@ -215,11 +320,17 @@ function failure(error: unknown) {
       || internalCode === "authorization_failed"
       ? { code: "authentication_error", message: "Product Lab authentication failed" }
       : internalCode === "preview_error"
-        ? { code: "invalid_preview", message: "Inventory count preview or approval is invalid" }
+        ? { code: "invalid_preview", message: `${domain === "purchase" ? "Purchase" : "Inventory count"} preview or approval is invalid` }
         : internalCode === "apply_failed"
-          ? { code: "inventory_apply_failed", message: "Inventory count was not applied" }
+          ? {
+            code: domain === "purchase" ? "purchase_apply_failed" : "inventory_apply_failed",
+            message: `${domain === "purchase" ? "Purchase" : "Inventory count"} was not applied`,
+          }
           : internalCode === "verification_failed"
-            ? { code: "inventory_verification_failed", message: "Inventory count verification failed" }
+            ? {
+              code: domain === "purchase" ? "purchase_verification_failed" : "inventory_verification_failed",
+              message: `${domain === "purchase" ? "Purchase" : "Inventory count"} verification failed`,
+            }
             : { code: "read_failed", message: "Product Lab read failed" };
   return {
     isError: true,
@@ -230,11 +341,12 @@ function failure(error: unknown) {
 export function createProductLabMcpServer(
   readService: ProductLabReadService = createProductLabReadService(),
   inventoryCountService: InventoryCountService = createInventoryCountService(),
+  purchaseService: PurchaseService = createPurchaseService(),
 ): McpServer {
   const server = new McpServer(
     { name: "product-lab", version: "2.0.0" },
     {
-      instructions: "Product Lab facts plus owner-approved physical counts. Never infer a match from suggestions or ambiguities. After inventory_count_preview, show the exact preview and stop. Call inventory_count_apply only after a new owner message contains the matching approval code, then call inventory_count_verify before reporting verified success.",
+      instructions: "Product Lab facts plus owner-approved physical counts and purchases. Never infer a match from suggestions or ambiguities. After inventory_count_preview or purchase_preview, show the exact preview and stop. Call inventory_count_apply/purchase_apply only after a new owner message contains the matching approval code, then call inventory_count_verify/purchase_verify before reporting verified success.",
     },
   );
 
@@ -327,6 +439,63 @@ export function createProductLabMcpServer(
         return success(await inventoryCountService.verify(preview_id));
       } catch (error) {
         return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "purchase_preview",
+    {
+      title: "Preview a Product Lab purchase",
+      description: "Builds and stores a deterministic preview for one or more raw-ingredient purchase lines, already resolved into structured {raw_name, quantity, unit, total_price} items by the calling client. It never mutates inventory, never guesses an ingredient/unit/package size, and blocks any ambiguous, unmatched, or unconvertible line.",
+      inputSchema: purchasePreviewInputSchema,
+      outputSchema: purchasePreviewOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (intent) => {
+      try {
+        return success(await purchaseService.preview(intent));
+      } catch (error) {
+        return failure(error, "purchase");
+      }
+    },
+  );
+
+  server.registerTool(
+    "purchase_apply",
+    {
+      title: "Apply an approved Product Lab purchase",
+      description: "Applies only a stored purchase preview bound to its approval code, through the existing purchase-import batch authority (inventory_private.confirm_purchase_import_v2). Call only after a NEW owner message explicitly confirms that exact code. The purchase payload itself may not be re-supplied here. Returns applied_unverified; verify separately.",
+      inputSchema: z.object({
+        preview_id: z.string().regex(/^pu_[a-f0-9]{20}$/),
+        approval_code: z.string().trim().min(1),
+      }).strict(),
+      outputSchema: purchaseApplyOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ preview_id, approval_code }) => {
+      try {
+        return success(await purchaseService.apply(preview_id, approval_code));
+      } catch (error) {
+        return failure(error, "purchase");
+      }
+    },
+  );
+
+  server.registerTool(
+    "purchase_verify",
+    {
+      title: "Verify an applied Product Lab purchase",
+      description: "Reads back the authoritative ingredient and inventory-ledger state for a stored applied purchase preview and fails visibly on any mismatch. This tool never writes inventory.",
+      inputSchema: z.object({ preview_id: z.string().regex(/^pu_[a-f0-9]{20}$/) }).strict(),
+      outputSchema: purchaseVerifyOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ preview_id }) => {
+      try {
+        return success(await purchaseService.verify(preview_id));
+      } catch (error) {
+        return failure(error, "purchase");
       }
     },
   );
