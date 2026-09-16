@@ -225,6 +225,93 @@ test("Product Lab remote MCP endpoint (Slice 2.1A)", async (t) => {
     assert.notEqual(response.status, 200);
   });
 
+  await t.test("a configured public hostname makes the 401 challenge name it, not the underlying Netlify hostname the request actually arrived on", async () => {
+    const previousHostname = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    const previousUrl = process.env.URL;
+    process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = "app.alyandpon.com";
+    // Mirrors Netlify's own build-provided production URL var, which is what lets a request that
+    // really did arrive on the underlying *.netlify.app hostname pass Host validation in production.
+    process.env.URL = "https://elegant-bombolone-754d65.netlify.app";
+    try {
+      const response = await mcpRoute.POST(requestFor("https://elegant-bombolone-754d65.netlify.app/api/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }));
+      assert.equal(response.status, 401);
+      const challenge = response.headers.get("www-authenticate") ?? "";
+      assert.ok(challenge.includes("app.alyandpon.com"));
+      assert.ok(!challenge.includes("elegant-bombolone-754d65.netlify.app"));
+    } finally {
+      if (previousHostname === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previousHostname;
+      if (previousUrl === undefined) delete process.env.URL;
+      else process.env.URL = previousUrl;
+    }
+  });
+
+  await t.test("an inbound X-Forwarded-Host header cannot override the configured hostname in the 401 challenge", async () => {
+    const previous = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = "app.alyandpon.com";
+    try {
+      const response = await mcpRoute.POST(requestFor("http://localhost/api/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-host": "attacker.example" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }));
+      assert.equal(response.status, 401);
+      const challenge = response.headers.get("www-authenticate") ?? "";
+      assert.ok(challenge.includes("app.alyandpon.com"));
+      assert.ok(!challenge.includes("attacker.example"));
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previous;
+    }
+  });
+
+  await t.test("with no configured public hostname, the 401 challenge uses the request's own hostname (local/dev fallback)", async () => {
+    const previous = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    try {
+      const response = await mcpRoute.POST(requestFor("http://localhost/api/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }));
+      assert.equal(response.status, 401);
+      const challenge = response.headers.get("www-authenticate") ?? "";
+      assert.ok(challenge.includes("localhost"));
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previous;
+    }
+  });
+
+  await t.test("RFC 9728 discovery and the /api/mcp bearer challenge agree on the same canonical resource identity", async () => {
+    const previous = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+    process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = "app.alyandpon.com";
+    try {
+      const discoveryResponse = await wellKnown.GET(
+        new Request("https://app.alyandpon.com/.well-known/oauth-protected-resource/api/mcp"),
+      );
+      assert.equal(discoveryResponse.status, 200);
+      const discoveryBody = await discoveryResponse.json() as { resource: string };
+      assert.equal(discoveryBody.resource, "https://app.alyandpon.com/api/mcp");
+
+      const challengeResponse = await mcpRoute.POST(requestFor("http://localhost/api/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }));
+      assert.equal(challengeResponse.status, 401);
+      const challenge = challengeResponse.headers.get("www-authenticate") ?? "";
+      assert.ok(challenge.includes(`resource_metadata="https://app.alyandpon.com/.well-known/oauth-protected-resource/api/mcp"`));
+    } finally {
+      if (previous === undefined) delete process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+      else process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME = previous;
+    }
+  });
+
   await t.test("a request with no Origin header (the normal shape for non-browser MCP clients) is not refused by Origin validation", async () => {
     // Confirms Host/Origin hardening does not break the legitimate MCP client path exercised by
     // every other test in this file -- `connect()` below never sends an Origin header either, and

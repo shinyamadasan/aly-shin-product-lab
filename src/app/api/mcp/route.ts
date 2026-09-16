@@ -47,7 +47,7 @@ import {
 import { ProductLabError, readProductLabProjectConfig } from "../../../../scripts/product-lab/auth.ts";
 import { createInventoryCountServiceForClient } from "../../../../scripts/product-lab/inventory-count-service.ts";
 import { createProductLabMcpServer } from "../../../../scripts/product-lab-mcp/mcp-server.ts";
-import { allowedMcpHostnames } from "../../../../scripts/product-lab-mcp/origin-policy.ts";
+import { allowedMcpHostnames, canonicalMcpResourceUrl } from "../../../../scripts/product-lab-mcp/origin-policy.ts";
 import { createProductLabOAuthTokenVerifier, ownerContextFromAuthInfo } from "../../../../scripts/product-lab-mcp/remote-auth.ts";
 import { createProductLabReadServiceForClient } from "../../../../scripts/product-lab/read-service.ts";
 
@@ -92,7 +92,11 @@ async function handle(request: Request): Promise<Response> {
   const originRejection = originValidationResponse(request, allowedHostnames);
   if (originRejection) return originRejection;
 
-  const resourceUrl = new URL(request.url);
+  // Must agree with the RFC 9728 discovery document (src/app/.well-known/[...path]/route.ts) or an
+  // OAuth client's discovery step and this 401 challenge point at two different origins -- e.g.
+  // Netlify's underlying *.netlify.app hostname leaking into the challenge on a custom domain even
+  // though discovery correctly advertises it. See canonicalMcpResourceUrl in origin-policy.ts.
+  const resourceUrl = canonicalMcpResourceUrl(request.url);
   const gate = requireBearerAuth({
     verifier: createProductLabOAuthTokenVerifier(config),
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceUrl),

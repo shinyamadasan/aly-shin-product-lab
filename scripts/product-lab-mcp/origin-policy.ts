@@ -60,3 +60,21 @@ export function allowedMcpHostnames(
   if (env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME) hostnames.add(env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME);
   return [...hostnames];
 }
+
+// The canonical `/api/mcp` resource URL this deployment must advertise -- shared by RFC 9728
+// discovery (src/app/.well-known/[...path]/route.ts) and the WWW-Authenticate challenge the bearer
+// gate issues on a 401 (src/app/api/mcp/route.ts). Both call sites must agree, or an OAuth client's
+// discovery step and its 401 challenge point at two different origins -- exactly the Netlify
+// custom-domain mismatch (challenge naming the underlying *.netlify.app hostname instead of the
+// configured custom domain) this function exists to prevent. Never derived from Host,
+// X-Forwarded-Host, or any other inbound header: only the operator-configured
+// PRODUCT_LAB_MCP_PUBLIC_HOSTNAME (the same trusted variable allowedMcpHostnames above allowlists)
+// or, absent that, `requestUrl` itself, which keeps local/dev and platforms without an explicit
+// override working exactly as before this existed.
+export function canonicalMcpResourceUrl(requestUrl: string, env: OriginPolicyEnv = process.env): URL {
+  const publicHostname = env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
+  const resourceUrl = publicHostname ? new URL(`https://${publicHostname}/api/mcp`) : new URL(requestUrl);
+  resourceUrl.pathname = "/api/mcp";
+  resourceUrl.search = "";
+  return resourceUrl;
+}
