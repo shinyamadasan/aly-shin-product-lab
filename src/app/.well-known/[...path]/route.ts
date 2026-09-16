@@ -17,6 +17,7 @@
 // origin, which is the RFC 8414-documented reason the mirrored route exists at all.
 import { oauthMetadataResponse, type OAuthMetadata } from "@modelcontextprotocol/server";
 import { ProductLabError, readProductLabProjectConfig } from "../../../../scripts/product-lab/auth.ts";
+import { canonicalMcpResourceUrl } from "../../../../scripts/product-lab-mcp/origin-policy.ts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -61,17 +62,12 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   // The resource URL this metadata advertises is security-sensitive (RFC 9728) and must not be
-  // derived from inbound Host/X-Forwarded-Host headers, which are attacker-controlled. When an
-  // operator has configured the deployment's public hostname (see origin-policy.ts, which uses the
-  // same variable for Host/Origin allowlisting), that trusted value wins over whatever hostname
-  // `request.url` happened to carry -- e.g. Netlify's underlying site hostname on a custom domain.
-  // Falling back to `request.url` keeps local/dev and platforms without an explicit override working.
-  const publicHostname = process.env.PRODUCT_LAB_MCP_PUBLIC_HOSTNAME;
-  const resourceServerUrl = publicHostname
-    ? new URL(`https://${publicHostname}/api/mcp`)
-    : new URL(request.url);
-  resourceServerUrl.pathname = "/api/mcp";
-  resourceServerUrl.search = "";
+  // derived from inbound Host/X-Forwarded-Host headers, which are attacker-controlled -- and must
+  // agree with the WWW-Authenticate challenge src/app/api/mcp/route.ts issues on a 401, or an OAuth
+  // client's discovery step and its 401 challenge point at two different origins. Both call sites
+  // share canonicalMcpResourceUrl for exactly that reason; see its own documentation in
+  // origin-policy.ts for the trust model.
+  const resourceServerUrl = canonicalMcpResourceUrl(request.url);
 
   const response = oauthMetadataResponse(request, {
     oauthMetadata,
