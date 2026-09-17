@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const sql = readFileSync(new URL("../supabase/migrations/20260917090200_supply_entries_ingredient_fk.sql", import.meta.url), "utf8");
+const sql = readFileSync(new URL("../supabase/migrations/20260917175812_supply_entries_ingredient_fk.sql", import.meta.url), "utf8");
 const sqlStatementsOnly = sql
   .split("\n")
   .filter((line) => !line.trim().startsWith("--"))

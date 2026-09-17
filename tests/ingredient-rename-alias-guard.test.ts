@@ -21,7 +21,7 @@ test("isGenuineIngredientRename compares normalized names, not literal ones, and
 });
 
 // Rename-history preservation lives in a database trigger (ingredients_preserve_rename_history,
-// see supabase/migrations/20260917090100_ingredient_rename_history.sql) that fires for every
+// see supabase/migrations/20260917175805_ingredient_rename_history.sql) that fires for every
 // writer to ingredients.name, not only this call site. saveIngredient's Supabase branch is a
 // single plain update with no rename-specific branching, no separate RPC call, and no separate
 // error path for a failed rename (a failed rename now just fails the one update, surfacing through

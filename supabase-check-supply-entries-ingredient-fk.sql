@@ -1,5 +1,5 @@
 -- Run this FIRST, in the Supabase SQL Editor, before applying
--- supabase/migrations/20260917090200_supply_entries_ingredient_fk.sql (and again before running
+-- supabase/migrations/20260917175812_supply_entries_ingredient_fk.sql (and again before running
 -- `alter table supply_entries validate constraint supply_entries_ingredient_id_fkey;` afterward).
 -- Safe to run more than once -- read-only, no schema changes.
 --

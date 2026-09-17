@@ -24,7 +24,7 @@ export function describeIngredientConstraintError(error: Pick<PostgrestError, "c
   return error.message;
 }
 
-// hard_delete_ingredient_if_unreferenced (supabase/migrations/20260917090000_ingredient_hard_
+// hard_delete_ingredient_if_unreferenced (supabase/migrations/20260917175753_ingredient_hard_
 // delete_guard.sql) independently re-checks every reference category the client-side guard already
 // checked, inside the same transaction as the delete -- this is the message shown when that
 // server-side re-check finds a reference the client's own check missed (something else wrote a new

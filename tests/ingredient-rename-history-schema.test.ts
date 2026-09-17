@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 const purchaseImportWizardSource = readFileSync(new URL("../src/components/purchase-import-wizard.tsx", import.meta.url), "utf8");
 const bakePageSource = readFileSync(new URL("../src/components/bake-page.tsx", import.meta.url), "utf8");
 
-const sql = readFileSync(new URL("../supabase/migrations/20260917090100_ingredient_rename_history.sql", import.meta.url), "utf8");
+const sql = readFileSync(new URL("../supabase/migrations/20260917175805_ingredient_rename_history.sql", import.meta.url), "utf8");
 const sqlStatementsOnly = sql
   .split("\n")
   .filter((line) => !line.trim().startsWith("--"))

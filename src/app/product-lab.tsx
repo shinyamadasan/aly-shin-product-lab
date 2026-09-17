@@ -2120,7 +2120,7 @@ export default function ProductLab({
       // check above and this call (a second tab logging a purchase, a bake confirming) still
       // blocks the delete instead of silently succeeding. It also independently enforces that the
       // caller is the product lab owner (SECURITY DEFINER, since it bypasses the ingredients
-      // table's own RLS) -- see supabase/migrations/20260917090000_ingredient_hard_delete_guard.sql.
+      // table's own RLS) -- see supabase/migrations/20260917175753_ingredient_hard_delete_guard.sql.
       const { error } = await supabase.rpc("hard_delete_ingredient_if_unreferenced", { p_ingredient_id: ingredientId });
       setMessage(error ? `Permanent delete failed: ${describeHardDeleteError(ingredient.name, error)}` : "Ingredient permanently deleted.");
       setMessageTone(error ? "bad" : "good");
