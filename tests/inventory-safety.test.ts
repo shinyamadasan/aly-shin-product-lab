@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "../src/lib/inventory-safety.ts";
-import type { CostingEntry, Ingredient, InventoryTransaction, ProductBatch, SellingFormatPackagingLine, SupplyEntry } from "../src/lib/product-lab-types.ts";
+import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, itemReferenceCount, restoreItem } from "../src/lib/inventory-safety.ts";
+import type { CostingEntry, Ingredient, IngredientAlias, InventoryTransaction, ProductBatch, SellingFormatPackagingLine, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
   return {
@@ -225,4 +225,84 @@ test("buildHardDeleteBlockedMessage names Selling Format packaging usage, with c
 
   assert.equal(buildHardDeleteBlockedMessage(item, twoLines), "All Purpose Flour cannot be permanently deleted because it is used by 2 Selling Format packaging lines. Archive keeps history intact.");
   assert.equal(buildHardDeleteBlockedMessage(item, oneLine), "All Purpose Flour cannot be permanently deleted because it is used by 1 Selling Format packaging line. Archive keeps history intact.");
+});
+
+// These four tests prove the renamed-ingredient fix: saveIngredient's local/offline branch, and
+// the ingredients_preserve_rename_history database trigger for the Supabase branch, both record an
+// Item's old name as an ingredient_aliases row (source "rename") whenever a genuine rename happens.
+// getItemReferenceSummary doesn't need to know anything about renames specifically -- it already
+// treats ANY alias for this id as a durable reference, exactly like an alias created by CSV-import
+// or bake-formula matching. These tests exist to prove that reuse actually closes the gap: a
+// renamed Item whose old-name historical records (costing, batch formula, unmatched purchases) no
+// longer match its CURRENT name under normalizeIngredientName must still be blocked, and it's the
+// alias -- not the name match -- doing the blocking.
+test("a rename-sourced alias blocks hard delete even when every name-matched category is zero under the current name", () => {
+  const item = ingredient({ id: "flour-id", name: "APF (renamed)" });
+  const oldNameAlias: IngredientAlias = {
+    id: "alias-1",
+    rawText: "All Purpose Flour",
+    normalizedText: "all purpose flour",
+    ingredientId: "flour-id",
+    source: "rename",
+  };
+  // Historical records exist ONLY under the ingredient's OLD name -- none of them match "APF
+  // (renamed)", so every name-matched category comes back zero. Only the rename alias reflects
+  // that this Item has real history.
+  const costingUnderOldName: CostingEntry = {
+    id: "cost-1",
+    productId: "brownies",
+    batchId: "",
+    brandName: "",
+    ingredientName: "All Purpose Flour",
+    quantityUsed: 1,
+    unit: "g",
+    cost: 1,
+    supplierNote: "",
+  };
+  const summary = summaryFor(item, { ingredientAliases: [oldNameAlias], costingEntries: [costingUnderOldName] });
+
+  assert.equal(summary.legacyText.costingEntries, 0, "the old-name costing entry does not match the new name -- this is the exact gap being closed");
+  assert.equal(summary.durable.aliases, 1);
+  assert.equal(canHardDeleteItem(summary), false);
+});
+
+test("multiple renames leave multiple old-name aliases, and any one of them still blocks hard delete", () => {
+  const item = ingredient({ id: "flour-id", name: "Current Name" });
+  const aliases: IngredientAlias[] = [
+    { id: "alias-1", rawText: "Original Name", normalizedText: "original name", ingredientId: "flour-id", source: "rename" },
+    { id: "alias-2", rawText: "Intermediate Name", normalizedText: "intermediate name", ingredientId: "flour-id", source: "rename" },
+  ];
+  const summary = summaryFor(item, { ingredientAliases: aliases });
+
+  assert.equal(summary.durable.aliases, 2);
+  assert.equal(canHardDeleteItem(summary), false);
+});
+
+test("an Item that was created, then renamed, then genuinely never used stays blocked -- archive is the only option", () => {
+  // Documents the intended, accepted trade-off: a typo fixed via rename (rather than delete-and-
+  // recreate) permanently forfeits hard-delete eligibility even if the Item was never otherwise
+  // used, because the system cannot distinguish "harmless typo fix" from "rename of something with
+  // real history" after the fact. Archive remains fully available either way.
+  const item = ingredient({ id: "typo-id", name: "Flour" });
+  const renameAlias: IngredientAlias = {
+    id: "alias-1",
+    rawText: "Flur",
+    normalizedText: "flur",
+    ingredientId: "typo-id",
+    source: "rename",
+  };
+  const summary = summaryFor(item, { ingredientAliases: [renameAlias] });
+
+  assert.equal(itemReferenceCount(summary), 1);
+  assert.equal(canHardDeleteItem(summary), false);
+});
+
+test("an Item that was never renamed and never used has zero aliases and can still be hard deleted", () => {
+  // Confirms the fix is additive, not a regression: acceptance case #1 (brand-new unused Item)
+  // still passes with zero aliases of any source.
+  const item = ingredient();
+  const summary = summaryFor(item);
+
+  assert.equal(summary.durable.aliases, 0);
+  assert.equal(canHardDeleteItem(summary), true);
 });

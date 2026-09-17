@@ -116,7 +116,7 @@ import { applyBakeConfirmation } from "@/lib/bake-confirm";
 import type { BakeDeduction } from "@/lib/bake-deduction";
 import { applySupplyPurchaseEffect, planSupplyDelete, planSupplyEdit, repairMissingSupplyInventoryEffects, type SupplyRepairResult } from "@/lib/supply-inventory-effect";
 import { applyStockAdjustment, reverseStockAdjustment } from "@/lib/stock-adjustment";
-import { describeIngredientConstraintError } from "@/lib/inventory-errors";
+import { describeHardDeleteError, describeIngredientConstraintError } from "@/lib/inventory-errors";
 import {
   getAutoCostedIngredientRowForItems,
   getConversionLabel,
@@ -138,6 +138,7 @@ import {
   type BatchFormulaRow,
 } from "@/lib/batches";
 import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "@/lib/inventory-safety";
+import { normalizeIngredientName } from "@/lib/ingredient-normalization";
 import { canDeleteDraftBatch, canVoidBatch, getBatchReferenceSummary, getEffectiveBatchStatus, markBatchCompleted, voidBatch } from "@/lib/batch-safety";
 import { canDeleteProduct, getProductReferenceCount, totalProductReferenceCount } from "@/lib/product-safety";
 
@@ -2020,10 +2021,25 @@ export default function ProductLab({
       ...current,
       ingredients: ingredientId ? current.ingredients.map((entry) => (entry.id === ingredientId ? ingredient : entry)) : [ingredient, ...current.ingredients],
     }));
+    if (isGenuineIngredientRename(existingIngredient, ingredient)) {
+      await saveIngredientAlias(existingIngredient!.name, savedId, "rename");
+    }
     setEditingIngredient(null);
     setMessage("Ingredient saved locally.");
     setMessageTone("good");
     return savedId;
+  }
+
+  // True only for an edit to an EXISTING Item whose name actually changed in a way that could
+  // break name-matching (i.e. normalizeIngredientName's output differs) -- not for a brand-new
+  // Item (existingIngredient is undefined), and not for a pure case/whitespace/punctuation edit
+  // that normalizes to the same text, since that can never desync from a name-only historical
+  // record that already matches on normalized form. The Supabase path needs no equivalent call --
+  // ingredients_preserve_rename_history (a database trigger) already preserves a genuine rename's
+  // old name for every writer, so this detection is only needed for the local/offline fallback
+  // above, which has no database trigger behind it.
+  function isGenuineIngredientRename(existingIngredient: Ingredient | undefined, nextIngredient: Ingredient): boolean {
+    return Boolean(existingIngredient) && normalizeIngredientName(existingIngredient!.name) !== normalizeIngredientName(nextIngredient.name);
   }
 
   async function deleteIngredient(ingredientId: string) {
@@ -2074,12 +2090,6 @@ export default function ProductLab({
   }
 
   async function hardDeleteIngredient(ingredientId: string) {
-    if (supabase && session) {
-      setMessage("Permanent inventory deletion is disabled. Archive this ingredient to preserve its history.");
-      setMessageTone("bad");
-      return;
-    }
-
     const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
     if (!ingredient) {
       setMessage("Ingredient not found.");
@@ -2099,6 +2109,25 @@ export default function ProductLab({
     if (!canHardDeleteItem(summary)) {
       setMessage(buildHardDeleteBlockedMessage(ingredient, summary));
       setMessageTone("bad");
+      return;
+    }
+
+    if (supabase && session) {
+      // The client-side check above is the fast, itemized "why" for the operator. This call is
+      // the real authority: hard_delete_ingredient_if_unreferenced independently re-checks every
+      // reference category, inside the same transaction as the delete, against the database
+      // directly rather than these already-loaded arrays -- so a reference created between the
+      // check above and this call (a second tab logging a purchase, a bake confirming) still
+      // blocks the delete instead of silently succeeding. It also independently enforces that the
+      // caller is the product lab owner (SECURITY DEFINER, since it bypasses the ingredients
+      // table's own RLS) -- see supabase/migrations/20260917090000_ingredient_hard_delete_guard.sql.
+      const { error } = await supabase.rpc("hard_delete_ingredient_if_unreferenced", { p_ingredient_id: ingredientId });
+      setMessage(error ? `Permanent delete failed: ${describeHardDeleteError(ingredient.name, error)}` : "Ingredient permanently deleted.");
+      setMessageTone(error ? "bad" : "good");
+      if (!error && editingIngredient?.id === ingredientId) {
+        setEditingIngredient(null);
+      }
+      await loadSupabaseData();
       return;
     }
 
