@@ -55,12 +55,42 @@ function evaluateFunction(fnNode: ts.Node, context: Record<string, unknown>) {
 const purchasePage = component(app, "PurchaseLogPage");
 const record = component(app, "PurchaseRecordRow");
 
-test("Wave 0B: only Delete and the legacy Repair tool remain disabled while a purchase is posted remotely", () => {
-  for (const [root, label] of [[record, "Delete"], [purchasePage, "Repair missing purchase effects"]] as const) {
-    const disabled = attribute(button(root, label), "disabled");
-    assert.equal(evaluate(disabled, { deleteAndRepairPaused: true }), true, label);
-    assert.equal(evaluate(disabled, { deleteAndRepairPaused: false }), false, `${label}: local mode preserved`);
-  }
+test("Wave 0B: the legacy Repair tool remains disabled while a purchase is posted remotely", () => {
+  const disabled = attribute(button(purchasePage, "Repair missing purchase effects"), "disabled");
+  assert.equal(evaluate(disabled, { deleteAndRepairPaused: true }), true);
+  assert.equal(evaluate(disabled, { deleteAndRepairPaused: false }), false, "local mode preserved");
+});
+
+test("Safe Purchase Delete: the Delete button's disabled/tooltip state is computed per-purchase, never a blanket pause", () => {
+  assert.equal(attribute(button(record, "Delete"), "disabled"), "deleteDisabled");
+  assert.equal(attribute(button(record, "Delete"), "title"), "deleteTooltip");
+
+  const eligibility = nodes(record, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "eligibility")[0] as ts.VariableDeclaration;
+  const deleteDisabled = nodes(record, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "deleteDisabled")[0] as ts.VariableDeclaration;
+  const deleteTooltip = nodes(record, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "deleteTooltip")[0] as ts.VariableDeclaration;
+  const getPurchaseDeleteEligibility = (supply: { ingredientId: string }, transactions: unknown[]) =>
+    supply.ingredientId ? (transactions.length > 0 ? { eligible: true, kind: "reversible" } : { eligible: false, reason: "blocked" }) : { eligible: true, kind: "unmatched" };
+  const evalWith = (node: ts.VariableDeclaration, context: Record<string, unknown>) => evaluate(node.initializer?.getText(), context);
+
+  // Local (non-remote) mode never computes eligibility at all -- the button stays unconditionally
+  // enabled, exactly as it did before this feature, since deleteAndRepairPaused doubles as
+  // "remote mode is active".
+  assert.equal(evalWith(eligibility, { deleteAndRepairPaused: false, supply: { ingredientId: "x" }, transactions: [], getPurchaseDeleteEligibility }), null);
+  assert.equal(evalWith(deleteDisabled, { eligibility: null }), false);
+  assert.equal(evalWith(deleteTooltip, { eligibility: null }), undefined);
+
+  // Remote mode: an eligible purchase (matched, still reversible) enables the button with no tooltip.
+  const eligibleResult = evalWith(eligibility, { deleteAndRepairPaused: true, supply: { ingredientId: "x" }, transactions: [1], getPurchaseDeleteEligibility });
+  assert.equal(eligibleResult.eligible, true);
+  assert.equal(evalWith(deleteDisabled, { eligibility: eligibleResult }), false);
+  assert.equal(evalWith(deleteTooltip, { eligibility: eligibleResult }), undefined);
+
+  // Remote mode: a blocked purchase (CSV-imported, or superseded by later activity) disables the
+  // button and surfaces the specific reason as its tooltip.
+  const blockedResult = evalWith(eligibility, { deleteAndRepairPaused: true, supply: { ingredientId: "x" }, transactions: [], getPurchaseDeleteEligibility });
+  assert.equal(blockedResult.eligible, false);
+  assert.equal(evalWith(deleteDisabled, { eligibility: blockedResult }), true);
+  assert.equal(evalWith(deleteTooltip, { eligibility: blockedResult }), "blocked");
 });
 
 test("Wave 0B: Save/Update, Edit, Log Purchase, and CSV/Bake confirm are never gated by deleteAndRepairPaused", () => {
@@ -75,12 +105,11 @@ test("Wave 0B: Save/Update, Edit, Log Purchase, and CSV/Bake confirm are never g
   assert.doesNotMatch(attribute(confirmBakeButton, "disabled") ?? "", /deleteAndRepairPaused|postingPaused|remotePosting/);
 });
 
-test("Delete and Repair handlers cannot be invoked while deleteAndRepairPaused, and never touch old RPCs", () => {
-  const forbidden = () => { assert.fail("paused action invoked a callback or confirmation"); };
-  const context = { deleteAndRepairPaused: true, window: { confirm: forbidden }, deleteSupply: forbidden, repairSupplyInventoryEffects: forbidden };
-  evaluate(attribute(button(record, "Delete"), "onClick"), context)();
-  evaluate(attribute(button(purchasePage, "Repair missing purchase effects"), "onClick"), context)();
-  // Edit is never gated -- calling it always invokes editSupply, even while deleteAndRepairPaused.
+test("Delete and Repair handlers cannot be invoked while blocked, and never touch old RPCs", () => {
+  const forbidden = () => { assert.fail("blocked action invoked a callback or confirmation"); };
+  evaluate(attribute(button(record, "Delete"), "onClick"), { deleteDisabled: true, window: { confirm: forbidden }, deleteSupply: forbidden })();
+  evaluate(attribute(button(purchasePage, "Repair missing purchase effects"), "onClick"), { deleteAndRepairPaused: true, window: { confirm: forbidden }, repairSupplyInventoryEffects: forbidden })();
+  // Edit is never gated -- calling it always invokes editSupply, even while deleteDisabled.
   let edited = false;
   evaluate(attribute(button(record, "Edit"), "onClick"), { supply: { id: "s1" }, editSupply: () => { edited = true; } })();
   assert.equal(edited, true);
@@ -145,9 +174,13 @@ test("Wave 0B: manual purchase posting, CSV confirm, and Bake confirm call the n
   assert.match(confirmBakeText, /added to finished stock/);
 });
 
-test("deleteSupply and repairSupplyInventoryEffects stay refused remotely, with an accurate message", () => {
+test("Safe Purchase Delete: deleteSupply calls the new RPC remotely, with RAW_PURCHASE_DELETE_BLOCKED only as a fallback message; repairSupplyInventoryEffects stays refused remotely", () => {
   const deleteSupply = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "deleteSupply")[0];
-  assert.match(deleteSupply.getText(), /RAW_PURCHASE_DELETE_BLOCKED/);
+  const deleteSupplyText = deleteSupply.getText();
+  assert.match(deleteSupplyText, /supabase\.rpc\("delete_posted_purchase_if_reversible", deletePostedPurchaseIfReversibleArgs\(supplyId, operationId\)\)/);
+  assert.match(deleteSupplyText, /deletePurchaseOperationIdsRef/);
+  assert.match(deleteSupplyText, /describeIngredientConstraintError\(error\) \|\| RAW_PURCHASE_DELETE_BLOCKED/);
+  assert.doesNotMatch(deleteSupplyText, /delete_supply_with_inventory_effect/);
   const repair = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "repairSupplyInventoryEffects")[0];
   assert.match(repair.getText(), /RAW_REPAIR_BLOCKED/);
 });

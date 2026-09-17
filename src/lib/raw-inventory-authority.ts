@@ -5,9 +5,12 @@ import type { FinishedStockExceptionType, Ingredient, InventoryTransaction, Supp
 // posting, CSV confirm, and Bake consumption through database-authoritative mutations; only
 // what Wave 0B deliberately still does not restore keeps a pause message, below.
 
-// A purchase with a ledger effect is historical fact once posted -- Wave 0B intentionally does
-// not add a safe way to delete one. Correct the recorded balance with a stock adjustment instead.
-export const RAW_PURCHASE_DELETE_BLOCKED = "Posted purchases can't be deleted. Use a stock adjustment to correct the recorded balance instead.";
+// Safe Purchase Delete (delete_posted_purchase_if_reversible) closed the gap this message used to
+// describe unconditionally ("Wave 0B intentionally does not add a safe way to delete one"). It is
+// now only shown for a purchase getPurchaseDeleteEligibility() has already determined is NOT
+// reversible -- kept as a generic fallback string; the specific eligibility reason from that
+// function is always preferred when one is available.
+export const RAW_PURCHASE_DELETE_BLOCKED = "This purchase can't be safely deleted. Use a stock adjustment to correct the recorded balance instead.";
 
 // The one-time pre-Wave-0A backfill for purchases that predate ledger tracking entirely. Its
 // contract -- browser computes an absolute ending quantity/cost and asks the database to accept
@@ -36,6 +39,45 @@ export function adjustmentSupersededByCount(transaction: InventoryTransaction, i
 export function latestInventoryMovement(ingredientId: string, movements: InventoryTransaction[]): InventoryTransaction | undefined {
   return movements.filter((row) => row.ingredientId === ingredientId)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0];
+}
+
+// Safe Purchase Delete: client-side ADVISORY preview only (button enabled/disabled + which message
+// to show), never the enforcement -- delete_posted_purchase_if_reversible re-derives every one of
+// these checks itself against the locked, authoritative rows before ever deleting anything, the
+// same trust boundary every other mutation in this file already draws. Mirrors
+// planSupplyDelete/isSafeToRecalculate's local-only logic, but all-or-nothing (no "quantity-only"
+// partial fallback) -- the database path either reverses exactly or refuses, never guesses a
+// partial correction.
+export type PurchaseDeleteEligibility =
+  | { eligible: true; kind: "unmatched" | "reversible" }
+  | { eligible: false; reason: string };
+
+export function getPurchaseDeleteEligibility(
+  supply: Pick<SupplyEntry, "id" | "ingredientId">,
+  transactions: InventoryTransaction[],
+): PurchaseDeleteEligibility {
+  if (!supply.ingredientId) {
+    // Never matched to an Item -- structurally impossible for this purchase to have ever produced
+    // a ledger row (inventory_transactions.ingredient_id is NOT NULL) or moved any balance.
+    return { eligible: true, kind: "unmatched" };
+  }
+  const ownTransaction = transactions.find(
+    (transaction) => transaction.transactionType === "purchase" && transaction.sourceType === "manual" && transaction.sourceId === supply.id,
+  );
+  if (!ownTransaction) {
+    // Either CSV-imported (one combined ledger row per ingredient per upload -- this purchase's own
+    // contribution can't be isolated) or predates per-purchase ledger tracking entirely.
+    return { eligible: false, reason: "This purchase's inventory effect can't be isolated (it may be part of a CSV import batch, or predates per-purchase ledger tracking). Use a stock adjustment to correct the balance instead." };
+  }
+  const latest = latestInventoryMovement(supply.ingredientId, transactions);
+  if (!latest || latest.id !== ownTransaction.id) {
+    return { eligible: false, reason: "Later inventory activity exists for this Item, so this purchase can no longer be safely reversed. Use a stock adjustment to correct the balance instead." };
+  }
+  return { eligible: true, kind: "reversible" };
+}
+
+export function deletePostedPurchaseIfReversibleArgs(supplyId: string, operationId: string) {
+  return { p_operation_id: operationId, p_supply_id: supplyId };
 }
 
 export function rawAdjustmentArgs(ingredient: Ingredient, movements: InventoryTransaction[], input: {

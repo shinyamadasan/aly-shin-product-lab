@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  adjustmentSupersededByCount, confirmBakeArgs, ingredientMetadataPayload, latestInventoryMovement,
-  postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs, rawAdjustmentArgs, updatePostedPurchaseMetadataArgs,
+  adjustmentSupersededByCount, confirmBakeArgs, deletePostedPurchaseIfReversibleArgs, getPurchaseDeleteEligibility,
+  ingredientMetadataPayload, latestInventoryMovement, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
+  rawAdjustmentArgs, updatePostedPurchaseMetadataArgs,
 } from "../src/lib/raw-inventory-authority.ts";
 import type { Ingredient, InventoryTransaction, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
@@ -77,6 +78,60 @@ test("posted purchase edits are flagged unsafe exactly when quantity, unit, cost
   assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, unit: "kg" }), true);
   assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, totalCost: 80 }), true);
   assert.equal(postedPurchaseInventoryFieldsChanged(supply, { ...supply, ingredientId: "flour" }), true);
+});
+
+test("delete_posted_purchase_if_reversible args carry only the operation id and the purchase -- no client-computed ending state", () => {
+  const args = deletePostedPurchaseIfReversibleArgs("supply-1", "op-3");
+  assert.deepEqual(args, { p_operation_id: "op-3", p_supply_id: "supply-1" });
+});
+
+test("purchase delete eligibility: unmatched purchases are always eligible -- provably zero effect", () => {
+  const result = getPurchaseDeleteEligibility({ id: "supply-1", ingredientId: "" }, []);
+  assert.deepEqual(result, { eligible: true, kind: "unmatched" });
+});
+
+test("purchase delete eligibility: a manually-posted purchase still the latest movement is reversible", () => {
+  const transactions: InventoryTransaction[] = [
+    { ...movements[0], id: "own", sourceId: "supply-1", createdAt: "2026-07-01T00:00:00Z" },
+  ];
+  assert.deepEqual(getPurchaseDeleteEligibility({ id: "supply-1", ingredientId: "sugar" }, transactions), { eligible: true, kind: "reversible" });
+});
+
+test("purchase delete eligibility: same-instant tie breaks by id, not timestamp alone -- matches the database's created_at desc, id desc", () => {
+  // Own transaction's id ("own") sorts BEFORE a same-instant sibling's id ("zzz") -- the sibling
+  // wins the tie, so it is correctly no longer the latest movement and must be blocked.
+  const blockedByTie: InventoryTransaction[] = [
+    { ...movements[0], id: "own", sourceId: "supply-1", createdAt: "2026-07-01T00:00:00Z" },
+    { ...movements[0], id: "zzz", sourceId: "other", createdAt: "2026-07-01T00:00:00Z" },
+  ];
+  assert.equal(getPurchaseDeleteEligibility({ id: "supply-1", ingredientId: "sugar" }, blockedByTie).eligible, false);
+
+  // Own transaction's id ("zzz") sorts AFTER a same-instant sibling's id ("own") -- it still wins
+  // the tie and remains reversible, proving the outcome depends on the id, not just the timestamp.
+  const wonByTie: InventoryTransaction[] = [
+    { ...movements[0], id: "own", sourceId: "other", createdAt: "2026-07-01T00:00:00Z" },
+    { ...movements[0], id: "zzz", sourceId: "supply-1", createdAt: "2026-07-01T00:00:00Z" },
+  ];
+  assert.deepEqual(getPurchaseDeleteEligibility({ id: "supply-1", ingredientId: "sugar" }, wonByTie), { eligible: true, kind: "reversible" });
+});
+
+test("purchase delete eligibility: blocked once later inventory activity exists for the Item", () => {
+  const transactions: InventoryTransaction[] = [
+    { ...movements[0], id: "own", sourceId: "supply-1", createdAt: "2026-07-01T00:00:00Z" },
+    { ...movements[0], id: "later", sourceId: "other", createdAt: "2026-07-02T00:00:00Z" },
+  ];
+  const result = getPurchaseDeleteEligibility({ id: "supply-1", ingredientId: "sugar" }, transactions);
+  assert.equal(result.eligible, false);
+  assert.match((result as { reason: string }).reason, /Later inventory activity/);
+});
+
+test("purchase delete eligibility: blocked when no directly-linked ledger row exists (CSV import or pre-ledger legacy)", () => {
+  const transactions: InventoryTransaction[] = [
+    { ...movements[0], id: "combined", sourceType: "purchase_import", sourceId: "import-1", createdAt: "2026-07-01T00:00:00Z" },
+  ];
+  const result = getPurchaseDeleteEligibility({ id: "supply-1", ingredientId: "sugar" }, transactions);
+  assert.equal(result.eligible, false);
+  assert.match((result as { reason: string }).reason, /can't be isolated/);
 });
 
 test("confirm_bake_v3 args carry the batch, product, observed pieces, a pre-resolved snake_cased deduction list, and no allow-negative escape", () => {

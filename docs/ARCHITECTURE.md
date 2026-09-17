@@ -629,6 +629,57 @@ exact recounts preserve it. Repair still proceeds forward through verified count
 rewriting history. See the `SELLING_WAVE_*` planning records and
 `supabase/migrations/20260912090000_cost_baseline_repair.sql`.
 
+**Safe Purchase Delete** (`supabase/migrations/20260917175840_safe_purchase_delete.sql`) closes the
+one gap Wave 0B deliberately left open — deleting a posted purchase. Same
+`inventory_private`/`public` pair shape as every function above:
+`delete_posted_purchase_if_reversible` deletes a purchase never matched to an Item outright (a
+purchase can never have produced a ledger row through any current write path --
+`inventory_transactions.ingredient_id` is `not null` -- but `source_id` is a loose text column, not
+a real foreign key, so this is re-verified directly: any ledger row that happens to carry this
+purchase's id as its `source_id` blocks the delete rather than being ignored), and
+reverses-then-deletes a manually-posted purchase (`post_raw_purchase`) exactly when its own ledger
+row is still the single latest `inventory_transactions` row for its ingredient (`created_at desc, id
+desc`, the same tie-break used everywhere else a "latest" row is resolved) -- quantity returns to
+that row's own `quantity_before`.
+
+`average_unit_cost` reversal needed a fix mid-review: `quantity_before = 0` does not prove the prior
+average was `0` -- Cost Baseline Repair (`certify_ingredient_cost_baseline`) can certify a positive
+average independent of quantity, and a purchase posted from that state produces a weighted average
+with no trace of the prior value (its weight was zero), so nothing in the post-purchase state alone
+can recover it. `post_raw_purchase` now stores a narrow `purchase_reversal_snapshot` (same pattern as
+`reconciliation_snapshot`/`cost_certification_snapshot` -- a new, single-producer column, never an
+overloaded existing one) on the ledger row it inserts, capturing the ingredient's
+`average_unit_cost` immediately before its own math ran. Deletion prefers this exact recorded value
+whenever it exists (correct for any `quantity_before`, including a genuinely-zero or genuinely-null
+prior average); falls back to the algebraic inverse of `post_raw_purchase`'s formula only for a
+purchase posted before this column existed AND whose `quantity_before > 0` (still provably exact,
+since a nonzero weight means the prior value is recoverable); and refuses the delete outright for a
+pre-snapshot purchase with `quantity_before = 0`, where the prior average cannot be proven by any
+means. Ported from the already-tested pure `reverseSupplyPurchaseEffect`/`isSafeToRecalculate` in
+`src/lib/supply-inventory-effect.ts`, corrected for this one case that pure function's local-only
+contract didn't need to handle safely. `cost_reconciled_at` is never written by this function in
+either direction, matching `post_raw_purchase`'s own documented invariant that an ordinary purchase
+never touches it.
+
+Everything else is refused, never guessed at: a CSV-imported purchase (`confirm_purchase_import_v2`
+posts one combined ledger row per ingredient per upload, not one per `supply_entries` row, so one
+row's own contribution can't be isolated) and any purchase whose ledger row is no longer the latest
+movement (a later purchase, Bake, adjustment, physical count, or cost certification -- the last of
+these needs no special-casing, since a certification is itself a ledger row). Client-side
+`getPurchaseDeleteEligibility` (`src/lib/raw-inventory-authority.ts`) is an advisory-only preview
+mirroring the reversibility/latest-movement logic (not the cost-snapshot arithmetic, which only
+matters once the database is actually about to write) for the Delete button's enabled state and
+confirm copy; the RPC itself re-derives every check against the locked, authoritative rows and is
+the only real enforcement. Ingredient permanent-delete (`hard_delete_ingredient_if_unreferenced`)
+needs no changes -- deleting a purchase clears that one specific reference from its count, nothing
+more. Deleting the purchase does not, by itself, make permanent-delete available: a verified
+physical count is required before `post_raw_purchase` will ever post a purchase in the first place,
+and that count is itself an `inventory_transactions` row the hard-delete guard also counts and this
+migration never touches or auto-cleans. Existing independent history -- physical-count
+reconciliation, any adjustment, any Bake, any alias, any costing entry, any other purchase or CSV
+import, any Selling Format packaging line -- continues to block permanent deletion exactly as
+before.
+
 ## Claude Inventory Operator V1A
 
 The project-scoped Claude Code skill at `.claude/skills/product-lab-inventory/SKILL.md` turns a

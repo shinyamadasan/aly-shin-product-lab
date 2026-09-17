@@ -43,7 +43,8 @@ import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
 import {
-  certifyIngredientCostBaselineArgs, confirmBakeArgs, ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
+  certifyIngredientCostBaselineArgs, confirmBakeArgs, deletePostedPurchaseIfReversibleArgs, getPurchaseDeleteEligibility,
+  ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
   rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, recordFinishedStockExceptionArgs, updatePostedPurchaseMetadataArgs,
 } from "@/lib/raw-inventory-authority";
 import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
@@ -215,6 +216,10 @@ export default function ProductLab({
   // confirmPurchaseImport's own comment) -- an import id is never reused once confirmed, so
   // entries are never cleaned up beyond the delete on success.
   const csvConfirmOperationIdsRef = useRef(new Map<string, string>());
+  // Same shape, one operation id per purchase being deleted -- a retry of the same delete click
+  // reuses it (delete_posted_purchase_if_reversible's idempotency claim needs that), deleted on
+  // success the same way csvConfirmOperationIdsRef is above.
+  const deletePurchaseOperationIdsRef = useRef(new Map<string, string>());
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
@@ -1709,10 +1714,30 @@ export default function ProductLab({
     return !previousSupply;
   }
 
+  // Safe Purchase Delete: delete_posted_purchase_if_reversible re-derives eligibility itself
+  // against the locked, authoritative rows (see that function's own comment) -- the RPC is called
+  // unconditionally here; PurchaseRecordRow's own getPurchaseDeleteEligibility check is advisory UI
+  // only (disables the button, picks the confirm message) and is never trusted as enforcement.
   async function deleteSupply(supplyId: string) {
     if (supabase && session) {
-      setMessage(RAW_PURCHASE_DELETE_BLOCKED);
-      setMessageTone("bad");
+      let operationId = deletePurchaseOperationIdsRef.current.get(supplyId);
+      if (!operationId) {
+        operationId = crypto.randomUUID();
+        deletePurchaseOperationIdsRef.current.set(supplyId, operationId);
+      }
+      const { error } = await supabase.rpc("delete_posted_purchase_if_reversible", deletePostedPurchaseIfReversibleArgs(supplyId, operationId));
+      if (error) {
+        setMessage(describeIngredientConstraintError(error) || RAW_PURCHASE_DELETE_BLOCKED);
+        setMessageTone("bad");
+        return;
+      }
+      deletePurchaseOperationIdsRef.current.delete(supplyId);
+      if (editingSupply?.id === supplyId) {
+        setEditingSupply(null);
+      }
+      setMessage("Purchase deleted.");
+      setMessageTone("good");
+      await loadSupabaseData();
       return;
     }
 
@@ -5385,27 +5410,50 @@ function PurchaseRecordRow({
   editSupply,
   isActive,
   supply,
+  transactions,
 }: {
-  // Wave 0B still does not restore deleting a posted purchase (see RAW_PURCHASE_DELETE_BLOCKED) --
-  // editing is unaffected: saveSupply itself now decides whether an edit is safe metadata-only or
+  // deleteAndRepairPaused doubles as "remote mode is active": the legacy repair tool stays fully
+  // blocked in that mode (see RAW_REPAIR_BLOCKED), while Delete's own disabled state is computed
+  // per-purchase below via getPurchaseDeleteEligibility, not by this flag alone. Editing is
+  // unaffected either way -- saveSupply itself decides whether an edit is safe metadata-only or
   // must be rejected for touching a posted purchase's quantity/unit/cost/item.
   deleteAndRepairPaused?: boolean;
   deleteSupply: (supplyId: string) => void;
   editSupply: (supply: SupplyEntry) => void;
   isActive?: boolean;
   supply: SupplyEntry;
+  transactions: InventoryTransaction[];
 }) {
   const unitCost = supply.packQuantity > 0 ? supply.totalCost / supply.packQuantity : 0;
   const supplierLabel = supply.supplierName || "Supplier not set";
   const brandLabel = supply.brandName || "Brand not set";
   const source = "source" in supply ? String((supply as SupplyEntry & { source?: string }).source || "") : "";
-  const deleteMessage = [
-    `Delete this purchase record?`,
-    `${brandLabel} / ${supply.ingredientName} / ${supplierLabel} / ${supply.purchaseDate || "date not set"} / ${supply.packQuantity}${supply.unit ? ` ${supply.unit}` : ""} / PHP ${supply.totalCost.toFixed(2)}`,
-    "Only this purchase record will be removed.",
-    "Current stock will not change.",
-    "No InventoryTransaction will be created, changed, or deleted.",
-  ].join("\n\n");
+  // Advisory only, for the button's disabled state and the confirm/tooltip copy --
+  // delete_posted_purchase_if_reversible re-derives this exact eligibility itself against the
+  // locked, authoritative rows and is what actually enforces it (see deleteSupply's own comment).
+  // Local (non-remote) mode keeps its existing unconditional-enabled behavior unchanged.
+  const eligibility = deleteAndRepairPaused ? getPurchaseDeleteEligibility(supply, transactions) : null;
+  const deleteDisabled = eligibility !== null && !eligibility.eligible;
+  const deleteTooltip = eligibility && !eligibility.eligible ? eligibility.reason : undefined;
+  const deleteMessage = eligibility?.eligible
+    ? eligibility.kind === "reversible"
+      ? [
+          `Delete this purchase record?`,
+          `${brandLabel} / ${supply.ingredientName} / ${supplierLabel} / ${supply.purchaseDate || "date not set"} / ${supply.packQuantity}${supply.unit ? ` ${supply.unit}` : ""} / PHP ${supply.totalCost.toFixed(2)}`,
+          "This purchase's inventory effect will be exactly reversed: stock and average cost return to what they were before it, and its ledger entry is removed.",
+        ].join("\n\n")
+      : [
+          `Delete this purchase record?`,
+          `${brandLabel} / ${supply.ingredientName} / ${supplierLabel} / ${supply.purchaseDate || "date not set"} / ${supply.packQuantity}${supply.unit ? ` ${supply.unit}` : ""} / PHP ${supply.totalCost.toFixed(2)}`,
+          "It was never matched to an Item, so it never had an inventory effect. Only this record will be removed.",
+        ].join("\n\n")
+    : [
+        `Delete this purchase record?`,
+        `${brandLabel} / ${supply.ingredientName} / ${supplierLabel} / ${supply.purchaseDate || "date not set"} / ${supply.packQuantity}${supply.unit ? ` ${supply.unit}` : ""} / PHP ${supply.totalCost.toFixed(2)}`,
+        "Only this purchase record will be removed.",
+        "Current stock will not change.",
+        "No InventoryTransaction will be created, changed, or deleted.",
+      ].join("\n\n");
 
   return (
     <article className={`grid gap-4 p-5 lg:grid-cols-[1fr_160px_160px_120px_140px] ${isActive ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`} key={supply.id}>
@@ -5435,7 +5483,7 @@ function PurchaseRecordRow({
       </div>
       <div className="flex gap-2 lg:flex-col">
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editSupply(supply)} type="button">Edit</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827] disabled:cursor-not-allowed disabled:opacity-50" disabled={deleteAndRepairPaused} title={deleteAndRepairPaused ? RAW_PURCHASE_DELETE_BLOCKED : undefined} onClick={() => !deleteAndRepairPaused && window.confirm(deleteMessage) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
+        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827] disabled:cursor-not-allowed disabled:opacity-50" disabled={deleteDisabled} title={deleteTooltip} onClick={() => !deleteDisabled && window.confirm(deleteMessage) ? deleteSupply(supply.id) : undefined} type="button">Delete</button>
       </div>
     </article>
   );
@@ -5921,9 +5969,10 @@ function PurchaseLogPage({
   saveSupply,
   supply,
 }: {
-  // Wave 0B still does not restore deleting a posted purchase or the legacy repair tool (see
-  // RAW_PURCHASE_DELETE_BLOCKED/RAW_REPAIR_BLOCKED); Save/Update always attempts -- saveSupply
-  // itself decides whether a remote edit is safe and surfaces any rejection.
+  // The legacy repair tool stays fully blocked remotely (see RAW_REPAIR_BLOCKED). Deleting a
+  // posted purchase is now allowed when Safe Purchase Delete can prove it's exactly reversible --
+  // see PurchaseRecordRow's own getPurchaseDeleteEligibility check. Save/Update always attempts --
+  // saveSupply itself decides whether a remote edit is safe and surfaces any rejection.
   deleteAndRepairPaused?: boolean;
   cancelEdit: () => void;
   deleteSupply: (supplyId: string) => void;
@@ -6172,7 +6221,7 @@ function PurchaseLogPage({
                   <details className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3]">
                     <summary className="cursor-pointer p-3 text-sm font-semibold text-[#5f4a3d]">Purchase history</summary>
                     <div className="divide-y divide-[#ead9c8] bg-white">
-                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} transactions={labState.inventoryTransactions} />)}
                     </div>
                   </details>
                 </article>
@@ -6185,7 +6234,7 @@ function PurchaseLogPage({
                   <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">These purchase records do not resolve to a current Item. Records with unknown Item IDs are kept here and are not matched by name.</p>
                 </div>
                 <div className="divide-y divide-[#f0e4d8]">
-                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+                  {unlinkedPurchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} transactions={labState.inventoryTransactions} />)}
                 </div>
               </section>
             ) : null}
@@ -6193,7 +6242,7 @@ function PurchaseLogPage({
         ) : (
         <div className="divide-y divide-[#f0e4d8]">
           {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
-          {chronologicalPurchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} />)}
+          {chronologicalPurchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} transactions={labState.inventoryTransactions} />)}
         </div>
         )}
       </div>
