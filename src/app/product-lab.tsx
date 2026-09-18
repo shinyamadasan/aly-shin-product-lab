@@ -6112,10 +6112,10 @@ function PurchaseLogPage({
 
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
-      <FormPanel ref={editorRef} title={supply ? "Edit purchase" : "Log purchase"} icon={<PackageCheck size={18} />}>
+      <FormPanel ref={editorRef} title={supply?.id ? "Edit purchase" : "Log purchase"} icon={<PackageCheck size={18} />}>
         {supply ? (
           <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
-            Editing: {supply.brandName ? `${supply.brandName} ` : ""}{supply.ingredientName}
+            {supply.id ? "Editing" : "Logging purchase for"}: {supply.brandName ? `${supply.brandName} ` : ""}{supply.ingredientName}
           </p>
         ) : null}
         {isSuppliesTableMissing ? (
@@ -6140,8 +6140,8 @@ function PurchaseLogPage({
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
           <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." defaultValue={supply?.notes} />
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Button disabled={isSaving}>{isSaving ? "Saving..." : supply ? "Update purchase" : "Save purchase"}</Button>
-            {supply ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+            <Button disabled={isSaving}>{isSaving ? "Saving..." : supply?.id ? "Update purchase" : "Save purchase"}</Button>
+            {supply ? <SecondaryButton onClick={cancelEdit}>{supply.id ? "Cancel edit" : "Cancel"}</SecondaryButton> : null}
             {isSaving ? <span className="text-sm text-[#6f5a4c]">Please don&apos;t refresh or close this tab until this finishes.</span> : null}
           </div>
         </form>
