@@ -430,3 +430,56 @@ production inventory mutation was touched. No deployment cutover; Vercel remains
 access-control logic for an authenticated MCP endpoint; the task that produced this change
 explicitly stops short of merging (PR only) pending independent review and a real Netlify trial
 deployment.
+
+## 2026-09-18 — Operations Dashboard V1 + navigation calm-down
+
+**Scope:** `/` becomes the Dashboard, Today moves to `/today`; grouped navigation
+(`lab-state.ts`, `app-shell.tsx`); old product-proof Dashboard replaced by `dashboard-page.tsx` plus
+`src/lib/dashboard/*`; `route-redirects.ts`/`next.config.ts`; 41 new tests, 5 existing tests
+updated to the new contract. No schema, migration, auth or Supabase-facing change.
+
+**Verdict:** Sound, with the judgement calls below stated rather than buried.
+- Every number reuses its owner: `buildSellingSummary`, `deriveFinishedStockBalances`,
+  `getPreparationByProduct`, the inventory-status helpers. A structural test forbids the dashboard
+  from importing the revenue/pieces/fulfilment modules.
+- Finished-stock demand counts `new` orders only. Checked against the Wave 2 migration, not assumed:
+  reservation happens at `new -> confirmed`, so confirmed/ready are already inside `reserved`. A
+  replayed-ledger test proves it, and a mutation (adding confirmed/ready to demand) makes it fail.
+- A failed Orders read is contained; "You're caught up" is never claimed over unread orders.
+
+**Not rubber-stamped:**
+- "Sales" was relabelled "Paid today / Paid last 7 days": the canonical figure is cash received
+  (`paidAt`), which is not sales booked. Deviates from the brief's preferred wording on purpose.
+- Profit NOT built. `order_raw_cogs` is ingredient-only, fulfilled-only, and period-mismatched to
+  revenue. Follow-up spec: `planning/DASHBOARD_PROFIT_V1.md`. Recent activity and repeat-customer
+  rate also deferred (no honest source / no customer-origin field).
+- The brief's More list omitted Product Detail, and its Operations list added Bake (which was not in
+  the nav). Product Detail is kept under More so no page loses its link; Bake is added.
+- Sign out previously lived only on the old Dashboard; moved into the shell so it is not lost.
+- Lint: `eslint` flags `src/components/bake-page.tsx:89` (`react-hooks/set-state-in-effect`).
+  Pre-existing on `origin/main` (file untouched; reproduced on a pristine checkout). Not fixed here.
+  Bare `npm run lint` also walks `.worktrees/`, which is not this repo's code.
+- Header badges (Stage: Pre-launch / Model / Focus) still say pre-launch. Not in scope; flagged.
+
+**Human-only checks not done:** Dashboard against real owner data (sits behind login), and a real
+phone. Layout was checked with fixtures at 1440px and a true 390px viewport in headless Edge.
+
+**Merge gate: `done`.** Presentational and routing change with no data/auth/security surface,
+reversible via git. Old `/?job=` bookmarks and `/dashboard` are covered by redirects.
+
+## 2026-09-19 — Operations Dashboard V1 pre-merge corrections
+
+**Scope:** `ProductLab`'s `view` prop is now required (default `"today"` removed); global AppShell
+chrome updated (sidebar sentence, header badges Stage/Model/Focus). Closes two items the 2026-09-18
+entry listed as open. No dashboard scope added; no data, schema or route change.
+
+**Verdict:** Sound. All 18 `<ProductLab>` callsites already passed `view`, so removing the default
+changes no behaviour. Proven both ways rather than assumed: deleting `view` from a route fails
+`tsc` (TS2741) and fails the new route-scan test. Header badges now read Selling / Home-based
+preorder / Bakery operations; layout and grouping untouched.
+
+**Not rubber-stamped:** "Stage: Selling" is a wording judgement supplied by the owner, not derived
+from data. The pre-existing `bake-page.tsx:89` lint error is unchanged (file not modified;
+reproduced on pristine `origin/main` in the prior pass).
+
+**Merge gate: `done`.** Type/copy change only, reversible via git.

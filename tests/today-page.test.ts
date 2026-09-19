@@ -14,7 +14,8 @@ const createNowSource = readFileSync(new URL("../src/components/create-now.tsx",
 const productLabSource = readFileSync(new URL("../src/app/product-lab.tsx", import.meta.url), "utf8");
 const labStateSource = readFileSync(new URL("../src/lib/lab-state.ts", import.meta.url), "utf8");
 const appShellSource = readFileSync(new URL("../src/components/app-shell.tsx", import.meta.url), "utf8");
-const dashboardRouteSource = readFileSync(new URL("../src/app/dashboard/page.tsx", import.meta.url), "utf8");
+const homeRouteSource = readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
+const todayRouteSource = readFileSync(new URL("../src/app/today/page.tsx", import.meta.url), "utf8");
 const recommendationCopySource = readFileSync(new URL("../src/lib/today-recommendation-copy.ts", import.meta.url), "utf8");
 
 // Words that describe the machinery, not the moment -- banned from anything Today renders, per
@@ -186,27 +187,31 @@ test("[static] no banned internal vocabulary appears in any of Today's user-faci
   }
 });
 
-test("[static] product-lab.tsx: Today is the default view, and the today branch is wired before dashboard's", () => {
-  assert.match(productLabSource, /view = "today"/);
+test("[static] product-lab.tsx: view is a required prop with no default, and the today branch is wired before dashboard's", () => {
+  assert.match(productLabSource, /\n  view,\n/);
+  assert.doesNotMatch(productLabSource, /view = "/);
+  assert.match(productLabSource, /\n  view: LabView;\n/);
+  assert.doesNotMatch(productLabSource, /view\?: LabView/);
   // S4 gives Today two things it could not read for itself: the app's already-loaded product
   // catalog (so Create Now's optional selector has no second source) and the route's resolved
   // active job id (so a refresh recovers an in-flight creation).
   assert.match(productLabSource, /view === "today" \? <TodayPage initialCreativeJobId=\{initialCreativeJobId\} products=\{labState\.products\} \/> : null/);
-  // DashboardPage's own render branch and props are untouched -- same call as before this slice.
-  assert.match(productLabSource, /view === "dashboard" \? <DashboardPage metrics=\{metrics\} labState=\{labState\} message=\{message\} messageTone=\{messageTone\} session=\{session\} signOut=\{signOut\} \/> : null/);
+  // The Dashboard branch renders the operations dashboard, which reads its own orders and takes only
+  // the app's already-loaded state plus the load message.
+  assert.match(productLabSource, /view === "dashboard" \? <DashboardPage labState=\{labState\} message=\{message\} messageTone=\{messageTone\} \/> : null/);
 });
 
-test("[static] lab-state.ts: today owns \"/\", dashboard moved to its own explicit route+nav entry", () => {
+test("[static] lab-state.ts: Dashboard owns \"/\", Today lives at /today under Marketing", () => {
   assert.match(labStateSource, /\| "today"/);
-  assert.match(labStateSource, /\{ label: "Today", href: "\/", view: "today" \}/);
-  assert.match(labStateSource, /\{ label: "Dashboard", href: "\/dashboard", view: "dashboard" \}/);
+  assert.match(labStateSource, /\{ label: "Today", href: "\/today", view: "today", group: "marketing" \}/);
+  assert.match(labStateSource, /\{ label: "Dashboard", href: "\/", view: "dashboard", group: "operations" \}/);
 });
 
 test("[static] app-shell.tsx: today has a titles entry so AppHeader's titles[view] lookup type-checks", () => {
   assert.match(appShellSource, /today: "",/);
 });
 
-test("[static] dashboard route exists, reachable at its own URL, rendering Dashboard unchanged", () => {
-  assert.match(dashboardRouteSource, /import ProductLab from "\.\.\/product-lab";/);
-  assert.match(dashboardRouteSource, /<ProductLab view="dashboard" \/>/);
+test("[static] the home route renders the Dashboard and /today renders Today", () => {
+  assert.match(homeRouteSource, /<ProductLab view="dashboard" \/>/);
+  assert.match(todayRouteSource, /<ProductLab initialCreativeJobId=\{resolveCreateNowJobId\(job\)\} view="today" \/>/);
 });

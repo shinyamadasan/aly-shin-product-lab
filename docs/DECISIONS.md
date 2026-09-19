@@ -133,3 +133,23 @@ that boundary; genuine recovery stays a separate, unscoped proposal.
 
 Verify: src/lib/creative-jobs.ts contains "opportunity_brief"
 Verify: scripts/creative-prep/run.ts contains "CREATIVE_PREP_RUNNING_STALE_AFTER_MS"
+
+## D-006 — Operations Dashboard V1: what it counts, what it deliberately does not
+
+**Decision:** Dashboard is home (`/`); Today moved to `/today`. The dashboard's finished-stock
+"new order" demand counts **only orders with status `new`**. Its money metrics are labelled "Paid
+today" / "Paid last 7 days", not "Sales". It shows **no profit**, no recent-activity feed and no
+repeat-customer rate. Legacy `/?job=` and `/dashboard` are temporary (307) redirects.
+
+**Why:** Wave 2 reserves stock at `new → confirmed`, so confirmed/ready orders are already in the
+ledger's `reserved` and therefore already subtracted from `available` — counting them as demand
+again would subtract the same pieces twice (proved by a replayed-ledger test). "Paid" is what
+`grossRevenue` measures (`paidAmount` at `paidAt`); "Sales" would overstate an unpaid order's
+absence. Profit needs packaging/cost coverage and a period basis that do not exist
+(`order_raw_cogs` is ingredient-only, fulfilled-only); the activity feed has no cross-domain source;
+repeat-customer rate needs a customer-origin field that does not exist. Details and the follow-up
+spec: `planning/DASHBOARD_PROFIT_V1.md`. Redirects are 307 because a permanent redirect on `/` is
+cached by browsers indefinitely.
+
+Verify: src/lib/dashboard/finished-stock-demand.ts contains "THE ONE RULE HERE: only `new` orders are unreserved demand."
+Verify: src/lib/route-redirects.ts contains "dashboardHomeRedirects"

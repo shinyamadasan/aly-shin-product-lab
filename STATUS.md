@@ -157,6 +157,11 @@ physical-phone checks also remain under "Needs human verification" below.
 
 ## Needs human verification
 
+- **Operations Dashboard V1 (`feat/ops-dashboard-v1`, not merged):** open `/` signed in as owner and
+  confirm the numbers against `/orders` and `/bake`; check the sidebar/More disclosure on a real phone;
+  confirm an old `/?job=<id>` link lands on `/today` with the job open. Not verifiable headlessly (login).
+  Pre-existing, unrelated: `bake-page.tsx:89` fails `react-hooks/set-state-in-effect` lint on `main`.
+
 - **Product Lab MCP Slice 2:** perform targeted re-review of the Codex human-review configuration,
   real installed-client acceptance evidence, authoritative `cost_reconciled_at` read-back, and
   corrected test claims. Do not perform a live physical count or production write during review.

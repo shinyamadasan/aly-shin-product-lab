@@ -6,9 +6,7 @@ import type { ChangeEvent as ReactChangeEvent, Dispatch, FormEvent as ReactFormE
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PostgrestError, Session } from "@supabase/supabase-js";
 import {
-  AlertTriangle,
   Beaker,
-  CalendarClock,
   CalendarDays,
   CheckCircle2,
   ChevronDown,
@@ -18,7 +16,6 @@ import {
   NotebookPen,
   Plus,
   PackageCheck,
-  PackageX,
   ShieldAlert,
   Sparkles,
   Star,
@@ -54,6 +51,7 @@ import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
 import { OpportunitiesPage } from "@/components/opportunities-page";
 import { OrdersPage, UNSAVED_ORDER_MESSAGE } from "@/components/orders-page";
+import { DashboardPage } from "@/components/dashboard-page";
 import { TodayPage } from "@/components/today-page";
 import { CreateNow } from "@/components/create-now";
 import { CREATE_NOW_JOB_SEARCH_PARAM } from "@/lib/create-now";
@@ -109,7 +107,7 @@ import { areBatchFormSnapshotsEqual, buildBatchFormSnapshot, type BatchFormSnaps
 import { areSupplyFormSnapshotsEqual, buildSupplyFormSnapshot, type SupplyFormSnapshot } from "@/lib/supply-form-snapshot";
 import { resolveTabChange } from "@/lib/inventory-tab-guard";
 import { areTastingFormSnapshotsEqual, buildTastingFormSnapshot, type TastingFormSnapshot } from "@/lib/tasting-form-snapshot";
-import { DEFAULT_EXPIRES_SOON_DAYS, getInventorySummaryCounts, getNeedToBuyList } from "@/lib/inventory-status";
+import { getNeedToBuyList } from "@/lib/inventory-status";
 import { buildAliasRecord } from "@/lib/ingredient-matching";
 import { applyPurchaseImportConfirmation, buildSupplyEntriesFromPurchaseImport } from "@/lib/purchase-import-confirm";
 import type { PurchaseImportRowDraft } from "@/lib/purchase-import";
@@ -175,13 +173,14 @@ const UNSAVED_SUPPLY_MESSAGE = "You have unsaved changes in this purchase. Leavi
 type CostingWorkspaceMode = "history" | "detail" | "editor";
 
 export default function ProductLab({
-  view = "today",
+  view,
   initialInventoryTab,
   initialOrdersTab,
   initialOpportunityStatusFilter = "new",
   initialCreativeJobId = null,
 }: {
-  view?: LabView;
+  // Required on purpose: a route that forgets it must fail typecheck, not silently render another page.
+  view: LabView;
   initialInventoryTab?: InventoryTab;
   initialOrdersTab?: OrdersTab;
   initialOpportunityStatusFilter?: OpportunityStatusFilter;
@@ -735,20 +734,6 @@ export default function ProductLab({
   async function signOut() {
     await supabase?.auth.signOut();
   }
-
-  const metrics = useMemo(() => {
-    const launchCandidates = labState.products.filter((product) => {
-      const readiness = getReadinessScore(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines);
-      return readiness.percent >= 100;
-    }).length;
-
-    return {
-      productCount: labState.products.length,
-      launchCandidates,
-      needsProof: labState.products.filter((product) => getProductStats(product, labState.batches, labState.costings, labState.tastings, labState.sellingFormats, labState.sellingFormatPackagingLines).proofBatches === 0).length,
-      tastingEntries: labState.tastings.length,
-    };
-  }, [labState]);
 
   async function saveProduct(formData: FormData) {
     const productId = String(formData.get("id") || "");
@@ -3145,12 +3130,12 @@ export default function ProductLab({
   }
 
   return (
-    <AppShell navigationConfirmationMessage={activeUnsavedForm?.message} shouldConfirmNavigation={Boolean(activeUnsavedForm)} view={view}>
+    <AppShell navigationConfirmationMessage={activeUnsavedForm?.message} onSignOut={session ? signOut : undefined} shouldConfirmNavigation={Boolean(activeUnsavedForm)} view={view}>
           {message && view !== "dashboard" && view !== "costing" && view !== "today" ? <MessageBox message={message} tone={messageTone} /> : null}
           {/* products comes from the app's own already-loaded catalog read -- Create Now's optional
               product selector reads the real catalog and never opens a second source for it. */}
           {view === "today" ? <TodayPage initialCreativeJobId={initialCreativeJobId} products={labState.products} /> : null}
-          {view === "dashboard" ? <DashboardPage metrics={metrics} labState={labState} message={message} messageTone={messageTone} session={session} signOut={signOut} /> : null}
+          {view === "dashboard" ? <DashboardPage labState={labState} message={message} messageTone={messageTone} /> : null}
 
           {view === "products" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_360px]" id="products">
@@ -4428,71 +4413,6 @@ function ContentStudioGuide() {
         </ul>
       </div>
     </Panel>
-  );
-}
-
-function DashboardPage({
-  metrics,
-  labState,
-  message,
-  messageTone,
-  session,
-  signOut,
-}: {
-  metrics: { productCount: number; launchCandidates: number; needsProof: number; tastingEntries: number };
-  labState: LabState;
-  message: string;
-  messageTone: "good" | "bad" | "info";
-  session: Session | null;
-  signOut: () => void;
-}) {
-  const productsNeedingProof = getProductsNeedingProof(labState.products, labState.batches);
-  const proofDayCopy = productsNeedingProof.length
-    ? `Test ${productsNeedingProof.map((product) => product.name).join(", ")}. Capture yield, timing, texture, packaging behavior, freshness after 12/24 hours, and willingness to pay.`
-    : "Every product has at least one proof batch logged. Pick the weakest formula and run a focused retest.";
-  const inventoryCounts = getInventorySummaryCounts(labState.ingredients, getToday());
-
-  return (
-    <div className="space-y-5">
-      <section className="grid gap-4 xl:grid-cols-[1.5fr_0.8fr]" id="dashboard">
-        <div className="rounded-lg border border-[#e1d4c4] bg-[#fffaf3] p-5">
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard icon={<Beaker size={20} />} label="Products" value={metrics.productCount} detail="Starter candidates" />
-            <MetricCard icon={<ClipboardCheck size={20} />} label="Launch-ready" value={metrics.launchCandidates} detail="Target after proof" />
-            <MetricCard icon={<FlaskConical size={20} />} label="Need batches" value={metrics.needsProof} detail="Proof logs missing" />
-            <MetricCard icon={<Star size={20} />} label="Taste entries" value={metrics.tastingEntries} detail="Target: 5 each" />
-          </div>
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <MetricCard icon={<AlertTriangle size={20} />} label="Low stock" value={inventoryCounts.lowCount} detail="Ingredients running low" />
-            <MetricCard icon={<PackageX size={20} />} label="Out of stock" value={inventoryCounts.outCount} detail="Ingredients at zero" />
-            <MetricCard icon={<CalendarClock size={20} />} label="Expiring" value={inventoryCounts.expiringCount} detail={`Within ${DEFAULT_EXPIRES_SOON_DAYS} days or already past`} />
-          </div>
-          <div className="mt-5 rounded-md border border-[#e7d8c9] bg-white p-4">
-            <div className="flex items-start gap-3">
-              <span className="rounded-md bg-[#f8ead9] p-2 text-[#9a5b2f]"><CalendarDays size={20} /></span>
-              <div>
-                <h3 className="font-semibold">Next Product Proof Day</h3>
-                <p className="mt-1 max-w-3xl text-sm leading-6 text-[#6f5a4c]">
-                  {proofDayCopy}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-        <aside className="rounded-lg border border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef]">
-          <div className="flex items-center gap-2 text-[#ddb778]"><ShieldAlert size={20} /><p className="text-sm font-semibold uppercase tracking-[0.16em]">Guardrails</p></div>
-          <div className="mt-3 flex items-center justify-between gap-3">
-            <h3 className="text-xl font-semibold">Coffee is not a hero yet.</h3>
-            {session ? <button className="text-sm text-[#ddb778] underline" onClick={signOut}>Sign out</button> : null}
-          </div>
-          <p className="mt-3 text-sm leading-6 text-[#e6d3c4]">Bottled coffee stays as an add-on test until it proves freshness, cold delivery, margin, and premium feel.</p>
-          {message ? <MessageBox message={message} tone={messageTone} dark /> : null}
-        </aside>
-      </section>
-      <section className="grid gap-4 md:grid-cols-3">
-        <ReadinessPanels labState={labState} />
-      </section>
-    </div>
   );
 }
 

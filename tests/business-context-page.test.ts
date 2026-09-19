@@ -55,9 +55,10 @@ test("[PR-2] Business Context is discoverable from the normal navigation", () =>
   const navItems = LAB_STATE.slice(LAB_STATE.indexOf("export const navItems"), LAB_STATE.indexOf("export const storageKey"));
 
   // Unlisted through Runtime v1 while it was unproven; listed now that live validation settled it.
-  // One entry added using the existing convention -- no new hierarchy, no badge, no count.
-  assert.ok(navItems.includes('{ label: "Business Context", href: "/context", view: "context" }'));
-  assert.equal((navItems.match(/href: "/g) ?? []).length, 18, "exactly one nav entry added");
+  // Listed under "More" by the navigation calm-down slice -- still a plain entry, no badge, no count.
+  assert.ok(navItems.includes('{ label: "Business Context", href: "/context", view: "context", group: "more" }'));
+  // 18 original entries, plus Bake (previously reachable only by link) now that Operations lists it.
+  assert.equal((navItems.match(/href: "/g) ?? []).length, 19, "18 original entries + Bake");
   assert.equal(navItems.includes("badge"), false);
   assert.equal(navItems.includes("count"), false);
 });

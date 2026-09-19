@@ -279,13 +279,15 @@ test("a non-integer typed quantity is rejected by validation before any round tr
 
 // --- Wiring --------------------------------------------------------------------------------------
 
-test("Orders is registered as a nav entry at /orders, placed after Costing", () => {
+test("Orders is registered as a nav entry at /orders, in Operations right after Dashboard", () => {
   const labels = navItems.map((item) => item.label);
   const orders = navItems.find((item) => item.view === ("orders" satisfies LabView));
 
   assert.ok(orders, "Orders is missing from navItems");
   assert.equal(orders?.href, "/orders");
   assert.equal(orders?.label, "Orders");
-  // Orders belongs with the money pages, immediately after Costing.
-  assert.equal(labels.indexOf("Orders"), labels.indexOf("Costing") + 1);
+  // Orders is the second Operations destination. (It used to sit after Costing among the money pages;
+  // the navigation calm-down slice regrouped the sidebar by daily use.)
+  assert.equal(orders?.group, "operations");
+  assert.equal(labels.indexOf("Orders"), labels.indexOf("Dashboard") + 1);
 });

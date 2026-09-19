@@ -1,5 +1,5 @@
 import type { NextConfig } from "next";
-import { inventoryRouteRedirects } from "./src/lib/route-redirects";
+import { dashboardHomeRedirects, inventoryRouteRedirects } from "./src/lib/route-redirects";
 
 const nextConfig: NextConfig = {
   turbopack: {
@@ -57,7 +57,7 @@ const nextConfig: NextConfig = {
     ],
   },
   async redirects() {
-    return inventoryRouteRedirects;
+    return [...inventoryRouteRedirects, ...dashboardHomeRedirects];
   },
 };
 

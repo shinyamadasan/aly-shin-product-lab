@@ -43,3 +43,11 @@ Selling Waves 0A–3 and Cost Baseline Repair are implemented. Verified counts, 
 posting, production execution, finished-stock/order movements, exceptions, raw COGS, and separate
 quantity/cost reconciliation facts are database-authoritative. See `docs/ARCHITECTURE.md` and the
 `planning/SELLING_WAVE_*` records.
+
+## Operations dashboard and navigation
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Dashboard as home (`/`) | Done | Business pulse, needs attention, finished stock and demand, inventory attention. Reuses `buildSellingSummary`, `deriveFinishedStockBalances` and the inventory-status helpers. No profit (see `planning/DASHBOARD_PROFIT_V1.md`). |
+| Today at `/today` | Done | Unchanged apart from its address; `?job=` resume preserved, old `/?job=` links redirect. |
+| Grouped navigation | Done | Operations / Marketing / More. Bake added to the sidebar; every route still reachable. |
