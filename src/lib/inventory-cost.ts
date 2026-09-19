@@ -38,3 +38,16 @@ export function computeWeightedAverageUnitCost(
 
   return totalCost / totalQuantity;
 }
+
+// What the Manage Items "Stock value" cell may honestly show. Value = current quantity x average
+// unit cost, but that cost is only trustworthy once verified (see isCostBaselineUncertified) -- so
+// an unverified Item never presents a derived monetary total as if it were authoritative. The
+// recorded (unverified) cost can still be shown separately, labeled as such, as "Cost basis".
+export type StockValueDisplay = { kind: "verify-cost-first" } | { kind: "value"; amount: number; quantity: number; unitCost: number };
+
+export function getStockValueDisplay(ingredient: Pick<Ingredient, "currentQuantity" | "averageUnitCost" | "costReconciledAt">): StockValueDisplay {
+  if (isCostBaselineUncertified(ingredient)) {
+    return { kind: "verify-cost-first" };
+  }
+  return { kind: "value", amount: getInventoryValue(ingredient), quantity: ingredient.currentQuantity, unitCost: ingredient.averageUnitCost };
+}

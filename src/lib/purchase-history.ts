@@ -171,3 +171,20 @@ export function findReliableSupplierForItem(ingredient: Ingredient, purchases: S
 
   return matchingEntries[0]?.supplierName.trim() ?? "";
 }
+
+// Client-side search over the purchase history already loaded on the page. A purchase matches on
+// its Item name (the linked Item's current name when known, plus the name recorded on the
+// purchase), brand, or supplier -- case-insensitive substring; an empty query matches everything.
+export function matchesPurchaseSearch(purchase: Pick<SupplyEntry, "ingredientName" | "brandName" | "supplierName">, query: string, itemName: string = purchase.ingredientName): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return true;
+  }
+  return [itemName, purchase.ingredientName, purchase.brandName, purchase.supplierName].some((value) => value.toLowerCase().includes(needle));
+}
+
+// A By Item group stays visible when the Item's own name matches or any of its purchases matches
+// on brand/supplier -- so searching a brand still leads to the Item it was bought for.
+export function purchaseGroupMatchesSearch(group: PurchaseItemGroup, query: string): boolean {
+  return group.purchases.some((purchase) => matchesPurchaseSearch(purchase, query, group.ingredient.name)) || matchesPurchaseSearch({ ingredientName: group.ingredient.name, brandName: "", supplierName: "" }, query);
+}

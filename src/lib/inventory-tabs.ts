@@ -18,3 +18,13 @@ export function resolveInventoryTab(value: string | string[] | undefined): Inven
   const raw = Array.isArray(value) ? value[0] : value;
   return raw && validInventoryTabs.has(raw) ? (raw as InventoryTab) : defaultInventoryTab;
 }
+
+// A narrow, presentation-only focus for Manage Items: /inventory?tab=ingredients&focus=costs opens
+// it already narrowed to the Items whose cost needs verification. It never changes which tab is
+// active and any other (or missing) value means "no focus", so every existing link is unaffected.
+export type InventoryFocus = "costs";
+
+export function resolveInventoryFocus(value: string | string[] | undefined): InventoryFocus | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return raw === "costs" ? "costs" : undefined;
+}
