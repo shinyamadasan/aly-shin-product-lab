@@ -5712,41 +5712,6 @@ function InventoryWorkspace({
     setPurchasesTab(nextPurchasesTab);
   }
 
-  // "Buy" is only reachable from the Ingredients tab's own row list (InventoryPage), so leaving
-  // that tab is the one real discard risk here -- resolved with the same resolveTabChange decision
-  // changeTab itself uses, but settled BEFORE editSupply (= editSupplyWithGuard in ProductLab) ever
-  // runs. Calling editSupply first would let it see whatever activeUnsavedForm currently holds --
-  // the Ingredient editor's own message, if that's what's dirty -- and confirm a Supply draft the
-  // operator never asked about, ahead of (and independent of) the real "leave Ingredients" prompt.
-  // Resolving the tab-leave decision first, and only then creating the draft, guarantees exactly
-  // one prompt (for the Ingredient editor, the thing actually being discarded) and means a Cancel
-  // leaves no partial Supply state behind.
-  function logPurchaseForIngredient(item: Ingredient) {
-    const decision = resolveTabChange("ingredients", "purchases", { isDirty: isIngredientDirty, message: UNSAVED_INGREDIENT_MESSAGE }, (message) => window.confirm(message));
-    if (!decision.proceed) {
-      return;
-    }
-    if (decision.shouldClearDirty) {
-      onIngredientDirtyChange(false);
-    }
-    editSupply({
-      id: "",
-      ingredientId: item.id,
-      ingredientName: item.name,
-      brandName: "",
-      supplierName: "",
-      purchaseDate: getToday(),
-      createdAt: new Date().toISOString(),
-      packQuantity: 0,
-      unit: item.baseUnit,
-      totalCost: 0,
-      qualityRating: 0,
-      notes: "",
-    });
-    setPurchasesTab("manual");
-    setTab("purchases");
-  }
-
   // "Count / correct stock" on the Stock tab points at RawInventoryReconciliation, which is a
   // sibling of this whole workspace (rendered once, above every tab, in ProductLab) rather than
   // part of it -- so this just reveals it, opens it, and brings it into view instead of
@@ -5834,7 +5799,7 @@ function InventoryWorkspace({
       {tab === "history" ? <InventoryTimeline labState={labState} reverseInventoryAdjustment={reverseInventoryAdjustment} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} certifyIngredientCostBaseline={certifyIngredientCostBaseline} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} logPurchaseForIngredient={logPurchaseForIngredient} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
+        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} certifyIngredientCostBaseline={certifyIngredientCostBaseline} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
       ) : null}
     </div>
   );

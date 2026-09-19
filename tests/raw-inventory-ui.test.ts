@@ -143,7 +143,9 @@ test("purchase reads/exports and safe draft editing retain their controls", () =
   assert.match(wizard.text, /updatePurchaseImportRow\(/);
   assert.doesNotMatch(inventory.text, /postingPaused|deleteAndRepairPaused/);
   assert.match(inventory.text, /restoreIngredient/);
-  assert.match(inventory.text, /action=\{saveIngredient\}/);
+  // The editor form still submits through saveIngredient (via the page's handleSave wrapper).
+  assert.match(inventory.text, /action=\{onSave\}/);
+  assert.match(inventory.text, /const savedId = await saveIngredient\(formData\)/);
 });
 
 test("deleteAndRepairPaused reaches InventoryWorkspace, PurchaseLogPage, and every PurchaseRecordRow rendering -- CSV confirm and Bake are not gated by it at all", () => {
@@ -710,4 +712,152 @@ test("Purchases: the form no longer offers a separate 'Create New Item' decision
 test("Purchases: CSV import is untouched by the smart resolver", () => {
   assert.doesNotMatch(wizard.text, /purchase-item-resolution|planPurchaseItem|resolvePurchaseItem/);
   assert.match(wizard.text, /Create New Item/);
+});
+
+// ---- Manage Items: calm searchable list by default; every maintenance capability still reachable ----
+
+test("Manage Items: the Add/Edit form is closed by default and only mounts through + Add item or Edit", () => {
+  const page = component(inventory, "InventoryPage");
+  const text = page.getText();
+  assert.match(text, /const \[isAdding, setIsAdding\] = useState\(false\)/);
+  assert.match(text, /const isEditorOpen = Boolean\(ingredient\) \|\| isAdding/);
+  // The form itself lives in IngredientEditor, rendered only when the editor is open.
+  assert.match(text, /\{isEditorOpen \? \(\s*<IngredientEditor/);
+  assert.doesNotMatch(text, /<form/, "the page itself renders no always-open creation form");
+  const add = button(page, "+ Add item");
+  assert.match(attribute(add, "onClick") ?? "", /setIsAdding\(true\)/);
+  // The button only exists while the editor is closed.
+  assert.match(text, /\{isEditorOpen \? null : \(\s*<button[\s\S]*?\+ Add item/);
+  // The full existing editor is intact: same fields, same validation surface.
+  const editor = component(inventory, "IngredientEditor").getText();
+  for (const field of ["name=\"name\"", "name=\"baseUnit\"", "name=\"category\"", "LowStockThresholdField", "name=\"nearestExpirationDate\"", "name=\"notes\""]) {
+    assert.ok(editor.includes(field), field);
+  }
+  assert.match(editor, /Update ingredient/);
+  assert.match(editor, /Save ingredient/);
+});
+
+test("Manage Items: a successful save or a cancel returns to the calm list; a failed save keeps the editor open", async () => {
+  const page = component(inventory, "InventoryPage");
+  const handleSave = nodes(page, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "handleSave")[0];
+  const handleCancel = nodes(page, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "handleCancel")[0];
+  assert.ok(handleSave && handleCancel);
+
+  const events: string[] = [];
+  const make = (saveResult: string | null, ingredient: unknown = null) => ({
+    onDirtyChange: (dirty: boolean) => events.push(`dirty:${dirty}`),
+    setIsAdding: (value: boolean) => events.push(`adding:${value}`),
+    saveIngredient: async () => saveResult,
+    cancelEdit: () => events.push("cancelEdit"),
+    ingredient,
+  });
+  await (evaluateFunction(handleSave, make("id-1")) as (form: unknown) => Promise<void>)({});
+  assert.deepEqual(events.splice(0), ["dirty:false", "adding:false"], "saved -> closes");
+  await (evaluateFunction(handleSave, make(null)) as (form: unknown) => Promise<void>)({});
+  assert.deepEqual(events.splice(0), [], "failed save -> editor stays open, nothing reset");
+  (evaluateFunction(handleCancel, make("x")) as () => void)();
+  assert.deepEqual(events.splice(0), ["dirty:false", "adding:false"], "cancelling an add");
+  (evaluateFunction(handleCancel, make("x", { id: "edit-me" })) as () => void)();
+  assert.deepEqual(events.splice(0), ["dirty:false", "adding:false", "cancelEdit"], "cancelling an edit also clears the edit target");
+});
+
+test("Manage Items: Buy is gone from Item rows and the workspace no longer wires a per-row purchase shortcut", () => {
+  assert.doesNotMatch(inventory.text, /logPurchaseForIngredient/);
+  const row = component(inventory, "IngredientRow").getText();
+  assert.equal(nodes(component(inventory, "IngredientRow"), (node) => ts.isJsxElement(node)
+    && node.openingElement.tagName.getText() === "button"
+    && node.children.map((child) => child.getText()).join("").trim() === "Buy").length, 0);
+  assert.doesNotMatch(row, />Buy</);
+  const workspace = component(app, "InventoryWorkspace").getText();
+  assert.doesNotMatch(workspace, /logPurchaseForIngredient/);
+  // Purchases still owns buying -- its own per-Item "Log Purchase" shortcut remains.
+  assert.match(component(app, "PurchaseLogPage").getText(), /Log Purchase/);
+});
+
+test("Manage Items: rows are concise by default; every maintenance action lives behind Manage", () => {
+  const rowNode = component(inventory, "IngredientRow");
+  const row = rowNode.getText();
+  const openIndex = row.indexOf("{isOpen ? (");
+  assert.ok(openIndex > 0, "expandable body");
+  // Only the rendered JSX above the expandable body (the hook/derivation lines before "return (" are not UI).
+  const collapsedPart = row.slice(row.indexOf("return ("), openIndex);
+  const expandedPart = row.slice(openIndex);
+  // The always-visible part: name, muted category/unit context, exception tags, one Manage control.
+  assert.match(collapsedPart, /\{isOpen \? "Close" : "Manage"\}/);
+  // (">Edit<" rather than "Edit": the row's own isEditing prop would otherwise match.)
+  for (const label of [">Edit<", "Adjust Stock", "Archive", "Certify cost"]) {
+    assert.ok(!collapsedPart.includes(label), `${label} must not be a permanent row button`);
+    assert.ok(expandedPart.includes(label), `${label} remains reachable inside Manage`);
+  }
+  // Nothing analytical or monetary on the collapsed row.
+  for (const detail of ["Value", "Purchase history", "Latest purchase", "targetStockQuantity", "currentQuantity"]) {
+    assert.ok(!collapsedPart.includes(detail), `${detail} is not part of the default row`);
+  }
+  assert.match(expandedPart, /Re-certify cost/);
+  assert.match(expandedPart, /<AdjustStockForm/);
+  assert.match(expandedPart, /<CertifyCostForm/);
+  // No healthy/stock status pills on Manage Items rows -- that is Stock's job.
+  assert.doesNotMatch(row, /stockStatusLabel|getStockStatus|Good/);
+  // Only exception tags: cost verification and manual reconciliation.
+  assert.match(collapsedPart, /\{uncertified \? <Tag tone="danger">Cost needs verification<\/Tag> : null\}/);
+  assert.match(collapsedPart, /\{needsReconciliation \? <Tag tone="danger">Needs reconciliation<\/Tag> : null\}/);
+});
+
+test("Manage Items: the list is searchable by name, client-side, over already-loaded Items", () => {
+  const page = component(inventory, "InventoryPage");
+  const text = page.getText();
+  assert.match(text, /placeholder="Search items\.\.\."/);
+  assert.match(text, /\.filter\(\(view\) => matchesStockSearch\(view\.ingredient, search\)\)/);
+  assert.match(text, /archivedIngredients\.filter\(\(item\) => matchesStockSearch\(item, search\)\)/);
+});
+
+test("Manage Items: Review costs narrows the list to Items needing verification, and lifts itself once none remain", () => {
+  const page = component(inventory, "InventoryPage");
+  const declaration = (name: string) => nodes(page, (node) => ts.isVariableDeclaration(node) && node.name.getText() === name)[0] as ts.VariableDeclaration;
+  const visible = declaration("visibleItemViews");
+  const focused = declaration("isCostFocused");
+  assert.ok(visible && focused);
+  const views = [
+    { ingredient: { name: "Flour", costReconciledAt: "2026-01-01", averageUnitCost: 1 } },
+    { ingredient: { name: "Brown Sugar", costReconciledAt: null, averageUnitCost: 1 } },
+    { ingredient: { name: "Egg", costReconciledAt: null, averageUnitCost: 0 } },
+  ];
+  const helpers = {
+    matchesStockSearch: (item: { name: string }, query: string) => item.name.toLowerCase().includes(query.trim().toLowerCase()),
+    isCostBaselineUncertified: (item: { costReconciledAt: string | null; averageUnitCost: number }) => !item.costReconciledAt || !item.averageUnitCost || item.averageUnitCost <= 0,
+  };
+  const names = (context: { search: string; costFocus: boolean; uncertifiedCostCount: number }) => {
+    const isCostFocused = evaluate(focused.initializer?.getText(), context) as boolean;
+    const result = evaluate(visible.initializer?.getText(), { ...helpers, itemViews: views, search: context.search, isCostFocused }) as typeof views;
+    return result.map((view) => view.ingredient.name);
+  };
+  assert.deepEqual(names({ search: "", costFocus: false, uncertifiedCostCount: 2 }), ["Flour", "Brown Sugar", "Egg"]);
+  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 2 }), ["Brown Sugar", "Egg"]);
+  assert.deepEqual(names({ search: "sugar", costFocus: true, uncertifiedCostCount: 2 }), ["Brown Sugar"]);
+  assert.deepEqual(names({ search: "SUGAR", costFocus: false, uncertifiedCostCount: 2 }), ["Brown Sugar"], "search is case-insensitive");
+  // Certifying the last one must not leave a stuck, empty filtered list.
+  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 0 }), ["Flour", "Brown Sugar", "Egg"]);
+  // Certification semantics are untouched: this page still only calls the existing certify handler.
+  assert.match(inventory.text, /certifyIngredientCostBaseline\(ingredient\.id, certifiedUnitCost, evidenceNote\)/);
+});
+
+test("Manage Items: archived Items stay reachable but secondary, with Restore and the guarded Permanent delete intact", () => {
+  const text = component(inventory, "InventoryPage").getText();
+  assert.match(text, /<details className="rounded-lg border border-\[#e1d4c4\] bg-white">\s*<summary[^>]*>Archived items \(\{archivedIngredients\.length\}\)<\/summary>/);
+  assert.doesNotMatch(text, /<details className="rounded-lg border border-\[#e1d4c4\] bg-white" open/, "collapsed by default");
+  assert.match(text, /onClick=\{\(\) => restoreIngredient\(item\.id\)\}[^>]*>Restore</);
+  assert.match(text, /hardDeleteIngredient\(item\.id\)/);
+  assert.match(text, /Permanently delete \$\{item\.name\}\? This is only allowed when the Item has no purchase, stock, formula, import, or costing references\./);
+});
+
+test("Manage Items: outdated milestone copy is gone, replaced by short current help", () => {
+  assert.doesNotMatch(inventory.text, /later milestones|How this page works|Ingredient Master/);
+  assert.match(inventory.text, /Manage names, units, thresholds, and other Item setup here\. Stock changes through purchases, counts, and baking\./);
+});
+
+test("Manage Items: no fixed-width or forced-scroll layout on the list or its rows (mobile)", () => {
+  assert.doesNotMatch(inventory.text, /overflow-x-auto|min-w-\[|min-\[1360px\]|grid-cols-\[minmax/);
+  // The Item row is a wrapping flex row that stacks naturally; the expanded detail grid is 2 columns
+  // on a phone and 4 from sm.
+  assert.match(component(inventory, "IngredientRow").getText(), /grid grid-cols-2 gap-3 sm:grid-cols-4/);
 });

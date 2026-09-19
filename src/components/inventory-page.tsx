@@ -2,9 +2,9 @@ import { Boxes } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { Ingredient, IngredientCategory, StockAdjustmentReason, SupplyEntry } from "@/lib/product-lab-types";
 import { CANONICAL_UNITS } from "@/lib/product-lab-types";
-import { getToday, type LabState } from "@/lib/lab-state";
+import type { LabState } from "@/lib/lab-state";
 import { getInventoryValue, isCostBaselineUncertified } from "@/lib/inventory-cost";
-import { getExpirationStatus, getFlaggedIngredients, getStockStatus } from "@/lib/inventory-status";
+import { getFlaggedIngredients, matchesStockSearch } from "@/lib/inventory-status";
 import { buildInventoryItemViews, type InventoryItemView } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { Button, FormPanel, Input, Select, SecondaryButton, Tag, Textarea } from "@/components/ui";
@@ -240,31 +240,16 @@ function CertifyCostForm({
   );
 }
 
-// One ingredient's row in the master list, plus whichever of its two expandable action panels
-// (Adjust Stock, Certify Cost) is currently open. Pulled out into its own component -- rather than
-// staying inline in InventoryPage's .map() -- because open/closed state for those two panels must
-// live per-row (a hook cannot be called conditionally inside a .map() callback), and because the
-// two panels are no longer rendered inside the row's own fixed-width action-button column:
+// One Item's row in the master list. Concise by default: the name, a little category/base-unit
+// context, and exception tags only when something needs attention. One Manage control expands
+// everything else -- the numbers, the latest purchase (the evidence cost verification needs), and
+// every maintenance action -- so nothing was removed, it just isn't all on screen at once.
+// Buying is deliberately not here: Purchases owns recording a purchase.
 //
-// The row is a 6-column CSS grid, but only from min-[1360px] up -- measured empirically, not
-// guessed: Tailwind's standard lg (1024px) and even xl (1280px) leave too little room once the
-// sidebar/page padding and this row's own 700px of fixed-width columns are subtracted (106px or
-// less for the name column at 1280px, degrading to single-character-per-line wrapping at 1100px --
-// a real readability defect, confirmed with a real browser, not just a page-overflow number).
-// min-[1360px] is the point measured to leave a genuinely readable ~180px+ for the name column;
-// below it, the row falls back to the plain `grid`'s single stacked column (acceptable per this
-// fix's own layout goal -- an ingredient row becoming stacked at narrower widths is fine, an
-// unreadable near-zero column is not) rather than trying to force 6 columns into too little space.
-
-// column, 120px, holds only short action buttons. A form-sized panel (current quantity/cost,
-// a certified-cost input, an evidence note, submit/cancel) genuinely cannot fit in 120px at any
-// viewport width -- before this fix, opening Certify Cost forced that column, and with it the
-// whole page, wider than the viewport (a real, measured horizontal-overflow bug, not a cosmetic
-// one). The fix follows this file's own established pattern for something that doesn't fit a
-// fixed column: render the toggle buttons in the action column as before, but render whichever
-// panel is open as one MORE child of the same grid, given `col-span-full` -- CSS Grid auto-places
-// it into a new implicit row spanning all 6 tracks, i.e. exactly "ingredient summary row above,
-// full-width expanded panel below," with no change to the row's existing column widths at all.
+// Open/closed state for the row and for its two form-sized action panels (Adjust Stock, Certify
+// Cost) lives per-row -- a hook cannot be called conditionally inside a .map() callback. The panels
+// render full-width below the summary, never inside a fixed-width action column, so opening one can
+// never push the page wider than the viewport.
 function IngredientRow({
   view,
   isEditing,
@@ -272,7 +257,6 @@ function IngredientRow({
   certifyIngredientCostBaseline,
   deleteIngredient,
   editIngredient,
-  logPurchaseForIngredient,
 }: {
   view: InventoryItemView;
   isEditing: boolean;
@@ -280,47 +264,66 @@ function IngredientRow({
   certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
-  logPurchaseForIngredient: (ingredient: Ingredient) => void;
 }) {
-  const { ingredient: item, averageQualityRating, latestBrand, latestPackageSize, latestPurchase, latestSupplier, latestUnitPrice, distinctBrandCount, purchaseHistory } = view;
+  const { ingredient: item, latestBrand, latestPackageSize, latestPurchase, latestSupplier, latestUnitPrice, purchaseHistory } = view;
+  const [isOpen, setIsOpen] = useState(false);
   const [openPanel, setOpenPanel] = useState<"adjust" | "certify" | null>(null);
-  const status = getStockStatus(item);
-  const expirationStatus = getExpirationStatus(item.nearestExpirationDate, getToday());
   const value = getInventoryValue(item);
+  // Cost Baseline Repair: isCostBaselineUncertified (costReconciledAt, not a non-null/positive
+  // averageUnitCost) is what actually means "trustworthy" -- see certify_ingredient_cost_baseline's
+  // own comment. Plain language on purpose -- "Cost baseline not certified" is the internal term;
+  // the operator-facing surface says what to do about it instead.
   const uncertified = isCostBaselineUncertified(item);
-  const lastPurchaseDate = latestPurchase?.purchaseDate ?? "";
+  const needsReconciliation = Boolean(item.baseUnitMigrationFlaggedReason);
 
   return (
-    <article className={`grid grid-cols-1 gap-4 p-5 min-[1360px]:grid-cols-[minmax(0,1fr)_minmax(0,130px)_minmax(0,130px)_minmax(0,190px)_minmax(0,130px)_minmax(0,120px)] ${isEditing ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`}>
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag>
-          {expirationStatus !== "none" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}
-          {item.category ? <Tag tone="warm">{ingredientCategoryLabel[item.category]}</Tag> : null}
+    <article className={`p-4 ${isEditing ? "border-l-4 border-l-[#9a5b2f] bg-[#fff2d8]" : ""}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <h4 className="break-words font-semibold">{item.name}</h4>
+          <span className="text-sm text-[#6f5a4c]">{item.category ? `${ingredientCategoryLabel[item.category]} · ` : ""}{item.baseUnit}</span>
+          {uncertified ? <Tag tone="danger">Cost needs verification</Tag> : null}
+          {needsReconciliation ? <Tag tone="danger">Needs reconciliation</Tag> : null}
         </div>
-        <h4 className="mt-2 font-semibold break-words">{item.name}</h4>
-        {item.notes ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c] break-words">{item.notes}</p> : null}
+        <button aria-expanded={isOpen} className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen((current) => !current)} type="button">
+          {isOpen ? "Close" : "Manage"}
+        </button>
       </div>
-      <div className="min-w-0 text-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Current</p>
-        <p className="mt-1 font-semibold">{item.currentQuantity} {item.baseUnit}</p>
-        <p className="text-[#6f5a4c]">Low at {item.lowStockThreshold} {item.baseUnit}</p>
-      </div>
-      <div className="min-w-0 text-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Target</p>
-        <p className="mt-1 font-semibold">{item.targetStockQuantity} {item.baseUnit}</p>
-      </div>
-      <div className="min-w-0 text-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Purchases</p>
-        {latestPurchase ? (
-          <>
-            <p className="mt-1 font-semibold break-words">{latestBrand || "Brand not set"}</p>
-            <p className="text-[#6f5a4c] break-words">{latestSupplier || "Supplier not set"}</p>
-            <p className="text-[#6f5a4c] break-words">{latestPackageSize ? `${latestPackageSize} @ PHP ${latestUnitPrice.toFixed(2)}` : "No pack size"}</p>
-            <p className="text-[#6f5a4c]">{purchaseHistory.length} purchase{purchaseHistory.length === 1 ? "" : "s"}{lastPurchaseDate ? `, last ${lastPurchaseDate}` : ""}</p>
-            <p className="text-[#6f5a4c]">{distinctBrandCount} brand{distinctBrandCount === 1 ? "" : "s"} · quality {averageQualityRating ? averageQualityRating.toFixed(1) : "n/a"}/5</p>
-            <details className="mt-2">
-              <summary className="cursor-pointer text-xs font-semibold text-[#8f5632]">Purchase history</summary>
+
+      {isOpen ? (
+        <div className="mt-3 grid gap-3 rounded-md border border-[#eaded2] bg-[#fffaf3] p-3 text-sm">
+          {item.notes ? <p className="break-words leading-6 text-[#6f5a4c]">{item.notes}</p> : null}
+          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Current</dt>
+              <dd className="mt-1 font-semibold">{item.currentQuantity} {item.baseUnit}</dd>
+              <dd className="text-[#6f5a4c]">Low at {item.lowStockThreshold} {item.baseUnit}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Target</dt>
+              <dd className="mt-1 font-semibold">{item.targetStockQuantity} {item.baseUnit}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Value</dt>
+              <dd className="mt-1 font-semibold">PHP {value.toFixed(2)}</dd>
+              {uncertified ? null : <dd className="text-[#6f5a4c]">@ PHP {item.averageUnitCost.toFixed(2)}</dd>}
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Latest purchase</dt>
+              {latestPurchase ? (
+                <>
+                  <dd className="mt-1 break-words font-semibold">{latestBrand || "Brand not set"}</dd>
+                  <dd className="break-words text-[#6f5a4c]">{latestSupplier || "Supplier not set"}</dd>
+                  <dd className="break-words text-[#6f5a4c]">{latestPackageSize ? `${latestPackageSize} @ PHP ${latestUnitPrice.toFixed(2)}` : "No pack size"}</dd>
+                </>
+              ) : (
+                <dd className="mt-1 text-[#6f5a4c]">None logged yet</dd>
+              )}
+            </div>
+          </dl>
+          {purchaseHistory.length > 0 ? (
+            <details>
+              <summary className="cursor-pointer text-xs font-semibold text-[#8f5632]">Purchase history ({purchaseHistory.length})</summary>
               <div className="mt-2 grid gap-1 text-xs text-[#6f5a4c]">
                 {purchaseHistory.map((purchase: SupplyEntry) => {
                   const unitCost = purchase.packQuantity > 0 ? purchase.totalCost / purchase.packQuantity : 0;
@@ -330,98 +333,51 @@ function IngredientRow({
                 })}
               </div>
             </details>
-          </>
-        ) : (
-          <p className="mt-1 text-[#6f5a4c]">No purchases logged yet</p>
-        )}
-      </div>
-      <div className="min-w-0 text-sm">
-        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Value</p>
-        <p className="mt-1 font-semibold">PHP {value.toFixed(2)}</p>
-        {/* Cost Baseline Repair: isCostBaselineUncertified (costReconciledAt, not a non-null/
-            positive averageUnitCost) is what actually means "trustworthy" -- see
-            certify_ingredient_cost_baseline's own comment. Plain language here on purpose --
-            "Cost baseline not certified" is the internal term; the operator-facing surface says
-            what to do about it instead. */}
-        <p className={uncertified ? "font-semibold text-[#b3441f]" : "text-[#6f5a4c]"}>
-          {uncertified ? "Cost needs verification" : `@ PHP ${item.averageUnitCost.toFixed(2)}`}
-        </p>
-      </div>
-      <div className="min-w-0 flex flex-wrap gap-2 min-[1360px]:flex-col">
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editIngredient(item)} type="button">Edit</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => logPurchaseForIngredient(item)} type="button">Buy</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Archive ${item.name}? It will be hidden from active workflows, but all purchase, stock, formula, and report history will be preserved.`) ? deleteIngredient(item.id) : undefined} type="button">Archive</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "adjust" ? null : "adjust")} type="button">Adjust Stock</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "certify" ? null : "certify")} type="button">
-          {uncertified ? "Certify cost" : "Re-certify cost"}
-        </button>
-      </div>
-      {openPanel === "adjust" ? (
-        <div className="col-span-full">
-          <AdjustStockForm adjustStock={adjustStock} ingredient={item} onClose={() => setOpenPanel(null)} />
-        </div>
-      ) : null}
-      {openPanel === "certify" ? (
-        <div className="col-span-full">
-          <CertifyCostForm certifyIngredientCostBaseline={certifyIngredientCostBaseline} ingredient={item} onClose={() => setOpenPanel(null)} suggestedUnitCost={latestUnitPrice > 0 ? latestUnitPrice : null} />
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editIngredient(item)} type="button">Edit</button>
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "adjust" ? null : "adjust")} type="button">Adjust Stock</button>
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "certify" ? null : "certify")} type="button">
+              {uncertified ? "Certify cost" : "Re-certify cost"}
+            </button>
+            <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Archive ${item.name}? It will be hidden from active workflows, but all purchase, stock, formula, and report history will be preserved.`) ? deleteIngredient(item.id) : undefined} type="button">Archive</button>
+          </div>
+          {openPanel === "adjust" ? <AdjustStockForm adjustStock={adjustStock} ingredient={item} onClose={() => setOpenPanel(null)} /> : null}
+          {openPanel === "certify" ? (
+            <CertifyCostForm certifyIngredientCostBaseline={certifyIngredientCostBaseline} ingredient={item} onClose={() => setOpenPanel(null)} suggestedUnitCost={latestUnitPrice > 0 ? latestUnitPrice : null} />
+          ) : null}
         </div>
       ) : null}
     </article>
   );
 }
 
-export function InventoryPage({
-  adjustStock,
-  cancelEdit,
-  certifyIngredientCostBaseline,
-  deleteIngredient,
-  editIngredient,
-  hardDeleteIngredient,
+// The full Item editor (add or edit) -- the same form and validation Manage Items always had, but
+// only mounted once the operator asks for it (+ Add item, or Edit on a row) so the landing state is
+// a calm searchable list rather than a permanently-open creation form. Its own dirty tracking
+// starts when it mounts, which is why the baseline snapshot is captured here and not in the page.
+function IngredientEditor({
   ingredient,
   isInventoryTableMissing,
   labState,
-  logPurchaseForIngredient,
+  onCancel,
   onDirtyChange,
-  restoreIngredient,
-  saveIngredient,
+  onSave,
 }: {
-  adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
-  cancelEdit: () => void;
-  certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
-  deleteIngredient: (ingredientId: string) => void;
-  editIngredient: (ingredient: Ingredient) => void;
-  hardDeleteIngredient: (ingredientId: string) => void;
   ingredient: Ingredient | null;
   isInventoryTableMissing: boolean;
   labState: LabState;
-  logPurchaseForIngredient: (ingredient: Ingredient) => void;
-  // Reports live dirty state upward for AppShell's nav guard and same-page discard actions -- see
-  // useUnsavedChangesGuard. Optional so this page still works standalone (e.g. tests).
+  onCancel: () => void;
   onDirtyChange?: (isDirty: boolean) => void;
-  restoreIngredient: (ingredientId: string) => void;
-  saveIngredient: (formData: FormData) => void;
+  onSave: (formData: FormData) => Promise<void>;
 }) {
-  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(ingredient?.id ?? null);
-  const ingredients = labState.ingredients.filter((item) => item.isActive);
-  const archivedIngredients = labState.ingredients.filter((item) => !item.isActive);
-  const itemViews = buildInventoryItemViews(ingredients, labState.supplies);
-  const flaggedIngredients = getFlaggedIngredients(labState.ingredients);
-  const uncertifiedCostCount = ingredients.filter((item) => isCostBaselineUncertified(item)).length;
-
-  function scrollToIngredientMaster() {
-    document.getElementById("ingredient-master")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
+  const { editorRef, fieldRef } = useEditNavigation<HTMLElement, HTMLInputElement>(ingredient?.id ?? "new-ingredient");
   const formRef = useRef<HTMLFormElement>(null);
   const [baselineSnapshot, setBaselineSnapshot] = useState<IngredientFormSnapshot | null>(null);
   const [isDirty, setIsDirty] = useState(false);
 
   // Most of this form's fields are uncontrolled (see ingredient-form-snapshot.ts), so the baseline
   // can only be read from the real DOM <form> -- which doesn't exist yet during the first render.
-  // InventoryPage itself isn't keyed by ingredient?.id below this component's own call site (see
-  // its call site's key in product-lab.tsx's InventoryWorkspace), so switching to a different
-  // ingredient remounts this whole component -- this effect re-runs and re-captures the new
-  // ingredient's own values as the fresh baseline, exactly as it did on first mount.
   useEffect(() => {
     if (formRef.current) {
       setBaselineSnapshot(buildIngredientFormSnapshot(new FormData(formRef.current)));
@@ -439,101 +395,200 @@ export function InventoryPage({
   useUnsavedChangesGuard(isDirty, onDirtyChange);
 
   return (
-    // grid-cols-1 (Tailwind's minmax(0, 1fr) single track), not the bare `grid` this used to be,
-    // below xl: a plain `grid` with no explicit template sizes its one implicit column to the
-    // MAX-CONTENT width of its widest child instead of the available viewport width -- the classic
-    // CSS Grid "blowout" trap -- which measurably pushed this section past the viewport at narrow-
-    // desktop widths even before Cost Baseline Repair touched this file. grid-cols-1's minmax(0, ...)
-    // track gives every child room to shrink/wrap instead of forcing the page wider.
-    <section className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_420px]">
-      <FormPanel ref={editorRef} title={ingredient ? "Edit ingredient" : "Add ingredient"} icon={<Boxes size={18} />}>
-        {ingredient ? (
-          <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">Editing: {ingredient.name}</p>
-        ) : null}
-        {isInventoryTableMissing ? (
-          <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
-            Inventory is unavailable. Have the inventory setup checked before recording stock.
-          </div>
-        ) : null}
-        <form action={saveIngredient} className="grid gap-3" key={ingredient?.id ?? "new-ingredient"} onChange={recomputeIsDirty} ref={formRef}>
-          <input name="id" type="hidden" value={ingredient?.id ?? ""} />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Input name="name" label="Ingredient name" placeholder="Fresh Milk" defaultValue={ingredient?.name} ref={fieldRef} />
-            {ingredient && (ingredient.baseUnitMigrationFlaggedReason || labState.inventoryTransactions.some((row) => row.ingredientId === ingredient.id)) ? (
-              // Flagged rows keep whatever legacy base_unit the migration left them at (e.g. a
-              // value outside g/ml/pcs) -- baseUnitOptions only offers the three canonical units,
-              // so a normal <select> here would silently default to the first option and
-              // resubmit a DIFFERENT base_unit on save, reinterpreting the ingredient exactly
-              // where the migration deliberately chose not to guess. A hidden input preserves the
-              // current value exactly instead.
-              <div className="grid gap-1 text-sm font-medium">
-                Base unit
-                <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-sm">{ingredient.baseUnit} (protected; not editable here)</p>
-                <input name="baseUnit" type="hidden" value={ingredient.baseUnit} />
-              </div>
-            ) : (
-              <Select name="baseUnit" label="Base unit" options={baseUnitOptions} defaultValue={ingredient?.baseUnit || "g"} />
-            )}
-          </div>
-          <label className="grid gap-1 text-sm font-medium">
-            Category (optional)
-            <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={ingredient?.category || ""} name="category">
-              <option value="">Not set</option>
-              {ingredientCategoryOptions.map((option) => (
-                <option key={option} value={option}>
-                  {ingredientCategoryLabel[option]}
-                </option>
-              ))}
-            </select>
-          </label>
-          {ingredient ? (
+    <FormPanel ref={editorRef} title={ingredient ? "Edit ingredient" : "Add ingredient"} icon={<Boxes size={18} />}>
+      {ingredient ? (
+        <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">Editing: {ingredient.name}</p>
+      ) : null}
+      {isInventoryTableMissing ? (
+        <div className="mb-4 rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
+          Inventory is unavailable. Have the inventory setup checked before recording stock.
+        </div>
+      ) : null}
+      <form action={onSave} className="grid gap-3" key={ingredient?.id ?? "new-ingredient"} onChange={recomputeIsDirty} ref={formRef}>
+        <input name="id" type="hidden" value={ingredient?.id ?? ""} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input name="name" label="Ingredient name" placeholder="Fresh Milk" defaultValue={ingredient?.name} ref={fieldRef} />
+          {ingredient && (ingredient.baseUnitMigrationFlaggedReason || labState.inventoryTransactions.some((row) => row.ingredientId === ingredient.id)) ? (
+            // Flagged rows keep whatever legacy base_unit the migration left them at (e.g. a
+            // value outside g/ml/pcs) -- baseUnitOptions only offers the three canonical units,
+            // so a normal <select> here would silently default to the first option and
+            // resubmit a DIFFERENT base_unit on save, reinterpreting the ingredient exactly
+            // where the migration deliberately chose not to guess. A hidden input preserves the
+            // current value exactly instead.
             <div className="grid gap-1 text-sm font-medium">
-              Current quantity
-              <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-base font-semibold">{ingredient.currentQuantity} {ingredient.baseUnit}</p>
-              <span className="text-xs font-normal leading-5 text-[#6f5a4c]">Changed only through a supported inventory operation. Saving item details does not change stock.</span>
+              Base unit
+              <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-sm">{ingredient.baseUnit} (protected; not editable here)</p>
+              <input name="baseUnit" type="hidden" value={ingredient.baseUnit} />
             </div>
           ) : (
-            <p className="text-sm">New ingredients start at zero. Save the item, then record a verified physical opening count.</p>
+            <Select name="baseUnit" label="Base unit" options={baseUnitOptions} defaultValue={ingredient?.baseUnit || "g"} />
           )}
-          <LowStockThresholdField ingredient={ingredient} />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Input name="nearestExpirationDate" label="Nearest expiration date (optional)" type="date" defaultValue={ingredient?.nearestExpirationDate || undefined} />
-            <div className="grid gap-1 text-sm">
-              <span>Recorded average unit cost</span>
-              <p>
-                {ingredient?.averageUnitCost ? `PHP ${ingredient.averageUnitCost}` : "Not recorded"}
-                {ingredient ? (ingredient.costReconciledAt ? " (certified)" : " (not certified)") : ""}
-              </p>
-              <span>Protected inventory value; not changed by item details or a quantity count. Certify it (below, in the Ingredients list) after reviewing real purchase evidence.</span>
-            </div>
+        </div>
+        <label className="grid gap-1 text-sm font-medium">
+          Category (optional)
+          <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" defaultValue={ingredient?.category || ""} name="category">
+            <option value="">Not set</option>
+            {ingredientCategoryOptions.map((option) => (
+              <option key={option} value={option}>
+                {ingredientCategoryLabel[option]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {ingredient ? (
+          <div className="grid gap-1 text-sm font-medium">
+            Current quantity
+            <p className="rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 py-2 text-base font-semibold">{ingredient.currentQuantity} {ingredient.baseUnit}</p>
+            <span className="text-xs font-normal leading-5 text-[#6f5a4c]">Changed only through a supported inventory operation. Saving item details does not change stock.</span>
           </div>
-          <Textarea name="notes" label="Notes" placeholder="Storage notes, brand preference, anything worth remembering." defaultValue={ingredient?.notes} />
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button>{ingredient ? "Update ingredient" : "Save ingredient"}</Button>
-            {ingredient ? <SecondaryButton onClick={cancelEdit}>Cancel edit</SecondaryButton> : null}
+        ) : (
+          <p className="text-sm">New ingredients start at zero. Save the item, then record a verified physical opening count.</p>
+        )}
+        <LowStockThresholdField ingredient={ingredient} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Input name="nearestExpirationDate" label="Nearest expiration date (optional)" type="date" defaultValue={ingredient?.nearestExpirationDate || undefined} />
+          <div className="grid gap-1 text-sm">
+            <span>Recorded average unit cost</span>
+            <p>
+              {ingredient?.averageUnitCost ? `PHP ${ingredient.averageUnitCost}` : "Not recorded"}
+              {ingredient ? (ingredient.costReconciledAt ? " (certified)" : " (not certified)") : ""}
+            </p>
+            <span>Protected inventory value; not changed by item details or a quantity count. Certify it (from Manage on the item&apos;s row) after reviewing real purchase evidence.</span>
           </div>
-        </form>
-      </FormPanel>
+        </div>
+        <Textarea name="notes" label="Notes" placeholder="Storage notes, brand preference, anything worth remembering." defaultValue={ingredient?.notes} />
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button>{ingredient ? "Update ingredient" : "Save ingredient"}</Button>
+          <SecondaryButton onClick={onCancel}>{ingredient ? "Cancel edit" : "Cancel"}</SecondaryButton>
+        </div>
+      </form>
+    </FormPanel>
+  );
+}
 
-      <div className="rounded-lg border border-[#e1d4c4] bg-white p-5 text-sm leading-6 text-[#5f4a3d]">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">How this page works</p>
-        <p className="mt-2">This is the master list of ingredients tracked in inventory. Quantity changes from purchases or baking come in later milestones -- for now, current quantity is only editable when an ingredient is first created.</p>
-        <p className="mt-2">Archive hides an Item from active workflows while preserving purchases, stock history, formulas, and reports.</p>
+export function InventoryPage({
+  adjustStock,
+  cancelEdit,
+  certifyIngredientCostBaseline,
+  deleteIngredient,
+  editIngredient,
+  hardDeleteIngredient,
+  ingredient,
+  isInventoryTableMissing,
+  labState,
+  onDirtyChange,
+  restoreIngredient,
+  saveIngredient,
+}: {
+  adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
+  cancelEdit: () => void;
+  certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
+  deleteIngredient: (ingredientId: string) => void;
+  editIngredient: (ingredient: Ingredient) => void;
+  hardDeleteIngredient: (ingredientId: string) => void;
+  ingredient: Ingredient | null;
+  isInventoryTableMissing: boolean;
+  labState: LabState;
+  // Reports live dirty state upward for AppShell's nav guard and same-page discard actions -- see
+  // useUnsavedChangesGuard. Optional so this page still works standalone (e.g. tests).
+  onDirtyChange?: (isDirty: boolean) => void;
+  restoreIngredient: (ingredientId: string) => void;
+  saveIngredient: (formData: FormData) => Promise<string | null>;
+}) {
+  const ingredients = labState.ingredients.filter((item) => item.isActive);
+  const archivedIngredients = labState.ingredients.filter((item) => !item.isActive);
+  const itemViews = buildInventoryItemViews(ingredients, labState.supplies);
+  const flaggedIngredients = getFlaggedIngredients(labState.ingredients);
+  const uncertifiedCostCount = ingredients.filter((item) => isCostBaselineUncertified(item)).length;
+
+  // Editing an existing Item arrives as the `ingredient` prop (this page is keyed by it, so it
+  // remounts into the editor); adding is local. Either way the editor is closed by default and
+  // closes again after a successful save or a cancel -- back to the calm list.
+  const [isAdding, setIsAdding] = useState(false);
+  const [search, setSearch] = useState("");
+  const [costFocus, setCostFocus] = useState(false);
+  const isEditorOpen = Boolean(ingredient) || isAdding;
+  // "Review costs" narrows the list to the Items that need verification; it lifts itself once none
+  // remain, so certifying the last one can never leave an empty, confusing filtered list.
+  const isCostFocused = costFocus && uncertifiedCostCount > 0;
+  const visibleItemViews = itemViews
+    .filter((view) => matchesStockSearch(view.ingredient, search))
+    .filter((view) => !isCostFocused || isCostBaselineUncertified(view.ingredient));
+  const visibleArchived = archivedIngredients.filter((item) => matchesStockSearch(item, search));
+
+  async function handleSave(formData: FormData) {
+    const savedId = await saveIngredient(formData);
+    if (savedId) {
+      onDirtyChange?.(false);
+      setIsAdding(false);
+    }
+  }
+
+  function handleCancel() {
+    onDirtyChange?.(false);
+    setIsAdding(false);
+    if (ingredient) {
+      cancelEdit();
+    }
+  }
+
+  function focusItemList() {
+    setCostFocus(true);
+    document.getElementById("ingredient-master")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  return (
+    <section className="grid grid-cols-1 gap-5">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h3 className="text-xl font-semibold">Manage Items</h3>
+            <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">Manage names, units, thresholds, and other Item setup here. Stock changes through purchases, counts, and baking.</p>
+          </div>
+          {isEditorOpen ? null : (
+            <button className="h-10 shrink-0 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427]" onClick={() => setIsAdding(true)} type="button">
+              + Add item
+            </button>
+          )}
+        </div>
+        <input
+          className="mt-4 h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-sm sm:max-w-xs"
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search items..."
+          type="text"
+          value={search}
+        />
       </div>
 
+      {isEditorOpen ? (
+        <IngredientEditor
+          ingredient={ingredient}
+          isInventoryTableMissing={isInventoryTableMissing}
+          key={ingredient?.id ?? "new-ingredient"}
+          labState={labState}
+          onCancel={handleCancel}
+          onDirtyChange={onDirtyChange}
+          onSave={handleSave}
+        />
+      ) : null}
+
       {uncertifiedCostCount > 0 ? (
-        <div className="flex flex-col gap-3 rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d] sm:flex-row sm:items-center sm:justify-between xl:col-span-2">
+        <div className="flex flex-col gap-3 rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d] sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.16em]">Cost setup</p>
             <p className="mt-1 font-semibold">{uncertifiedCostCount} ingredient cost{uncertifiedCostCount === 1 ? "" : "s"} need{uncertifiedCostCount === 1 ? "s" : ""} verification.</p>
             <p className="mt-1 text-xs">A recorded cost is not trustworthy until it&apos;s checked against real purchase evidence. It can need checking again later -- for example after a physical count -- not just once.</p>
           </div>
-          <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={scrollToIngredientMaster} type="button">Review costs</button>
+          {isCostFocused ? (
+            <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={() => setCostFocus(false)} type="button">Show all items</button>
+          ) : (
+            <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={focusItemList} type="button">Review costs</button>
+          )}
         </div>
       ) : null}
 
       {flaggedIngredients.length > 0 ? (
-        <div className="rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d] xl:col-span-2">
+        <div className="rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d]">
           <p className="text-xs font-semibold uppercase tracking-[0.16em]">Needs manual reconciliation</p>
           <p className="mt-2">
             The unit-normalization migration could not safely convert {flaggedIngredients.length} ingredient{flaggedIngredients.length === 1 ? "" : "s"} below -- each was left exactly as it was, not guessed at. Until its unit and quantity are corrected by hand, edits to it (including a purchase, a bake, or a stock adjustment) may fail to save.
@@ -545,18 +600,22 @@ export function InventoryPage({
               </li>
             ))}
           </ul>
-          <p className="mt-3">Next step: open the Item, review its unit and quantity against a physical count, and correct them by hand (see docs/DATA_MODEL.md&apos;s reconciliation steps). The flag is only cleared after that manual reconciliation -- this page never clears or reinterprets it automatically.</p>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs font-semibold">What to do</summary>
+            <p className="mt-2">Open the Item (Manage, then Edit), review its unit and quantity against a physical count, and correct them by hand (see docs/DATA_MODEL.md&apos;s reconciliation steps). The flag is only cleared after that manual reconciliation -- this page never clears or reinterprets it automatically.</p>
+          </details>
         </div>
       ) : null}
 
-      <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2" id="ingredient-master">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white" id="ingredient-master">
         <div className="border-b border-[#eaded2] p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Ingredient Master</p>
-          <h3 className="mt-1 text-xl font-semibold">Ingredients</h3>
+          <h3 className="text-lg font-semibold">Items</h3>
+          {isCostFocused ? <p className="mt-1 text-sm text-[#6f5a4c]">Showing only the Items whose cost needs verification.</p> : null}
         </div>
         <div className="divide-y divide-[#f0e4d8]">
-          {ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No ingredients yet.</p> : null}
-          {itemViews.map((view) => (
+          {ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No items yet. Add one here, or just record a purchase and it will be created for you.</p> : null}
+          {ingredients.length > 0 && visibleItemViews.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No items match.</p> : null}
+          {visibleItemViews.map((view) => (
             <IngredientRow
               adjustStock={adjustStock}
               certifyIngredientCostBaseline={certifyIngredientCostBaseline}
@@ -564,20 +623,19 @@ export function InventoryPage({
               editIngredient={editIngredient}
               isEditing={view.ingredient.id === ingredient?.id}
               key={view.ingredient.id}
-              logPurchaseForIngredient={logPurchaseForIngredient}
               view={view}
             />
           ))}
         </div>
       </div>
+
       {archivedIngredients.length > 0 ? (
-        <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2">
-          <div className="border-b border-[#eaded2] p-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Archived Items</p>
-            <h3 className="mt-1 text-xl font-semibold">Hidden from active workflows</h3>
-          </div>
+        <details className="rounded-lg border border-[#e1d4c4] bg-white">
+          <summary className="cursor-pointer p-5 text-lg font-semibold">Archived items ({archivedIngredients.length})</summary>
+          <p className="border-t border-[#eaded2] px-5 pt-4 text-sm text-[#6f5a4c]">Hidden from active workflows. History is preserved; restore an Item to use it again.</p>
           <div className="divide-y divide-[#f0e4d8]">
-            {archivedIngredients.map((item) => (
+            {visibleArchived.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No archived items match.</p> : null}
+            {visibleArchived.map((item) => (
               <article className="grid gap-3 p-5 md:grid-cols-[1fr_280px]" key={item.id}>
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -594,7 +652,7 @@ export function InventoryPage({
               </article>
             ))}
           </div>
-        </div>
+        </details>
       ) : null}
     </section>
   );
