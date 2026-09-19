@@ -8,7 +8,7 @@ import { resolveCreateNowJobId } from "@/lib/create-now";
 // server-side, exactly like /inventory's tab and /opportunities' status filter, so the route hands
 // the app an already-validated value instead of a raw query string. Create Now writes the param onto
 // whatever URL it is already on, so it follows Today here with no path knowledge of its own; old
-// `/?job=<id>` bookmarks are forwarded by legacyRootJobRedirects in src/lib/route-redirects.ts.
+// `/?job=<id>` bookmarks are forwarded by dashboardHomeRedirects in src/lib/route-redirects.ts.
 export default async function TodayRoute({ searchParams }: { searchParams: Promise<{ job?: string | string[] }> }) {
   const { job } = await searchParams;
   return <ProductLab initialCreativeJobId={resolveCreateNowJobId(job)} view="today" />;

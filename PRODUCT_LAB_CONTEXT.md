@@ -1,19 +1,19 @@
 # Aly & Shin Product Lab Context Brain
 
-Last updated: 2026-07-23
+Last updated: 2026-09-19
 
 ## What This App Is
 
-Aly & Shin Product Lab is a private operating system for proving a home-based coffee and bakery business before launch. It is not a public ordering site yet. It exists so Aly can record real kitchen work and Shin can review product readiness, cost, supplier quality, tasting signals, content opportunities, and launch risk.
+Aly & Shin Product Lab is a private operating system for running a home-based coffee and bakery business: selling and orders, inventory, production, product development, and marketing. It exists so Aly can record real kitchen work and Shin can review orders, stock, cost, product readiness, supplier quality, tasting signals, content opportunities, and launch risk. Product proof / R&D still applies to products under development.
 
-The business is currently in home proofing / preorder preparation. The app must support small-batch experiments, not physical-store operations.
+The business is now actively selling through a home-based preorder model. The app must support small-batch production and preorder fulfilment, not physical-store operations.
 
 ## Current Business Context
 
-- Stage: home-based product testing, pre-launch.
+- Stage: actively selling through a home-based preorder model; products still in development go through proof/R&D first.
 - Primary product focus: bakery first.
 - Coffee focus: bottled coffee is not assumed premium or fresh enough yet. It must be chaos-tested for freshness, separation, cold delivery, packaging, perceived value, and margin before becoming a hero product.
-- Product proof should come before launch decisions.
+- For products under development, product proof should come before launch decisions.
 - The goal is not to make forms. The goal is to reduce repeated thinking, reduce kitchen friction, and create better decisions from real data.
 
 ## User Roles
