@@ -35,7 +35,8 @@ import { mapFinishedStockMovementRow, mapProductionExecutionRow } from "@/lib/su
 import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, FinishedStockExceptionType, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
-import { baseUnitOptions, ingredientCategoryLabel, ingredientCategoryOptions, InventoryPage } from "@/components/inventory-page";
+import { InventoryPage } from "@/components/inventory-page";
+import { PurchaseItemField } from "@/components/purchase-item-field";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
@@ -138,6 +139,7 @@ import {
 } from "@/lib/batches";
 import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "@/lib/inventory-safety";
 import { normalizeIngredientName } from "@/lib/ingredient-normalization";
+import { buildNewPurchaseItem, isBlockingPurchaseItemPlan, isCanonicalUnit, planPurchaseItem, resolvePurchaseItem } from "@/lib/purchase-item-resolution";
 import { canDeleteDraftBatch, canVoidBatch, getBatchReferenceSummary, getEffectiveBatchStatus, markBatchCompleted, voidBatch } from "@/lib/batch-safety";
 import { canDeleteProduct, getProductReferenceCount, totalProductReferenceCount } from "@/lib/product-safety";
 
@@ -219,6 +221,10 @@ export default function ProductLab({
   // reuses it (delete_posted_purchase_if_reversible's idempotency claim needs that), deleted on
   // success the same way csvConfirmOperationIdsRef is above.
   const deletePurchaseOperationIdsRef = useRef(new Map<string, string>());
+  // Items created by the purchase flow whose purchase has not posted yet, keyed by normalized name.
+  // A retry after "Item created, but the purchase failed" must reuse that Item even if the reloaded
+  // catalog has not reached this render yet -- otherwise a fast retry could create it a second time.
+  const itemsCreatedForPurchaseRef = useRef(new Map<string, Ingredient>());
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
@@ -1568,6 +1574,61 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
+  // Resolves the Item a NEW manual purchase belongs to, creating it only now -- at save time -- when
+  // it is genuinely new. The same pure resolution the form rendered from is re-run here against the
+  // current catalog before anything is written, so a stale form can never create a duplicate.
+  // Creation still goes through saveIngredient (no new write path) and the purchase itself still
+  // posts through post_raw_purchase afterwards; if that second step fails, the created Item is
+  // remembered (itemsCreatedForPurchaseRef) so the retry reuses it instead of creating it again.
+  // Returns ingredient null when the form already carried a resolved Item id (or none at all --
+  // saveSupply's own "Choose an Item" message covers that).
+  async function ensureItemForNewPurchase(formData: FormData): Promise<{ ok: true; ingredient: Ingredient | null; createdForThisPurchase: boolean } | { ok: false }> {
+    const resolvedId = String(formData.get("ingredientId") || "").trim();
+    const newItemName = String(formData.get("newItemName") || "").trim();
+    if (resolvedId || !newItemName) {
+      return { ok: true, ingredient: null, createdForThisPurchase: false };
+    }
+
+    const key = normalizeIngredientName(newItemName);
+    const outstanding = itemsCreatedForPurchaseRef.current.get(key);
+    const resolution = resolvePurchaseItem(newItemName, labState.ingredients, { createAnyway: formData.get("createAnyway") === "1" });
+    if (resolution.kind === "existing") {
+      return { ok: true, ingredient: resolution.ingredient, createdForThisPurchase: outstanding?.id === resolution.ingredient.id };
+    }
+    if (resolution.kind === "new" && outstanding) {
+      return { ok: true, ingredient: outstanding, createdForThisPurchase: true };
+    }
+    if (resolution.kind !== "new") {
+      setMessage(
+        resolution.kind === "archived"
+          ? `An archived Item named "${newItemName}" already exists. Restore it before recording this purchase.`
+          : resolution.kind === "ambiguous"
+            ? `${resolution.matches.length} existing Items match "${newItemName}". Resolve the duplicate Items before recording this purchase.`
+            : `"${newItemName}" looks like an existing Item. Choose that Item, or confirm you want a new one, before saving.`,
+      );
+      setMessageTone("bad");
+      return { ok: false };
+    }
+
+    const baseUnit = String(formData.get("newItemBaseUnit") || "");
+    if (!isCanonicalUnit(baseUnit)) {
+      setMessage("Choose how to track this new Item (g, ml, or pcs) before saving this purchase.");
+      setMessageTone("bad");
+      return { ok: false };
+    }
+    const itemForm = new FormData();
+    itemForm.set("name", newItemName);
+    itemForm.set("baseUnit", baseUnit);
+    itemForm.set("category", "");
+    const newId = await saveIngredient(itemForm);
+    if (!newId) {
+      return { ok: false };
+    }
+    const created = buildNewPurchaseItem(newId, newItemName, baseUnit);
+    itemsCreatedForPurchaseRef.current.set(key, created);
+    return { ok: true, ingredient: created, createdForThisPurchase: true };
+  }
+
   // Wave 0B: a new remote purchase posts through post_raw_purchase (the database locks the
   // ingredient, reads its own quantity/cost, and computes the result -- see that function's own
   // comment). Editing an existing remote purchase is metadata-only once it has a ledger effect,
@@ -1580,8 +1641,18 @@ export default function ProductLab({
   // fresh identity).
   async function saveSupply(formData: FormData): Promise<boolean> {
     const supplyId = String(formData.get("id") || "");
-    const ingredientId = String(formData.get("ingredientId") || "").trim();
-    const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
+    // A brand-new purchase may name an Item that does not exist yet: it is resolved (or created)
+    // here, at save time, never while typing. Editing an existing purchase never creates anything.
+    const itemStep = supplyId ? { ok: true as const, ingredient: null, createdForThisPurchase: false } : await ensureItemForNewPurchase(formData);
+    if (!itemStep.ok) {
+      return false;
+    }
+    const ingredientId = itemStep.ingredient?.id ?? String(formData.get("ingredientId") || "").trim();
+    const ingredient = itemStep.ingredient ?? labState.ingredients.find((item) => item.id === ingredientId);
+    // Only meaningful when this flow created the Item and its purchase has not posted yet: the
+    // operator must be told the Item exists so a retry is understood as "post the purchase", not
+    // "create again". A retry resolves to the same Item (see ensureItemForNewPurchase).
+    const itemCreatedNote = itemStep.createdForThisPurchase ? `Item "${ingredient?.name ?? ""}" was created, but the purchase was not posted. Retry the purchase.` : "";
     if (!ingredient) {
       setMessage("Choose an Item before saving this purchase.");
       setMessageTone("bad");
@@ -1616,17 +1687,18 @@ export default function ProductLab({
       if (!previousSupply) {
         const effect = applySupplyPurchaseEffect(ingredient, supply, supply.id, today);
         if ("error" in effect) {
-          setMessage(effect.error);
+          setMessage(itemCreatedNote ? `${itemCreatedNote} (${effect.error})` : effect.error);
           setMessageTone("bad");
           return false;
         }
         const operationId = String(formData.get("operationId") || "");
         const { error } = await supabase.rpc("post_raw_purchase", postRawPurchaseArgs(supply, effect.transaction.quantityChange, operationId));
         if (error) {
-          setMessage(`Purchase not posted: ${describeIngredientConstraintError(error)}`);
+          setMessage(itemCreatedNote ? `${itemCreatedNote} (${describeIngredientConstraintError(error)})` : `Purchase not posted: ${describeIngredientConstraintError(error)}`);
           setMessageTone("bad");
           return false;
         }
+        itemsCreatedForPurchaseRef.current.delete(normalizeIngredientName(ingredient.name));
         setEditingSupply(null);
         setMessage("Purchase posted.");
         setMessageTone("good");
@@ -1659,7 +1731,7 @@ export default function ProductLab({
     if (!previousSupply) {
       const effect = applySupplyPurchaseEffect(ingredient, supply, supply.id, today);
       if ("error" in effect) {
-        setMessage(effect.error);
+        setMessage(itemCreatedNote ? `${itemCreatedNote} (${effect.error})` : effect.error);
         setMessageTone("bad");
         return false;
       }
@@ -1693,6 +1765,7 @@ export default function ProductLab({
         : current.inventoryTransactions,
       supplies: supplyId ? current.supplies.map((entry) => (entry.id === supplyId ? supply : entry)) : [supply, ...current.supplies],
     }));
+    itemsCreatedForPurchaseRef.current.delete(normalizeIngredientName(ingredient.name));
     setEditingSupply(null);
     setMessage(historicalCostWarning ? `Purchase saved locally. ${historicalCostWarning}` : "Purchase saved locally.");
     setMessageTone("good");
@@ -5186,140 +5259,6 @@ function resolvePackagingItemUnitCost(ingredientId: string, ingredients: Ingredi
   return ingredient.averageUnitCost;
 }
 
-// Manual purchases must attach to an existing Item, not arbitrary free text -- an ingredient and
-// its purchase history are one business item now (see inventory-items.ts), so a purchase logged
-// under a name that doesn't match any Item silently orphans itself the same way the "Vanhouten
-// Dark chocolate" bug did. "Create New Item" is the escape hatch for a genuinely new item, using
-// the same saveIngredient the Items tab itself uses -- not a second, divergent creation path.
-//
-// Lives inside PurchaseLogPage's own <form key={supplyEditorKey(supply)}> (see call site and that
-// function's own comment), so switching which supply is being edited -- including starting a new
-// blank draft for a *different* ingredient, which supplyEditorKey() also gives a distinct key --
-// remounts this component and correctly resets its local state, the same key-remount convention
-// this file already uses for the outer form itself, rather than a useEffect syncing local state to
-// a changed prop.
-//
-// The "Create New Item" panel below is deliberately NOT a nested <form> -- forms cannot nest in
-// HTML, and this field already lives inside PurchaseLogPage's outer <form>. It reads its inputs via
-// refs and builds a FormData by hand instead, matching what a real form submission would send.
-function SupplyIngredientField({
-  ingredients,
-  initialIngredientId,
-  initialIngredientName,
-  isLocked = false,
-  onSelectionChange,
-  saveIngredient,
-}: {
-  ingredients: Ingredient[];
-  initialIngredientId?: string;
-  initialIngredientName: string;
-  isLocked?: boolean;
-  // Called whenever the selected ingredient changes via a picker click, the "Change" button, or a
-  // newly created Item -- none of those fire a native form event the way typing does, so
-  // PurchaseLogPage's onChange-based dirty-tracking would never see them without this.
-  onSelectionChange?: () => void;
-  saveIngredient: (formData: FormData) => Promise<string | null>;
-}) {
-  const matched = ingredients.find((item) => item.id === initialIngredientId) ?? ingredients.find((item) => item.name === initialIngredientName);
-  const [selectedIngredientId, setSelectedIngredientId] = useState(matched?.id ?? "");
-  const [ingredientName, setIngredientName] = useState(initialIngredientName);
-  const [isCreatingItem, setIsCreatingItem] = useState(false);
-  const [isSavingItem, setIsSavingItem] = useState(false);
-  const newNameRef = useRef<HTMLInputElement>(null);
-  const newBaseUnitRef = useRef<HTMLSelectElement>(null);
-  const newCategoryRef = useRef<HTMLSelectElement>(null);
-  const selected = ingredients.find((item) => item.id === selectedIngredientId);
-
-  async function handleCreateItem() {
-    const formData = new FormData();
-    formData.set("name", newNameRef.current?.value.trim() ?? "");
-    formData.set("baseUnit", newBaseUnitRef.current?.value ?? "g");
-    formData.set("category", newCategoryRef.current?.value ?? "");
-    setIsSavingItem(true);
-    const newIngredientId = await saveIngredient(formData);
-    setIsSavingItem(false);
-    if (!newIngredientId) {
-      return;
-    }
-    setSelectedIngredientId(newIngredientId);
-    setIngredientName(String(formData.get("name") || ""));
-    setIsCreatingItem(false);
-    onSelectionChange?.();
-  }
-
-  return (
-    <label className="grid gap-1 text-sm font-medium">
-      Ingredient
-      <input name="ingredientId" type="hidden" value={selectedIngredientId} />
-      <input name="ingredientName" type="hidden" value={ingredientName} />
-      {selected ? (
-        <div className="flex h-10 items-center justify-between gap-2 rounded-md border border-[#d8c7b7] bg-white px-3">
-          <span className="truncate text-sm font-semibold">{selected.name}</span>
-          {isLocked ? <span className="shrink-0 text-xs font-semibold text-[#8f5632]">Locked</span> : (
-            <button
-              className="shrink-0 text-xs font-semibold text-[#8f5632]"
-              onClick={() => {
-                setSelectedIngredientId("");
-                setIngredientName("");
-                onSelectionChange?.();
-              }}
-              type="button"
-            >
-              Change
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          <IngredientPicker
-            ingredients={ingredients}
-            onSelect={(ingredientId) => {
-              const item = ingredients.find((entry) => entry.id === ingredientId);
-              setSelectedIngredientId(ingredientId);
-              setIngredientName(item?.name ?? "");
-              onSelectionChange?.();
-            }}
-            placeholder="Cocoa powder"
-          />
-          <button className="shrink-0 text-xs font-semibold text-[#8f5632]" onClick={() => setIsCreatingItem((current) => !current)} type="button">
-            {isCreatingItem ? "Cancel" : "Create New Item"}
-          </button>
-        </div>
-      )}
-      {isCreatingItem ? (
-        <div className="mt-1 grid gap-2 rounded-md border border-[#d8c7b7] bg-[#fffaf3] p-3">
-          <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" defaultValue={ingredientName} placeholder="Ingredient name" ref={newNameRef} />
-          <div className="grid grid-cols-2 gap-2">
-            <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm font-normal" defaultValue="g" ref={newBaseUnitRef}>
-              {baseUnitOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-            <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm font-normal" defaultValue="" ref={newCategoryRef}>
-              <option value="">Category (optional)</option>
-              {ingredientCategoryOptions.map((option) => (
-                <option key={option} value={option}>
-                  {ingredientCategoryLabel[option]}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            className="h-8 rounded-md bg-[#8f5632] px-3 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isSavingItem}
-            onClick={handleCreateItem}
-            type="button"
-          >
-            {isSavingItem ? "Saving..." : "Save new item"}
-          </button>
-        </div>
-      ) : null}
-    </label>
-  );
-}
-
 function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingredientName" | "supplierName" | "unit") {
   return Array.from(new Set(supplies.map((supply) => supply[key].trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
@@ -5871,7 +5810,7 @@ function InventoryWorkspace({
             </button>
           </div>
           {purchasesTab === "manual" ? (
-            <PurchaseLogPage deleteAndRepairPaused={deleteAndRepairPaused} cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} saveIngredient={saveIngredient} saveSupply={saveSupply} supply={supply} />
+            <PurchaseLogPage deleteAndRepairPaused={deleteAndRepairPaused} cancelEdit={cancelEditSupply} deleteSupply={deleteSupply} editSupply={editSupply} isSuppliesTableMissing={isSuppliesTableMissing} key={supplyEditorKey(supply)} labState={labState} onDirtyChange={onSupplyDirtyChange} repairSupplyInventoryEffects={repairSupplyInventoryEffects} restoreIngredient={restoreIngredient} saveSupply={saveSupply} supply={supply} />
           ) : (
             <PurchaseImportWizard
               confirmPurchaseImport={confirmPurchaseImport}
@@ -5925,7 +5864,7 @@ function PurchaseLogPage({
   labState,
   onDirtyChange,
   repairSupplyInventoryEffects,
-  saveIngredient,
+  restoreIngredient,
   saveSupply,
   supply,
 }: {
@@ -5943,7 +5882,7 @@ function PurchaseLogPage({
   // useUnsavedChangesGuard. Optional so this page still works standalone (e.g. tests).
   onDirtyChange?: (isDirty: boolean) => void;
   repairSupplyInventoryEffects: () => void;
-  saveIngredient: (formData: FormData) => Promise<string | null>;
+  restoreIngredient: (ingredientId: string) => void | Promise<void>;
   saveSupply: (formData: FormData) => Promise<boolean>;
   supply: SupplyEntry | null;
 }) {
@@ -6001,6 +5940,26 @@ function PurchaseLogPage({
   const [pickerNonce, setPickerNonce] = useState(0);
   function bumpPickerNonce() {
     setPickerNonce((current) => current + 1);
+  }
+
+  // What the Ingredient field means for this purchase -- see planPurchaseItem. The operator just
+  // types what they bought; nothing is created until the purchase is saved (saveSupply).
+  const [selectedIngredientId, setSelectedIngredientId] = useState(
+    () => (labState.ingredients.find((item) => item.id === supply?.ingredientId) ?? labState.ingredients.find((item) => item.name === supply?.ingredientName))?.id ?? "",
+  );
+  const [typedIngredientName, setTypedIngredientName] = useState(() => (selectedIngredientId ? "" : (supply?.ingredientName ?? "")));
+  const [createAnywayFor, setCreateAnywayFor] = useState("");
+  const [chosenBaseUnit, setChosenBaseUnit] = useState("");
+  const [purchaseUnit, setPurchaseUnit] = useState(supply?.unit ?? "");
+  const [isRestoringItem, setIsRestoringItem] = useState(false);
+  const itemPlan = planPurchaseItem({ typedName: typedIngredientName, ingredients: labState.ingredients, selectedIngredientId, createAnywayFor, purchaseUnit, chosenBaseUnit });
+  const selectedIngredient = labState.ingredients.find((item) => item.id === selectedIngredientId);
+
+  async function restoreAndUseItem(ingredient: Ingredient) {
+    setIsRestoringItem(true);
+    await restoreIngredient(ingredient.id);
+    setIsRestoringItem(false);
+    bumpPickerNonce();
   }
 
   // Most of this form's fields are uncontrolled (see supply-form-snapshot.ts), so the baseline can
@@ -6088,19 +6047,50 @@ function PurchaseLogPage({
           <input name="operationId" type="hidden" value={operationId} />
           <div className="grid gap-3 sm:grid-cols-3">
             <SupplyValuePicker label="Brand" name="brandName" onValueChange={bumpPickerNonce} options={brandOptions} placeholder="Beryl's / Callebaut / local" value={supply?.brandName} />
-            <SupplyIngredientField ingredients={labState.ingredients} initialIngredientId={supply?.ingredientId} initialIngredientName={supply?.ingredientName ?? ""} isLocked={Boolean(supply?.ingredientId && !supply.id)} onSelectionChange={bumpPickerNonce} saveIngredient={saveIngredient} />
+            <PurchaseItemField
+              chosenBaseUnit={chosenBaseUnit}
+              createAnywayActive={Boolean(createAnywayFor) && createAnywayFor === normalizeIngredientName(typedIngredientName)}
+              ingredients={labState.ingredients}
+              isLocked={Boolean(supply?.ingredientId && !supply.id)}
+              isRestoring={isRestoringItem}
+              onChangeSelection={() => {
+                setSelectedIngredientId("");
+                setTypedIngredientName("");
+                bumpPickerNonce();
+              }}
+              onChosenBaseUnitChange={(value) => {
+                setChosenBaseUnit(value);
+                bumpPickerNonce();
+              }}
+              onCreateAnyway={() => {
+                setCreateAnywayFor(normalizeIngredientName(typedIngredientName));
+                bumpPickerNonce();
+              }}
+              onRestoreAndUse={restoreAndUseItem}
+              onTypedNameChange={(value) => {
+                setTypedIngredientName(value);
+                bumpPickerNonce();
+              }}
+              onUseIngredient={(ingredientId) => {
+                setSelectedIngredientId(ingredientId);
+                bumpPickerNonce();
+              }}
+              plan={itemPlan}
+              selectedIngredient={selectedIngredient}
+              typedName={typedIngredientName}
+            />
             <SupplyValuePicker label="Supplier" name="supplierName" onValueChange={bumpPickerNonce} options={supplierOptions} placeholder="SM / Shopee / local baking store" value={supply?.supplierName} />
           </div>
           <div className="grid gap-3 sm:grid-cols-4">
             <Input name="purchaseDate" label="Date bought" type="date" defaultValue={supply?.purchaseDate ?? getToday()} ref={fieldRef} />
             <Input name="packQuantity" label="Pack qty" type="number" step="0.01" placeholder="1000" defaultValue={supply?.packQuantity || undefined} />
-            <SupplyValuePicker label="Unit" name="unit" onValueChange={bumpPickerNonce} options={unitOptions} placeholder="g" value={supply?.unit} />
+            <SupplyValuePicker label="Unit" name="unit" onValueChange={(value) => { setPurchaseUnit(value); bumpPickerNonce(); }} options={unitOptions} placeholder="g" value={supply?.unit} />
             <Input name="totalCost" label="Total PHP" type="number" step="0.01" placeholder="100" defaultValue={supply?.totalCost || undefined} />
           </div>
           <Input name="qualityRating" label="Quality rating 1-5" type="number" min="1" max="5" defaultValue={supply?.qualityRating || undefined} helper="Rate the supply itself: aroma, texture, consistency, taste impact, packaging condition." />
           <Textarea name="notes" label="Supplier and quality notes" placeholder="Darker color, stronger aroma, cheaper but clumpy, better for brownies, delivery took 3 days." defaultValue={supply?.notes} />
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Button disabled={isSaving}>{isSaving ? "Saving..." : supply?.id ? "Update purchase" : "Save purchase"}</Button>
+            <Button disabled={isSaving || isBlockingPurchaseItemPlan(itemPlan)}>{isSaving ? "Saving..." : supply?.id ? "Update purchase" : "Save purchase"}</Button>
             {supply ? <SecondaryButton onClick={cancelEdit}>{supply.id ? "Cancel edit" : "Cancel"}</SecondaryButton> : null}
             {isSaving ? <span className="text-sm text-[#6f5a4c]">Please don&apos;t refresh or close this tab until this finishes.</span> : null}
           </div>

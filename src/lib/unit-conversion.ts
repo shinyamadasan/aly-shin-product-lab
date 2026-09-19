@@ -66,6 +66,14 @@ export function getMeasurementFamily(baseUnit: CanonicalUnit): "mass" | "volume"
 // apply a conversion. Falls back to CANONICAL_UNITS.mass (matching this app's existing default of
 // "g" for a from-scratch ingredient) for anything unrecognized, like "box" or "pack".
 export function guessCanonicalUnit(rawUnit: string): CanonicalUnit {
+  return inferCanonicalUnit(rawUnit) ?? CANONICAL_UNITS.mass;
+}
+
+// The strict version of the guess above: the canonical unit a raw purchase unit maps to through
+// this file's own fixed conversions (g/kg -> g, ml/L/tbsp/tsp/cup -> ml, pcs -> pcs), or null for
+// anything else ("box", "pack", "", ...). Null means "cannot be inferred safely" -- the caller must
+// ask the operator, never default. guessCanonicalUnit is the lenient, prefill-only wrapper.
+export function inferCanonicalUnit(rawUnit: string): CanonicalUnit | null {
   const normalized = normalizeUnitText(rawUnit);
   if (normalized === "kg" || normalized === CANONICAL_UNITS.mass) {
     return CANONICAL_UNITS.mass;
@@ -76,5 +84,5 @@ export function guessCanonicalUnit(rawUnit: string): CanonicalUnit {
   if (normalized === CANONICAL_UNITS.count) {
     return CANONICAL_UNITS.count;
   }
-  return CANONICAL_UNITS.mass;
+  return null;
 }

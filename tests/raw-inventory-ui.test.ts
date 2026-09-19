@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { inventoryTabs } from "../src/lib/inventory-tabs.ts";
+import { normalizeIngredientName } from "../src/lib/ingredient-normalization.ts";
+import { buildNewPurchaseItem, isCanonicalUnit, resolvePurchaseItem } from "../src/lib/purchase-item-resolution.ts";
+import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
 // Exercise the actual JSX control expressions and handlers without a browser or new
 // test dependencies. These are component contract tests, not visual acceptance tests.
@@ -541,4 +544,170 @@ test("Bake: Stock correction stays available but collapsed behind Advanced, not 
   // default, just below the primary Bake card (this component only renders after it).
   assert.match(text, /Baked pieces on hand/);
   assert.match(text, /Production history/);
+});
+
+// ---- Purchases: smart Item resolution (Item is resolved or created when the purchase is SAVED) ----
+
+function catalogItem(overrides: Partial<Ingredient> = {}): Ingredient {
+  return { id: "x", name: "Item", baseUnit: "g", category: "", currentQuantity: 0, lowStockThreshold: 0, targetStockQuantity: 0, nearestExpirationDate: "", averageUnitCost: 0, notes: "", isActive: true, ...overrides };
+}
+
+// Runs the real ensureItemForNewPurchase source with its collaborators stubbed, so the create /
+// reuse / refuse decisions are exercised as behavior rather than as string presence.
+function itemStepHarness(ingredients: Ingredient[]) {
+  const ensure = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "ensureItemForNewPurchase")[0];
+  assert.ok(ensure, "ensureItemForNewPurchase");
+  const created: Array<{ name: string; baseUnit: string; category: string }> = [];
+  const messages: string[] = [];
+  const state = { ingredients, nextId: 1, failCreate: false };
+  class FakeFormData {
+    values = new Map<string, string>();
+    set(key: string, value: string) { this.values.set(key, value); }
+    get(key: string) { return this.values.get(key) ?? null; }
+  }
+  const ref = { current: new Map<string, Ingredient>() };
+  const run = evaluateFunction(ensure, {
+    itemsCreatedForPurchaseRef: ref,
+    get labState() { return { ingredients: state.ingredients }; },
+    normalizeIngredientName, resolvePurchaseItem, isCanonicalUnit, buildNewPurchaseItem,
+    FormData: FakeFormData,
+    setMessage: (message: string) => { messages.push(message); },
+    setMessageTone: () => {},
+    saveIngredient: async (form: FakeFormData) => {
+      if (state.failCreate) return null;
+      created.push({ name: String(form.get("name")), baseUnit: String(form.get("baseUnit")), category: String(form.get("category")) });
+      return `new-${state.nextId++}`;
+    },
+  }) as (form: { get: (key: string) => string | null }) => Promise<{ ok: boolean; ingredient: Ingredient | null; createdForThisPurchase: boolean }>;
+  const form = (values: Record<string, string>) => ({ get: (key: string) => values[key] ?? null });
+  return { run, form, created, messages, state, ref };
+}
+
+test("Purchases E/F: a genuinely new Item is created only at save time, with the base unit the form inferred", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "flour", name: "All Purpose Flour" })]);
+  const result = await harness.run(harness.form({ newItemName: "Rice Flour", newItemBaseUnit: "g" }));
+  assert.equal(result.ok, true);
+  assert.equal(result.ingredient?.id, "new-1");
+  assert.equal(result.ingredient?.baseUnit, "g");
+  assert.equal(result.createdForThisPurchase, true);
+  assert.deepEqual(harness.created, [{ name: "Rice Flour", baseUnit: "g", category: "" }]);
+});
+
+test("Purchases: nothing is created when the form already resolved an Item, or nothing was typed", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "egg", name: "Egg" })]);
+  // JSON round-trip: the function ran in a separate vm realm, so its plain objects have a different Object.prototype.
+  const expected = { ok: true, ingredient: null, createdForThisPurchase: false };
+  assert.deepEqual(JSON.parse(JSON.stringify(await harness.run(harness.form({ ingredientId: "egg" })))), expected);
+  assert.deepEqual(JSON.parse(JSON.stringify(await harness.run(harness.form({})))), expected);
+  assert.equal(harness.created.length, 0);
+});
+
+test("Purchases H: a retry after 'Item created, purchase failed' reuses the created Item -- even before the reloaded catalog arrives", async () => {
+  const harness = itemStepHarness([]);
+  const first = await harness.run(harness.form({ newItemName: "Rice Flour", newItemBaseUnit: "g" }));
+  assert.equal(first.ingredient?.id, "new-1");
+  // The purchase failed; the operator clicks Save again while labState is still stale (no Rice Flour yet).
+  const retryStale = await harness.run(harness.form({ newItemName: "Rice Flour", newItemBaseUnit: "g" }));
+  assert.equal(retryStale.ingredient?.id, "new-1", "same Item, not a second one");
+  assert.equal(retryStale.createdForThisPurchase, true);
+  // ...and again once the catalog has caught up and the exact match exists.
+  harness.state.ingredients = [catalogItem({ id: "new-1", name: "Rice Flour" })];
+  const retryFresh = await harness.run(harness.form({ newItemName: "rice flour", newItemBaseUnit: "g" }));
+  assert.equal(retryFresh.ingredient?.id, "new-1");
+  assert.equal(retryFresh.createdForThisPurchase, true, "still the Item whose purchase has not posted");
+  assert.equal(harness.created.length, 1, "the Item was created exactly once across every attempt");
+});
+
+test("Purchases: if creating the Item itself fails, nothing proceeds and no Item is remembered", async () => {
+  const harness = itemStepHarness([]);
+  harness.state.failCreate = true;
+  const result = await harness.run(harness.form({ newItemName: "Rice Flour", newItemBaseUnit: "g" }));
+  assert.equal(result.ok, false);
+  assert.equal(harness.ref.current.size, 0);
+});
+
+test("Purchases B: a near-match is refused at save time unless the operator chose 'create anyway'", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "sugar", name: "Brown Sugar" })]);
+  const refused = await harness.run(harness.form({ newItemName: "Brown Sugr", newItemBaseUnit: "g" }));
+  assert.equal(refused.ok, false);
+  assert.equal(harness.created.length, 0, "never silently created or merged");
+  assert.match(harness.messages.at(-1) ?? "", /looks like an existing Item/);
+
+  const forced = await harness.run(harness.form({ newItemName: "Brown Sugr", newItemBaseUnit: "g", createAnyway: "1" }));
+  assert.equal(forced.ok, true);
+  assert.deepEqual(harness.created.map((entry) => entry.name), ["Brown Sugr"]);
+});
+
+test("Purchases D: an archived exact match is never duplicated or silently restored by saving a purchase", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "cf", name: "Cake Flour", isActive: false })]);
+  const result = await harness.run(harness.form({ newItemName: "Cake Flour", newItemBaseUnit: "g", createAnyway: "1" }));
+  assert.equal(result.ok, false);
+  assert.equal(harness.created.length, 0);
+  assert.match(harness.messages.at(-1) ?? "", /archived Item named "Cake Flour" already exists/);
+});
+
+test("Purchases I: two existing Items with the same normalized name block the purchase instead of picking one", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "a", name: "Brown Sugar" }), catalogItem({ id: "b", name: "brown sugar" })]);
+  const result = await harness.run(harness.form({ newItemName: "Brown Sugar", newItemBaseUnit: "g" }));
+  assert.equal(result.ok, false);
+  assert.equal(harness.created.length, 0);
+  assert.match(harness.messages.at(-1) ?? "", /2 existing Items match "Brown Sugar"\. Resolve the duplicate Items/);
+});
+
+test("Purchases G: a new Item with no valid base unit is refused rather than defaulted", async () => {
+  const harness = itemStepHarness([]);
+  for (const baseUnit of ["", "oz", "box"]) {
+    const result = await harness.run(harness.form({ newItemName: "Rice Flour", newItemBaseUnit: baseUnit }));
+    assert.equal(result.ok, false, baseUnit || "(blank)");
+  }
+  assert.equal(harness.created.length, 0);
+});
+
+test("Purchases: a stale form that says 'create' but whose Item now exists resolves to that Item instead of duplicating it", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "flour", name: "All Purpose Flour" })]);
+  const result = await harness.run(harness.form({ newItemName: "all purpose flour", newItemBaseUnit: "g" }));
+  assert.equal(result.ingredient?.id, "flour");
+  assert.equal(result.createdForThisPurchase, false);
+  assert.equal(harness.created.length, 0);
+});
+
+test("Purchases: the purchase itself still posts through post_raw_purchase with the stable operation id -- Item creation is not an inventory write", () => {
+  const saveSupplySource = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "saveSupply")[0].getText();
+  assert.match(saveSupplySource, /supabase\.rpc\("post_raw_purchase", postRawPurchaseArgs\(supply, effect\.transaction\.quantityChange, operationId\)\)/);
+  assert.match(saveSupplySource, /const operationId = String\(formData\.get\("operationId"\) \|\| ""\)/);
+  // A failed post never reports success and, when an Item was just created, says so truthfully.
+  assert.match(saveSupplySource, /was created, but the purchase was not posted\. Retry the purchase\./);
+  // Editing an already-posted purchase never creates anything and keeps every lock.
+  assert.match(saveSupplySource, /supplyId \? \{ ok: true as const, ingredient: null, createdForThisPurchase: false \} : await ensureItemForNewPurchase\(formData\)/);
+  assert.match(saveSupplySource, /postedPurchaseInventoryFieldsChanged\(previousSupply, supply\)/);
+  assert.match(saveSupplySource, /Changing which Item a purchase belongs to isn't supported/);
+  assert.match(saveSupplySource, /update_posted_purchase_metadata/);
+
+  const ensureSource = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "ensureItemForNewPurchase")[0].getText();
+  // Item creation reuses saveIngredient; it never touches stock, cost, or the inventory RPCs itself.
+  assert.equal((ensureSource.match(/saveIngredient\(/g) ?? []).length, 1);
+  assert.doesNotMatch(ensureSource, /supabase|current_quantity|currentQuantity =|post_raw_purchase|average_unit_cost/);
+});
+
+test("Purchases: the form no longer offers a separate 'Create New Item' decision, and typing writes nothing", () => {
+  const purchaseLogPage = component(app, "PurchaseLogPage");
+  const text = purchaseLogPage.getText();
+  assert.doesNotMatch(text, /Create New Item|saveIngredient/);
+  assert.match(text, /<PurchaseItemField/);
+  // The typed-name handler only updates local state -- no save, no RPC, no catalog write.
+  assert.match(text, /onTypedNameChange=\{\(value\) => \{\s*setTypedIngredientName\(value\);\s*bumpPickerNonce\(\);\s*\}\}/);
+  // Save is held back only for plans that need the operator (near-match, archived, ambiguous, unknown unit).
+  assert.match(text, /disabled=\{isSaving \|\| isBlockingPurchaseItemPlan\(itemPlan\)\}/);
+  // Archived Items reuse the existing restoreIngredient behavior; no second restore implementation.
+  assert.match(text, /await restoreIngredient\(ingredient\.id\)/);
+  const field = source("src/components/purchase-item-field.tsx");
+  assert.match(field.text, /Restore and use/);
+  assert.match(field.text, /Create &ldquo;\{typedName\.trim\(\)\}&rdquo; anyway/);
+  assert.match(field.text, /Track this Item in/);
+  assert.doesNotMatch(field.text, /saveIngredient|supabase/);
+});
+
+test("Purchases: CSV import is untouched by the smart resolver", () => {
+  assert.doesNotMatch(wizard.text, /purchase-item-resolution|planPurchaseItem|resolvePurchaseItem/);
+  assert.match(wizard.text, /Create New Item/);
 });
