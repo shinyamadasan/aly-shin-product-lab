@@ -656,6 +656,16 @@ test("Purchases I: two existing Items with the same normalized name block the pu
   assert.match(harness.messages.at(-1) ?? "", /2 existing Items match "Brown Sugar"\. Resolve the duplicate Items/);
 });
 
+test("Purchases I2: an active Item plus an archived Item with the same normalized name also blocks the purchase, even with 'create anyway'", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "a", name: "Brown Sugar" }), catalogItem({ id: "b", name: "brown sugar", isActive: false })]);
+  for (const createAnyway of ["", "1"]) {
+    const result = await harness.run(harness.form({ newItemName: "Brown Sugar", newItemBaseUnit: "g", createAnyway }));
+    assert.equal(result.ok, false);
+  }
+  assert.equal(harness.created.length, 0);
+  assert.match(harness.messages.at(-1) ?? "", /2 existing Items match "Brown Sugar"\. Resolve the duplicate Items/);
+});
+
 test("Purchases G: a new Item with no valid base unit is refused rather than defaulted", async () => {
   const harness = itemStepHarness([]);
   for (const baseUnit of ["", "oz", "box"]) {

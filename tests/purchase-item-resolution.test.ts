@@ -44,10 +44,11 @@ test("brand is never part of Item identity: the same Item resolves whatever bran
   assert.equal(planPurchaseItem({ typedName: "Egg", ingredients: [egg], purchaseUnit: "pcs" }).status, "use-existing");
 });
 
-test("an archived twin of an active exact match is ignored -- the active Item wins", () => {
+test("exactly one active exact match is reused, even when unrelated archived Items exist", () => {
   const active = item({ id: "active", name: "Cake Flour" });
-  const archived = item({ id: "archived", name: "cake flour", isActive: false });
-  const result = resolvePurchaseItem("Cake Flour", [archived, active]);
+  const unrelatedArchived = item({ id: "old", name: "Rye Flour", isActive: false });
+  const result = resolvePurchaseItem("Cake Flour", [unrelatedArchived, active]);
+  assert.equal(result.kind, "existing");
   assert.equal(result.kind === "existing" && result.ingredient.id, "active");
 });
 
@@ -78,6 +79,45 @@ test("two archived Items with the same normalized name (and no active one) are a
   const a = item({ id: "a", name: "Brown Sugar", isActive: false });
   const b = item({ id: "b", name: "Brown Sugar", isActive: false });
   assert.equal(resolvePurchaseItem("Brown Sugar", [a, b]).kind, "ambiguous");
+});
+
+// Archived Items still own purchase/stock/formula/import/costing history, so an active + archived
+// pair with the same normalized name is an identity conflict -- the active one is NOT preferred.
+test("one active and one archived Item with the same normalized name are ambiguous -- the active Item does not win", () => {
+  const active = item({ id: "active", name: "Brown Sugar" });
+  const archived = item({ id: "archived", name: "brown sugar", isActive: false });
+  for (const catalog of [[active, archived], [archived, active]]) {
+    const result = resolvePurchaseItem("Brown Sugar", catalog);
+    assert.equal(result.kind, "ambiguous");
+    assert.deepEqual(result.kind === "ambiguous" && result.matches.map((entry) => entry.id).sort(), ["active", "archived"]);
+  }
+});
+
+test("planPurchaseItem also returns ambiguous for every 2+ exact-match combination, including active + archived", () => {
+  const combos: Array<[string, Ingredient[]]> = [
+    ["two active", [item({ id: "a", name: "Brown Sugar" }), item({ id: "b", name: "brown sugar" })]],
+    ["two archived", [item({ id: "a", name: "Brown Sugar", isActive: false }), item({ id: "b", name: "brown sugar", isActive: false })]],
+    ["active + archived", [item({ id: "a", name: "Brown Sugar" }), item({ id: "b", name: "brown sugar", isActive: false })]],
+  ];
+  for (const [label, catalog] of combos) {
+    const plan = planPurchaseItem({ typedName: "Brown Sugar", ingredients: catalog, purchaseUnit: "g" });
+    assert.equal(plan.status, "ambiguous", label);
+    assert.equal(isBlockingPurchaseItemPlan(plan), true, label);
+    assert.equal(plan.status === "ambiguous" && plan.matches.length, 2, label);
+  }
+});
+
+test("createAnyway can never bypass a 2+ exact-match ambiguity, whatever the active/archived mix", () => {
+  const combos: Ingredient[][] = [
+    [item({ id: "a", name: "Brown Sugar" }), item({ id: "b", name: "brown sugar" })],
+    [item({ id: "a", name: "Brown Sugar", isActive: false }), item({ id: "b", name: "brown sugar", isActive: false })],
+    [item({ id: "a", name: "Brown Sugar" }), item({ id: "b", name: "brown sugar", isActive: false })],
+  ];
+  for (const catalog of combos) {
+    assert.equal(resolvePurchaseItem("Brown Sugar", catalog, { createAnyway: true }).kind, "ambiguous");
+    const plan = planPurchaseItem({ typedName: "Brown Sugar", ingredients: catalog, purchaseUnit: "g", createAnywayFor: "brown sugar" });
+    assert.equal(plan.status, "ambiguous");
+  }
 });
 
 // --- near matches (scenario B) -------------------------------------------------------------------

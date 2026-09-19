@@ -73,10 +73,10 @@ function editDistance(a: string, b: string, limit: number): number {
 
 // Decision table, in order:
 //   nothing typed (after normalization)          -> empty
-//   exactly 1 ACTIVE exact match                 -> existing (auto-reuse; archived twins are ignored)
-//   2+ ACTIVE exact matches                      -> ambiguous (an integrity problem -- never guessed through)
-//   no active exact, exactly 1 ARCHIVED exact    -> archived (never silently restored, never duplicated)
-//   no active exact, 2+ ARCHIVED exact           -> ambiguous
+//   exactly 1 exact match, active                -> existing (auto-reuse)
+//   exactly 1 exact match, archived              -> archived (never silently restored, never duplicated)
+//   2+ exact matches, ANY active/archived mix    -> ambiguous (an integrity problem -- never guessed
+//                                                   through, and the active Item is never preferred)
 //   no exact, 1+ possible matches (any status)   -> similar, unless createAnyway (operator insisted)
 //   otherwise                                    -> new
 // createAnyway only ever bypasses "similar". It can never bypass an exact or archived match.
@@ -86,20 +86,15 @@ export function resolvePurchaseItem(typedName: string, ingredients: Ingredient[]
     return { kind: "empty" };
   }
 
+  // Every Item counts toward an exact match, active or archived: an archived Item still owns its
+  // purchase, stock, formula, import and costing history, so an active + archived pair sharing a
+  // normalized name is an identity conflict the purchase form must not guess through.
   const exact = ingredients.filter((ingredient) => normalizeIngredientName(ingredient.name) === normalized);
-  const activeExact = exact.filter((ingredient) => ingredient.isActive);
-  if (activeExact.length === 1) {
-    return { kind: "existing", ingredient: activeExact[0] };
+  if (exact.length > 1) {
+    return { kind: "ambiguous", matches: exact };
   }
-  if (activeExact.length > 1) {
-    return { kind: "ambiguous", matches: activeExact };
-  }
-  const archivedExact = exact.filter((ingredient) => !ingredient.isActive);
-  if (archivedExact.length === 1) {
-    return { kind: "archived", ingredient: archivedExact[0] };
-  }
-  if (archivedExact.length > 1) {
-    return { kind: "ambiguous", matches: archivedExact };
+  if (exact.length === 1) {
+    return exact[0].isActive ? { kind: "existing", ingredient: exact[0] } : { kind: "archived", ingredient: exact[0] };
   }
 
   const candidates = ingredients
