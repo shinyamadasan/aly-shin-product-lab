@@ -371,3 +371,91 @@ test("Bake: cost certification uses the same shared helper as Inventory, not a r
   assert.match(bake.text, /isCostBaselineUncertified/);
   assert.doesNotMatch(bake.text, /!ingredient\.costReconciledAt \|\| !ingredient\.averageUnitCost \|\| ingredient\.averageUnitCost <= 0/);
 });
+
+test("Bake: a fully resolved recipe collapses the ingredient mapping table into a closed-by-default disclosure", () => {
+  const bakePage = component(bake, "BakePage");
+  const text = bakePage.getText();
+  // The always-open table only renders for the not-fully-resolved case now.
+  assert.match(text, /selectedBatch && !fullyResolved \?/);
+  // The fullyResolved case renders a <details> with no `open` attribute (closed by default),
+  // labeled distinctly from the deductions disclosure so the two toggles are never confused.
+  const detailsMatch = text.match(/\{selectedBatch && fullyResolved \? \(\s*<details className="mt-3">/);
+  assert.ok(detailsMatch, "fullyResolved renders a plain, un-opened <details>");
+  assert.match(text, /View ingredient mapping \(\{resolved\.length\}\)/);
+});
+
+test("Bake: an unresolved ingredient still shows the assignment picker directly, not behind a disclosure", () => {
+  const bakePage = component(bake, "BakePage");
+  const ingredientPickerUse = nodes(bakePage, (node) => ts.isJsxSelfClosingElement(node) && node.tagName.getText() === "IngredientPicker")[0];
+  assert.ok(ingredientPickerUse, "IngredientPicker is still used");
+  // Walk up from the picker to confirm it sits under the "!fullyResolved" branch, not inside any
+  // <details> (a hidden picker an operator has to know to expand would defeat the point).
+  let current: ts.Node | undefined = ingredientPickerUse;
+  let underDetails = false;
+  while (current && current !== bakePage) {
+    if (ts.isJsxElement(current) && current.openingElement.tagName.getText() === "details") {
+      underDetails = true;
+    }
+    current = current.parent;
+  }
+  assert.equal(underDetails, false, "the assignment picker for an unresolved row is never hidden behind a disclosure");
+});
+
+test("Bake: preflight shows one short message per short ingredient, sourced from getInsufficientDeductions", () => {
+  assert.match(bake.text, /is short by \{item\.shortfall\.toFixed\(2\)\}/);
+  assert.match(bake.text, /insufficient\.map\(\(item\) =>/);
+});
+
+test("Bake: multiple uncertified costs are summarized as one Preflight line, never one card per ingredient", () => {
+  assert.match(bake.text, /Cost setup needed/);
+  assert.match(bake.text, /uncertifiedCostIngredientNames\.length/);
+  // The per-deduction card no longer renders its own separate "not certified" line -- that
+  // information now lives once, in the grouped Preflight message above.
+  assert.doesNotMatch(bake.text, /isCostUncertified/);
+  assert.doesNotMatch(bake.text, /Cost baseline not certified/);
+});
+
+test("Bake: Review costs in the cost-setup exception links straight to Inventory's Manage Items", () => {
+  assert.match(bake.text, /href="\/inventory\?tab=ingredients"/);
+});
+
+test("Bake: insufficient stock and cost-uncertified ingredients still block a remote confirm (readyToConfirm unchanged)", () => {
+  const readyToConfirm = nodes(bake, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "readyToConfirm")[0] as ts.VariableDeclaration;
+  const text = readyToConfirm.initializer?.getText() ?? "";
+  assert.match(text, /insufficient\.length === 0/);
+  assert.match(text, /uncertifiedCostIngredientNames\.length === 0/);
+  assert.match(text, /fullyResolved/);
+  assert.match(text, /isActualPiecesValid/);
+});
+
+test("Bake: batch-amount presets are a convenience only -- the numeric field stays the single source of truth", () => {
+  assert.match(bake.text, /multiplierPresets = \["0\.5", "1", "2"\]/);
+  const bakePage = component(bake, "BakePage");
+  const presetButton = nodes(bakePage, (node) => ts.isJsxElement(node) && node.openingElement.tagName.getText() === "button" && node.getText().includes("preset"))[0];
+  assert.ok(presetButton, "preset buttons exist");
+  const onClick = attribute((presetButton as ts.JsxElement).openingElement, "onClick");
+  assert.match(onClick ?? "", /setMultiplierText\(preset\)/);
+  // The number input this feeds is still the one bound to multiplierText -- a preset writes into
+  // it rather than replacing it with separate state.
+  assert.match(bake.text, /value=\{multiplierText\}/);
+});
+
+test("Bake: Actual usable pieces is never auto-filled from Expected -- both remain independently rendered (regression, unchanged)", () => {
+  // Re-verifies the pre-existing contract survives this pass's restructuring: no wiring exists
+  // from expectedPieces into actualPiecesText anywhere in the file.
+  assert.doesNotMatch(bake.text, /setActualPiecesText\(String\(expectedPieces/);
+  assert.doesNotMatch(bake.text, /setActualPiecesText\(expectedPieces/);
+  assert.match(bake.text, /const \[actualPiecesText, setActualPiecesText\] = useState\(""\)/);
+});
+
+test("Bake: Stock correction stays available but collapsed behind Advanced, not competing with the primary Bake action", () => {
+  const finishedStockPanel = component(bake, "FinishedStockPanel");
+  const text = finishedStockPanel.getText();
+  assert.match(text, /<summary className="cursor-pointer text-lg font-semibold">Advanced: Stock correction<\/summary>/);
+  // Closed by default: the <details> wrapping it carries no `open` attribute.
+  assert.doesNotMatch(text, /<details className="mt-6" open/);
+  // Finished stock and Production history remain outside that disclosure -- still visible by
+  // default, just below the primary Bake card (this component only renders after it).
+  assert.match(text, /Baked pieces on hand/);
+  assert.match(text, /Production history/);
+});

@@ -152,6 +152,11 @@ export function BakePage({
     setAllowNegative(false);
   }
 
+  // Quick multiplier presets for the common cases -- the input below stays the one source of
+  // truth (a preset click just writes into it), so a batch not listed here (0.75x, 3x, ...) is
+  // never a separate "Custom" mode, just typing directly into the same field.
+  const multiplierPresets = ["0.5", "1", "2"];
+
   return (
     <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
       {isInventoryTableMissing ? (
@@ -187,6 +192,18 @@ export function BakePage({
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-sm font-medium">
             Batches made
+            <span className="flex flex-wrap gap-1.5">
+              {multiplierPresets.map((preset) => (
+                <button
+                  className={`h-7 rounded-md border px-2.5 text-xs font-semibold ${multiplierText === preset ? "border-[#8f5632] bg-[#8f5632] text-white" : "border-[#d8c7b7] bg-white text-[#5f4a3d]"}`}
+                  key={preset}
+                  onClick={() => setMultiplierText(preset)}
+                  type="button"
+                >
+                  {preset}x
+                </button>
+              ))}
+            </span>
             <input
               className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
               min="0.01"
@@ -221,7 +238,35 @@ export function BakePage({
         </label>
 
         {selectedBatch ? (
-          <div className="mt-5 divide-y divide-[#f0e4d8] rounded-md border border-[#eaded2]">
+          <div className="mt-5 rounded-md border border-[#eaded2] p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Preflight</p>
+            <ul className="mt-2 grid gap-1.5 text-sm">
+              <li className={fullyResolved ? "text-[#3f6b3f]" : "font-semibold text-[#8a3827]"}>
+                {fullyResolved ? `✓ ${resolved.length} ingredient${resolved.length === 1 ? "" : "s"} matched` : "⚠ Some ingredients need assignment -- see below"}
+              </li>
+              {fullyResolved ? (
+                insufficient.length === 0 ? (
+                  <li className="text-[#3f6b3f]">{"✓"} Enough raw stock</li>
+                ) : (
+                  insufficient.map((item) => (
+                    <li className="font-semibold text-[#8a3827]" key={item.ingredientId}>
+                      {"⚠"} {item.name} is short by {item.shortfall.toFixed(2)} {labState.ingredients.find((i) => i.id === item.ingredientId)?.baseUnit ?? ""}
+                    </li>
+                  ))
+                )
+              ) : null}
+              {remotePosting && uncertifiedCostIngredientNames.length > 0 ? (
+                <li className="font-semibold text-[#8a3827]">
+                  {"⚠"} Cost setup needed -- {uncertifiedCostIngredientNames.length} ingredient cost{uncertifiedCostIngredientNames.length === 1 ? "" : "s"} need one-time verification before this Bake can be posted ({uncertifiedCostIngredientNames.join(", ")}).{" "}
+                  <a className="underline" href="/inventory?tab=ingredients">Review costs</a>
+                </li>
+              ) : null}
+            </ul>
+          </div>
+        ) : null}
+
+        {selectedBatch && !fullyResolved ? (
+          <div className="mt-3 divide-y divide-[#f0e4d8] rounded-md border border-[#eaded2]">
             {resolved.length === 0 ? <p className="p-4 text-sm text-[#6f5a4c]">This batch has no formula ingredients.</p> : null}
             {resolved.map((row) => {
               const ingredient = labState.ingredients.find((item) => item.id === row.ingredientId);
@@ -269,6 +314,38 @@ export function BakePage({
           </div>
         ) : null}
 
+        {selectedBatch && fullyResolved ? (
+          <details className="mt-3">
+            <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">View ingredient mapping ({resolved.length})</summary>
+            <div className="mt-2 divide-y divide-[#f0e4d8] rounded-md border border-[#eaded2]">
+              {resolved.map((row) => {
+                const ingredient = labState.ingredients.find((item) => item.id === row.ingredientId);
+                const statusLabel = row.convertedQuantity !== null ? `${(row.convertedQuantity * (isMultiplierValid ? multiplier : 1)).toFixed(2)} ${ingredient?.baseUnit ?? ""}` : "Needs unit fix";
+                return (
+                  <div className="grid gap-2 p-4 sm:grid-cols-[1fr_200px_140px]" key={row.rowId}>
+                    <div>
+                      <p className="font-semibold">
+                        {row.ingredientName}
+                        {row.step ? <span className="ml-2 text-xs font-normal text-[#6f5a4c]">({row.step})</span> : null}
+                      </p>
+                      <p className="text-sm text-[#6f5a4c]">
+                        {row.requestedQuantity} {row.requestedUnit} per batch
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm">{ingredient?.name}</p>
+                      <span className="mt-1 inline-block">
+                        <Tag tone="warm">{row.matchMethod}</Tag>
+                      </span>
+                    </div>
+                    <div className="text-sm font-semibold">{statusLabel}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        ) : null}
+
         <div className="mt-5 flex flex-col gap-3">
           {insufficient.length > 0 && canOverrideNegative ? (
             <label className="flex items-center gap-2 text-sm font-medium text-[#8a3827]">
@@ -278,11 +355,6 @@ export function BakePage({
           ) : null}
           {insufficient.length > 0 && !canOverrideNegative ? (
             <p className="text-sm font-medium text-[#8a3827]">Insufficient stock blocks this Bake -- there is no override for a posted Bake.</p>
-          ) : null}
-          {remotePosting && uncertifiedCostIngredientNames.length > 0 ? (
-            <p className="text-sm font-medium text-[#8a3827]">
-              Cannot confirm this Bake. Cost baseline is not certified for: {uncertifiedCostIngredientNames.join(", ")}. Quantity may already be reconciled, but cost still needs a Certify Cost action in Inventory -- Items before this Bake can post. There is no override.
-            </p>
           ) : null}
           <button
             className="h-10 w-fit rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
@@ -298,31 +370,35 @@ export function BakePage({
       <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Deductions</p>
         <h3 className="mt-1 text-lg font-semibold">What this bake will use</h3>
-        <div className="mt-3 space-y-2 text-sm">
-          {deductions.length === 0 ? <p className="text-[#6f5a4c]">Nothing to deduct yet -- resolve every ingredient and set a valid multiplier.</p> : null}
-          {deductions.map((deduction) => {
-            const ingredient = labState.ingredients.find((item) => item.id === deduction.ingredientId);
-            if (!ingredient) {
-              return null;
-            }
-            const resultingQuantity = ingredient.currentQuantity - deduction.quantity;
-            const isShort = resultingQuantity < 0;
-            const isCostUncertified = remotePosting && isCostBaselineUncertified(ingredient);
-            return (
-              <div className={`rounded-md border p-3 ${isShort || isCostUncertified ? "border-[#f3c9c0] bg-[#fde6df]" : "border-[#f0e4d8]"}`} key={deduction.ingredientId}>
-                <p className="font-semibold">{ingredient.name}</p>
-                <p className="text-[#6f5a4c]">
-                  Current: {ingredient.currentQuantity} {ingredient.baseUnit} -- Needs: {deduction.quantity.toFixed(2)} {ingredient.baseUnit}
-                </p>
-                <p className={isShort ? "font-semibold text-[#8a3827]" : "text-[#6f5a4c]"}>
-                  Resulting: {resultingQuantity.toFixed(2)} {ingredient.baseUnit}
-                  {isShort ? " -- insufficient stock" : ""}
-                </p>
-                {isCostUncertified ? <p className="font-semibold text-[#8a3827]">Cost baseline not certified</p> : null}
-              </div>
-            );
-          })}
-        </div>
+        {deductions.length === 0 ? (
+          <p className="mt-3 text-sm text-[#6f5a4c]">Nothing to deduct yet -- resolve every ingredient and set a valid multiplier.</p>
+        ) : (
+          <details className="mt-3" open={insufficient.length > 0}>
+            <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">View ingredient deductions ({deductions.length})</summary>
+            <div className="mt-2 space-y-2 text-sm">
+              {deductions.map((deduction) => {
+                const ingredient = labState.ingredients.find((item) => item.id === deduction.ingredientId);
+                if (!ingredient) {
+                  return null;
+                }
+                const resultingQuantity = ingredient.currentQuantity - deduction.quantity;
+                const isShort = resultingQuantity < 0;
+                return (
+                  <div className={`rounded-md border p-3 ${isShort ? "border-[#f3c9c0] bg-[#fde6df]" : "border-[#f0e4d8]"}`} key={deduction.ingredientId}>
+                    <p className="font-semibold">{ingredient.name}</p>
+                    <p className="text-[#6f5a4c]">
+                      Current: {ingredient.currentQuantity} {ingredient.baseUnit} -- Needs: {deduction.quantity.toFixed(2)} {ingredient.baseUnit}
+                    </p>
+                    <p className={isShort ? "font-semibold text-[#8a3827]" : "text-[#6f5a4c]"}>
+                      Resulting: {resultingQuantity.toFixed(2)} {ingredient.baseUnit}
+                      {isShort ? " -- insufficient stock" : ""}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        )}
       </div>
 
       <FinishedStockPanel labState={labState} recordFinishedStockException={remotePosting ? recordFinishedStockException : null} />
@@ -417,10 +493,13 @@ function FinishedStockPanel({
       ) : null}
 
       {recordFinishedStockException ? (
-        <FinishedStockExceptionForm
-          balances={balances}
-          recordFinishedStockException={recordFinishedStockException}
-        />
+        <details className="mt-6">
+          <summary className="cursor-pointer text-lg font-semibold">Advanced: Stock correction</summary>
+          <FinishedStockExceptionForm
+            balances={balances}
+            recordFinishedStockException={recordFinishedStockException}
+          />
+        </details>
       ) : null}
 
       {exceptionHistory.length > 0 ? (
