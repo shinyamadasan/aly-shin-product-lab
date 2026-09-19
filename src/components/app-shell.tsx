@@ -68,7 +68,7 @@ export function AppShell({
         <div className="mb-6 border-b border-white/10 pb-5">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#ddb778]">Aly & Shin</p>
           <h1 className="mt-2 text-2xl font-semibold">Product Lab</h1>
-          <p className="mt-2 text-sm leading-6 text-[#d8c6b8]">Run orders, stock, production, and growth from one workspace.</p>
+          <p className="mt-2 text-sm leading-6 text-[#d8c6b8]">Run orders, stock, production, products, and growth from one workspace.</p>
         </div>
         <nav aria-label="Main" className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
           {itemsByGroup.map((group) => {
@@ -168,9 +168,9 @@ function AppHeader({ view }: { view: LabView }) {
           <h2 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">{titles[view]}</h2>
         </div>
         <div className="grid gap-2 sm:grid-cols-3">
-          <HeaderBadge label="Stage" value="Pre-launch" />
-          <HeaderBadge label="Model" value="Home preorder" />
-          <HeaderBadge label="Focus" value="Bakery first" />
+          <HeaderBadge label="Stage" value="Selling" />
+          <HeaderBadge label="Model" value="Home-based preorder" />
+          <HeaderBadge label="Focus" value="Bakery operations" />
         </div>
       </div>
     </header>

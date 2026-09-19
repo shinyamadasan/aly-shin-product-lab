@@ -178,7 +178,7 @@ test("every LabView is reachable from the navigation", () => {
 
 test("the shell no longer describes the app as a pre-launch proving system or shows the R&D rule", () => {
   const shell = read("../src/components/app-shell.tsx");
-  assert.match(shell, /Run orders, stock, production, and growth from one workspace\./);
+  assert.match(shell, /Run orders, stock, production, products, and growth from one workspace\./);
   for (const gone of ["Internal system for proving products before launch", "Today&apos;s rule", "No launch menu decisions"]) {
     assert.equal(shell.includes(gone), false, `${gone} must not be in the operational shell`);
   }
@@ -198,6 +198,33 @@ test("mobile keeps a compact two-tier structure with a native disclosure for Mor
   assert.match(shell, /<details/);
   assert.match(shell, /open=\{isMoreActive\}/);
   assert.match(shell, /overflow-x-auto/);
+});
+
+test("every ProductLab route passes its view explicitly, so the required prop is never satisfied by accident", () => {
+  const root = decodeURIComponent(SRC_APP.pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+  let checked = 0;
+  for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || entry.name !== "page.tsx") continue;
+    const code = readFileSync(join(entry.parentPath, entry.name), "utf8").replace(/\/\/.*$/gm, "");
+    for (const usage of code.match(/<ProductLab\b[^>]*\/>/g) ?? []) {
+      checked += 1;
+      assert.match(usage, /\bview="[a-z-]+"/, `${entry.parentPath}: ProductLab rendered without an explicit view`);
+    }
+  }
+  // A floor, not an equality: /context only mentions <ProductLab> in a comment and renders its own
+  // page, so it is not a usage. The floor just proves the scan found the real ones.
+  assert.ok(checked >= 18, `only ${checked} ProductLab usages found -- fixture is stale`);
+});
+
+test("global chrome describes the app as it is now, not a pre-launch proving tool", () => {
+  const shell = read("../src/components/app-shell.tsx");
+  assert.match(shell, /Run orders, stock, production, products, and growth from one workspace\./);
+  assert.match(shell, /<HeaderBadge label="Stage" value="Selling" \/>/);
+  assert.match(shell, /<HeaderBadge label="Model" value="Home-based preorder" \/>/);
+  assert.match(shell, /<HeaderBadge label="Focus" value="Bakery operations" \/>/);
+  for (const stale of ["Pre-launch", "Home preorder", "Bakery first"]) {
+    assert.equal(shell.includes(stale), false, `${stale} is stale global chrome`);
+  }
 });
 
 test("Dashboard header title is no longer the old product-proof command center", () => {

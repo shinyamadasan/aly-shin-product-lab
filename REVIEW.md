@@ -466,3 +466,20 @@ phone. Layout was checked with fixtures at 1440px and a true 390px viewport in h
 
 **Merge gate: `done`.** Presentational and routing change with no data/auth/security surface,
 reversible via git. Old `/?job=` bookmarks and `/dashboard` are covered by redirects.
+
+## 2026-09-19 — Operations Dashboard V1 pre-merge corrections
+
+**Scope:** `ProductLab`'s `view` prop is now required (default `"today"` removed); global AppShell
+chrome updated (sidebar sentence, header badges Stage/Model/Focus). Closes two items the 2026-09-18
+entry listed as open. No dashboard scope added; no data, schema or route change.
+
+**Verdict:** Sound. All 18 `<ProductLab>` callsites already passed `view`, so removing the default
+changes no behaviour. Proven both ways rather than assumed: deleting `view` from a route fails
+`tsc` (TS2741) and fails the new route-scan test. Header badges now read Selling / Home-based
+preorder / Bakery operations; layout and grouping untouched.
+
+**Not rubber-stamped:** "Stage: Selling" is a wording judgement supplied by the owner, not derived
+from data. The pre-existing `bake-page.tsx:89` lint error is unchanged (file not modified;
+reproduced on pristine `origin/main` in the prior pass).
+
+**Merge gate: `done`.** Type/copy change only, reversible via git.

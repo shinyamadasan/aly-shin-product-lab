@@ -173,13 +173,14 @@ const UNSAVED_SUPPLY_MESSAGE = "You have unsaved changes in this purchase. Leavi
 type CostingWorkspaceMode = "history" | "detail" | "editor";
 
 export default function ProductLab({
-  view = "today",
+  view,
   initialInventoryTab,
   initialOrdersTab,
   initialOpportunityStatusFilter = "new",
   initialCreativeJobId = null,
 }: {
-  view?: LabView;
+  // Required on purpose: a route that forgets it must fail typecheck, not silently render another page.
+  view: LabView;
   initialInventoryTab?: InventoryTab;
   initialOrdersTab?: OrdersTab;
   initialOpportunityStatusFilter?: OpportunityStatusFilter;

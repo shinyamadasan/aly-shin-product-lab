@@ -187,8 +187,11 @@ test("[static] no banned internal vocabulary appears in any of Today's user-faci
   }
 });
 
-test("[static] product-lab.tsx: Today is the default view, and the today branch is wired before dashboard's", () => {
-  assert.match(productLabSource, /view = "today"/);
+test("[static] product-lab.tsx: view is a required prop with no default, and the today branch is wired before dashboard's", () => {
+  assert.match(productLabSource, /\n  view,\n/);
+  assert.doesNotMatch(productLabSource, /view = "/);
+  assert.match(productLabSource, /\n  view: LabView;\n/);
+  assert.doesNotMatch(productLabSource, /view\?: LabView/);
   // S4 gives Today two things it could not read for itself: the app's already-loaded product
   // catalog (so Create Now's optional selector has no second source) and the route's resolved
   // active job id (so a refresh recovers an in-flight creation).
