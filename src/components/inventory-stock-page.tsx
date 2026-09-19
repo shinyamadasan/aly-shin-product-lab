@@ -83,12 +83,15 @@ export function InventoryStockPage({
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div>
         {allIngredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No ingredients yet. Add one in Manage Items.</p> : null}
         {allIngredients.length > 0 && ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">Nothing matches right now.</p> : null}
         {ingredients.length > 0 ? (
-          <div className="min-w-[480px]">
-            <div className="sticky top-0 z-10 grid grid-cols-[minmax(200px,1fr)_140px_180px] gap-4 border-b border-[#eaded2] bg-[#fffaf3] px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">
+          <div>
+            {/* Column headers only make sense once there are columns to label -- below sm, each
+                row stacks into a plain name/quantity/tags card instead, so this row hides rather
+                than labeling a layout that no longer exists. */}
+            <div className="hidden border-b border-[#eaded2] bg-[#fffaf3] px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f] sm:grid sm:grid-cols-[minmax(200px,1fr)_140px_180px] sm:gap-4">
               <p>Item</p>
               <p>On hand</p>
               <p>Status</p>
@@ -102,8 +105,11 @@ export function InventoryStockPage({
                 // A flagged (manual-reconciliation) ingredient always gets a tag, even if its stock
                 // and expiration are otherwise fine -- the flag is a data-integrity issue, not a
                 // stock-level one.
+                // Single stacked column below sm (no fixed track widths, no horizontal scroll --
+                // a phone-width viewport never needs to scroll to read a row); the 3-column
+                // Item/On hand/Status grid only kicks in at sm and up, matching the header above.
                 return (
-                  <article className="grid grid-cols-[minmax(200px,1fr)_140px_180px] items-center gap-4 px-5 py-3 text-sm" key={item.id}>
+                  <article className="grid grid-cols-1 gap-1 px-5 py-3 text-sm sm:grid-cols-[minmax(200px,1fr)_140px_180px] sm:items-center sm:gap-4" key={item.id}>
                     <h4 className="min-w-0 truncate font-semibold">{item.name}</h4>
                     <p>{item.currentQuantity} {item.baseUnit}</p>
                     <div className="flex flex-wrap items-center gap-1.5">

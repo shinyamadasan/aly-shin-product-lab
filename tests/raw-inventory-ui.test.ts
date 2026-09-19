@@ -355,6 +355,30 @@ test("Inventory Stock table: Need to Buy survives as the 'Low / Out' filter, rea
   assert.match(stockPage.text, /matchesStockFilter/);
 });
 
+// Independent review found the list still forced a ~390px phone to scroll horizontally: a fixed
+// grid-cols-[...140px_180px] track list, plus gaps, sat inside an overflow-x-auto wrapper with its
+// own min-w-[480px] floor -- together wider than the viewport, no matter how narrow the name
+// column shrank. The fix removes the forced minimum width and the scroll wrapper entirely, and
+// only applies the 3-column desktop grid at sm and up; below that, a row is a single stacked
+// column with no explicit width at all, so it can never be wider than its own text content.
+test("Inventory Stock table: no fixed minimum width or horizontal-scroll wrapper forces a phone-width viewport to scroll", () => {
+  assert.doesNotMatch(stockPage.text, /overflow-x-auto/);
+  assert.doesNotMatch(stockPage.text, /min-w-\[/);
+  // The 3-column Item/On hand/Status layout is gated behind the sm breakpoint, both for the
+  // header row and for each item row -- unprefixed (mobile-first) classes carry no fixed track
+  // widths, so a narrow viewport gets a single stacked column, not a squeezed 3-column one.
+  assert.match(stockPage.text, /sm:grid sm:grid-cols-\[minmax\(200px,1fr\)_140px_180px\] sm:gap-4/);
+  assert.match(stockPage.text, /grid grid-cols-1 gap-1 px-5 py-3 text-sm sm:grid-cols-\[minmax\(200px,1fr\)_140px_180px\] sm:items-center sm:gap-4/);
+});
+
+test("Inventory Stock table: does not duplicate row rendering for mobile vs desktop -- one grid, responsive classes only", () => {
+  const stockPageModule = component(stockPage, "InventoryStockPage");
+  // Exactly one ingredients.map(...) render pass -- a second, mobile-only card renderer would be
+  // a parallel data-rendering implementation, which the fix deliberately avoids.
+  const mapCalls = nodes(stockPageModule, (node) => ts.isCallExpression(node) && node.expression.getText() === "ingredients.map");
+  assert.equal(mapCalls.length, 1, "a single responsive grid renders every row, not a separate mobile card list");
+});
+
 test("Manage Items: a Cost setup summary appears only when ingredients need verification, and the per-item Certify/Re-certify control still exists", () => {
   assert.match(inventory.text, /uncertifiedCostCount > 0/);
   assert.match(inventory.text, /isCostBaselineUncertified/);
