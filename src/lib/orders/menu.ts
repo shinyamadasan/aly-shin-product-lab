@@ -17,6 +17,7 @@
 
 import { getLatestBatch, getLinkedCosting, type RuleEngineContext } from "../rule-engine/types.ts";
 import type { CostingSummary, Product, ProductBatch, SellingFormat } from "../product-lab-types.ts";
+import { toDisplayPrice } from "./money.ts";
 import type { OrderLine } from "./types.ts";
 
 // One orderable thing: a product in one of its active selling formats.
@@ -56,6 +57,64 @@ function isOfferableFormat(format: SellingFormat): boolean {
   return format.isActive && format.name.trim() !== "" && format.piecesPerUnit > 0;
 }
 
+// Why a product contributes no catalog items. Diagnostic only -- it never changes what is offered.
+//
+//   no-costing                 no costing exists for the product, so no format can exist either.
+//   no-selling-format          the current costing has no selling formats at all.
+//   formats-on-older-costing   the current costing has none, but another costing of the SAME product
+//                              does. Deliberately not offered (see getSellableItems); named here so
+//                              the operator is told which costing to add formats to.
+//   selling-format-unusable    formats exist on the current costing but every one is inactive,
+//                              unnamed, or has no pack size.
+export type UnorderableReason = "no-costing" | "no-selling-format" | "formats-on-older-costing" | "selling-format-unusable";
+
+export type UnorderableProduct = {
+  productId: string;
+  productName: string;
+  reason: UnorderableReason;
+};
+
+type ProductMenuResolution = { items: SellableItem[]; reason: UnorderableReason | null };
+
+// The single place that decides, for one product, what is offerable and -- when nothing is -- why.
+// getSellableItems and getUnorderableProducts both read this, so the explanation shown to the
+// operator can never disagree with the menu they are actually looking at.
+function resolveProductMenu(product: Product, context: RuleEngineContext, sellingFormats: SellingFormat[]): ProductMenuResolution {
+  const latestBatch = getLatestBatch(context, product);
+  const costing = getLinkedCosting(context, product, latestBatch);
+
+  if (!costing) {
+    return { items: [], reason: "no-costing" };
+  }
+
+  const costingFormats = sellingFormats.filter((format) => format.costingId === costing.id);
+  const items = costingFormats
+    .filter(isOfferableFormat)
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+    .map((format) => ({
+      key: `${product.id}::${format.id}`,
+      productId: product.id,
+      productName: product.name,
+      sellingFormatId: format.id,
+      formatName: format.name,
+      itemName: `${product.name} — ${format.name}`,
+      unitPrice: format.sellingPrice,
+      piecesPerUnit: format.piecesPerUnit,
+    }));
+
+  if (items.length > 0) {
+    return { items, reason: null };
+  }
+
+  if (costingFormats.length > 0) {
+    return { items: [], reason: "selling-format-unusable" };
+  }
+
+  const otherCostingIds = new Set(context.costings.filter((entry) => entry.productId === product.id && entry.id !== costing.id).map((entry) => entry.id));
+  return { items: [], reason: sellingFormats.some((format) => otherCostingIds.has(format.costingId)) ? "formats-on-older-costing" : "no-selling-format" };
+}
+
 // The menu, grouped by product, in a stable order.
 //
 // Only the CURRENT costing's formats appear: a product's older batch versions each have their own
@@ -66,33 +125,44 @@ export function getSellableItems(products: Product[], batches: ProductBatch[], c
   const context = buildSelectionContext(batches, costings);
 
   return products
-    .map((product) => {
-      const latestBatch = getLatestBatch(context, product);
-      const costing = getLinkedCosting(context, product, latestBatch);
-
-      if (!costing) {
-        return { productId: product.id, productName: product.name, items: [] };
-      }
-
-      const items = sellingFormats
-        .filter((format) => format.costingId === costing.id && isOfferableFormat(format))
-        .slice()
-        .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
-        .map((format) => ({
-          key: `${product.id}::${format.id}`,
-          productId: product.id,
-          productName: product.name,
-          sellingFormatId: format.id,
-          formatName: format.name,
-          itemName: `${product.name} — ${format.name}`,
-          unitPrice: format.sellingPrice,
-          piecesPerUnit: format.piecesPerUnit,
-        }));
-
-      return { productId: product.id, productName: product.name, items };
-    })
+    .map((product) => ({ productId: product.id, productName: product.name, items: resolveProductMenu(product, context, sellingFormats).items }))
     .filter((group) => group.items.length > 0)
     .sort((a, b) => a.productName.localeCompare(b.productName));
+}
+
+// The products getSellableItems leaves out, each with the one reason. Lets the form say "X is not
+// orderable yet because ..." instead of leaving the operator to guess why a product they sell is
+// missing from the dropdown.
+export function getUnorderableProducts(products: Product[], batches: ProductBatch[], costings: CostingSummary[], sellingFormats: SellingFormat[]): UnorderableProduct[] {
+  const context = buildSelectionContext(batches, costings);
+
+  return products
+    .flatMap((product) => {
+      const { reason } = resolveProductMenu(product, context, sellingFormats);
+      return reason ? [{ productId: product.id, productName: product.name, reason }] : [];
+    })
+    .sort((a, b) => a.productName.localeCompare(b.productName));
+}
+
+// Operator-facing wording for each reason. Kept beside the reasons so the two cannot drift.
+export function describeUnorderableReason(reason: UnorderableReason): string {
+  switch (reason) {
+    case "no-costing":
+      return "no costing yet";
+    case "no-selling-format":
+      return "no selling format";
+    case "formats-on-older-costing":
+      return "selling formats are only on an older costing";
+    case "selling-format-unusable":
+      return "its selling formats are inactive or incomplete";
+  }
+}
+
+// What the operator reads in the Item dropdown. The format's own name plus its price, so two
+// formats of one product ("1 pc", "Box of 6") are distinguishable without picking them. The price
+// shown is the same number the line will be prefilled with.
+export function getSellableOptionLabel(item: SellableItem): string {
+  return `${item.formatName} — ₱${toDisplayPrice(item.unitPrice)}`;
 }
 
 export function findSellableItem(groups: SellableProductGroup[], key: string): SellableItem | null {
@@ -162,6 +232,25 @@ export type DraftLine = {
   unitPrice: string;
   quantity: string;
 };
+
+// What changes on a row when the operator picks a different option in its Item dropdown. Pure so the
+// switching rules are testable; the component just applies the returned patch.
+//
+// Switching a catalog pick to Custom must not leave the catalog's display name behind: a manual
+// line called "Brownies - Box of 6" reads like a catalog sale while carrying no product, no format,
+// and no pack size. Text already typed on an already-custom row is kept, since that is the
+// operator's own.
+export function applyItemChoice(line: DraftLine, nextKey: string, sellableGroups: SellableProductGroup[]): Partial<DraftLine> {
+  const picked = findSellableItem(sellableGroups, nextKey);
+  const wasCatalogPick = line.itemKey !== "" && line.itemKey !== CUSTOM_ITEM_KEY;
+
+  return {
+    itemKey: nextKey,
+    itemName: picked ? picked.itemName : nextKey === CUSTOM_ITEM_KEY && !wasCatalogPick ? line.itemName : "",
+    // Pre-filled from the format, and editable afterwards.
+    unitPrice: picked ? String(picked.unitPrice) : line.unitPrice,
+  };
+}
 
 // Turns the form's rows into real OrderLines, taking the snapshots at this moment. Pure: the same
 // drafts and the same menu always produce the same lines.

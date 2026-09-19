@@ -26,7 +26,7 @@ import { createMutationGuard } from "@/lib/mutation-guard";
 import { getOrderCountsBySource } from "@/lib/orders/attribution";
 import { toDisplayPrice } from "@/lib/orders/money";
 import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getActiveDeliveryAddress, sortOrdersByFulfillment, type FulfillmentFilter, type FulfillmentSort } from "@/lib/orders/fulfillment";
-import { buildLinesFromDrafts, CUSTOM_ITEM_KEY, findSellableItem, getSellableItems, type DraftLine, type SellableProductGroup } from "@/lib/orders/menu";
+import { applyItemChoice, buildLinesFromDrafts, CUSTOM_ITEM_KEY, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, type DraftLine, type SellableProductGroup, type UnorderableProduct } from "@/lib/orders/menu";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
@@ -133,6 +133,10 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
 
   const sellableGroups: SellableProductGroup[] = useMemo(
     () => getSellableItems(labState.products, labState.batches, labState.costings, labState.sellingFormats),
+    [labState.products, labState.batches, labState.costings, labState.sellingFormats],
+  );
+  const unorderableProducts: UnorderableProduct[] = useMemo(
+    () => getUnorderableProducts(labState.products, labState.batches, labState.costings, labState.sellingFormats),
     [labState.products, labState.batches, labState.costings, labState.sellingFormats],
   );
 
@@ -550,6 +554,7 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
             possibleDuplicateCustomer={possibleDuplicateCustomer}
             previewTotal={previewTotal}
             sellableGroups={sellableGroups}
+            unorderableProducts={unorderableProducts}
             setCustomerId={setCustomerId}
             setDraftLines={setDraftLines}
             setFulfillmentAddress={setFulfillmentAddress}
@@ -651,6 +656,7 @@ function NewOrderForm({
   possibleDuplicateCustomer,
   previewTotal,
   sellableGroups,
+  unorderableProducts,
   setCustomerId,
   setDraftLines,
   setFulfillmentAddress,
@@ -673,6 +679,7 @@ function NewOrderForm({
   possibleDuplicateCustomer: { id: string; name: string } | null;
   previewTotal: number;
   sellableGroups: SellableProductGroup[];
+  unorderableProducts: UnorderableProduct[];
   setCustomerId: (value: string) => void;
   setDraftLines: (updater: (lines: DraftLine[]) => DraftLine[]) => void;
   setFulfillmentAddress: (value: string) => void;
@@ -725,6 +732,18 @@ function NewOrderForm({
 
       <div className="grid gap-2">
         <p className="text-sm font-semibold">Items</p>
+        {sellableGroups.length === 0 ? (
+          <p className="text-xs leading-5 text-[#6f5a4c]">
+            No orderable products are set up yet. Set up a selling format for a product in <a className="font-semibold text-[#8f5632] underline" href="/costing">Costing</a> first, or use Custom item.
+          </p>
+        ) : null}
+        {unorderableProducts.length > 0 ? (
+          // Says why a product the operator sells is missing from the dropdown. It never blocks the
+          // form: the products above still order normally, and Custom item always works.
+          <p className="text-xs leading-5 text-[#6f5a4c]">
+            Not orderable yet: {unorderableProducts.map((entry) => `${entry.productName} (${describeUnorderableReason(entry.reason)})`).join(", ")}.{sellableGroups.length > 0 ? <> Add a selling format in <a className="font-semibold text-[#8f5632] underline" href="/costing">Costing</a>.</> : null}
+          </p>
+        ) : null}
         {draftLines.map((line) => {
           const item = line.itemKey && line.itemKey !== CUSTOM_ITEM_KEY ? findSellableItem(sellableGroups, line.itemKey) : null;
           return (
@@ -733,27 +752,13 @@ function NewOrderForm({
                 Item
                 <select
                   className="h-10 min-w-0 rounded-md border border-[#d8c7b7] bg-white px-2"
-                  onChange={(event) => {
-                    const nextKey = event.target.value;
-                    const picked = findSellableItem(sellableGroups, nextKey);
-                    // Switching a catalog pick to Custom must not leave the catalog's display name
-                    // behind: a manual line called "Brownies - Box of 6" reads like a catalog sale
-                    // while carrying no product, no format, and no pack size. Text already typed on
-                    // an already-custom row is kept, since that is the operator's own.
-                    const wasCatalogPick = line.itemKey !== "" && line.itemKey !== CUSTOM_ITEM_KEY;
-                    updateLine(line.rowId, {
-                      itemKey: nextKey,
-                      itemName: picked ? picked.itemName : nextKey === CUSTOM_ITEM_KEY && !wasCatalogPick ? line.itemName : "",
-                      // Pre-filled from the format, and editable afterwards.
-                      unitPrice: picked ? String(picked.unitPrice) : line.unitPrice,
-                    });
-                  }}
+                  onChange={(event) => updateLine(line.rowId, applyItemChoice(line, event.target.value, sellableGroups))}
                   value={line.itemKey}
                 >
                   <option value="">Choose an item…</option>
                   {sellableGroups.map((group) => (
                     <optgroup key={group.productId} label={group.productName}>
-                      {group.items.map((option) => <option key={option.key} value={option.key}>{option.formatName}</option>)}
+                      {group.items.map((option) => <option key={option.key} value={option.key}>{getSellableOptionLabel(option)}</option>)}
                     </optgroup>
                   ))}
                   <option value={CUSTOM_ITEM_KEY}>Custom item…</option>

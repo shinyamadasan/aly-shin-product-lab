@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildCatalogOrderLine, buildLinesFromDrafts, buildManualOrderLine, CUSTOM_ITEM_KEY, findSellableItem, getSellableItems, type DraftLine } from "../src/lib/orders/menu.ts";
+import { applyItemChoice, buildCatalogOrderLine, buildLinesFromDrafts, buildManualOrderLine, CUSTOM_ITEM_KEY, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, type DraftLine } from "../src/lib/orders/menu.ts";
 import { validateOrderForSave } from "../src/lib/orders/validation.ts";
 import { navItems, type LabView } from "../src/lib/lab-state.ts";
 import type { Order } from "../src/lib/orders/types.ts";
@@ -275,6 +275,129 @@ test("a non-integer typed quantity is rejected by validation before any round tr
   assert.match(String(validateOrderForSave(order, buildLinesFromDrafts([draft({ quantity: "2.5" })], MENU, "order-1"))), /whole quantity/i);
   assert.match(String(validateOrderForSave(order, buildLinesFromDrafts([draft({ quantity: "0" })], MENU, "order-1"))), /whole quantity/i);
   assert.equal(validateOrderForSave(order, buildLinesFromDrafts([draft({ quantity: "3" })], MENU, "order-1")), null);
+});
+
+// --- Item picker: what is offered, and why a product is not ------------------------------------------
+
+const BLONDIES = product("blondies", "Blondies");
+const BLONDIES_BATCH = batch("batch-bl", "blondies", "V1");
+const BLONDIES_COSTING = costing("costing-bl", "blondies", "batch-bl");
+
+test("several products, each with several formats, all appear and stay distinguishable", () => {
+  const groups = getSellableItems(
+    [BROWNIES, BLONDIES],
+    [BATCH_V2, BLONDIES_BATCH],
+    [COSTING_V2, BLONDIES_COSTING],
+    [
+      format("fmt-1pc", "costing-v2", "1 pc", { piecesPerUnit: 1, sellingPrice: 85, sortOrder: 1 }),
+      format("fmt-box", "costing-v2", "Box of 6", { piecesPerUnit: 6, sellingPrice: 480, sortOrder: 2 }),
+      format("fmt-bl", "costing-bl", "1 pc", { piecesPerUnit: 1, sellingPrice: 95 }),
+    ],
+  );
+
+  assert.deepEqual(groups.map((group) => group.productName), ["Blondies", "Brownies"]);
+  assert.deepEqual(groups[1].items.map((item) => getSellableOptionLabel(item)), ["1 pc — ₱85.00", "Box of 6 — ₱480.00"]);
+  assert.deepEqual(groups[0].items.map((item) => getSellableOptionLabel(item)), ["1 pc — ₱95.00"]);
+  // Same format name under two products still resolves to the right product and price.
+  assert.equal(findSellableItem(groups, "blondies::fmt-bl")?.unitPrice, 95);
+  assert.equal(findSellableItem(groups, "brownies::fmt-1pc")?.unitPrice, 85);
+});
+
+test("a product with no selling format is given no price -- costing's suggested price is not a fallback", () => {
+  const costed = { ...COSTING_V2, suggestedPrice: 500, ingredientCost: 200 };
+  const groups = getSellableItems([BROWNIES], [BATCH_V2], [costed], []);
+
+  assert.deepEqual(groups, []);
+});
+
+test("each way a product can be left out is named, and orderable products are not listed", () => {
+  const noCosting = product("no-costing", "Cookies");
+  const noFormat = product("no-format", "Scones");
+  const unusable = product("unusable", "Loaf");
+  const older = product("older", "Muffins");
+
+  const batches = [batch("b-nf", "no-format", "V1"), batch("b-un", "unusable", "V1"), batch("b-old2", "older", "V2"), batch("b-old1", "older", "V1"), BATCH_V2];
+  const costings = [costing("c-nf", "no-format", "b-nf"), costing("c-un", "unusable", "b-un"), costing("c-old2", "older", "b-old2"), costing("c-old1", "older", "b-old1"), COSTING_V2];
+  const formats = [
+    format("f-un", "c-un", "Loaf", { isActive: false }),
+    format("f-old", "c-old1", "Box of 6"),
+    format("f-ok", "costing-v2", "Box of 6"),
+  ];
+
+  const result = getUnorderableProducts([BROWNIES, noCosting, noFormat, unusable, older], batches, costings, formats);
+
+  assert.deepEqual(
+    result.map((entry) => [entry.productName, entry.reason]),
+    [
+      ["Cookies", "no-costing"],
+      ["Loaf", "selling-format-unusable"],
+      ["Muffins", "formats-on-older-costing"],
+      ["Scones", "no-selling-format"],
+    ],
+  );
+  assert.ok(result.every((entry) => describeUnorderableReason(entry.reason).length > 0));
+});
+
+test("getSellableItems and getUnorderableProducts partition the products -- no product is in both", () => {
+  const products = [BROWNIES, BLONDIES];
+  const batches = [BATCH_V2, BLONDIES_BATCH];
+  const costings = [COSTING_V2, BLONDIES_COSTING];
+  const formats = [format("fmt", "costing-v2", "Box of 6")];
+
+  const offered = getSellableItems(products, batches, costings, formats).map((group) => group.productId);
+  const left = getUnorderableProducts(products, batches, costings, formats).map((entry) => entry.productId);
+
+  assert.deepEqual(offered, ["brownies"]);
+  assert.deepEqual(left, ["blondies"]);
+});
+
+test("an empty catalog yields no groups and no unorderable products", () => {
+  assert.deepEqual(getSellableItems([], [], [], []), []);
+  assert.deepEqual(getUnorderableProducts([], [], [], []), []);
+});
+
+test("choosing a catalog item fills the name and price from the format", () => {
+  const patch = applyItemChoice(draft({ itemKey: "", itemName: "", unitPrice: "" }), "brownies::fmt", MENU);
+
+  assert.equal(patch.itemKey, "brownies::fmt");
+  assert.equal(patch.itemName, "Brownies — Box of 6");
+  assert.equal(patch.unitPrice, "480");
+});
+
+test("switching a catalog pick to Custom clears the catalog name and keeps the typed price", () => {
+  const patch = applyItemChoice(draft({ itemKey: "brownies::fmt", itemName: "Brownies — Box of 6", unitPrice: "450" }), CUSTOM_ITEM_KEY, MENU);
+
+  assert.equal(patch.itemKey, CUSTOM_ITEM_KEY);
+  assert.equal(patch.itemName, "");
+  assert.equal(patch.unitPrice, "450");
+});
+
+test("re-selecting Custom on an already-custom row keeps what the operator typed", () => {
+  const patch = applyItemChoice(draft({ itemKey: CUSTOM_ITEM_KEY, itemName: "Delivery", unitPrice: "60" }), CUSTOM_ITEM_KEY, MENU);
+
+  assert.equal(patch.itemName, "Delivery");
+  assert.equal(patch.unitPrice, "60");
+});
+
+test("a picked catalog row submits through buildLinesFromDrafts with the format's snapshots", () => {
+  const patch = applyItemChoice(draft({ itemKey: "", itemName: "", unitPrice: "" }), "brownies::fmt", MENU);
+  const lines = buildLinesFromDrafts([draft({ ...patch, quantity: "2" }), draft({ itemKey: CUSTOM_ITEM_KEY, itemName: "Delivery", unitPrice: "60" })], MENU, "order-1");
+
+  assert.equal(lines[0].sellingFormatId, "fmt");
+  assert.equal(lines[0].unitPrice, 480);
+  assert.equal(lines[0].piecesPerUnitSnapshot, 6);
+  assert.equal(lines[1].productId, "");
+  assert.equal(lines[1].piecesPerUnitSnapshot, null);
+});
+
+test("the New order form shows the empty-catalog message, keeps Custom item, and links to Costing", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/components/orders-page.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /No orderable products are set up yet\./);
+  assert.match(source, /<option value=\{CUSTOM_ITEM_KEY\}>Custom item…<\/option>/);
+  assert.match(source, /getSellableOptionLabel\(option\)/);
+  assert.match(source, /href="\/costing"/);
 });
 
 // --- Wiring --------------------------------------------------------------------------------------
