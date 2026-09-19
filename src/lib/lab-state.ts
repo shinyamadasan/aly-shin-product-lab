@@ -23,25 +23,37 @@ export type LabView =
   // Runtime v1 passed live validation -- it is a normal internal surface now, not an experiment.
   | "context";
 
-export const navItems: Array<{ label: string; href: string; view: LabView }> = [
-  { label: "Today", href: "/", view: "today" },
-  { label: "Dashboard", href: "/dashboard", view: "dashboard" },
-  { label: "Products", href: "/products", view: "products" },
-  { label: "Product Detail", href: "/product-detail", view: "product-detail" },
-  { label: "Proof Day", href: "/proof-day", view: "proof-day" },
-  { label: "Proof Batches", href: "/batches", view: "batches" },
-  { label: "Costing", href: "/costing", view: "costing" },
-  { label: "Orders", href: "/orders", view: "orders" },
-  { label: "Equipment", href: "/equipment", view: "equipment" },
-  { label: "Inventory", href: "/inventory", view: "inventory" },
-  { label: "Journey", href: "/journal", view: "journal" },
-  { label: "Opportunities", href: "/opportunities", view: "opportunities" },
-  { label: "Product Admin", href: "/admin", view: "admin" },
-  { label: "Launch Offer", href: "/launch", view: "launch" },
-  { label: "Brand Foundation", href: "/brand", view: "brand" },
-  { label: "Content Studio", href: "/content-studio", view: "content-studio" },
-  { label: "Business Context", href: "/context", view: "context" },
-  { label: "How To Use", href: "/guide", view: "guide" },
+// Navigation is information hierarchy only: every page keeps its own route, and the group decides
+// where its link sits. Array order IS display order within a group, and Dashboard (the home page,
+// at "/") leads the first group. Today is the content-creation feature and lives at /today.
+export type NavGroup = "operations" | "marketing" | "more";
+
+export const navGroups: Array<{ id: NavGroup; label: string }> = [
+  { id: "operations", label: "Operations" },
+  { id: "marketing", label: "Marketing" },
+  { id: "more", label: "More" },
+];
+
+export const navItems: Array<{ label: string; href: string; view: LabView; group: NavGroup }> = [
+  { label: "Dashboard", href: "/", view: "dashboard", group: "operations" },
+  { label: "Orders", href: "/orders", view: "orders", group: "operations" },
+  { label: "Inventory", href: "/inventory", view: "inventory", group: "operations" },
+  { label: "Bake", href: "/bake", view: "bake", group: "operations" },
+  { label: "Products", href: "/products", view: "products", group: "operations" },
+  { label: "Today", href: "/today", view: "today", group: "marketing" },
+  { label: "Content Studio", href: "/content-studio", view: "content-studio", group: "marketing" },
+  { label: "Journey", href: "/journal", view: "journal", group: "marketing" },
+  { label: "Opportunities", href: "/opportunities", view: "opportunities", group: "marketing" },
+  { label: "Proof Day", href: "/proof-day", view: "proof-day", group: "more" },
+  { label: "Proof Batches", href: "/batches", view: "batches", group: "more" },
+  { label: "Costing", href: "/costing", view: "costing", group: "more" },
+  { label: "Equipment", href: "/equipment", view: "equipment", group: "more" },
+  { label: "Product Detail", href: "/product-detail", view: "product-detail", group: "more" },
+  { label: "Product Admin", href: "/admin", view: "admin", group: "more" },
+  { label: "Launch Offer", href: "/launch", view: "launch", group: "more" },
+  { label: "Brand Foundation", href: "/brand", view: "brand", group: "more" },
+  { label: "Business Context", href: "/context", view: "context", group: "more" },
+  { label: "How To Use", href: "/guide", view: "guide", group: "more" },
 ];
 
 export const storageKey = "aly-shin-product-lab-v1";

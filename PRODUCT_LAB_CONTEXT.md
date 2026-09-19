@@ -59,18 +59,41 @@ just recording for its own sake.
 
 ## Page Dictionary
 
-### Dashboard
+### Dashboard (home, `/`)
 
-Purpose: quick command center for product readiness.
+Purpose: a calm daily read of the bakery's operations. It summarises; it never edits, and it never
+lists every order or ingredient (those live on Orders and Inventory). Product readiness moved off
+it: that lives on Products, Product Detail and Proof Day.
 
-Should show:
-- Product count and launch candidates.
-- Which products need proof, costing, tasting, or content.
-- Current focus and next actions.
+Four zones, in this order (on mobile: attention first):
+- Business pulse: paid today, paid last 7 days, unpaid, orders today (all from `buildSellingSummary`).
+  "Paid" means money received (`paidAt`), not orders booked. No profit figure — see
+  `planning/DASHBOARD_PROFIT_V1.md` for why and what it needs.
+- Needs attention: only non-zero items (orders to confirm / schedule / hand over / overdue, unpaid,
+  products short for new orders, ingredients needing attention), each linking to where it is handled;
+  otherwise "You're caught up" — never claimed if Orders failed to load.
+- Finished stock & demand: available / reserved / new-order demand / shortage per product. Demand is
+  `new` orders only; confirmed and ready orders are already inside `reserved` (Wave 2), so they are
+  never counted twice.
+- Inventory attention: capped list of out / low / expiring / migration-flagged ingredients.
+
+Orders load outside `LabState`; if they fail, the selling zones say so and the rest still renders.
 
 Avoid:
-- Vanity metrics.
-- Generic summaries that do not tell the operator what to do next.
+- Vanity metrics, full tables, and anything that turns it into a second editing surface.
+- Inventing a formula that an existing helper already owns.
+
+### Today (`/today`)
+
+The content-creation workflow (Create Now / recommended opportunity). It lived at `/` until the
+Dashboard became home; only its address changed. In-flight jobs resume via `/today?job=<id>`, and old
+`/?job=<id>` links are redirected there.
+
+### Navigation
+
+Grouped by daily use — Operations (Dashboard, Orders, Inventory, Bake, Products), Marketing (Today,
+Content Studio, Journey, Opportunities), More (everything else). Grouping is hierarchy only: every
+page keeps its route.
 
 ### Products
 

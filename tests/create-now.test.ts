@@ -54,7 +54,8 @@ import type { Product } from "../src/lib/product-lab-types.ts";
 
 const createNowSource = readFileSync(new URL("../src/components/create-now.tsx", import.meta.url), "utf8");
 const todayPageSource = readFileSync(new URL("../src/components/today-page.tsx", import.meta.url), "utf8");
-const homeRouteSource = readFileSync(new URL("../src/app/page.tsx", import.meta.url), "utf8");
+// Today's route. It lived at "/" until the Dashboard became home; only the address moved.
+const todayRouteSource = readFileSync(new URL("../src/app/today/page.tsx", import.meta.url), "utf8");
 
 // "This file must NOT contain X" is a claim about the code, not about the prose explaining it --
 // comments legitimately name the very things the code is forbidden to do, which is what makes them
@@ -847,7 +848,7 @@ test("I. a refresh or revisit still recovers a completed job's package -- a spen
   // validated server-side, handed to the app, and the screen opens straight back onto that job with
   // a fresh grace window (packageMissCount is component state, so a reload starts it at zero).
   assert.equal(resolveCreateNowJobId("3f2504e0-4f89-11d3-9a0c-0305e82c3301"), "3f2504e0-4f89-11d3-9a0c-0305e82c3301");
-  assert.match(homeRouteSource, /<ProductLab initialCreativeJobId=\{resolveCreateNowJobId\(job\)\} \/>/);
+  assert.match(todayRouteSource, /<ProductLab initialCreativeJobId=\{resolveCreateNowJobId\(job\)\} view="today" \/>/);
   assert.match(todayPageSource, /const \[creativeJobId, setCreativeJobId\] = useState\(initialCreativeJobId\);/);
   assert.match(createNowSource, /const \[packageMissCount, setPackageMissCount\] = useState\(0\);/);
   // And the reloaded screen reads the package again, because a completed job is still what triggers
@@ -907,9 +908,9 @@ test("AG. the active job id round-trips through the URL, in the same shape the o
 });
 
 test("AG. the route resolves the job id server-side and hands the app an already-validated value", () => {
-  assert.match(homeRouteSource, /import \{ resolveCreateNowJobId \} from "@\/lib\/create-now";/);
-  assert.match(homeRouteSource, /const \{ job \} = await searchParams;/);
-  assert.match(homeRouteSource, /<ProductLab initialCreativeJobId=\{resolveCreateNowJobId\(job\)\} \/>/);
+  assert.match(todayRouteSource, /import \{ resolveCreateNowJobId \} from "@\/lib\/create-now";/);
+  assert.match(todayRouteSource, /const \{ job \} = await searchParams;/);
+  assert.match(todayRouteSource, /<ProductLab initialCreativeJobId=\{resolveCreateNowJobId\(job\)\} view="today" \/>/);
 });
 
 test("AG. submitting writes the job id into the URL, and it is the ONLY recovery mechanism -- no shadow copy in storage", () => {

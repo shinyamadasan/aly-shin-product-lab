@@ -1,13 +1,13 @@
 import { ArrowRight } from "lucide-react";
 import { HeaderBadge } from "@/components/ui";
-import { navItems, type LabView } from "@/lib/lab-state";
+import { navGroups, navItems, type LabView } from "@/lib/lab-state";
 
 const titles = {
   // Empty by design -- the frozen Today wireframe spec calls for no page-title chrome beyond the
   // app's own permanent header ("Product Lab" in the sidebar above), so this view's subtitle line
   // renders nothing rather than a title competing with the recommendation itself.
   today: "",
-  dashboard: "Product proof command center",
+  dashboard: "Dashboard",
   products: "Products and launch readiness",
   "product-detail": "Product detail",
   "proof-day": "Proof day mode",
@@ -35,14 +35,19 @@ const titles = {
 // costing-form-snapshot.ts's callers), so onClick + preventDefault is what actually intercepts a
 // click here, and letting a confirmed click fall through to the anchor's own default behavior
 // preserves that real navigation exactly as it already works, unchanged.
+//
+// onSignOut lives here because sign-out used to sit on the old Dashboard only; the shell is the one
+// piece present on every page. Optional so the shell still renders without an auth session.
 export function AppShell({
   children,
   navigationConfirmationMessage,
+  onSignOut,
   shouldConfirmNavigation,
   view,
 }: {
   children: React.ReactNode;
   navigationConfirmationMessage?: string;
+  onSignOut?: () => void;
   shouldConfirmNavigation?: boolean;
   view: LabView;
 }) {
@@ -52,50 +57,101 @@ export function AppShell({
     }
   }
 
+  const itemsByGroup = navGroups.map((group) => ({ ...group, items: navItems.filter((item) => item.group === group.id) }));
+  const primaryGroups = itemsByGroup.filter((group) => group.id !== "more");
+  const moreGroup = itemsByGroup.find((group) => group.id === "more");
+  const isMoreActive = Boolean(moreGroup?.items.some((item) => item.view === view));
+
   return (
     <main className="min-h-screen bg-[#f7f2ea] text-[#211713]">
-      <aside className="fixed inset-y-0 left-0 hidden w-72 border-r border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef] lg:block">
-        <div className="mb-8 border-b border-white/10 pb-5">
+      <aside className="fixed inset-y-0 left-0 hidden w-72 flex-col border-r border-[#e1d4c4] bg-[#231813] p-5 text-[#fff8ef] lg:flex">
+        <div className="mb-6 border-b border-white/10 pb-5">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#ddb778]">Aly & Shin</p>
           <h1 className="mt-2 text-2xl font-semibold">Product Lab</h1>
-          <p className="mt-2 text-sm leading-6 text-[#d8c6b8]">Internal system for proving products before launch.</p>
+          <p className="mt-2 text-sm leading-6 text-[#d8c6b8]">Run orders, stock, production, and growth from one workspace.</p>
         </div>
-        <nav className="space-y-1">
-          {navItems.map((item) => (
-            <a
-              className={`flex items-center justify-between rounded-md px-3 py-2.5 text-sm hover:bg-white/10 ${
-                item.view === view ? "bg-white/10 text-white" : "text-[#f5e7d8]"
-              }`}
-              href={item.href}
-              key={item.href}
-              onClick={handleNavClick}
-            >
-              {item.label}
-              <ArrowRight size={14} />
-            </a>
-          ))}
+        <nav aria-label="Main" className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
+          {itemsByGroup.map((group) => {
+            const isQuiet = group.id === "more";
+            return (
+              <div key={group.id}>
+                <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#ddb778]/80">{group.label}</p>
+                <div className="space-y-0.5">
+                  {group.items.map((item) => (
+                    <a
+                      aria-current={item.view === view ? "page" : undefined}
+                      className={`flex items-center justify-between rounded-md px-3 hover:bg-white/10 ${isQuiet ? "py-1.5 text-[13px]" : "py-2.5 text-sm"} ${
+                        item.view === view ? "bg-white/10 text-white" : isQuiet ? "text-[#d8c6b8]" : "text-[#f5e7d8]"
+                      }`}
+                      href={item.href}
+                      key={item.href}
+                      onClick={handleNavClick}
+                    >
+                      {item.label}
+                      <ArrowRight size={14} />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </nav>
-        <div className="absolute bottom-5 left-5 right-5 rounded-md border border-white/15 bg-white/5 p-4 text-sm text-[#ead9c8]">
-          <p className="font-semibold text-white">Today&apos;s rule</p>
-          <p className="mt-2 leading-6">No launch menu decisions until taste, cost, freshness, and packaging have proof.</p>
-        </div>
+        {onSignOut ? (
+          <div className="mt-4 border-t border-white/10 pt-4">
+            <button className="text-sm text-[#ddb778] underline" onClick={onSignOut} type="button">Sign out</button>
+          </div>
+        ) : null}
       </aside>
 
       <section className="lg:pl-72">
         <AppHeader view={view} />
-        <nav className="flex gap-2 overflow-x-auto border-b border-[#e1d4c4] bg-white px-4 py-3 lg:hidden">
-          {navItems.map((item) => (
-            <a
-              className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${
-                item.view === view ? "bg-[#231813] text-white" : "bg-[#fffaf3] text-[#5f4a3d]"
-              }`}
-              href={item.href}
-              key={item.href}
-              onClick={handleNavClick}
-            >
-              {item.label}
-            </a>
-          ))}
+        <nav aria-label="Main" className="border-b border-[#e1d4c4] bg-white px-4 py-3 lg:hidden">
+          <div className="flex gap-2 overflow-x-auto">
+            {primaryGroups.map((group) => (
+              <div className="flex shrink-0 items-center gap-2" key={group.id}>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">{group.label}</span>
+                {group.items.map((item) => (
+                  <a
+                    aria-current={item.view === view ? "page" : undefined}
+                    className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${
+                      item.view === view ? "bg-[#231813] text-white" : "bg-[#fffaf3] text-[#5f4a3d]"
+                    }`}
+                    href={item.href}
+                    key={item.href}
+                    onClick={handleNavClick}
+                  >
+                    {item.label}
+                  </a>
+                ))}
+              </div>
+            ))}
+          </div>
+          {moreGroup ? (
+            // A native disclosure, not a drawer: nothing to build or keep in sync, and every page in
+            // it stays one tap away. Open by default when the current page lives here, so the active
+            // item is never hidden from the person standing on it.
+            <details className="mt-2" open={isMoreActive}>
+              <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">{moreGroup.label}</summary>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {moreGroup.items.map((item) => (
+                  <a
+                    aria-current={item.view === view ? "page" : undefined}
+                    className={`rounded-md px-3 py-2 text-sm font-medium ${
+                      item.view === view ? "bg-[#231813] text-white" : "bg-[#fffaf3] text-[#5f4a3d]"
+                    }`}
+                    href={item.href}
+                    key={item.href}
+                    onClick={handleNavClick}
+                  >
+                    {item.label}
+                  </a>
+                ))}
+                {onSignOut ? (
+                  <button className="rounded-md px-3 py-2 text-sm font-medium text-[#8f5632] underline" onClick={onSignOut} type="button">Sign out</button>
+                ) : null}
+              </div>
+            </details>
+          ) : null}
         </nav>
         <div className="space-y-6 px-4 py-5 sm:px-6 xl:px-8">{children}</div>
       </section>

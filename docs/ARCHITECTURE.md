@@ -790,3 +790,33 @@ video queueing still derives the route from `creativePackageId`, not browser-sup
 
 **Known remaining debt:** first-Produce idempotency remains the existing Asset Job workflow debt. D1
 does not add a new idempotency key, retry system, or automatic production job recovery.
+
+## Operations Dashboard V1 and navigation
+
+**Routing.** `/` renders `ProductLab view="dashboard"`. Today (content creation) moved to
+`/today` (`src/app/today/page.tsx`), which resolves `?job=<id>` server-side exactly as the old root
+did; Create Now writes `?job=` onto whatever URL it is already on, so it needed no change.
+`src/lib/route-redirects.ts` (`dashboardHomeRedirects`, wired in `next.config.ts`) forwards a root
+request carrying `job` to `/today` and `/dashboard` to `/`, both temporary (307).
+
+**Navigation.** `navItems` in `src/lib/lab-state.ts` carries a `group` (`operations` | `marketing` |
+`more`); `navGroups` gives the heading order. `AppShell` renders groups on desktop and a two-tier
+row plus a native `<details>` for More on mobile. Sign out moved from the old Dashboard into the
+shell.
+
+**Dashboard.** `src/components/dashboard-page.tsx` loads orders through `listOrders` /
+`listOrderLines` (orders are deliberately not in `LabState`) and renders a view-model built by
+`src/lib/dashboard/model.ts`, which composes — and computes nothing itself:
+`buildSellingSummary` (`orders/summary.ts`), `deriveFinishedStockBalances` + `getPreparationByProduct`
+(`finished-stock-demand.ts`), and the inventory-status helpers (`inventory-exceptions.ts`). A failed
+Orders read is contained: selling zones report it, inventory and stock still render, and "caught up"
+is never claimed.
+
+**Finished-stock demand rule.** `available = on_hand − reserved` (the expression
+`confirm_order_with_reservation` itself uses). Demand is `new` orders' stock-trackable lines only
+(product set and `pieces_per_unit_snapshot` recorded). Confirmed/ready orders are already in
+`reserved`; completed have left `on_hand`; cancelled were released or never reserved — so no order
+is counted twice. `shortage = max(0, demand − available)`.
+
+**Not built (deliberately):** profit, recent activity, repeat-customer rate — see
+`planning/DASHBOARD_PROFIT_V1.md`.
