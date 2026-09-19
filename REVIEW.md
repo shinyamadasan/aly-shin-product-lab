@@ -483,3 +483,74 @@ from data. The pre-existing `bake-page.tsx:89` lint error is unchanged (file not
 reproduced on pristine `origin/main` in the prior pass).
 
 **Merge gate: `done`.** Type/copy change only, reversible via git.
+
+## 2026-09-19 — Operational friction cleanup V1 (Inventory + Bake)
+
+**Scope:** `src/app/product-lab.tsx` (`InventoryWorkspace`'s primary-nav rendering only),
+`src/components/inventory-stock-page.tsx` (rewritten), `src/components/inventory-page.tsx`,
+`src/components/bake-page.tsx`, `src/components/raw-inventory-reconciliation.tsx` (one `id`
+attribute), `src/lib/inventory-cost.ts`, `src/lib/inventory-status.ts`, `docs/FEATURES.md`, plus
+27 new tests across `tests/inventory-cost.test.ts`, `tests/inventory-status.test.ts`, and
+`tests/raw-inventory-ui.test.ts`. Explicitly NOT touched: `src/lib/inventory-tabs.ts` (the tab/
+query-param contract itself), any Supabase migration, `confirm_bake_v3`/`certify_ingredient_cost_
+baseline`, Orders, Daily Log. Pre-PR scope gate run against `origin/main` (157fec4): diff is
+exactly these 11 files, nothing else.
+
+**Verdict:** Sound. Information-hierarchy pass, not an architecture or backend change --
+proven, not assumed: `inventory-tabs.test.ts` (tab key order + the "Items" label) and
+`route-redirects.test.ts` (every old bookmark) both pass unmodified, because `inventory-tabs.ts`
+itself was never edited; the primary nav's 3-pill list is a `.filter().map()` derived from that
+same array (tested against the real import, not a hand-copied duplicate), so it cannot drift out
+of sync with the tab contract. Cost-certification duplication (3 independently-drifting inline
+copies of the same "uncertified" condition, across the Stock table, Ingredient Master, and two
+places in Bake) was consolidated into one `isCostBaselineUncertified()` helper reused everywhere;
+`confirm_bake_v3`'s own server-side guard, `cost_reconciled_at`, and `certify_ingredient_cost_
+baseline` are byte-for-byte untouched. `readyToConfirm`'s guard conditions (insufficient stock,
+uncertified cost, actual-pieces validity, full resolution) are unchanged text, just verified by a
+new AST-level test rather than only by inspection. Full suite 3841/3842 (1 pre-existing skip, 0
+fail, up from the 3817/3818 baseline), typecheck clean, build clean. Lint (`npx eslint src`,
+scoped to avoid the pre-existing `.worktrees/` slowdown noted in the 2026-09-18 entry) shows
+exactly the same single pre-existing `bake-page.tsx` `react-hooks/set-state-in-effect` error,
+reproduced against a pristine `origin/main` checkout before this work started -- not introduced,
+not fixed.
+
+**Not rubber-stamped:**
+- Need to Buy's richer view (suggested-buy quantity) was deliberately NOT ported into the new
+  Stock filter -- the boring Stock table only ever shows Item/On hand/Status per the brief's own
+  mockup. The old `?tab=need-to-buy` bookmark still renders the original, unmodified `NeedToBuyPage`
+  (with the suggested quantity) verbatim; it's just no longer a primary nav pill. This is a
+  narrower interpretation of "reachable via Stock/filter" than "identical richness inline" --
+  flagged rather than assumed to be what was wanted.
+- "Count / correct stock" opens `RawInventoryReconciliation` via a plain `getElementById` +
+  `.open`/`.scrollIntoView` call, not lifted React state -- matches this file's own existing
+  pattern (`LowStockThresholdField`'s ref-based native-event dispatch) rather than introducing a
+  new one, but it is still an imperative DOM reach-through, not idiomatic React.
+- The Bake mapping-table disclosure is labeled "View ingredient mapping (N)", not the brief's
+  literal mockup text "View recipe deductions" -- that exact phrase was reused for two different
+  toggles in the brief's own mockup (mapping table in one section, quantity deductions in another),
+  which would have made two adjacent, differently-scoped disclosures carry an identical label.
+  Deviated on purpose; flagging rather than silently picking one.
+- Batch-amount quick presets (0.5x/1x/2x) were added per the brief's optional suggestion; no
+  separate "Custom" button exists since the existing numeric field already is the custom control.
+- A mid-task line-ending bug was caught and fixed before commit: two `src/lib` files and their
+  test files picked up CRLF line endings from an edit-tool pass (root cause not fully diagnosed --
+  it did not reproduce on every file edited the same way); normalized back to LF and reverified
+  (typecheck/tests) before either commit, so neither commit's diff carries the whole-file noise
+  that would have caused.
+
+**Human-only checks not done:** No browser-automation tool (Playwright/Puppeteer) is available in
+this environment, so the 1440px/390px responsive check required by the brief was NOT performed
+against a real rendered page -- only verified statically (Tailwind breakpoint classes follow this
+codebase's own existing responsive conventions; `next build` succeeds with no layout-affecting
+compile errors). This is a real gap, not a formality -- flagged per this repo's own honesty rule
+rather than claimed as done. A real owner-data / real-device pass is also outstanding, same as the
+2026-09-18 entry's own unresolved item.
+
+**Production boundary:** No Supabase schema, migration, RPC, or production data was touched or
+written to. No deploy, no merge -- both commits sit on `feat/ops-friction-cleanup-v1` only, per
+the task's explicit instruction to stop before either.
+
+**Merge gate: `approved`** -- held for human merge. Not because the change is architecturally
+risky (it's presentational/information-hierarchy only, and every backend safeguard is verifiably
+unchanged), but because the task explicitly requires a stop-before-merge checkpoint and the
+1440px/390px visual check is still a human-only outstanding item.
