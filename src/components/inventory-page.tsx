@@ -525,8 +525,8 @@ export function InventoryPage({
         <div className="flex flex-col gap-3 rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d] sm:flex-row sm:items-center sm:justify-between xl:col-span-2">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.16em]">Cost setup</p>
-            <p className="mt-1 font-semibold">{uncertifiedCostCount} ingredient cost{uncertifiedCostCount === 1 ? "" : "s"} need{uncertifiedCostCount === 1 ? "s" : ""} one-time verification.</p>
-            <p className="mt-1 text-xs">A recorded cost is not trustworthy until it&apos;s checked against real purchase evidence -- this is a one-time step per ingredient, not a recurring task.</p>
+            <p className="mt-1 font-semibold">{uncertifiedCostCount} ingredient cost{uncertifiedCostCount === 1 ? "" : "s"} need{uncertifiedCostCount === 1 ? "s" : ""} verification.</p>
+            <p className="mt-1 text-xs">A recorded cost is not trustworthy until it&apos;s checked against real purchase evidence. It can need checking again later -- for example after a physical count -- not just once.</p>
           </div>
           <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={scrollToIngredientMaster} type="button">Review costs</button>
         </div>
