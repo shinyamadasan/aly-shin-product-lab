@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { findReliableBrandForItem, findReliableSupplierForItem, getChronologicalPurchases, getPurchaseGroupSummary, getPurchaseHistoryForItem, getUnlinkedPurchases, groupPurchasesByItem } from "../src/lib/purchase-history.ts";
+import { findLatestBrandForItem, findReliableBrandForItem, findReliableSupplierForItem, getChronologicalPurchases, getPurchaseGroupSummary, getPurchaseHistoryForItem, getUnlinkedPurchases, groupPurchasesByItem } from "../src/lib/purchase-history.ts";
 import type { Ingredient, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
@@ -100,6 +100,55 @@ test("legacy rename behavior remains limited to existing normalized-name matchin
   const legacy = purchase({ id: "legacy", ingredientId: "", ingredientName: "Dark Chocolate Compound" });
 
   assert.deepEqual(getPurchaseHistoryForItem(renamed, [legacy]).map((entry) => entry.id), []);
+});
+
+// findLatestBrandForItem -- the Stock list's compact "Ingredient Name · Brand" contextual hint.
+// Deliberately a different rule from findReliableBrandForItem (which demands every purchase agree
+// on one brand): this always prefers whichever brand was bought most recently, even if an older
+// purchase used a different one.
+test("findLatestBrandForItem returns the brand from the single most recent purchase", () => {
+  const item = ingredient({ id: "choc-id" });
+  const older = purchase({ id: "older", ingredientId: "choc-id", brandName: "Van Houten", purchaseDate: "2026-01-01" });
+  const newer = purchase({ id: "newer", ingredientId: "choc-id", brandName: "Beryl's", purchaseDate: "2026-03-01" });
+
+  assert.equal(findLatestBrandForItem(item, [older, newer]), "Beryl's");
+});
+
+test("findLatestBrandForItem disagrees with findReliableBrandForItem on purpose when brands differ across history", () => {
+  const item = ingredient({ id: "choc-id" });
+  const older = purchase({ id: "older", ingredientId: "choc-id", brandName: "Van Houten", purchaseDate: "2026-01-01" });
+  const newer = purchase({ id: "newer", ingredientId: "choc-id", brandName: "Beryl's", purchaseDate: "2026-03-01" });
+
+  assert.equal(findReliableBrandForItem(item, [older, newer]), "", "reliable requires unanimous agreement");
+  assert.equal(findLatestBrandForItem(item, [older, newer]), "Beryl's", "latest just takes the newest brand on file");
+});
+
+test("findLatestBrandForItem skips a most-recent purchase that left brand blank and falls back to the next one that recorded a brand", () => {
+  const item = ingredient({ id: "choc-id" });
+  const branded = purchase({ id: "branded", ingredientId: "choc-id", brandName: "Van Houten", purchaseDate: "2026-01-01" });
+  const blankBrand = purchase({ id: "blank", ingredientId: "choc-id", brandName: "", purchaseDate: "2026-03-01" });
+
+  assert.equal(findLatestBrandForItem(item, [branded, blankBrand]), "Van Houten");
+});
+
+test("findLatestBrandForItem returns an empty string when no purchase on file ever recorded a brand", () => {
+  const item = ingredient({ id: "choc-id" });
+  const blank = purchase({ id: "blank", ingredientId: "choc-id", brandName: "" });
+
+  assert.equal(findLatestBrandForItem(item, [blank]), "");
+});
+
+test("findLatestBrandForItem returns an empty string for an ingredient with no purchase history at all", () => {
+  const item = ingredient({ id: "choc-id" });
+
+  assert.equal(findLatestBrandForItem(item, []), "");
+});
+
+test("findLatestBrandForItem trims surrounding whitespace from the stored brand name", () => {
+  const item = ingredient({ id: "choc-id" });
+  const padded = purchase({ id: "padded", ingredientId: "choc-id", brandName: "  Van Houten  " });
+
+  assert.equal(findLatestBrandForItem(item, [padded]), "Van Houten");
 });
 
 test("groupPurchasesByItem puts two purchases with the same ingredientId into one Item group", () => {

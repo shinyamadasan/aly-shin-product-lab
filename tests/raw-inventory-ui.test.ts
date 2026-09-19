@@ -56,6 +56,14 @@ function evaluateFunction(fnNode: ts.Node, context: Record<string, unknown>) {
 }
 const purchasePage = component(app, "PurchaseLogPage");
 const record = component(app, "PurchaseRecordRow");
+// Evaluated once and reused by every test that needs the primary Inventory nav's actual computed
+// pill list, rather than each test re-deriving it -- primaryInventoryTabs' own initializer closes
+// over primaryInventoryTabLabels (a sibling const in the same module), so both have to be
+// extracted and evaluated together against the real inventoryTabs import.
+const primaryInventoryTabLabelsDecl = nodes(app, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "primaryInventoryTabLabels")[0] as ts.VariableDeclaration;
+const primaryInventoryTabLabels = evaluate(primaryInventoryTabLabelsDecl.initializer?.getText(), {});
+const primaryInventoryTabsDecl = nodes(app, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "primaryInventoryTabs")[0] as ts.VariableDeclaration;
+const primaryInventoryTabsValue = evaluate(primaryInventoryTabsDecl.initializer?.getText(), { inventoryTabs, primaryInventoryTabLabels }) as Array<{ key: string; label: string }>;
 
 test("Wave 0B: the legacy Repair tool remains disabled while a purchase is posted remotely", () => {
   const disabled = attribute(button(purchasePage, "Repair missing purchase effects"), "disabled");
@@ -290,14 +298,16 @@ test("timeline excludes superseded adjustments and explains the boundary", () =>
 });
 
 test("Inventory: the primary navigation shows exactly Stock, Purchases, Manage Items, in that order", () => {
-  const decl = nodes(app, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "primaryInventoryTabs")[0] as ts.VariableDeclaration;
-  assert.ok(decl, "primaryInventoryTabs");
-  const result = evaluate(decl.initializer?.getText(), { inventoryTabs }) as Array<{ key: string; label: string }>;
-  assert.deepEqual(result.map((item) => item.key), ["stock", "purchases", "ingredients"]);
-  assert.deepEqual(result.map((item) => item.label), ["Current Stock", "Purchases", "Manage Items"]);
-  // The underlying tab contract itself (query-param resolution, old bookmarks) is untouched --
-  // only this page's own display list is narrowed. inventory-tabs.test.ts is what actually locks
-  // inventoryTabs' own "Items" label; this just confirms the override happens on a copy.
+  assert.deepEqual(primaryInventoryTabsValue.map((item) => item.key), ["stock", "purchases", "ingredients"]);
+  // The rendered pill label is the short "Stock", not the underlying tab's own "Current Stock" --
+  // that longer label still appears as the Stock card's own heading (InventoryStockPage), just
+  // not doubled as the nav pill text too.
+  assert.deepEqual(primaryInventoryTabsValue.map((item) => item.label), ["Stock", "Purchases", "Manage Items"]);
+  // The underlying tab contract itself (query-param resolution, old bookmarks, ?tab=stock) is
+  // untouched -- only this page's own display list is narrowed/relabeled on a copy.
+  // inventory-tabs.test.ts is what actually locks inventoryTabs' own "Current Stock"/"Items"
+  // labels; this just confirms the override never mutates that shared array.
+  assert.equal(inventoryTabs.find((item) => item.key === "stock")?.label, "Current Stock");
   assert.equal(inventoryTabs.find((item) => item.key === "ingredients")?.label, "Items");
 });
 
@@ -310,33 +320,40 @@ test("Inventory: History stays reachable as a secondary link, not a fourth prima
   const onClick = attribute((historyLink as ts.JsxElement).openingElement, "onClick");
   assert.match(onClick ?? "", /changeTab\("history"\)/);
   // Not one of the 3 primary pills.
-  const decl = nodes(app, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "primaryInventoryTabs")[0] as ts.VariableDeclaration;
-  const primary = evaluate(decl.initializer?.getText(), { inventoryTabs }) as Array<{ key: string }>;
-  assert.ok(!primary.some((item) => item.key === "history"));
+  assert.ok(!primaryInventoryTabsValue.some((item) => item.key === "history"));
 });
 
-test("Inventory: Count / correct stock opens and scrolls the physical-count panel, and no-ops when it isn't mounted", () => {
+test("Inventory: Count / correct stock reveals, opens, and scrolls to the physical-count panel, and no-ops when it isn't mounted", () => {
   const workspace = component(app, "InventoryWorkspace");
   const goToStockCount = nodes(workspace, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "goToStockCount")[0];
   assert.ok(goToStockCount, "goToStockCount");
 
-  let opened = false; let scrolled = false;
+  let opened = false; let scrolled = false; let unhidden = false;
+  const fakeWrapper = { classList: { remove: (name: string) => { if (name === "hidden") unhidden = true; } } };
   const fakePanel = {
     open: false,
     scrollIntoView: () => { scrolled = true; },
   };
   Object.defineProperty(fakePanel, "open", { get: () => opened, set: (value) => { opened = value; } });
   const fn = evaluateFunction(goToStockCount, {
-    document: { getElementById: (id: string) => (id === "raw-inventory-reconciliation" ? fakePanel : null) },
+    document: {
+      getElementById: (id: string) => {
+        if (id === "raw-inventory-reconciliation-wrapper") return fakeWrapper;
+        if (id === "raw-inventory-reconciliation") return fakePanel;
+        return null;
+      },
+    },
     HTMLDetailsElement: class {},
   });
   // Without a real HTMLDetailsElement instance, the `instanceof` check can't be satisfied inside
   // the sandboxed vm context (fakePanel is a plain object) -- confirm the no-op branch is safe
   // (scrollIntoView still runs, no throw) rather than asserting `open` flips true here.
   assert.doesNotThrow(() => fn());
+  assert.equal(unhidden, true, "un-hides the wrapper that keeps the panel visually dormant during normal use");
   assert.equal(scrolled, true, "always brings the panel into view, remote or not");
 
-  // A missing panel (no Supabase session, or not yet on this tab) must not throw.
+  // A missing panel (no Supabase session, or not yet on this tab) must not throw, whether the
+  // wrapper is also missing or present-but-unreachable.
   const fnMissing = evaluateFunction(goToStockCount, { document: { getElementById: () => null }, HTMLDetailsElement: class {} });
   assert.doesNotThrow(() => fnMissing());
 });
@@ -353,6 +370,48 @@ test("Inventory Stock table: Target, Value, and per-row cost-certification state
 test("Inventory Stock table: Need to Buy survives as the 'Low / Out' filter, reachable from Stock", () => {
   assert.match(stockPage.text, /"Low \/ Out"/);
   assert.match(stockPage.text, /matchesStockFilter/);
+});
+
+test("Inventory Stock card: Record purchase and Count / correct stock remain the only header actions -- the redundant Manage Items button is gone", () => {
+  const stockPageComponent = component(stockPage, "InventoryStockPage");
+  assert.ok(nodes(stockPageComponent, (node) => ts.isJsxElement(node)
+    && node.openingElement.tagName.getText() === "button"
+    && node.children.map((child) => child.getText()).join("").includes("Record purchase"))[0], "Record purchase button exists");
+  assert.ok(nodes(stockPageComponent, (node) => ts.isJsxElement(node)
+    && node.openingElement.tagName.getText() === "button"
+    && node.children.map((child) => child.getText()).join("").includes("Count / correct stock"))[0], "Count / correct stock button exists");
+  // Manage Items is already the primary tab directly above this card (InventoryWorkspace) -- a
+  // second button to the same place here would be duplicate navigation, not a lost capability.
+  const manageItemsButton = nodes(stockPageComponent, (node) => ts.isJsxElement(node)
+    && node.openingElement.tagName.getText() === "button"
+    && node.children.map((child) => child.getText()).join("").includes("Manage Items"));
+  assert.equal(manageItemsButton.length, 0, "no Manage Items button remains in the Stock card header");
+  // The prop this button used to call is gone too, not just unused -- SELF_REVIEW's "no dead code".
+  assert.doesNotMatch(stockPage.text, /goToManageItems/);
+});
+
+test("Inventory Stock table: the Item cell carries ingredient name plus compact brand context, still inside the same 3-column layout", () => {
+  assert.match(stockPage.text, /findLatestBrandForItem\(item, labState\.supplies\)/);
+  // Name first, bold/primary; brand (when present) is a muted secondary span appended in the same
+  // cell -- not a second grid column, not a second line, not a new track width.
+  assert.match(stockPage.text, /<h4 className="min-w-0 truncate font-semibold">\s*\{item\.name\}\s*\{latestBrand \? <span className="font-normal text-\[#6f5a4c\]"> · \{latestBrand\}<\/span> : null\}\s*<\/h4>/);
+  // Still exactly 3 grid tracks (Item / On hand / Status) -- no 4th column was introduced to hold
+  // the brand.
+  const gridTrackMatches = stockPage.text.match(/grid-cols-\[minmax\(200px,1fr\)_140px_180px\]/g) ?? [];
+  assert.ok(gridTrackMatches.length >= 2, "header and row both still use the same 3-track grid");
+  assert.doesNotMatch(stockPage.text, /Brand<\//, "no separate 'Brand' column header exists");
+});
+
+test("Inventory: the reconciliation launcher is not an always-visible bar above the normal Inventory workflow", () => {
+  const reconciliation = source("src/components/raw-inventory-reconciliation.tsx");
+  // Starts hidden -- a plain Tailwind `hidden` class on the outer wrapper, not a conditional that
+  // could evaluate either way; only goToStockCount's classList.remove("hidden") reveals it.
+  assert.match(reconciliation.text, /<div className="hidden" id="raw-inventory-reconciliation-wrapper">/);
+  // The component itself (state, submit handler, the <details> and its id) is unchanged --
+  // wrapped, not rewritten.
+  assert.match(reconciliation.text, /<details className="rounded-md border border-\[#d8c7b7\] bg-white p-4" id="raw-inventory-reconciliation">/);
+  assert.match(reconciliation.text, /Verify physical stock \/ correct a count/);
+  assert.match(reconciliation.text, /Record verified count/);
 });
 
 // Independent review found the list still forced a ~390px phone to scroll horizontally: a fixed

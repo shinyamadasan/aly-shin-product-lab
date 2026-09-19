@@ -137,6 +137,19 @@ export function getPurchaseHistoryForIngredientReference(
     .sort((a, b) => getPurchaseSortTime(b) - getPurchaseSortTime(a));
 }
 
+// Contextual brand hint for a display that has no room for full purchase history (e.g. the Stock
+// list's Item cell) -- the most recent purchase that actually recorded a brand, using the exact
+// same purchase-history ordering (getPurchaseHistoryForItem's own sort) every other "latest
+// purchase" reading in this app already uses, so "most recent" can't quietly mean two different
+// things depending on where you look. Deliberately NOT findReliableBrandForItem: that function
+// answers a different question ("does every purchase on file agree on one brand"), and returns ""
+// the moment two purchases disagree -- exactly the opposite of "show me whichever brand was
+// bought most recently." Says nothing about which brand any specific unit currently on hand is.
+export function findLatestBrandForItem(ingredient: Ingredient, purchases: SupplyEntry[]) {
+  const latestWithBrand = getPurchaseHistoryForItem(ingredient, purchases).find((purchase) => purchase.brandName.trim());
+  return latestWithBrand?.brandName.trim() ?? "";
+}
+
 export function findReliableBrandForItem(ingredient: Ingredient, purchases: SupplyEntry[]) {
   const matchingEntries = getPurchaseHistoryForItem(ingredient, purchases).filter((entry) => entry.brandName.trim());
   const distinctNormalizedBrands = new Set(matchingEntries.map((entry) => normalizeBrandText(entry.brandName)));

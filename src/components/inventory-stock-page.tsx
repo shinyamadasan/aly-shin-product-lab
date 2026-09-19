@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Boxes, ClipboardCheck, ShoppingCart } from "lucide-react";
+import { ClipboardCheck, ShoppingCart } from "lucide-react";
 import { getToday, type LabState } from "@/lib/lab-state";
 import { getExpirationStatus, getStockStatus, matchesStockFilter, matchesStockSearch, type StockViewFilter } from "@/lib/inventory-status";
+import { findLatestBrandForItem } from "@/lib/purchase-history";
 import { expirationStatusLabel, expirationStatusTone, stockStatusLabel, stockStatusTone } from "@/components/inventory-page";
 import { Tag } from "@/components/ui";
 
@@ -18,12 +19,10 @@ const stockViewFilters: Array<{ key: StockViewFilter; label: string }> = [
 // stays in Manage Items.
 export function InventoryStockPage({
   goToCount,
-  goToManageItems,
   goToPurchases,
   labState,
 }: {
   goToCount: () => void;
-  goToManageItems: () => void;
   goToPurchases: () => void;
   labState: LabState;
 }) {
@@ -37,16 +36,13 @@ export function InventoryStockPage({
 
   return (
     <div className="rounded-lg border border-[#e1d4c4] bg-white">
-      <div className="flex flex-col gap-3 border-b border-[#eaded2] p-5 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">On hand</p>
-          <h3 className="mt-1 text-xl font-semibold">Current stock</h3>
-          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">What&apos;s actually on hand right now. To add, edit, or delete an ingredient, go to Manage Items.</p>
-        </div>
-        <button className="flex h-9 shrink-0 items-center gap-2 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={goToManageItems} type="button">
-          <Boxes size={16} />
-          Manage Items
-        </button>
+      <div className="border-b border-[#eaded2] p-5">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">On hand</p>
+        <h3 className="mt-1 text-xl font-semibold">Current stock</h3>
+        {/* The old secondary "Manage Items" button here duplicated the Manage Items tab that now
+            sits directly above this card in the primary Inventory nav -- removed rather than kept
+            as a second path to the same place. */}
+        <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">What&apos;s actually on hand right now. To add, edit, or delete an ingredient, go to Manage Items.</p>
       </div>
 
       <div className="flex flex-col gap-3 border-b border-[#eaded2] p-5">
@@ -101,6 +97,10 @@ export function InventoryStockPage({
                 const status = getStockStatus(item);
                 const expirationStatus = getExpirationStatus(item.nearestExpirationDate, today);
                 const isFlagged = Boolean(item.baseUnitMigrationFlaggedReason);
+                // Contextual only -- the most recent purchase that recorded a brand, not a claim
+                // about which brand every unit currently on hand actually is (see
+                // findLatestBrandForItem's own comment). Empty when nothing on file has a brand.
+                const latestBrand = findLatestBrandForItem(item, labState.supplies);
                 // Normal items look boring on purpose: no tag at all when nothing needs attention.
                 // A flagged (manual-reconciliation) ingredient always gets a tag, even if its stock
                 // and expiration are otherwise fine -- the flag is a data-integrity issue, not a
@@ -110,7 +110,10 @@ export function InventoryStockPage({
                 // Item/On hand/Status grid only kicks in at sm and up, matching the header above.
                 return (
                   <article className="grid grid-cols-1 gap-1 px-5 py-3 text-sm sm:grid-cols-[minmax(200px,1fr)_140px_180px] sm:items-center sm:gap-4" key={item.id}>
-                    <h4 className="min-w-0 truncate font-semibold">{item.name}</h4>
+                    <h4 className="min-w-0 truncate font-semibold">
+                      {item.name}
+                      {latestBrand ? <span className="font-normal text-[#6f5a4c]"> · {latestBrand}</span> : null}
+                    </h4>
                     <p>{item.currentQuantity} {item.baseUnit}</p>
                     <div className="flex flex-wrap items-center gap-1.5">
                       {status !== "good" ? <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag> : null}
