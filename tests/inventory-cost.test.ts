@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeWeightedAverageUnitCost, getInventoryValue, getTotalInventoryValue } from "../src/lib/inventory-cost.ts";
+import { computeWeightedAverageUnitCost, getInventoryValue, getTotalInventoryValue, isCostBaselineUncertified } from "../src/lib/inventory-cost.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
 function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
@@ -74,4 +74,20 @@ test("computeWeightedAverageUnitCost returns the current average when total quan
   const result = computeWeightedAverageUnitCost(0, 50, 0, 0, 0);
 
   assert.equal(result, 50);
+});
+
+// The single source of truth for "needs a one-time cost verification" -- mirrors confirm_bake_v3's
+// own server-side guard (cost_reconciled_at is null, OR average_unit_cost is null/<=0).
+test("isCostBaselineUncertified is true when costReconciledAt has never been set", () => {
+  assert.equal(isCostBaselineUncertified({ costReconciledAt: null, averageUnitCost: 92 }), true);
+  assert.equal(isCostBaselineUncertified({ costReconciledAt: undefined, averageUnitCost: 92 }), true);
+});
+
+test("isCostBaselineUncertified is false once certified with a valid positive cost", () => {
+  assert.equal(isCostBaselineUncertified({ costReconciledAt: "2026-07-01T00:00:00Z", averageUnitCost: 92 }), false);
+});
+
+test("isCostBaselineUncertified is true when the cost itself is missing or non-positive, even if certified", () => {
+  assert.equal(isCostBaselineUncertified({ costReconciledAt: "2026-07-01T00:00:00Z", averageUnitCost: 0 }), true);
+  assert.equal(isCostBaselineUncertified({ costReconciledAt: "2026-07-01T00:00:00Z", averageUnitCost: -1 }), true);
 });

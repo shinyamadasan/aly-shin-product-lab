@@ -61,7 +61,7 @@ export function getExpirationStatus(nearestExpirationDate: string, today: string
   return "good";
 }
 
-function isExpiringStatus(status: ExpirationStatus) {
+export function isExpiringStatus(status: ExpirationStatus) {
   return status === "expired" || status === "expires-today" || status === "expires-soon";
 }
 
@@ -80,6 +80,34 @@ export function getExpiringIngredients(ingredients: Ingredient[], today: string,
 // NOT VALID base_unit constraint can still block a write to an archived-but-flagged row.
 export function getFlaggedIngredients(ingredients: Ingredient[]) {
   return ingredients.filter((ingredient) => Boolean(ingredient.baseUnitMigrationFlaggedReason));
+}
+
+// The daily Stock view's own exception filter -- "All" shows everything, "Low & Out" and
+// "Expiring" narrow to exactly what used to be separate primary workflows (Need to Buy, and the
+// expiration badges) before they folded into Stock as filters. Kept a pure predicate (rather than
+// inline in the component) so it stays testable without rendering anything.
+export type StockViewFilter = "all" | "attention" | "expiring";
+
+export function matchesStockFilter(
+  ingredient: Pick<Ingredient, "currentQuantity" | "lowStockThreshold" | "nearestExpirationDate">,
+  filter: StockViewFilter,
+  today: string,
+  expiresSoonDays: number = DEFAULT_EXPIRES_SOON_DAYS,
+): boolean {
+  if (filter === "attention") {
+    return getStockStatus(ingredient) !== "good";
+  }
+  if (filter === "expiring") {
+    return isExpiringStatus(getExpirationStatus(ingredient.nearestExpirationDate, today, expiresSoonDays));
+  }
+  return true;
+}
+
+// Plain substring match on name, case-insensitive. An empty/whitespace-only query matches
+// everything -- the search field is a narrowing tool, not a required gate.
+export function matchesStockSearch(ingredient: Pick<Ingredient, "name">, query: string): boolean {
+  const trimmed = query.trim().toLowerCase();
+  return !trimmed || ingredient.name.toLowerCase().includes(trimmed);
 }
 
 // Powers all 3 Dashboard summary cards (low stock, out of stock, expiring) in one pass.

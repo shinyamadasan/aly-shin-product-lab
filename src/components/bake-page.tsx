@@ -5,6 +5,7 @@ import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
 import type { FinishedStockExceptionType } from "@/lib/product-lab-types";
 import { parseBatchIngredients } from "@/lib/batches";
+import { isCostBaselineUncertified } from "@/lib/inventory-cost";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import { deriveFinishedStockBalances, sortFinishedStockExceptionHistory, sortProductionHistory } from "@/lib/finished-stock";
@@ -106,7 +107,7 @@ export function BakePage({
   const uncertifiedCostIngredientNames = Array.from(new Set(
     deductions
       .map((deduction) => labState.ingredients.find((item) => item.id === deduction.ingredientId))
-      .filter((ingredient) => ingredient && (!ingredient.costReconciledAt || !ingredient.averageUnitCost || ingredient.averageUnitCost <= 0))
+      .filter((ingredient) => ingredient && isCostBaselineUncertified(ingredient))
       .map((ingredient) => ingredient!.name),
   ));
   // Remote confirms never accept a negative-stock override -- confirm_bake_v2 rejects insufficient
@@ -306,7 +307,7 @@ export function BakePage({
             }
             const resultingQuantity = ingredient.currentQuantity - deduction.quantity;
             const isShort = resultingQuantity < 0;
-            const isCostUncertified = remotePosting && (!ingredient.costReconciledAt || !ingredient.averageUnitCost || ingredient.averageUnitCost <= 0);
+            const isCostUncertified = remotePosting && isCostBaselineUncertified(ingredient);
             return (
               <div className={`rounded-md border p-3 ${isShort || isCostUncertified ? "border-[#f3c9c0] bg-[#fde6df]" : "border-[#f0e4d8]"}`} key={deduction.ingredientId}>
                 <p className="font-semibold">{ingredient.name}</p>

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Ingredient, IngredientCategory, StockAdjustmentReason, SupplyEntry } from "@/lib/product-lab-types";
 import { CANONICAL_UNITS } from "@/lib/product-lab-types";
 import { getToday, type LabState } from "@/lib/lab-state";
-import { getInventoryValue } from "@/lib/inventory-cost";
+import { getInventoryValue, isCostBaselineUncertified } from "@/lib/inventory-cost";
 import { getExpirationStatus, getFlaggedIngredients, getStockStatus } from "@/lib/inventory-status";
 import { buildInventoryItemViews, type InventoryItemView } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
@@ -217,7 +217,7 @@ function CertifyCostForm({
       </div>
       <div className="grid gap-1 text-sm">
         <span>Current average cost</span>
-        <p className="font-semibold">{ingredient.costReconciledAt ? `PHP ${ingredient.averageUnitCost} (certified)` : ingredient.averageUnitCost ? `PHP ${ingredient.averageUnitCost} (not certified)` : "Not set"}</p>
+        <p className="font-semibold">{ingredient.costReconciledAt ? `PHP ${ingredient.averageUnitCost} (verified)` : ingredient.averageUnitCost ? `PHP ${ingredient.averageUnitCost} (needs verification)` : "Not set"}</p>
       </div>
       <div className="grid gap-1">
         <input
@@ -287,6 +287,7 @@ function IngredientRow({
   const status = getStockStatus(item);
   const expirationStatus = getExpirationStatus(item.nearestExpirationDate, getToday());
   const value = getInventoryValue(item);
+  const uncertified = isCostBaselineUncertified(item);
   const lastPurchaseDate = latestPurchase?.purchaseDate ?? "";
 
   return (
@@ -337,12 +338,13 @@ function IngredientRow({
       <div className="min-w-0 text-sm">
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Value</p>
         <p className="mt-1 font-semibold">PHP {value.toFixed(2)}</p>
-        {/* Cost Baseline Repair: costReconciledAt, not a non-null/positive averageUnitCost,
-            is what actually means "trustworthy" -- see certify_ingredient_cost_baseline's
-            own comment. "No cost set" alone would misleadingly conflate a merely-
-            uncertified positive cost with a genuinely missing one. */}
-        <p className={item.costReconciledAt ? "text-[#6f5a4c]" : "font-semibold text-[#b3441f]"}>
-          {item.costReconciledAt ? `@ PHP ${item.averageUnitCost.toFixed(2)} (certified)` : "Cost baseline not certified"}
+        {/* Cost Baseline Repair: isCostBaselineUncertified (costReconciledAt, not a non-null/
+            positive averageUnitCost) is what actually means "trustworthy" -- see
+            certify_ingredient_cost_baseline's own comment. Plain language here on purpose --
+            "Cost baseline not certified" is the internal term; the operator-facing surface says
+            what to do about it instead. */}
+        <p className={uncertified ? "font-semibold text-[#b3441f]" : "text-[#6f5a4c]"}>
+          {uncertified ? "Cost needs verification" : `@ PHP ${item.averageUnitCost.toFixed(2)}`}
         </p>
       </div>
       <div className="min-w-0 flex flex-wrap gap-2 min-[1360px]:flex-col">
@@ -351,7 +353,7 @@ function IngredientRow({
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Archive ${item.name}? It will be hidden from active workflows, but all purchase, stock, formula, and report history will be preserved.`) ? deleteIngredient(item.id) : undefined} type="button">Archive</button>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "adjust" ? null : "adjust")} type="button">Adjust Stock</button>
         <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "certify" ? null : "certify")} type="button">
-          {item.costReconciledAt ? "Re-certify cost" : "Certify cost"}
+          {uncertified ? "Certify cost" : "Re-certify cost"}
         </button>
       </div>
       {openPanel === "adjust" ? (
@@ -404,6 +406,11 @@ export function InventoryPage({
   const archivedIngredients = labState.ingredients.filter((item) => !item.isActive);
   const itemViews = buildInventoryItemViews(ingredients, labState.supplies);
   const flaggedIngredients = getFlaggedIngredients(labState.ingredients);
+  const uncertifiedCostCount = ingredients.filter((item) => isCostBaselineUncertified(item)).length;
+
+  function scrollToIngredientMaster() {
+    document.getElementById("ingredient-master")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   const formRef = useRef<HTMLFormElement>(null);
   const [baselineSnapshot, setBaselineSnapshot] = useState<IngredientFormSnapshot | null>(null);
@@ -514,6 +521,17 @@ export function InventoryPage({
         <p className="mt-2">Archive hides an Item from active workflows while preserving purchases, stock history, formulas, and reports.</p>
       </div>
 
+      {uncertifiedCostCount > 0 ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d] sm:flex-row sm:items-center sm:justify-between xl:col-span-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em]">Cost setup</p>
+            <p className="mt-1 font-semibold">{uncertifiedCostCount} ingredient cost{uncertifiedCostCount === 1 ? "" : "s"} need{uncertifiedCostCount === 1 ? "s" : ""} one-time verification.</p>
+            <p className="mt-1 text-xs">A recorded cost is not trustworthy until it&apos;s checked against real purchase evidence -- this is a one-time step per ingredient, not a recurring task.</p>
+          </div>
+          <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={scrollToIngredientMaster} type="button">Review costs</button>
+        </div>
+      ) : null}
+
       {flaggedIngredients.length > 0 ? (
         <div className="rounded-lg border border-[#e0a458] bg-[#fff2d8] p-5 text-sm leading-6 text-[#7a531d] xl:col-span-2">
           <p className="text-xs font-semibold uppercase tracking-[0.16em]">Needs manual reconciliation</p>
@@ -531,7 +549,7 @@ export function InventoryPage({
         </div>
       ) : null}
 
-      <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2" id="ingredient-master">
         <div className="border-b border-[#eaded2] p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Ingredient Master</p>
           <h3 className="mt-1 text-xl font-semibold">Ingredients</h3>

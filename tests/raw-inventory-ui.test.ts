@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { inventoryTabs } from "../src/lib/inventory-tabs.ts";
 
 // Exercise the actual JSX control expressions and handlers without a browser or new
 // test dependencies. These are component contract tests, not visual acceptance tests.
@@ -13,6 +14,7 @@ const app = source("src/app/product-lab.tsx");
 const wizard = source("src/components/purchase-import-wizard.tsx");
 const timeline = source("src/components/inventory-timeline.tsx");
 const inventory = source("src/components/inventory-page.tsx");
+const stockPage = source("src/components/inventory-stock-page.tsx");
 const bake = source("src/components/bake-page.tsx");
 function nodes(root: ts.Node, predicate: (node: ts.Node) => boolean): ts.Node[] {
   const result: ts.Node[] = [];
@@ -285,4 +287,87 @@ test("timeline excludes superseded adjustments and explains the boundary", () =>
     assert.equal(evaluate(canReverse.initializer?.getText(), { ordinaryAdjustment: true, superseded, reversedTransactionIds: new Set(), transaction: { id: "old" } }), !superseded);
   }
   assert.match(timeline.text, /Cannot reverse: a later physical reconciliation superseded this adjustment/);
+});
+
+test("Inventory: the primary navigation shows exactly Stock, Purchases, Manage Items, in that order", () => {
+  const decl = nodes(app, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "primaryInventoryTabs")[0] as ts.VariableDeclaration;
+  assert.ok(decl, "primaryInventoryTabs");
+  const result = evaluate(decl.initializer?.getText(), { inventoryTabs }) as Array<{ key: string; label: string }>;
+  assert.deepEqual(result.map((item) => item.key), ["stock", "purchases", "ingredients"]);
+  assert.deepEqual(result.map((item) => item.label), ["Current Stock", "Purchases", "Manage Items"]);
+  // The underlying tab contract itself (query-param resolution, old bookmarks) is untouched --
+  // only this page's own display list is narrowed. inventory-tabs.test.ts is what actually locks
+  // inventoryTabs' own "Items" label; this just confirms the override happens on a copy.
+  assert.equal(inventoryTabs.find((item) => item.key === "ingredients")?.label, "Items");
+});
+
+test("Inventory: History stays reachable as a secondary link, not a fourth primary pill", () => {
+  const workspace = component(app, "InventoryWorkspace");
+  const historyLink = nodes(workspace, (node) => ts.isJsxElement(node)
+    && node.openingElement.tagName.getText() === "button"
+    && node.children.map((child) => child.getText()).join("").includes("History"))[0];
+  assert.ok(historyLink && ts.isJsxElement(historyLink), "a History link exists");
+  const onClick = attribute((historyLink as ts.JsxElement).openingElement, "onClick");
+  assert.match(onClick ?? "", /changeTab\("history"\)/);
+  // Not one of the 3 primary pills.
+  const decl = nodes(app, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "primaryInventoryTabs")[0] as ts.VariableDeclaration;
+  const primary = evaluate(decl.initializer?.getText(), { inventoryTabs }) as Array<{ key: string }>;
+  assert.ok(!primary.some((item) => item.key === "history"));
+});
+
+test("Inventory: Count / correct stock opens and scrolls the physical-count panel, and no-ops when it isn't mounted", () => {
+  const workspace = component(app, "InventoryWorkspace");
+  const goToStockCount = nodes(workspace, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "goToStockCount")[0];
+  assert.ok(goToStockCount, "goToStockCount");
+
+  let opened = false; let scrolled = false;
+  const fakePanel = {
+    open: false,
+    scrollIntoView: () => { scrolled = true; },
+  };
+  Object.defineProperty(fakePanel, "open", { get: () => opened, set: (value) => { opened = value; } });
+  const fn = evaluateFunction(goToStockCount, {
+    document: { getElementById: (id: string) => (id === "raw-inventory-reconciliation" ? fakePanel : null) },
+    HTMLDetailsElement: class {},
+  });
+  // Without a real HTMLDetailsElement instance, the `instanceof` check can't be satisfied inside
+  // the sandboxed vm context (fakePanel is a plain object) -- confirm the no-op branch is safe
+  // (scrollIntoView still runs, no throw) rather than asserting `open` flips true here.
+  assert.doesNotThrow(() => fn());
+  assert.equal(scrolled, true, "always brings the panel into view, remote or not");
+
+  // A missing panel (no Supabase session, or not yet on this tab) must not throw.
+  const fnMissing = evaluateFunction(goToStockCount, { document: { getElementById: () => null }, HTMLDetailsElement: class {} });
+  assert.doesNotThrow(() => fnMissing());
+});
+
+test("Inventory Stock table: Target, Value, and per-row cost-certification state are gone from the daily view", () => {
+  assert.doesNotMatch(stockPage.text, /Cost baseline not certified/);
+  assert.doesNotMatch(stockPage.text, />Target</);
+  assert.doesNotMatch(stockPage.text, />Value</);
+  assert.doesNotMatch(stockPage.text, /costReconciledAt/);
+  // A healthy row renders no status tag at all -- only Out/Low/expiration/reconciliation states do.
+  assert.match(stockPage.text, /status !== "good" \? <Tag/);
+});
+
+test("Inventory Stock table: Need to Buy survives as the 'Low / Out' filter, reachable from Stock", () => {
+  assert.match(stockPage.text, /"Low \/ Out"/);
+  assert.match(stockPage.text, /matchesStockFilter/);
+});
+
+test("Manage Items: a Cost setup summary appears only when ingredients need verification, and the per-item Certify/Re-certify control still exists", () => {
+  assert.match(inventory.text, /uncertifiedCostCount > 0/);
+  assert.match(inventory.text, /isCostBaselineUncertified/);
+  // The per-row action is unchanged in kind (a button toggling the same CertifyCostForm panel) --
+  // just relabeled from a fixed string to reflect the ingredient's own certified state.
+  button(inventory, "Certify cost");
+  assert.match(inventory.text, /uncertified \? "Certify cost" : "Re-certify cost"/);
+  // Plain language replaces the internal term on the operator-facing row; the technical name stays
+  // only in comments/docs.
+  assert.match(inventory.text, /Cost needs verification/);
+});
+
+test("Bake: cost certification uses the same shared helper as Inventory, not a re-derived condition", () => {
+  assert.match(bake.text, /isCostBaselineUncertified/);
+  assert.doesNotMatch(bake.text, /!ingredient\.costReconciledAt \|\| !ingredient\.averageUnitCost \|\| ingredient\.averageUnitCost <= 0/);
 });

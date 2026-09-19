@@ -5604,6 +5604,17 @@ function NeedToBuyPage({ labState }: { labState: LabState }) {
   );
 }
 
+// The primary Inventory navigation shows only 3 pills -- Stock, Purchases, Manage Items -- not all
+// 5 underlying tabs. Need to Buy folded into Stock as a filter (see InventoryStockPage); History
+// stays reachable as a smaller secondary link instead of a fourth pill (see the render below).
+// Reuses inventoryTabs' own key order and filters down to it, rather than a separately maintained
+// list, so this can never drift out of sync with the tab contract itself; only the "ingredients"
+// tab's display label is overridden here -- inventoryTabs' own "Items" label is locked by
+// inventory-tabs.test.ts and still drives resolveInventoryTab/every other consumer unchanged.
+const primaryInventoryTabs = inventoryTabs
+  .filter((item) => item.key === "stock" || item.key === "purchases" || item.key === "ingredients")
+  .map((item) => (item.key === "ingredients" ? { ...item, label: "Manage Items" } : item));
+
 // One Inventory page, five jobs that used to be five separate nav entries: Current Stock (what's
 // on hand), Purchases (Supplier prices log + CSV import -- both are ways of recording a purchase),
 // Need to Buy, History (the inventory transaction timeline), and Items (the unified ingredient +
@@ -5795,22 +5806,45 @@ function InventoryWorkspace({
     setTab("purchases");
   }
 
+  // "Count / correct stock" on the Stock tab points at RawInventoryReconciliation, which is a
+  // sibling of this whole workspace (rendered once, above every tab, in ProductLab) rather than
+  // part of it -- it's already collapsed behind its own <details>, so this just opens it and
+  // brings it into view instead of duplicating its form here. A no-op (not an error) when the
+  // element isn't present, e.g. no Supabase session, matches how the panel already hides itself.
+  function goToStockCount() {
+    const panel = document.getElementById("raw-inventory-reconciliation");
+    if (panel instanceof HTMLDetailsElement) {
+      panel.open = true;
+    }
+    panel?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   return (
     <div className="grid gap-5">
-      <div className="inline-flex w-fit flex-wrap rounded-md border border-[#d8c7b7] bg-white p-1">
-        {inventoryTabs.map((item) => (
-          <button
-            className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-            key={item.key}
-            onClick={() => changeTab(item.key)}
-            type="button"
-          >
-            {item.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex w-fit flex-wrap rounded-md border border-[#d8c7b7] bg-white p-1">
+          {primaryInventoryTabs.map((item) => (
+            <button
+              className={`rounded px-4 py-1.5 text-sm font-semibold ${tab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
+              key={item.key}
+              onClick={() => changeTab(item.key)}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {/* History is real ledger data, kept reachable (including its own old bookmark), but it's
+            an advanced/audit surface, not part of the primary daily workflow, so it sits as a
+            smaller secondary link rather than a fourth pill in the primary row above. */}
+        <button className="text-sm font-semibold text-[#8f5632] underline-offset-2 hover:underline" onClick={() => changeTab("history")} type="button">
+          History
+        </button>
       </div>
 
-      {tab === "stock" ? <InventoryStockPage goToManageItems={() => setTab("ingredients")} labState={labState} /> : null}
+      {tab === "stock" ? (
+        <InventoryStockPage goToCount={goToStockCount} goToManageItems={() => setTab("ingredients")} goToPurchases={() => setTab("purchases")} labState={labState} />
+      ) : null}
 
       {tab === "purchases" ? (
         <div className="grid gap-4">

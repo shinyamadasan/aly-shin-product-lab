@@ -30,7 +30,7 @@ export function RawInventoryReconciliation({ labState, reconcile }: {
   }
 
   return (
-    <details className="rounded-md border border-[#d8c7b7] bg-white p-4">
+    <details className="rounded-md border border-[#d8c7b7] bg-white p-4" id="raw-inventory-reconciliation">
       <summary className="cursor-pointer font-semibold">Verify physical stock / correct a count</summary>
       <p className="my-3 text-sm">Count the ingredient first. Recorded balances are references, not verified physical quantities. Earlier history stays unchanged.</p>
       <label className="grid gap-1">

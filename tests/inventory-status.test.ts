@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getExpirationStatus, getExpiringIngredients, getFlaggedIngredients, getInventorySummaryCounts, getNeedToBuyList, getStockStatus, getSuggestedBuyQuantity } from "../src/lib/inventory-status.ts";
+import { getExpirationStatus, getExpiringIngredients, getFlaggedIngredients, getInventorySummaryCounts, getNeedToBuyList, getStockStatus, getSuggestedBuyQuantity, matchesStockFilter, matchesStockSearch } from "../src/lib/inventory-status.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
 function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
@@ -177,4 +177,44 @@ test("getFlaggedIngredients includes an archived ingredient's flag -- the NOT VA
   const flaggedArchived = ingredient({ id: "flagged-archived", baseUnitMigrationFlaggedReason: "non_finite_numeric_field", isActive: false });
 
   assert.deepEqual(getFlaggedIngredients([flaggedArchived]).map((item) => item.id), ["flagged-archived"]);
+});
+
+// The daily Stock view's own filter -- Need to Buy folded into this as "attention" rather than
+// staying a separate top-level tab.
+test("matchesStockFilter 'all' matches everything regardless of status", () => {
+  const good = ingredient({ id: "good", currentQuantity: 1000, lowStockThreshold: 200 });
+  assert.equal(matchesStockFilter(good, "all", TODAY), true);
+});
+
+test("matchesStockFilter 'attention' matches low and out, excludes good", () => {
+  const low = ingredient({ currentQuantity: 100, lowStockThreshold: 200 });
+  const out = ingredient({ currentQuantity: 0, lowStockThreshold: 200 });
+  const good = ingredient({ currentQuantity: 1000, lowStockThreshold: 200 });
+
+  assert.equal(matchesStockFilter(low, "attention", TODAY), true);
+  assert.equal(matchesStockFilter(out, "attention", TODAY), true);
+  assert.equal(matchesStockFilter(good, "attention", TODAY), false);
+});
+
+test("matchesStockFilter 'expiring' matches expired/expires-today/expires-soon, excludes good and none", () => {
+  const soon = ingredient({ nearestExpirationDate: "2026-07-26" });
+  const none = ingredient({ nearestExpirationDate: "" });
+  const farOut = ingredient({ nearestExpirationDate: "2026-08-15" });
+
+  assert.equal(matchesStockFilter(soon, "expiring", TODAY), true);
+  assert.equal(matchesStockFilter(none, "expiring", TODAY), false);
+  assert.equal(matchesStockFilter(farOut, "expiring", TODAY), false);
+});
+
+test("matchesStockSearch is a case-insensitive substring match on name", () => {
+  const item = ingredient({ name: "All Purpose Flour" });
+  assert.equal(matchesStockSearch(item, "flour"), true);
+  assert.equal(matchesStockSearch(item, "FLOUR"), true);
+  assert.equal(matchesStockSearch(item, "sugar"), false);
+});
+
+test("matchesStockSearch treats an empty or whitespace-only query as matching everything", () => {
+  const item = ingredient({ name: "All Purpose Flour" });
+  assert.equal(matchesStockSearch(item, ""), true);
+  assert.equal(matchesStockSearch(item, "   "), true);
 });
