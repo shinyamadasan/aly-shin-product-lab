@@ -554,3 +554,53 @@ the task's explicit instruction to stop before either.
 risky (it's presentational/information-hierarchy only, and every backend safeguard is verifiably
 unchanged), but because the task explicitly requires a stop-before-merge checkpoint and the
 1440px/390px visual check is still a human-only outstanding item.
+
+## 2026-09-19 — Operational friction cleanup V1: Purchases + Manage Items
+
+**Scope:** `src/lib/purchase-item-resolution.ts` (new, pure), `src/components/purchase-item-field.tsx`
+(new), `src/lib/unit-conversion.ts` (`inferCanonicalUnit`, shared with `guessCanonicalUnit`),
+`src/app/product-lab.tsx` (`saveSupply`/`ensureItemForNewPurchase`, `PurchaseLogPage`, removal of
+the per-row Buy plumbing), `src/components/inventory-page.tsx` (Manage Items), `docs/FEATURES.md`,
+and tests (`purchase-item-resolution.test.ts` new; `raw-inventory-ui.test.ts` extended). Explicitly
+NOT touched: any migration, `post_raw_purchase`, `confirm_bake_v3`, cost-certification RPCs, CSV
+import (`PurchaseImportWizard`), Bake, Orders, Daily Log.
+
+**Verdict:** Sound, with the judgement calls below stated. The Item is resolved or created at
+Save time, never while typing: the form renders from one pure planner (`planPurchaseItem`) and
+`saveSupply` re-runs the same resolution against the current catalog before writing, so a stale form
+cannot create a duplicate. Item creation reuses `saveIngredient` (no new write path); the purchase
+still posts through `post_raw_purchase` with the unchanged operation id. Proven by behavior, not only
+by string checks: the real `ensureItemForNewPurchase` source is executed with stubbed collaborators
+for the create / near-match / archived / ambiguous / bad-base-unit / retry cases, including "Item
+created, purchase failed, retry twice" creating the Item exactly once. Full suite 3894 pass, 0 fail,
+1 pre-existing skip; typecheck and build clean.
+
+**Not rubber-stamped:**
+- The near-match rule is a judgement call, deliberately conservative and documented on
+  `arePossibleNameMatch`: same words reordered, a trailing s/es, or edit distance 1 (shorter name >= 5
+  chars) / 2 (>= 12 chars). It will sometimes ask when two names really are different products
+  ("Salted butter" vs "Unsalted butter" at distance 2); that is what "Create anyway" is for. Tune with
+  real data before trusting the thresholds.
+- A retry after a failed purchase is protected by an in-memory ref (`itemsCreatedForPurchaseRef`) plus
+  the exact-match resolution once the reloaded catalog arrives. If the Item is hard-deleted in that
+  window the retry fails at the database (truthfully reported) rather than recreating it. It does NOT
+  survive a page refresh -- but after a refresh the Item exists in the catalog, so the exact match
+  reuses it. Two steps remain two writes; no migration was added to make them atomic.
+- Similar-but-archived candidates are shown as information only ("Restore it in Manage Items"); only an
+  EXACT archived match offers "Restore and use", to avoid a second restore/select code path.
+- Manage Items dropped the always-visible purchase summary, value and per-row action buttons; they
+  are behind Manage, not deleted. Search reuses `matchesStockSearch` (name substring) rather than a
+  new matcher.
+- A shell-backtick slip briefly emptied three identifiers in the Manage Items FEATURES.md row; caught
+  by reading the committed diff and corrected in the following docs commit.
+
+**Human-only checks not done:** no real browser/phone pass at 390px or 1440px (no browser automation
+here); the smart Ingredient field, datalist suggestions, and Manage expansion were verified through
+structure and behavior tests only. A real owner-data run of "Item created but purchase failed" is also
+outstanding.
+
+**Production boundary:** no Supabase schema, migration, RPC, or production data was touched or
+written. No merge, no deploy; commits sit on `feat/ops-friction-cleanup-v1` only.
+
+**Merge gate: `approved`** — held for human merge and a real-device pass; presentational/orchestration
+change with every backend safeguard unchanged.
