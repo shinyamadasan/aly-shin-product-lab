@@ -111,7 +111,9 @@ test("Wave 0B: Save/Update, Edit, Log Purchase, and CSV/Bake confirm are never g
   // feedback, see planning/SELLING_WAVE_0B.md), never by the delete/repair pause flag.
   assert.doesNotMatch(attribute(button(purchasePage, "Save purchase"), "disabled") ?? "", /deleteAndRepairPaused|postingPaused/);
   assert.equal(attribute(button(record, "Edit"), "disabled"), undefined);
-  assert.equal(attribute(button(purchasePage, "Log Purchase"), "disabled"), undefined);
+  // The per-Item "Log Purchase" shortcut is gone -- the top form is the buying workflow, and it is
+  // gated only by its own Item-resolution state, never by the delete/repair pause.
+  assert.doesNotMatch(attribute(button(purchasePage, "Save purchase"), "disabled") ?? "", /deleteAndRepairPaused/);
   const importButton = button(wizard, "Import Purchases");
   assert.doesNotMatch(attribute(importButton, "disabled") ?? "", /deleteAndRepairPaused|postingPaused/);
   const confirmBakeButton = button(bake, "Confirm bake");
@@ -490,21 +492,25 @@ test("Bake: an unresolved ingredient still shows the assignment picker directly,
 });
 
 test("Bake: preflight shows one short message per short ingredient, sourced from getInsufficientDeductions", () => {
-  assert.match(bake.text, /is short by \{item\.shortfall\.toFixed\(2\)\}/);
+  assert.match(bake.text, /is short by \{formatQuantity\(item\.shortfall, /);
   assert.match(bake.text, /insufficient\.map\(\(item\) =>/);
 });
 
 test("Bake: multiple uncertified costs are summarized as one Preflight line, never one card per ingredient", () => {
-  assert.match(bake.text, /Cost setup needed/);
-  assert.match(bake.text, /uncertifiedCostIngredientNames\.length/);
+  // Compact by default: a count and the fact the bake is blocked; the names sit behind a disclosure.
+  assert.match(bake.text, /need\{uncertifiedCostIngredientNames\.length === 1 \? "s" : ""\} verification before this bake can be posted\./);
+  assert.match(bake.text, /Show ingredients \(\{uncertifiedCostIngredientNames\.length\}\)/);
+  assert.match(bake.text, /\{uncertifiedCostIngredientNames\.join\(", "\)\}/);
+  assert.doesNotMatch(bake.text, /Cost setup needed/);
   // The per-deduction card no longer renders its own separate "not certified" line -- that
   // information now lives once, in the grouped Preflight message above.
   assert.doesNotMatch(bake.text, /isCostUncertified/);
   assert.doesNotMatch(bake.text, /Cost baseline not certified/);
 });
 
-test("Bake: Review costs in the cost-setup exception links straight to Inventory's Manage Items", () => {
-  assert.match(bake.text, /href="\/inventory\?tab=ingredients"/);
+test("Bake: Review costs deep-links to Manage Items already narrowed to Items needing verification", () => {
+  assert.match(bake.text, /href="\/inventory\?tab=ingredients&focus=costs"/);
+  assert.doesNotMatch(bake.text, /href="\/inventory\?tab=ingredients"/);
 });
 
 test("Bake: insufficient stock and cost-uncertified ingredients still block a remote confirm (readyToConfirm unchanged)", () => {
@@ -780,8 +786,8 @@ test("Manage Items: Buy is gone from Item rows and the workspace no longer wires
   assert.doesNotMatch(row, />Buy</);
   const workspace = component(app, "InventoryWorkspace").getText();
   assert.doesNotMatch(workspace, /logPurchaseForIngredient/);
-  // Purchases still owns buying -- its own per-Item "Log Purchase" shortcut remains.
-  assert.match(component(app, "PurchaseLogPage").getText(), /Log Purchase/);
+  // Purchases owns buying through its top form; the per-Item "Log Purchase" shortcut is gone too.
+  assert.doesNotMatch(component(app, "PurchaseLogPage").getText(), />Log Purchase<|logPurchaseForIngredient/);
 });
 
 test("Manage Items: rows are concise by default; every maintenance action lives behind Manage", () => {
@@ -809,7 +815,9 @@ test("Manage Items: rows are concise by default; every maintenance action lives 
   // No healthy/stock status pills on Manage Items rows -- that is Stock's job.
   assert.doesNotMatch(row, /stockStatusLabel|getStockStatus|Good/);
   // Only exception tags: cost verification and manual reconciliation.
-  assert.match(collapsedPart, /\{uncertified \? <Tag tone="danger">Cost needs verification<\/Tag> : null\}/);
+  // ...and the cost warning only in cost-focused mode, so ~24 uncertified Items don't turn the whole
+  // default list red again.
+  assert.match(collapsedPart, /\{showCostWarning && uncertified \? <Tag tone="danger">Cost needs verification<\/Tag> : null\}/);
   assert.match(collapsedPart, /\{needsReconciliation \? <Tag tone="danger">Needs reconciliation<\/Tag> : null\}/);
 });
 
@@ -867,7 +875,173 @@ test("Manage Items: outdated milestone copy is gone, replaced by short current h
 
 test("Manage Items: no fixed-width or forced-scroll layout on the list or its rows (mobile)", () => {
   assert.doesNotMatch(inventory.text, /overflow-x-auto|min-w-\[|min-\[1360px\]|grid-cols-\[minmax/);
-  // The Item row is a wrapping flex row that stacks naturally; the expanded detail grid is 2 columns
-  // on a phone and 4 from sm.
-  assert.match(component(inventory, "IngredientRow").getText(), /grid grid-cols-2 gap-3 sm:grid-cols-4/);
+  // The Item row is a wrapping flex row that stacks naturally; the expanded detail grid is one
+  // column on a phone, 2 from sm, 3 from lg.
+  assert.match(component(inventory, "IngredientRow").getText(), /grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3/);
+});
+
+// ---- Final consolidated visual correction: Stock / Purchases / Manage Items / Bake ----------------
+
+test("Stock: still 3 columns with inline brand context, the shared quantity formatter, and shorter helper copy", () => {
+  const text = stockPage.text;
+  assert.match(text, /formatQuantity\(item\.currentQuantity, item\.baseUnit\)/);
+  assert.doesNotMatch(text, /\{item\.currentQuantity\} \{item\.baseUnit\}/);
+  assert.match(text, /findLatestBrandForItem\(item, labState\.supplies\)/);
+  assert.match(text, /What&apos;s actually on hand right now\.<\/p>/);
+  assert.doesNotMatch(text, /To add, edit, or delete an ingredient/);
+  // Item | On hand | Status only.
+  assert.equal((text.match(/<p>(Item|On hand|Status)<\/p>/g) ?? []).length, 3);
+  assert.doesNotMatch(text, />Target<|>Value<|>Brand</);
+});
+
+test("Purchases: the per-Item Log Purchase button is gone and the top smart form remains the buying workflow", () => {
+  const text = purchasePage.getText();
+  assert.doesNotMatch(text, />Log Purchase<|logPurchaseForIngredient/);
+  assert.match(text, /<PurchaseItemField/);
+  assert.match(text, /Save purchase/);
+  assert.match(text, /post_raw_purchase|handleSaveSupply/);
+});
+
+test("Purchases: By Item and All Purchases are both preserved, with a client-side search over item, brand and supplier", () => {
+  const text = purchasePage.getText();
+  button(purchasePage, "By Item");
+  button(purchasePage, "All Purchases");
+  assert.match(text, /setPurchaseView\("by-item"\)/);
+  assert.match(text, /setPurchaseView\("all"\)/);
+  assert.match(text, /placeholder="Search item, brand, or supplier\.\.\."/);
+  assert.match(text, /groupPurchasesByItem\(labState\.ingredients, labState\.supplies\)\.filter\(\(group\) => purchaseGroupMatchesSearch\(group, purchaseSearch\)\)/);
+  assert.match(text, /getChronologicalPurchases\(labState\.supplies\)\.filter\(\(entry\) => matchesPurchaseSearch\(entry, purchaseSearch\)\)/);
+  assert.match(text, /getUnlinkedPurchases\(labState\.ingredients, labState\.supplies\)\.filter/);
+});
+
+test("Purchases: a By Item row is compact -- the stored total paid, the unit price separately, and history behind one View control", () => {
+  const row = component(app, "PurchaseGroupRow").getText();
+  assert.match(row, /formatPesos\(latest\.totalPaid\)\} total/);
+  assert.match(row, /formatPesosPerUnit\(latest\.unitCost, latest\.unit\)/);
+  assert.match(row, /\{isOpen \? "Hide" : "View"\}/);
+  // The history (each record's Edit/Delete) only renders once opened.
+  assert.match(row, /\{isOpen \? <div[^>]*>\{children\}<\/div> : null\}/);
+  // The old permanent full-width "Purchase history" bar and the multiplied-back total are gone.
+  assert.doesNotMatch(row, /Purchase history|<details/);
+  assert.doesNotMatch(row, /packQuantity \* |unitCost \* /);
+  // Paid comes from the stored purchase, via the tested helper -- not from summary.latestUnitCost.
+  assert.match(row, /getLatestPurchaseFacts\(group\.purchases\[0\]\)/);
+});
+
+test("Purchases: the comparison explainer is a closed disclosure, not a permanent wide sidebar; utilities stay secondary", () => {
+  const text = purchasePage.getText();
+  assert.doesNotMatch(text, /xl:grid-cols-\[1fr_420px\]|<Panel title="Purchase Comparison"/);
+  assert.match(text, /<details className="mt-2 text-sm text-\[#5f4a3d\]">\s*<summary[^>]*>How purchase comparison works<\/summary>/);
+  assert.doesNotMatch(text, /<details className="mt-2 text-sm text-\[#5f4a3d\]" open/);
+  for (const label of ["Print", "Download CSV", "Repair missing purchase effects"]) button(purchasePage, label);
+  // Repair semantics untouched.
+  assert.match(text, /repairSupplyInventoryEffects\(\)/);
+  assert.match(text, /disabled=\{deleteAndRepairPaused\}/);
+});
+
+test("Purchases: no fixed-width sidebar or forced-scroll layout in the compact rows", () => {
+  const row = component(app, "PurchaseGroupRow").getText();
+  assert.doesNotMatch(row, /overflow-x-auto|min-w-\[|w-\[\d+px\]|\d+px\]/);
+  assert.match(row, /grid gap-3 sm:grid-cols-2 lg:grid-cols-\[minmax\(0,1\.5fr\)/);
+});
+
+test("Manage Items: manual creation is the exception path -- '+ Add item manually' with helper copy, and it still works", () => {
+  const page = component(inventory, "InventoryPage").getText();
+  assert.match(page, /\+ Add item manually/);
+  assert.doesNotMatch(page, />\s*\+ Add item\s*</);
+  assert.match(page, /New Items are usually created automatically when you record a purchase\. Add one manually for setup before a purchase\./);
+  assert.match(attribute(button(component(inventory, "InventoryPage"), "+ Add item manually"), "onClick") ?? "", /setIsAdding\(true\)/);
+  assert.match(component(inventory, "IngredientEditor").getText(), /Save ingredient/);
+});
+
+test("Manage Items: cost verification is an intentional mode -- Review costs activates the filter, and the warning shows only then", async () => {
+  const page = component(inventory, "InventoryPage");
+  const focusItemList = nodes(page, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "focusItemList")[0];
+  assert.ok(focusItemList);
+  const calls: boolean[] = [];
+  evaluateFunction(focusItemList, { onCostFocusChange: (value: boolean) => calls.push(value), document: { getElementById: () => null } })();
+  assert.deepEqual(calls, [true], "Review costs turns cost-focused mode on");
+  assert.match(page.getText(), /onClick=\{\(\) => onCostFocusChange\(false\)\}[^>]*>Show all items/);
+  // The row receives the warning flag only from the focused mode.
+  assert.match(page.getText(), /showCostWarning=\{isCostFocused\}/);
+  assert.match(page.getText(), /const isCostFocused = costFocus && uncertifiedCostCount > 0/);
+});
+
+test("Manage Items: ?focus=costs starts cost-focused mode; the tab key and old links are untouched", () => {
+  const route = source("src/app/inventory/page.tsx").text;
+  assert.match(route, /resolveInventoryFocus\(focus\)/);
+  assert.match(route, /resolveInventoryTab\(tab\)/);
+  const workspace = component(app, "InventoryWorkspace").getText();
+  assert.match(workspace, /const \[costFocus, setCostFocus\] = useState\(initialFocus === "costs"\)/);
+  assert.match(workspace, /costFocus=\{costFocus\} onCostFocusChange=\{setCostFocus\}/);
+});
+
+test("Manage Items: cost basis, latest purchase and stock value are separate, and value is only shown for a verified cost", () => {
+  const row = component(inventory, "IngredientRow").getText();
+  for (const heading of ["Current stock", "Target", "Cost basis", "Latest purchase", "Stock value"]) {
+    assert.ok(row.includes(`>${heading}</dt>`), heading);
+  }
+  // Latest purchase: the STORED total, the pack, and the unit price separately, plus brand/supplier/date.
+  assert.match(row, /formatPesos\(latest\.totalPaid\)\} total/);
+  assert.match(row, /formatPesosPerUnit\(latest\.unitCost, latest\.unit\)/);
+  assert.match(row, /formatPurchaseDate\(latest\.date, \{ year: true \}\)/);
+  assert.match(row, /latest\.brand \|\| "Brand not set", latest\.supplier \|\| "Supplier not set"/);
+  // Cost basis is labeled Verified / Needs verification, on its own.
+  assert.match(row, /uncertified \? "Needs verification" : "Verified"/);
+  // Stock value comes from the trust rule: a confident amount only when verified.
+  assert.match(row, /getStockValueDisplay\(item\)/);
+  assert.match(row, /stockValue\.kind === "value" \? \(/);
+  assert.match(row, /-- Verify cost first/);
+  assert.doesNotMatch(row, /getInventoryValue/);
+  // Quantities use the shared formatter.
+  assert.match(row, /formatQuantity\(item\.currentQuantity, item\.baseUnit\)/);
+  assert.match(row, /formatQuantity\(item\.targetStockQuantity, item\.baseUnit\)/);
+  assert.match(row, /formatQuantity\(item\.lowStockThreshold, item\.baseUnit\)/);
+});
+
+test("Bake: the batch option identifies the batch (product, version, pieces, date) instead of only the version", () => {
+  assert.match(bake.text, /formatBakeBatchOption\(group\.product\.name, batch\)/);
+  assert.doesNotMatch(bake.text, /<optgroup/);
+  assert.doesNotMatch(bake.text, /\{batch\.batchVersion\}\s*<\/option>/);
+});
+
+test("Bake: ingredient quantities go through the shared formatter, so a tiny converted amount never shows as 0.00 kg", () => {
+  const page = component(bake, "BakePage").getText();
+  assert.match(page, /formatQuantity\(row\.convertedQuantity \* \(isMultiplierValid \? multiplier : 1\), ingredient\?\.baseUnit \?\? ""\)/);
+  assert.match(page, /formatQuantity\(deduction\.quantity, ingredient\.baseUnit\)/);
+  assert.match(page, /formatQuantity\(ingredient\.currentQuantity, ingredient\.baseUnit\)/);
+  assert.match(page, /formatQuantity\(resultingQuantity, ingredient\.baseUnit\)/);
+  // No quantity is rounded with toFixed(2) for display any more.
+  assert.doesNotMatch(page, /\.toFixed\(2\)/);
+  // The underlying values are unchanged: deductions still come from groupDeductionsByIngredient.
+  assert.match(page, /groupDeductionsByIngredient\(resolved, multiplier\)/);
+});
+
+test("Bake: the deductions live in the main flow as a disclosure, not in a permanent desktop right rail", () => {
+  const page = component(bake, "BakePage").getText();
+  assert.doesNotMatch(page, /xl:grid-cols-\[1fr_380px\]|What this bake will use/);
+  assert.match(page, /<section className="grid gap-5">/);
+  // The disclosure is inside the Bake form, before the confirm controls, closed unless stock is short.
+  const disclosure = page.indexOf("View ingredient deductions (");
+  assert.ok(disclosure > 0);
+  assert.ok(page.indexOf("Bake a batch") < disclosure, "inside the Bake panel");
+  assert.ok(disclosure < page.indexOf("Confirm bake"), "before Confirm bake");
+  assert.match(page, /<details className="mt-3" open=\{insufficient\.length > 0\}>/);
+});
+
+test("Bake: historical production cost is described as frozen at posting, not recomputed from current costs", () => {
+  assert.doesNotMatch(bake.text, /uses the ingredient costs currently stored in the app/);
+  assert.match(bake.text, /Raw cost was recorded from the ingredient costs used when this bake was posted; later cost corrections do not rewrite historical production cost\./);
+  assert.match(bake.text, /Verify ingredient costs before relying on this/);
+  assert.match(bake.text, /frozenIngredientCostTotal/);
+});
+
+test("Bake: the posting authority is unchanged -- same readyToConfirm guards, same confirmBake payload path", () => {
+  const readyToConfirm = nodes(bake, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "readyToConfirm")[0] as ts.VariableDeclaration;
+  const text = readyToConfirm.initializer?.getText() ?? "";
+  for (const guard of ["fullyResolved", "isMultiplierValid", "isActualPiecesValid", "deductions.length > 0", "insufficient.length === 0", "uncertifiedCostIngredientNames.length === 0"]) {
+    assert.ok(text.includes(guard), guard);
+  }
+  assert.match(bake.text, /confirmBake\(selectedBatch\.id, selectedBatch\.productId, batchLabel, multiplier, actualPieces, deductions,/);
+  assert.match(bake.text, /const \[actualPiecesText, setActualPiecesText\] = useState\(""\)/);
 });

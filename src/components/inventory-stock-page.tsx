@@ -3,6 +3,7 @@ import { ClipboardCheck, ShoppingCart } from "lucide-react";
 import { getToday, type LabState } from "@/lib/lab-state";
 import { getExpirationStatus, getStockStatus, matchesStockFilter, matchesStockSearch, type StockViewFilter } from "@/lib/inventory-status";
 import { findLatestBrandForItem } from "@/lib/purchase-history";
+import { formatQuantity } from "@/lib/quantity-display";
 import { expirationStatusLabel, expirationStatusTone, stockStatusLabel, stockStatusTone } from "@/components/inventory-page";
 import { Tag } from "@/components/ui";
 
@@ -42,7 +43,7 @@ export function InventoryStockPage({
         {/* The old secondary "Manage Items" button here duplicated the Manage Items tab that now
             sits directly above this card in the primary Inventory nav -- removed rather than kept
             as a second path to the same place. */}
-        <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">What&apos;s actually on hand right now. To add, edit, or delete an ingredient, go to Manage Items.</p>
+        <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">What&apos;s actually on hand right now.</p>
       </div>
 
       <div className="flex flex-col gap-3 border-b border-[#eaded2] p-5">
@@ -114,7 +115,7 @@ export function InventoryStockPage({
                       {item.name}
                       {latestBrand ? <span className="font-normal text-[#6f5a4c]"> · {latestBrand}</span> : null}
                     </h4>
-                    <p>{item.currentQuantity} {item.baseUnit}</p>
+                    <p>{formatQuantity(item.currentQuantity, item.baseUnit)}</p>
                     <div className="flex flex-wrap items-center gap-1.5">
                       {status !== "good" ? <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag> : null}
                       {expirationStatus !== "none" && expirationStatus !== "good" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}

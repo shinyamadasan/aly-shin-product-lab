@@ -45,7 +45,7 @@ import {
   ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
   rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, recordFinishedStockExceptionArgs, updatePostedPurchaseMetadataArgs,
 } from "@/lib/raw-inventory-authority";
-import { inventoryTabs, type InventoryTab } from "@/lib/inventory-tabs";
+import { inventoryTabs, type InventoryFocus, type InventoryTab } from "@/lib/inventory-tabs";
 import type { OrdersTab } from "@/lib/orders-tabs";
 import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/components/purchase-import-wizard";
 import { IngredientPicker } from "@/components/ingredient-picker";
@@ -125,7 +125,8 @@ import {
   getSupplyUsedCost,
   normalizeSupplyText,
 } from "@/lib/supplies";
-import { getChronologicalPurchases, getPurchaseGroupSummary, getPurchaseHistoryForIngredientReference, getUnlinkedPurchases, groupPurchasesByItem } from "@/lib/purchase-history";
+import { getChronologicalPurchases, getPurchaseGroupSummary, getPurchaseHistoryForIngredientReference, getUnlinkedPurchases, groupPurchasesByItem, matchesPurchaseSearch, purchaseGroupMatchesSearch, type PurchaseItemGroup } from "@/lib/purchase-history";
+import { formatPesos, formatPesosPerUnit, formatPurchaseDate, getLatestPurchaseFacts } from "@/lib/inventory-display";
 import { getAllocatedEquipmentCost, getEquipmentTotals, REFERENCE_COOKING_MINUTES } from "@/lib/equipment";
 import {
   diffFormulaRows,
@@ -176,6 +177,7 @@ type CostingWorkspaceMode = "history" | "detail" | "editor";
 
 export default function ProductLab({
   view,
+  initialInventoryFocus,
   initialInventoryTab,
   initialOrdersTab,
   initialOpportunityStatusFilter = "new",
@@ -183,6 +185,7 @@ export default function ProductLab({
 }: {
   // Required on purpose: a route that forgets it must fail typecheck, not silently render another page.
   view: LabView;
+  initialInventoryFocus?: InventoryFocus;
   initialInventoryTab?: InventoryTab;
   initialOrdersTab?: OrdersTab;
   initialOpportunityStatusFilter?: OpportunityStatusFilter;
@@ -3283,6 +3286,7 @@ export default function ProductLab({
               editSupply={editSupplyWithGuard}
               hardDeleteIngredient={hardDeleteIngredient}
               ingredient={editingIngredient}
+              initialFocus={initialInventoryFocus}
               initialTab={initialInventoryTab}
               isInventoryTableMissing={isInventoryTableMissing}
               isPurchaseImportPackagesMissing={isPurchaseImportPackagesMissing}
@@ -5263,6 +5267,47 @@ function getUniqueSupplyValues(supplies: SupplyEntry[], key: "brandName" | "ingr
   return Array.from(new Set(supplies.map((supply) => supply[key].trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
+// One Item in the By Item purchase view: a concise comparison row -- the latest purchase, what was
+// actually PAID (the stored total, with the unit price shown separately), and how many purchases
+// exist. The full history (each record's Edit/Delete) stays behind one small View control, so a
+// long catalog is not a wall of permanently-open rows.
+function PurchaseGroupRow({ group, children }: { group: PurchaseItemGroup; children: ReactNode }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const summary = getPurchaseGroupSummary(group);
+  const latest = group.purchases[0] ? getLatestPurchaseFacts(group.purchases[0]) : null;
+  const lastDate = formatPurchaseDate(summary.lastPurchaseDate);
+
+  return (
+    <article className="p-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.7fr)_auto] lg:items-center">
+        <div className="min-w-0">
+          <h4 className="break-words font-semibold">
+            {group.ingredient.name}
+            {summary.latestBrand ? <span className="font-normal text-[#6f5a4c]"> · {summary.latestBrand}</span> : null}
+          </h4>
+        </div>
+        <div className="text-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Latest purchase</p>
+          <p className="mt-1 font-semibold">{[lastDate || "Date not set", latest && latest.packQuantity > 0 ? `${latest.packQuantity}${latest.unit ? ` ${latest.unit}` : ""}` : ""].filter(Boolean).join(" · ")}</p>
+        </div>
+        <div className="text-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Paid</p>
+          <p className="mt-1 font-semibold">{latest ? `${formatPesos(latest.totalPaid)} total` : "--"}</p>
+          {latest && latest.unitCost !== null ? <p className="text-[#6f5a4c]">{formatPesosPerUnit(latest.unitCost, latest.unit)}</p> : null}
+        </div>
+        <div className="text-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">History</p>
+          <p className="mt-1 font-semibold">{summary.purchaseCount} purchase{summary.purchaseCount === 1 ? "" : "s"}</p>
+        </div>
+        <button aria-expanded={isOpen} className="h-9 w-fit rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen((current) => !current)} type="button">
+          {isOpen ? "Hide" : "View"}
+        </button>
+      </div>
+      {isOpen ? <div className="mt-3 divide-y divide-[#ead9c8] rounded-md border border-[#ead9c8] bg-white">{children}</div> : null}
+    </article>
+  );
+}
+
 function PurchaseRecordRow({
   deleteAndRepairPaused = false,
   deleteSupply,
@@ -5564,6 +5609,7 @@ const primaryInventoryTabs = inventoryTabs
 // behind their own routes.
 function InventoryWorkspace({
   deleteAndRepairPaused = false,
+  initialFocus,
   initialTab,
   adjustStock,
   cancelEditIngredient,
@@ -5596,6 +5642,7 @@ function InventoryWorkspace({
   labState,
 }: {
   deleteAndRepairPaused?: boolean;
+  initialFocus?: InventoryFocus;
   initialTab?: InventoryTab;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEditIngredient: () => void;
@@ -5632,6 +5679,9 @@ function InventoryWorkspace({
   labState: LabState;
 }) {
   const [tab, setTab] = useState<InventoryTab>(initialTab ?? "stock");
+  // Manage Items' cost-focused mode (only the Items needing cost verification). Starts on for
+  // ?tab=ingredients&focus=costs and otherwise off; owned here so it survives switching tabs.
+  const [costFocus, setCostFocus] = useState(initialFocus === "costs");
   const [purchasesTab, setPurchasesTab] = useState<"manual" | "csv">("manual");
   const [isIngredientDirty, setIsIngredientDirty] = useState(false);
   const [isSupplyDirty, setIsSupplyDirty] = useState(false);
@@ -5799,7 +5849,7 @@ function InventoryWorkspace({
       {tab === "history" ? <InventoryTimeline labState={labState} reverseInventoryAdjustment={reverseInventoryAdjustment} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} certifyIngredientCostBaseline={certifyIngredientCostBaseline} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
+        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} certifyIngredientCostBaseline={certifyIngredientCostBaseline} costFocus={costFocus} onCostFocusChange={setCostFocus} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
       ) : null}
     </div>
   );
@@ -5892,9 +5942,11 @@ function PurchaseLogPage({
   const brandOptions = getUniqueSupplyValues(labState.supplies, "brandName");
   const supplierOptions = getUniqueSupplyValues(labState.supplies, "supplierName");
   const unitOptions = getUniqueSupplyValues(labState.supplies, "unit");
-  const purchaseGroups = groupPurchasesByItem(labState.ingredients, labState.supplies);
-  const unlinkedPurchases = getUnlinkedPurchases(labState.ingredients, labState.supplies);
-  const chronologicalPurchases = getChronologicalPurchases(labState.supplies);
+  // Client-side search over the purchases already loaded: Item name, brand, or supplier.
+  const [purchaseSearch, setPurchaseSearch] = useState("");
+  const purchaseGroups = groupPurchasesByItem(labState.ingredients, labState.supplies).filter((group) => purchaseGroupMatchesSearch(group, purchaseSearch));
+  const unlinkedPurchases = getUnlinkedPurchases(labState.ingredients, labState.supplies).filter((entry) => matchesPurchaseSearch(entry, purchaseSearch));
+  const chronologicalPurchases = getChronologicalPurchases(labState.supplies).filter((entry) => matchesPurchaseSearch(entry, purchaseSearch));
 
   const formRef = useRef<HTMLFormElement>(null);
   const [baselineSnapshot, setBaselineSnapshot] = useState<SupplyFormSnapshot | null>(null);
@@ -5958,23 +6010,6 @@ function PurchaseLogPage({
 
   useUnsavedChangesGuard(isDirty, onDirtyChange);
 
-  function logPurchaseForIngredient(item: Ingredient) {
-    editSupply({
-      id: "",
-      ingredientId: item.id,
-      ingredientName: item.name,
-      brandName: "",
-      supplierName: "",
-      purchaseDate: getToday(),
-      createdAt: "",
-      packQuantity: 0,
-      unit: item.baseUnit,
-      totalCost: 0,
-      qualityRating: 0,
-      notes: "",
-    });
-  }
-
   function downloadPurchases() {
     downloadCsv(
       "purchases.csv",
@@ -5995,7 +6030,7 @@ function PurchaseLogPage({
   }
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[1fr_420px]">
+    <section className="grid gap-5">
       <FormPanel ref={editorRef} title={supply?.id ? "Edit purchase" : "Log purchase"} icon={<PackageCheck size={18} />}>
         {supply ? (
           <p className="mb-3 rounded-md border border-[#f1c78a] bg-[#fff2d8] px-3 py-2 text-sm font-semibold text-[#7a531d]">
@@ -6062,14 +6097,7 @@ function PurchaseLogPage({
         </form>
       </FormPanel>
 
-      <Panel title="Purchase Comparison" icon={<Sparkles size={18} />}>
-        <div className="space-y-3 text-sm leading-6 text-[#5f4a3d]">
-          <p>Use this page only for actual purchases. Costing should use this information later, but purchases are the source of truth for supplier prices and quality.</p>
-          <p><strong>Example:</strong> Cocoa powder, Supplier A, 1000g, PHP 100, quality 4/5.</p>
-        </div>
-      </Panel>
-
-      <div className="rounded-lg border border-[#e1d4c4] bg-white xl:col-span-2">
+      <div className="rounded-lg border border-[#e1d4c4] bg-white">
         <div className="border-b border-[#eaded2] p-5">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Purchase Log</p>
           <div className="mt-1 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -6077,71 +6105,54 @@ function PurchaseLogPage({
             <div className="flex flex-wrap gap-2">
               <button className={`h-9 rounded-md border px-3 text-sm font-semibold ${purchaseView === "by-item" ? "border-[#8f5632] bg-[#8f5632] text-white" : "border-[#d8c7b7] bg-white text-[#5f4a3d]"}`} onClick={() => setPurchaseView("by-item")} type="button">By Item</button>
               <button className={`h-9 rounded-md border px-3 text-sm font-semibold ${purchaseView === "all" ? "border-[#8f5632] bg-[#8f5632] text-white" : "border-[#d8c7b7] bg-white text-[#5f4a3d]"}`} onClick={() => setPurchaseView("all")} type="button">All Purchases</button>
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => printPage("supplies-print-report")} type="button">Print</button>
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={downloadPurchases} type="button">Download CSV</button>
-              <button
-                className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d] disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={deleteAndRepairPaused}
-                title={deleteAndRepairPaused ? RAW_REPAIR_BLOCKED : undefined}
-                onClick={() =>
-                  !deleteAndRepairPaused && window.confirm(
-                    "Apply every Item's full purchase history to current stock and average cost, for any Item never touched by a purchase before? This can move stock quantities and costs -- check the result against physical stock afterward.",
-                  )
-                    ? repairSupplyInventoryEffects()
-                    : undefined
-                }
-                type="button"
-              >
-                Repair missing purchase effects
-              </button>
             </div>
           </div>
-          {purchaseView === "all" ? <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">Transaction log: each row is one purchase record, so repeated Item names are expected.</p> : null}
+          <input
+            className="mt-3 h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-sm sm:max-w-xs"
+            onChange={(event) => setPurchaseSearch(event.target.value)}
+            placeholder="Search item, brand, or supplier..."
+            type="text"
+            value={purchaseSearch}
+          />
+          <p className="mt-2 text-sm leading-6 text-[#6f5a4c]">
+            {purchaseView === "all" ? "Transaction log: each row is one purchase record, so repeated Item names are expected." : "The latest purchase for each Item, for comparing what you paid. Open View for its full history."}
+          </p>
+          <details className="mt-2 text-sm text-[#5f4a3d]">
+            <summary className="cursor-pointer text-xs font-semibold text-[#8f5632]">How purchase comparison works</summary>
+            <div className="mt-2 space-y-2 leading-6">
+              <p>Use this page only for actual purchases. Costing should use this information later, but purchases are the source of truth for supplier prices and quality.</p>
+              <p><strong>Example:</strong> Cocoa powder, Supplier A, 1000g, PHP 100, quality 4/5.</p>
+            </div>
+          </details>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+            <button className="h-8 rounded-md border border-[#e1d4c4] bg-white px-2.5 font-semibold text-[#6f5a4c]" onClick={() => printPage("supplies-print-report")} type="button">Print</button>
+            <button className="h-8 rounded-md border border-[#e1d4c4] bg-white px-2.5 font-semibold text-[#6f5a4c]" onClick={downloadPurchases} type="button">Download CSV</button>
+            <button
+              className="h-8 rounded-md border border-[#e1d4c4] bg-white px-2.5 font-semibold text-[#6f5a4c] disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={deleteAndRepairPaused}
+              title={deleteAndRepairPaused ? RAW_REPAIR_BLOCKED : undefined}
+              onClick={() =>
+                !deleteAndRepairPaused && window.confirm(
+                  "Apply every Item's full purchase history to current stock and average cost, for any Item never touched by a purchase before? This can move stock quantities and costs -- check the result against physical stock afterward.",
+                )
+                  ? repairSupplyInventoryEffects()
+                  : undefined
+              }
+              type="button"
+            >
+              Repair missing purchase effects
+            </button>
+          </div>
         </div>
         {purchaseView === "by-item" ? (
           <div className="divide-y divide-[#f0e4d8]">
             {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
-            {purchaseGroups.map((group) => {
-              const summary = getPurchaseGroupSummary(group);
-              return (
-                <article className="p-5" key={group.ingredient.id}>
-                  <div className="grid gap-4 lg:grid-cols-[1fr_150px_150px_150px_130px]">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Tag tone="green">{summary.purchaseCount} purchase{summary.purchaseCount === 1 ? "" : "s"}</Tag>
-                        {summary.latestBrand ? <Tag tone="warm">{summary.latestBrand}</Tag> : null}
-                        {summary.latestSupplier ? <Tag tone="warm">{summary.latestSupplier}</Tag> : null}
-                      </div>
-                      <h4 className="mt-2 font-semibold">{group.ingredient.name}</h4>
-                      <p className="mt-1 text-sm text-[#6f5a4c]">Last bought {summary.lastPurchaseDate || "date not set"}</p>
-                    </div>
-                    <div className="text-sm">
-                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Latest Pack</p>
-                      <p className="mt-1 font-semibold">{summary.latestPackage || "--"}</p>
-                      <p className="text-[#6f5a4c]">PHP {summary.latestUnitCost.toFixed(4)}/unit</p>
-                    </div>
-                    <div className="text-sm">
-                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Total Bought</p>
-                      <p className="mt-1 font-semibold">{summary.totalPurchasedUnit ? `${summary.totalPurchasedQuantity} ${summary.totalPurchasedUnit}` : "Mixed units"}</p>
-                      <p className="text-[#6f5a4c]">{summary.averageUnitCost ? `Avg PHP ${summary.averageUnitCost.toFixed(4)}/${summary.totalPurchasedUnit}` : "Average not available"}</p>
-                    </div>
-                    <div className="text-sm">
-                      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">History</p>
-                      <p className="mt-1 font-semibold">{summary.purchaseCount} record{summary.purchaseCount === 1 ? "" : "s"}</p>
-                    </div>
-                    <div className="flex gap-2 lg:flex-col">
-                      <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => logPurchaseForIngredient(group.ingredient)} type="button">Log Purchase</button>
-                    </div>
-                  </div>
-                  <details className="mt-4 rounded-md border border-[#ead9c8] bg-[#fffaf3]">
-                    <summary className="cursor-pointer p-3 text-sm font-semibold text-[#5f4a3d]">Purchase history</summary>
-                    <div className="divide-y divide-[#ead9c8] bg-white">
-                      {group.purchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} transactions={labState.inventoryTransactions} />)}
-                    </div>
-                  </details>
-                </article>
-              );
-            })}
+            {labState.supplies.length > 0 && purchaseGroups.length === 0 && unlinkedPurchases.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases match.</p> : null}
+            {purchaseGroups.map((group) => (
+              <PurchaseGroupRow group={group} key={group.ingredient.id}>
+                {group.purchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} transactions={labState.inventoryTransactions} />)}
+              </PurchaseGroupRow>
+            ))}
             {unlinkedPurchases.length > 0 ? (
               <section>
                 <div className="p-5">
@@ -6157,6 +6168,7 @@ function PurchaseLogPage({
         ) : (
         <div className="divide-y divide-[#f0e4d8]">
           {labState.supplies.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases logged yet.</p> : null}
+          {labState.supplies.length > 0 && chronologicalPurchases.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No purchases match.</p> : null}
           {chronologicalPurchases.map((purchase) => <PurchaseRecordRow deleteAndRepairPaused={deleteAndRepairPaused} deleteSupply={deleteSupply} editSupply={editSupply} isActive={purchase.id === editingSupplyId} key={purchase.id} supply={purchase} transactions={labState.inventoryTransactions} />)}
         </div>
         )}

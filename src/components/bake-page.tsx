@@ -6,6 +6,8 @@ import type { LabState } from "@/lib/lab-state";
 import type { FinishedStockExceptionType } from "@/lib/product-lab-types";
 import { parseBatchIngredients } from "@/lib/batches";
 import { isCostBaselineUncertified } from "@/lib/inventory-cost";
+import { formatBakeBatchOption } from "@/lib/bake-batch-option";
+import { formatQuantity } from "@/lib/quantity-display";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import { deriveFinishedStockBalances, sortFinishedStockExceptionHistory, sortProductionHistory } from "@/lib/finished-stock";
@@ -158,9 +160,9 @@ export function BakePage({
   const multiplierPresets = ["0.5", "1", "2"];
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[1fr_380px]">
+    <section className="grid gap-5">
       {isInventoryTableMissing ? (
-        <div className="rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d] xl:col-span-2">
+        <div className="rounded-md bg-[#fff2d8] p-3 text-sm leading-6 text-[#7a531d]">
           Inventory database fields are not ready yet. Run <strong>supabase-add-inventory.sql</strong> once, then try again.
         </div>
       ) : null}
@@ -174,15 +176,13 @@ export function BakePage({
               onChange={(event) => setSelectedBatchId(event.target.value)}
               value={selectedBatchId}
             >
-              {batchesByProduct.map((group) => (
-                <optgroup key={group.product.id} label={group.product.name}>
-                  {group.productBatches.map((batch) => (
-                    <option key={batch.id} value={batch.id}>
-                      {batch.batchVersion}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
+              {batchesByProduct.flatMap((group) =>
+                group.productBatches.map((batch) => (
+                  <option key={batch.id} value={batch.id}>
+                    {formatBakeBatchOption(group.product.name, batch)}
+                  </option>
+                )),
+              )}
             </select>
           ) : (
             <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">No proof batches yet -- record one on Proof Day first.</p>
@@ -250,15 +250,19 @@ export function BakePage({
                 ) : (
                   insufficient.map((item) => (
                     <li className="font-semibold text-[#8a3827]" key={item.ingredientId}>
-                      {"⚠"} {item.name} is short by {item.shortfall.toFixed(2)} {labState.ingredients.find((i) => i.id === item.ingredientId)?.baseUnit ?? ""}
+                      {"⚠"} {item.name} is short by {formatQuantity(item.shortfall, labState.ingredients.find((i) => i.id === item.ingredientId)?.baseUnit ?? "")}
                     </li>
                   ))
                 )
               ) : null}
               {remotePosting && uncertifiedCostIngredientNames.length > 0 ? (
                 <li className="font-semibold text-[#8a3827]">
-                  {"⚠"} Cost setup needed -- {uncertifiedCostIngredientNames.length} ingredient cost{uncertifiedCostIngredientNames.length === 1 ? "" : "s"} need verification before this Bake can be posted ({uncertifiedCostIngredientNames.join(", ")}).{" "}
-                  <a className="underline" href="/inventory?tab=ingredients">Review costs</a>
+                  {"⚠"} {uncertifiedCostIngredientNames.length} ingredient cost{uncertifiedCostIngredientNames.length === 1 ? "" : "s"} need{uncertifiedCostIngredientNames.length === 1 ? "s" : ""} verification before this bake can be posted.{" "}
+                  <a className="underline" href="/inventory?tab=ingredients&focus=costs">Review costs</a>
+                  <details className="mt-1 font-normal">
+                    <summary className="cursor-pointer text-xs">Show ingredients ({uncertifiedCostIngredientNames.length})</summary>
+                    <p className="mt-1 text-xs">{uncertifiedCostIngredientNames.join(", ")}</p>
+                  </details>
                 </li>
               ) : null}
             </ul>
@@ -273,7 +277,7 @@ export function BakePage({
               const canPick = !row.ingredientId || row.convertedQuantity === null;
               const statusLabel =
                 row.ingredientId && row.convertedQuantity !== null
-                  ? `${(row.convertedQuantity * (isMultiplierValid ? multiplier : 1)).toFixed(2)} ${ingredient?.baseUnit ?? ""}`
+                  ? formatQuantity(row.convertedQuantity * (isMultiplierValid ? multiplier : 1), ingredient?.baseUnit ?? "")
                   : row.ingredientId
                     ? "Needs unit fix"
                     : "Needs ingredient";
@@ -320,7 +324,7 @@ export function BakePage({
             <div className="mt-2 divide-y divide-[#f0e4d8] rounded-md border border-[#eaded2]">
               {resolved.map((row) => {
                 const ingredient = labState.ingredients.find((item) => item.id === row.ingredientId);
-                const statusLabel = row.convertedQuantity !== null ? `${(row.convertedQuantity * (isMultiplierValid ? multiplier : 1)).toFixed(2)} ${ingredient?.baseUnit ?? ""}` : "Needs unit fix";
+                const statusLabel = row.convertedQuantity !== null ? formatQuantity(row.convertedQuantity * (isMultiplierValid ? multiplier : 1), ingredient?.baseUnit ?? "") : "Needs unit fix";
                 return (
                   <div className="grid gap-2 p-4 sm:grid-cols-[1fr_200px_140px]" key={row.rowId}>
                     <div>
@@ -339,6 +343,34 @@ export function BakePage({
                       </span>
                     </div>
                     <div className="text-sm font-semibold">{statusLabel}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        ) : null}
+
+        {deductions.length > 0 ? (
+          <details className="mt-3" open={insufficient.length > 0}>
+            <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">View ingredient deductions ({deductions.length})</summary>
+            <div className="mt-2 space-y-2 text-sm">
+              {deductions.map((deduction) => {
+                const ingredient = labState.ingredients.find((item) => item.id === deduction.ingredientId);
+                if (!ingredient) {
+                  return null;
+                }
+                const resultingQuantity = ingredient.currentQuantity - deduction.quantity;
+                const isShort = resultingQuantity < 0;
+                return (
+                  <div className={`rounded-md border p-3 ${isShort ? "border-[#f3c9c0] bg-[#fde6df]" : "border-[#f0e4d8]"}`} key={deduction.ingredientId}>
+                    <p className="font-semibold">{ingredient.name}</p>
+                    <p className="text-[#6f5a4c]">
+                      Current: {formatQuantity(ingredient.currentQuantity, ingredient.baseUnit)} -- Uses: {formatQuantity(deduction.quantity, ingredient.baseUnit)}
+                    </p>
+                    <p className={isShort ? "font-semibold text-[#8a3827]" : "text-[#6f5a4c]"}>
+                      After bake: {formatQuantity(resultingQuantity, ingredient.baseUnit)}
+                      {isShort ? " -- insufficient stock" : ""}
+                    </p>
                   </div>
                 );
               })}
@@ -367,40 +399,6 @@ export function BakePage({
         </div>
       </FormPanel>
 
-      <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
-        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Deductions</p>
-        <h3 className="mt-1 text-lg font-semibold">What this bake will use</h3>
-        {deductions.length === 0 ? (
-          <p className="mt-3 text-sm text-[#6f5a4c]">Nothing to deduct yet -- resolve every ingredient and set a valid multiplier.</p>
-        ) : (
-          <details className="mt-3" open={insufficient.length > 0}>
-            <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">View ingredient deductions ({deductions.length})</summary>
-            <div className="mt-2 space-y-2 text-sm">
-              {deductions.map((deduction) => {
-                const ingredient = labState.ingredients.find((item) => item.id === deduction.ingredientId);
-                if (!ingredient) {
-                  return null;
-                }
-                const resultingQuantity = ingredient.currentQuantity - deduction.quantity;
-                const isShort = resultingQuantity < 0;
-                return (
-                  <div className={`rounded-md border p-3 ${isShort ? "border-[#f3c9c0] bg-[#fde6df]" : "border-[#f0e4d8]"}`} key={deduction.ingredientId}>
-                    <p className="font-semibold">{ingredient.name}</p>
-                    <p className="text-[#6f5a4c]">
-                      Current: {ingredient.currentQuantity} {ingredient.baseUnit} -- Needs: {deduction.quantity.toFixed(2)} {ingredient.baseUnit}
-                    </p>
-                    <p className={isShort ? "font-semibold text-[#8a3827]" : "text-[#6f5a4c]"}>
-                      Resulting: {resultingQuantity.toFixed(2)} {ingredient.baseUnit}
-                      {isShort ? " -- insufficient stock" : ""}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          </details>
-        )}
-      </div>
-
       <FinishedStockPanel labState={labState} recordFinishedStockException={remotePosting ? recordFinishedStockException : null} />
     </section>
   );
@@ -426,7 +424,7 @@ function FinishedStockPanel({
   const productName = (id: string) => labState.products.find((product) => product.id === id)?.name ?? id;
 
   return (
-    <div className="rounded-lg border border-[#e1d4c4] bg-white p-5 xl:col-span-2">
+    <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Finished stock</p>
       <h3 className="mt-1 text-lg font-semibold">Baked pieces on hand</h3>
       {balances.length === 0 ? (
@@ -460,7 +458,7 @@ function FinishedStockPanel({
         <>
           <h3 className="mt-6 text-lg font-semibold">Production history</h3>
           <p className="mt-1 text-xs text-[#6f5a4c]"><span className="font-semibold">Actual</span> is the usable pieces the operator counted for that run; <span className="font-semibold">Expected</span> is what the recipe projected. Per-piece cost divides the raw cost by the actual count.</p>
-          <p className="mt-1 text-xs text-[#8a3827]">Recorded raw production cost uses the ingredient costs currently stored in the app. Verify ingredient costs before relying on this for financial decisions.</p>
+          <p className="mt-1 text-xs text-[#8a3827]">Raw cost was recorded from the ingredient costs used when this bake was posted; later cost corrections do not rewrite historical production cost. Verify ingredient costs before relying on this for financial decisions -- costs recorded before verification may be unreliable.</p>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>

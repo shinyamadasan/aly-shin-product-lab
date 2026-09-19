@@ -604,3 +604,39 @@ written. No merge, no deploy; commits sit on `feat/ops-friction-cleanup-v1` only
 
 **Merge gate: `approved`** — held for human merge and a real-device pass; presentational/orchestration
 change with every backend safeguard unchanged.
+
+## 2026-09-19 — Operational friction cleanup V1: final consolidated visual correction
+
+**Scope:** `src/lib/quantity-display.ts`, `inventory-display.ts`, `bake-batch-option.ts` (new, pure);
+small additions to `inventory-cost.ts` (`getStockValueDisplay`), `purchase-history.ts`
+(purchase search), `inventory-tabs.ts` (`resolveInventoryFocus`); UI in `inventory-stock-page.tsx`,
+`inventory-page.tsx`, `bake-page.tsx`, `product-lab.tsx` (Purchases history rows only) and
+`inventory/page.tsx`. Not touched: any migration, `post_raw_purchase`, `confirm_bake_v3`,
+cost-certification RPCs, purchase delete/edit rules, Orders, Daily Log, package-lock.json.
+
+**Verdict:** Sound; display and navigation only. Every changed quantity is formatted at render time
+from the same numbers as before -- the deduction payload, insufficient-stock math and
+`readyToConfirm` are unchanged and re-asserted by tests. The Sea Salt case (4.7 g rendering as
+"0.00 kg") is covered by formatter tests, including a "never displays a non-zero value as zero"
+sweep. The purchase total shown is the stored `totalCost`, never re-multiplied from a rounded unit
+price. Stock value is only presented for a verified cost; otherwise "Verify cost first", with the
+recorded cost shown separately as unverified Cost basis. Full suite 3929 pass, 0 fail, 1
+pre-existing skip; typecheck and build clean.
+
+**Not rubber-stamped:**
+- `formatQuantity` switches g->kg / ml->L at 1000, so Stock now reads "3.862 kg" where it used to
+  read "3862 g", and a Bake row can mix units (current in kg, uses in g). Readable, but a judgement
+  call worth eyeballing against real quantities.
+- Cost-focused mode state was lifted into the workspace so `?focus=costs` can start it and it
+  survives tab switches; it lifts itself when no Items still need verification.
+- The By Item search also matches a purchase's brand/supplier, so an Item stays visible when only
+  one of its older purchases matches.
+- Removing the per-row Log Purchase leaves the blank-draft path in `supplyEditorKey` unused by any
+  caller; left in place rather than opportunistically refactored.
+
+**Human-only checks not done:** no real browser or 390px/1440px pass (no browser automation here);
+the new layouts are verified structurally and by behavior tests only.
+
+**Production boundary:** no schema, migration, RPC or data touched. No merge, no deploy.
+
+**Merge gate: `approved`** -- held for human merge and a real-device pass.

@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import type { Ingredient, IngredientCategory, StockAdjustmentReason, SupplyEntry } from "@/lib/product-lab-types";
 import { CANONICAL_UNITS } from "@/lib/product-lab-types";
 import type { LabState } from "@/lib/lab-state";
-import { getInventoryValue, isCostBaselineUncertified } from "@/lib/inventory-cost";
+import { getStockValueDisplay, isCostBaselineUncertified } from "@/lib/inventory-cost";
+import { formatPesos, formatPesosPerUnit, formatPurchaseDate, getLatestPurchaseFacts } from "@/lib/inventory-display";
+import { formatQuantity } from "@/lib/quantity-display";
 import { getFlaggedIngredients, matchesStockSearch } from "@/lib/inventory-status";
 import { buildInventoryItemViews, type InventoryItemView } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
@@ -253,6 +255,7 @@ function CertifyCostForm({
 function IngredientRow({
   view,
   isEditing,
+  showCostWarning,
   adjustStock,
   certifyIngredientCostBaseline,
   deleteIngredient,
@@ -260,15 +263,20 @@ function IngredientRow({
 }: {
   view: InventoryItemView;
   isEditing: boolean;
+  // Cost verification is an intentional maintenance mode (Review costs / ?focus=costs), not a
+  // warning repeated on every row of the default list -- the Cost setup summary above already says
+  // there is work to do.
+  showCostWarning: boolean;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
 }) {
-  const { ingredient: item, latestBrand, latestPackageSize, latestPurchase, latestSupplier, latestUnitPrice, purchaseHistory } = view;
+  const { ingredient: item, latestPurchase, latestUnitPrice, purchaseHistory } = view;
   const [isOpen, setIsOpen] = useState(false);
   const [openPanel, setOpenPanel] = useState<"adjust" | "certify" | null>(null);
-  const value = getInventoryValue(item);
+  const stockValue = getStockValueDisplay(item);
+  const latest = latestPurchase ? getLatestPurchaseFacts(latestPurchase) : null;
   // Cost Baseline Repair: isCostBaselineUncertified (costReconciledAt, not a non-null/positive
   // averageUnitCost) is what actually means "trustworthy" -- see certify_ingredient_cost_baseline's
   // own comment. Plain language on purpose -- "Cost baseline not certified" is the internal term;
@@ -282,7 +290,7 @@ function IngredientRow({
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <h4 className="break-words font-semibold">{item.name}</h4>
           <span className="text-sm text-[#6f5a4c]">{item.category ? `${ingredientCategoryLabel[item.category]} · ` : ""}{item.baseUnit}</span>
-          {uncertified ? <Tag tone="danger">Cost needs verification</Tag> : null}
+          {showCostWarning && uncertified ? <Tag tone="danger">Cost needs verification</Tag> : null}
           {needsReconciliation ? <Tag tone="danger">Needs reconciliation</Tag> : null}
         </div>
         <button aria-expanded={isOpen} className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen((current) => !current)} type="button">
@@ -293,31 +301,43 @@ function IngredientRow({
       {isOpen ? (
         <div className="mt-3 grid gap-3 rounded-md border border-[#eaded2] bg-[#fffaf3] p-3 text-sm">
           {item.notes ? <p className="break-words leading-6 text-[#6f5a4c]">{item.notes}</p> : null}
-          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div>
-              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Current</dt>
-              <dd className="mt-1 font-semibold">{item.currentQuantity} {item.baseUnit}</dd>
-              <dd className="text-[#6f5a4c]">Low at {item.lowStockThreshold} {item.baseUnit}</dd>
+              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Current stock</dt>
+              <dd className="mt-1 font-semibold">{formatQuantity(item.currentQuantity, item.baseUnit)}</dd>
+              <dd className="text-[#6f5a4c]">Low at {formatQuantity(item.lowStockThreshold, item.baseUnit)}</dd>
             </div>
             <div>
               <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Target</dt>
-              <dd className="mt-1 font-semibold">{item.targetStockQuantity} {item.baseUnit}</dd>
+              <dd className="mt-1 font-semibold">{formatQuantity(item.targetStockQuantity, item.baseUnit)}</dd>
             </div>
             <div>
-              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Value</dt>
-              <dd className="mt-1 font-semibold">PHP {value.toFixed(2)}</dd>
-              {uncertified ? null : <dd className="text-[#6f5a4c]">@ PHP {item.averageUnitCost.toFixed(2)}</dd>}
+              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Cost basis</dt>
+              <dd className="mt-1 font-semibold">{item.averageUnitCost > 0 ? formatPesosPerUnit(item.averageUnitCost, item.baseUnit) : "Not recorded"}</dd>
+              <dd className={uncertified ? "font-semibold text-[#b3441f]" : "text-[#6f5a4c]"}>{uncertified ? "Needs verification" : "Verified"}</dd>
             </div>
             <div>
               <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Latest purchase</dt>
-              {latestPurchase ? (
+              {latest ? (
                 <>
-                  <dd className="mt-1 break-words font-semibold">{latestBrand || "Brand not set"}</dd>
-                  <dd className="break-words text-[#6f5a4c]">{latestSupplier || "Supplier not set"}</dd>
-                  <dd className="break-words text-[#6f5a4c]">{latestPackageSize ? `${latestPackageSize} @ PHP ${latestUnitPrice.toFixed(2)}` : "No pack size"}</dd>
+                  <dd className="mt-1 break-words font-semibold">{[latest.brand || "Brand not set", latest.supplier || "Supplier not set"].join(" · ")}</dd>
+                  <dd className="text-[#6f5a4c]">{formatPurchaseDate(latest.date, { year: true }) || "Date not set"}</dd>
+                  <dd className="font-semibold">{formatPesos(latest.totalPaid)} total</dd>
+                  <dd className="break-words text-[#6f5a4c]">{latest.packQuantity > 0 ? `${latest.packQuantity}${latest.unit ? ` ${latest.unit}` : ""}` : "No pack size"}{latest.unitCost !== null ? ` · ${formatPesosPerUnit(latest.unitCost, latest.unit)}` : ""}</dd>
                 </>
               ) : (
                 <dd className="mt-1 text-[#6f5a4c]">None logged yet</dd>
+              )}
+            </div>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Stock value</dt>
+              {stockValue.kind === "value" ? (
+                <>
+                  <dd className="mt-1 font-semibold">{formatPesos(stockValue.amount)}</dd>
+                  <dd className="text-[#6f5a4c]">{formatQuantity(stockValue.quantity, item.baseUnit)} × {formatPesosPerUnit(stockValue.unitCost, item.baseUnit)}</dd>
+                </>
+              ) : (
+                <dd className="mt-1 text-[#6f5a4c]">-- Verify cost first</dd>
               )}
             </div>
           </dl>
@@ -479,10 +499,16 @@ export function InventoryPage({
   onDirtyChange,
   restoreIngredient,
   saveIngredient,
+  costFocus,
+  onCostFocusChange,
 }: {
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEdit: () => void;
   certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
+  // Cost-focused mode: narrows the list to Items needing verification. Owned by the workspace so it
+  // can start on (?focus=costs) and stays as the operator left it when they switch tabs and back.
+  costFocus: boolean;
+  onCostFocusChange: (focused: boolean) => void;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
   hardDeleteIngredient: (ingredientId: string) => void;
@@ -506,7 +532,6 @@ export function InventoryPage({
   // closes again after a successful save or a cancel -- back to the calm list.
   const [isAdding, setIsAdding] = useState(false);
   const [search, setSearch] = useState("");
-  const [costFocus, setCostFocus] = useState(false);
   const isEditorOpen = Boolean(ingredient) || isAdding;
   // "Review costs" narrows the list to the Items that need verification; it lifts itself once none
   // remain, so certifying the last one can never leave an empty, confusing filtered list.
@@ -533,7 +558,7 @@ export function InventoryPage({
   }
 
   function focusItemList() {
-    setCostFocus(true);
+    onCostFocusChange(true);
     document.getElementById("ingredient-master")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -544,10 +569,11 @@ export function InventoryPage({
           <div>
             <h3 className="text-xl font-semibold">Manage Items</h3>
             <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">Manage names, units, thresholds, and other Item setup here. Stock changes through purchases, counts, and baking.</p>
+            <p className="mt-1 text-sm leading-6 text-[#6f5a4c]">New Items are usually created automatically when you record a purchase. Add one manually for setup before a purchase.</p>
           </div>
           {isEditorOpen ? null : (
             <button className="h-10 shrink-0 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427]" onClick={() => setIsAdding(true)} type="button">
-              + Add item
+              + Add item manually
             </button>
           )}
         </div>
@@ -580,7 +606,7 @@ export function InventoryPage({
             <p className="mt-1 text-xs">A recorded cost is not trustworthy until it&apos;s checked against real purchase evidence. It can need checking again later -- for example after a physical count -- not just once.</p>
           </div>
           {isCostFocused ? (
-            <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={() => setCostFocus(false)} type="button">Show all items</button>
+            <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={() => onCostFocusChange(false)} type="button">Show all items</button>
           ) : (
             <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={focusItemList} type="button">Review costs</button>
           )}
@@ -623,6 +649,7 @@ export function InventoryPage({
               editIngredient={editIngredient}
               isEditing={view.ingredient.id === ingredient?.id}
               key={view.ingredient.id}
+              showCostWarning={isCostFocused}
               view={view}
             />
           ))}
