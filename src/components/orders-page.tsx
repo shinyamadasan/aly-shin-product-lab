@@ -27,11 +27,12 @@ import { toDisplayPrice } from "@/lib/orders/money";
 import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getActiveDeliveryAddress, sortOrdersByFulfillment, type FulfillmentFilter, type FulfillmentSort } from "@/lib/orders/fulfillment";
 import { applyItemChoice, buildLinesFromDrafts, CUSTOM_ITEM_KEY, describePieceCount, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, sanitizeQuantityInput, settleQuantity, stepQuantity, type DraftLine, type SellableProductGroup, type UnorderableProduct } from "@/lib/orders/menu";
 import { filterOrdersBySearch, formatOrderItemSummary, getOrderCardSource, getOrderCardTimes, getOrdersLayoutClass, getPaymentTone } from "@/lib/orders/list-view";
+import { appearsSafeToDelete, buildDeleteConfirmation } from "@/lib/orders/delete-eligibility";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
 import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type FulfillmentMethod, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
-import { listCustomers, listOrderLines, listOrderRawCogs, listOrders, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
+import { listCustomers, listOrderLines, listOrderRawCogs, listOrders, safeDeleteOrder, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
 import type { OrderRawCogs } from "@/lib/product-lab-types";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import type { LabState } from "@/lib/lab-state";
@@ -246,6 +247,48 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
 
   function rotateTransitionOperationId(orderId: string, to: OrderStatus) {
     transitionOperationIdsRef.current.delete(`${orderId}:${to}`);
+  }
+
+  // Permanent delete gets its own operation id per order, so a retry after a dropped response replays
+  // the same request instead of asking the database for a second delete.
+  function getDeleteOperationId(orderId: string): string {
+    const key = `${orderId}:delete`;
+    const existing = transitionOperationIdsRef.current.get(key);
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    transitionOperationIdsRef.current.set(key, created);
+    return created;
+  }
+
+  // Nothing is hidden optimistically: the order leaves the list only because the reload after a
+  // confirmed delete no longer returns it. A refusal keeps the order, shows the database's reason,
+  // and reloads so the operator sees what the order actually is now.
+  async function runDeleteOrder(orderId: string, expectedUpdatedAt: string) {
+    if (!client || actionGuardRef.current.isActive(orderId)) {
+      return;
+    }
+
+    await actionGuardRef.current.run(orderId, async () => {
+      setActionBusy(true);
+      try {
+        const result = await safeDeleteOrder(client, { orderId, expectedUpdatedAt, operationId: getDeleteOperationId(orderId) });
+        if (result.ok) {
+          transitionOperationIdsRef.current.delete(`${orderId}:delete`);
+          setSelectedOrderId(null);
+          setMessage("Order deleted permanently.");
+          setMessageTone("good");
+        } else {
+          if (result.reason === "not-found") {
+            setSelectedOrderId(null);
+          }
+          setMessage(result.message);
+          setMessageTone("bad");
+        }
+        reload();
+      } finally {
+        setActionBusy(false);
+      }
+    });
   }
 
   const runOrderAction = useCallback(
@@ -631,6 +674,9 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
             });
           }}
           onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
+          onDelete={() => {
+            if (selectedOrder) void runDeleteOrder(selectedOrder.id, selectedOrder.updatedAt);
+          }}
           onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
           onEditAttribution={(attribution) => {
             if (!client || !selectedOrder) return;
@@ -874,6 +920,7 @@ function OrderDetailPanel({
   lines,
   onCancel,
   onClearPaymentRecord,
+  onDelete,
   onCorrectPaymentRecord,
   onEditAttribution,
   onEditFulfillment,
@@ -888,6 +935,9 @@ function OrderDetailPanel({
   lines: OrderLine[];
   onCancel: (reason: string) => void;
   onClearPaymentRecord: () => void;
+  // Permanent delete of an accidental order. Offered only when it appears safe; the database has the
+  // final say and can still refuse it.
+  onDelete: () => void;
   onCorrectPaymentRecord: (correction: { paidAmount: number; paidAt: string; method: PaymentMethod }) => void;
   // Both carry expectedUpdatedAt: the version of the order the edit form was populated from, so a
   // stale form is rejected by the conditional update rather than silently overwriting a newer row.
@@ -1055,6 +1105,22 @@ function OrderDetailPanel({
             >
               Cancel order
             </SecondaryButton>
+          ) : null}
+          {appearsSafeToDelete(order) ? (
+            // Deliberately quieter than Cancel and styled as destructive. Cancel keeps history; this
+            // removes the order, so it is only for one created by mistake.
+            <button
+              className="h-10 rounded-md border border-[#e2b8b0] bg-white px-4 text-sm font-semibold text-[#a3392b] hover:bg-[#fff5f3] disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={actionBusy}
+              onClick={() => {
+                if (window.confirm(buildDeleteConfirmation(customer?.name ?? null))) {
+                  onDelete();
+                }
+              }}
+              type="button"
+            >
+              Delete permanently
+            </button>
           ) : null}
         </div>
 

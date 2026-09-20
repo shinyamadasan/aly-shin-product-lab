@@ -113,6 +113,8 @@ export type OrdersClient = {
   rpc(name: "confirm_order_with_reservation", args: { p_operation_id: string; p_order_id: string }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
   rpc(name: "cancel_order_with_release", args: { p_operation_id: string; p_order_id: string; p_cancel_reason: string | null }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
   rpc(name: "complete_order_with_fulfillment", args: { p_operation_id: string; p_order_id: string }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
+  // Safe Delete Order: the database decides eligibility. See safeDeleteOrder below.
+  rpc(name: "safe_delete_order", args: { p_operation_id: string; p_order_id: string; p_expected_updated_at: string }): PromiseLike<{ data: { deleted: boolean } | null; error: SupabaseErrorLike | null }>;
 };
 
 export type SaveOrderArgs = {
@@ -447,6 +449,44 @@ export async function updateOrderStatus(
   }
 
   return { ok: true, order: mapOrderRow(result.data) };
+}
+
+export type SafeDeleteOrderResult = { ok: true } | { ok: false; reason: "conflict" | "not-deletable" | "not-found" | "unavailable" | "missing-table" | "failed"; message: string };
+
+// Permanent removal of an accidental order. The database is the authority (safe_delete_order): it
+// locks the order, requires `expectedUpdatedAt` to be the version the screen was rendered from, and
+// re-checks status, payment fields, stock reservations and stock movements. This function decides
+// nothing; it only reads the database's answer. `expectedUpdatedAt` must be the order's updatedAt AS
+// LOADED -- passing a fresh read would defeat the stale-screen protection.
+//
+// Error codes the function raises: 42501 not the owner, 22023 no such order, 40001 the order changed
+// since it was opened, 23514 not eligible (the message says why), 55P03 the same operation is still
+// running. PGRST202/42883 mean the function has not been applied to this database yet.
+export async function safeDeleteOrder(client: OrdersClient, { orderId, expectedUpdatedAt, operationId }: { orderId: string; expectedUpdatedAt: string; operationId: string }): Promise<SafeDeleteOrderResult> {
+  const { data, error } = await client.rpc("safe_delete_order", { p_operation_id: operationId, p_order_id: orderId, p_expected_updated_at: expectedUpdatedAt });
+  if (error) {
+    if (error.code === "40001") {
+      return { ok: false, reason: "conflict", message: error.message };
+    }
+    if (error.code === "23514") {
+      return { ok: false, reason: "not-deletable", message: error.message };
+    }
+    if (error.code === "55P03") {
+      return { ok: false, reason: "failed", message: "This order is still being processed from a moment ago. Wait a moment and try again." };
+    }
+    if (error.code === "22023" && /not found/i.test(error.message)) {
+      return { ok: false, reason: "not-found", message: "That order no longer exists. Refresh and try again." };
+    }
+    if (error.code === "PGRST202" || error.code === "42883") {
+      return { ok: false, reason: "unavailable", message: "Permanent delete is not available on this database yet. Cancel the order instead." };
+    }
+    return { ok: false, ...dbErrorResult(error) };
+  }
+  if (!data || data.deleted !== true) {
+    return { ok: false, reason: "failed", message: "The server did not confirm the delete. Refresh and check whether the order is still there." };
+  }
+
+  return { ok: true };
 }
 
 export type PaymentAction =
