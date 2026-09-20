@@ -6,7 +6,7 @@ import type { LabState } from "@/lib/lab-state";
 import type { FinishedStockExceptionType } from "@/lib/product-lab-types";
 import { parseBatchIngredients } from "@/lib/batches";
 import { isCostBaselineUncertified } from "@/lib/inventory-cost";
-import { formatBakeBatchOption } from "@/lib/bake-batch-option";
+import { buildBakeBatchChoices, formatBakeBatchOption, isOlderBakeBatch, resolveBakeBatchId } from "@/lib/bake-batch-option";
 import { formatQuantity } from "@/lib/quantity-display";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
@@ -34,23 +34,21 @@ export function BakePage({
   recordFinishedStockException: (productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>;
   saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
 }) {
-  const batchesByProduct = labState.products
-    .map((product) => ({
-      product,
-      productBatches: labState.batches.filter((item) => item.productId === product.id).sort((a, b) => (b.dateMade || "").localeCompare(a.dateMade || "")),
-    }))
-    .filter((group) => group.productBatches.length > 0);
+  // One current batch per product for the normal picker; every other batch stays reachable under
+  // "Use an older version" (see buildBakeBatchChoices for what "current" means).
+  const batchChoices = buildBakeBatchChoices(labState.products, labState.batches);
 
   // Preselect the batch passed via ?batch=<id> (the "Bake this" links on Proof Batches deep-link
-  // here with the batch already chosen); fall back to the most recent batch otherwise.
+  // here with the batch already chosen -- current or older, honored exactly); fall back to the
+  // first product's current batch otherwise.
   const [selectedBatchId, setSelectedBatchId] = useState(() => {
-    const fallback = batchesByProduct[0]?.productBatches[0]?.id ?? "";
-    if (typeof window === "undefined") {
-      return fallback;
-    }
-    const requested = new URLSearchParams(window.location.search).get("batch");
-    return requested && labState.batches.some((item) => item.id === requested) ? requested : fallback;
+    const requested = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("batch");
+    return resolveBakeBatchId(batchChoices, labState.batches, requested);
   });
+  const selectedIsOlder = isOlderBakeBatch(batchChoices, selectedBatchId);
+  // The disclosure starts open when the chosen batch is an older one (deep link), so the selection is
+  // never hidden; after that it is the operator's to open and close.
+  const [isOlderOpen, setIsOlderOpen] = useState(selectedIsOlder);
   const [multiplierText, setMultiplierText] = useState("1");
   // The operator's physically observed usable-piece count for this run. Starts empty on purpose --
   // finished stock is what actually came out sellable, so it must be entered and confirmed, never
@@ -83,14 +81,14 @@ export function BakePage({
   }
 
   useEffect(() => {
-    if (batchesByProduct.length === 0) {
+    if (batchChoices.current.length === 0) {
       return;
     }
     if (selectedBatchId && labState.batches.some((item) => item.id === selectedBatchId)) {
       return;
     }
-    setSelectedBatchId(batchesByProduct[0]?.productBatches[0]?.id ?? "");
-  }, [batchesByProduct, labState.batches, selectedBatchId]);
+    setSelectedBatchId(batchChoices.current[0]?.batch.id ?? "");
+  }, [batchChoices, labState.batches, selectedBatchId]);
 
   const selectedBatch = labState.batches.find((batch) => batch.id === selectedBatchId) ?? null;
   const multiplier = Number(multiplierText);
@@ -169,25 +167,47 @@ export function BakePage({
 
       <FormPanel icon={<Cookie size={18} />} title="Bake a batch">
         <label className="grid gap-1 text-sm font-medium">
-          Product batch
-          {batchesByProduct.length > 0 ? (
+          Recipe to bake
+          {batchChoices.current.length > 0 ? (
             <select
               className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
               onChange={(event) => setSelectedBatchId(event.target.value)}
-              value={selectedBatchId}
+              value={selectedIsOlder ? "" : selectedBatchId}
             >
-              {batchesByProduct.flatMap((group) =>
-                group.productBatches.map((batch) => (
-                  <option key={batch.id} value={batch.id}>
-                    {formatBakeBatchOption(group.product.name, batch)}
-                  </option>
-                )),
-              )}
+              {selectedIsOlder ? <option disabled value="">Older version selected below</option> : null}
+              {batchChoices.current.map((choice) => (
+                <option key={choice.batch.id} value={choice.batch.id}>
+                  {formatBakeBatchOption(choice.product.name, choice.batch)}
+                </option>
+              ))}
             </select>
           ) : (
             <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">No proof batches yet -- record one on Proof Day first.</p>
           )}
         </label>
+        {selectedIsOlder ? <p className="mt-2 rounded-md bg-[#fff2d8] px-3 py-2 text-sm text-[#7a531d]" role="status">Using an older recipe version.</p> : null}
+        {batchChoices.older.length > 0 ? (
+          <details className="mt-2 text-sm" onToggle={(event) => setIsOlderOpen(event.currentTarget.open)} open={isOlderOpen}>
+            <summary className="cursor-pointer text-xs font-semibold text-[#8f5632]">Use an older version</summary>
+            <select
+              aria-label="Older recipe version"
+              className="mt-2 h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3"
+              onChange={(event) => { if (event.target.value) { setSelectedBatchId(event.target.value); } }}
+              value={selectedIsOlder ? selectedBatchId : ""}
+            >
+              <option value="">Choose an older version...</option>
+              {batchChoices.older.map((group) => (
+                <optgroup key={group.product.id} label={group.product.name}>
+                  {group.batches.map((batch) => (
+                    <option key={batch.id} value={batch.id}>
+                      {formatBakeBatchOption(group.product.name, batch)}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </details>
+        ) : null}
 
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className="grid gap-1 text-sm font-medium">

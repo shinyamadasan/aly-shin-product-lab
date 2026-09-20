@@ -1017,8 +1017,12 @@ test("Manage Items: cost basis, latest purchase and stock value are separate, an
 });
 
 test("Bake: the batch option identifies the batch (product, version, pieces, date) instead of only the version", () => {
+  // Same descriptive label for current batches (primary picker) and older ones (grouped disclosure).
   assert.match(bake.text, /formatBakeBatchOption\(group\.product\.name, batch\)/);
-  assert.doesNotMatch(bake.text, /<optgroup/);
+  assert.match(bake.text, /formatBakeBatchOption\(choice\.product\.name, choice\.batch\)/);
+  // The primary picker stays a flat list of one current batch per product; only the older-version
+  // disclosure groups by product (see bake-batch-picker.test.ts).
+  assert.equal((bake.text.match(/<optgroup/g) ?? []).length, 1);
   assert.doesNotMatch(bake.text, /\{batch\.batchVersion\}\s*<\/option>/);
 });
 

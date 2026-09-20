@@ -678,3 +678,31 @@ build, and behavior/source tests only -- `ship-pending-human-review` for layout 
 evidence came from the disposable Docker smoke harness only.
 
 **Merge gate: `approved`** -- held for human merge and a real-device pass.
+
+## 2026-09-19 — Bake: current-recipe picker simplification
+
+**Scope:** `src/lib/bake-batch-option.ts` (pure `buildBakeBatchChoices`, `resolveBakeBatchId`,
+`isOlderBakeBatch`), `src/components/bake-page.tsx` (selector only), `tests/bake-batch-picker.test.ts`
+(new), one assertion in `raw-inventory-ui.test.ts`, `docs/FEATURES.md`. Not touched: formula
+parsing, deductions, cost-verification guard, `confirmBake` / `confirm_bake_v3`, operation-id logic,
+any migration or data, Inventory, Orders, CHANGELOG.md.
+
+**Verdict:** Sound; selection/presentation only. "Current" is the first batch under Bake's
+pre-existing per-product order, so nothing new is stored. Partition tests prove each batch of a
+listed product appears exactly once across current + older. Downstream Bake lines are re-asserted
+unchanged by source scans (operation key, `confirmBake` args, `readyToConfirm`).
+
+**Not rubber-stamped:**
+- A batch whose product is not in `products` was never in the picker and still is not (still
+  reachable via `?batch=`, as before).
+- Missing `dateMade` sorts last; ties keep loaded order -- same as the old inline sort.
+- The pre-existing lint error (`react-hooks/set-state-in-effect` on the disappeared-batch fallback
+  effect) is unchanged and untouched.
+- An old assertion banning `<optgroup>` in Bake was narrowed: only the older-version disclosure uses it.
+
+**Human-only checks not done:** no browser/phone pass -- `ship-pending-human-review` for the
+disclosure's look and the primary select's "Older version selected below" placeholder on mobile.
+
+**Production boundary:** no schema, migration, RPC or data touched. No merge, no deploy.
+
+**Merge gate: `approved`** -- held for human merge and a real-device pass.
