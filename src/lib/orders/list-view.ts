@@ -6,7 +6,7 @@
 // own them (transitions, payment, totals, fulfillment). Pure: no client, no clock.
 
 import { isScheduled } from "./fulfillment.ts";
-import type { Order, OrderLine, PaymentStatus } from "./types.ts";
+import type { Order, OrderLine, OrderSource, PaymentStatus } from "./types.ts";
 
 // Case-insensitive substring search over the customer's name, each line's item-name snapshot, and
 // the order id. Empty (or whitespace-only) means "no search" and returns the SAME array, so the
@@ -45,17 +45,19 @@ export function formatOrderItemSummary(lines: OrderLine[]): string {
   return hidden > 0 ? [...shown, `+${hidden} more`].join(" · ") : shown.join(" · ");
 }
 
-// The quiet source note for a card, or null to omit it. An unknown source with no reference is the
-// common historical case and says nothing, so it is left off rather than repeated on every card;
-// a known source is shown, and a reference is kept even when the source itself is unknown.
-export function getOrderCardSource(order: Pick<Order, "source" | "sourceRef">): string | null {
-  const ref = order.sourceRef.trim();
+// Human-readable channel names. Only where plain capitalising would be wrong ("Tiktok").
+const SOURCE_LABELS: Partial<Record<OrderSource, string>> = { tiktok: "TikTok" };
+
+// The quiet source note for a COMPACT card, or null to omit it. Only the channel is ever shown:
+// an unknown source says nothing (even when a reference was recorded), and sourceRef -- batch ids,
+// handles, and other detailed attribution -- never appears on the card. The detail panel is where
+// the full "source · reference" lives; nothing is deleted or rewritten here.
+export function getOrderCardSource(order: Pick<Order, "source">): string | null {
   if (order.source === "unknown") {
-    return ref === "" ? null : ref;
+    return null;
   }
 
-  const label = order.source.replace(/_/g, " ");
-  return ref === "" ? label : `${label} · ${ref}`;
+  return SOURCE_LABELS[order.source] ?? order.source.charAt(0).toUpperCase() + order.source.slice(1);
 }
 
 // The two timestamps a card can show, kept apart on purpose: placedAt is when the order was taken,

@@ -113,16 +113,32 @@ test("item summary uses the line snapshot and follows line sort order", () => {
 
 // --- Source, payment, timestamps -------------------------------------------------------------------
 
-test("an unknown source with no reference is omitted from the card", () => {
-  assert.equal(getOrderCardSource({ source: "unknown", sourceRef: "" }), null);
-  assert.equal(getOrderCardSource({ source: "unknown", sourceRef: "   " }), null);
+test("an unknown source shows nothing on the card, with or without a reference", () => {
+  assert.equal(getOrderCardSource({ source: "unknown" }), null);
+  // The reference is detailed attribution, not card metadata: it is not surfaced on its own either.
+  const withRef = order({ source: "unknown", sourceRef: "chatgpt-order-batch-2026-09-18-01" });
+  assert.equal(getOrderCardSource(withRef), null);
 });
 
-test("a known source stays available, and a reference is preserved", () => {
-  assert.equal(getOrderCardSource({ source: "tiktok", sourceRef: "" }), "tiktok");
-  assert.equal(getOrderCardSource({ source: "tiktok", sourceRef: "@maria" }), "tiktok · @maria");
-  // A reference is kept even when the source itself was never classified.
-  assert.equal(getOrderCardSource({ source: "unknown", sourceRef: "from the office" }), "from the office");
+test("a known source shows its label only, never the reference", () => {
+  const withRef = order({ source: "instagram", sourceRef: "@maria" });
+  assert.equal(getOrderCardSource(withRef), "Instagram");
+  assert.equal(getOrderCardSource({ source: "facebook" }), "Facebook");
+  assert.equal(getOrderCardSource({ source: "tiktok" }), "TikTok");
+  assert.equal(getOrderCardSource({ source: "referral" }), "Referral");
+  assert.equal(String(getOrderCardSource(withRef)).includes("@maria"), false);
+});
+
+test("the card never renders sourceRef, while the detail panel keeps the full attribution", () => {
+  const source = readFileSync(new URL("../src/components/orders-page.tsx", import.meta.url), "utf8");
+  const detailAt = source.indexOf("function OrderDetailPanel(");
+  const cardStart = source.indexOf("{visibleOrders.map((order) => {");
+  const card = source.slice(cardStart, source.indexOf("</button>", cardStart));
+  const detail = source.slice(detailAt);
+
+  assert.equal(cardStart > -1 && card.length > 0, true, "precondition: card block located");
+  assert.equal(card.includes("sourceRef"), false, "the compact card must not touch sourceRef");
+  assert.match(detail, /sourceLabel\(order\.source\)\}\{order\.sourceRef \? ` · \$\{order\.sourceRef\}` : ""\}/);
 });
 
 test("payment tone comes from paymentStatus alone, whatever the lifecycle status", () => {
