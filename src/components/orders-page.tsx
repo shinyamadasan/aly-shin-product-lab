@@ -23,10 +23,10 @@ import { Button, MessageBox, Panel, SecondaryButton, Tag } from "@/components/ui
 import { buildSellingSummary } from "@/lib/orders/summary";
 import { ordersTabs, type OrdersTab } from "@/lib/orders-tabs";
 import { createMutationGuard } from "@/lib/mutation-guard";
-import { getOrderCountsBySource } from "@/lib/orders/attribution";
 import { toDisplayPrice } from "@/lib/orders/money";
 import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getActiveDeliveryAddress, sortOrdersByFulfillment, type FulfillmentFilter, type FulfillmentSort } from "@/lib/orders/fulfillment";
 import { applyItemChoice, buildLinesFromDrafts, CUSTOM_ITEM_KEY, describePieceCount, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, sanitizeQuantityInput, settleQuantity, stepQuantity, type DraftLine, type SellableProductGroup, type UnorderableProduct } from "@/lib/orders/menu";
+import { filterOrdersBySearch, formatOrderItemSummary, getOrderCardSource, getOrderCardTimes, getOrdersLayoutClass, getPaymentTone } from "@/lib/orders/list-view";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
@@ -107,6 +107,8 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
   // defaults ("all", newest first) leave the list exactly as S2 shipped it.
   const [fulfillmentFilter, setFulfillmentFilter] = useState<FulfillmentFilter>("all");
   const [fulfillmentSort, setFulfillmentSort] = useState<FulfillmentSort>("placed");
+  // Client-side over what is already loaded; empty means the list is exactly as it was.
+  const [searchQuery, setSearchQuery] = useState("");
   // The instant this list was read, stamped by the loader below rather than by render. "Handover
   // today" has to resolve against a clock, and reading one during render is impure -- so the clock
   // is read once, where the data is, and Refresh re-stamps it.
@@ -128,8 +130,19 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
   const orderIdRef = useRef<string>(crypto.randomUUID());
   const pendingCustomerIdRef = useRef<string>(crypto.randomUUID());
   const guardRef = useRef(createMutationGuard<string>());
+  const detailRef = useRef<HTMLDivElement | null>(null);
 
   const client = supabase as unknown as OrdersClient | null;
+
+  // Below xl the detail stacks under the list, so a click on a card near the top would otherwise
+  // change something the operator cannot see. Bring it into view; on wide screens it is already
+  // beside the list. Scrolling only -- nothing is written or mutated.
+  useEffect(() => {
+    if (!selectedOrderId || window.matchMedia("(min-width: 1280px)").matches) {
+      return;
+    }
+    detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [selectedOrderId]);
 
   const sellableGroups: SellableProductGroup[] = useMemo(
     () => getSellableItems(labState.products, labState.batches, labState.costings, labState.sellingFormats),
@@ -298,14 +311,19 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
 
   // Filter first, then sort. Both are pure reads over the loaded list, and the clock they need is
   // the load stamp above rather than a fresh reading -- so this stays a pure render.
+  // Search narrows whatever the fulfilment filter kept; it composes with the filter and the sort.
   const visibleOrders = useMemo(
-    () => sortOrdersByFulfillment(filterOrdersByFulfillment(orders, fulfillmentFilter, { nowMs: loadedAtMs, timeZone: BUSINESS_TIMEZONE }), fulfillmentSort),
-    [orders, fulfillmentFilter, fulfillmentSort, loadedAtMs],
+    () =>
+      sortOrdersByFulfillment(
+        filterOrdersBySearch(filterOrdersByFulfillment(orders, fulfillmentFilter, { nowMs: loadedAtMs, timeZone: BUSINESS_TIMEZONE }), {
+          query: searchQuery,
+          linesByOrderId,
+          customerNameById: new Map(customers.map((customer) => [customer.id, customer.name])),
+        }),
+        fulfillmentSort,
+      ),
+    [orders, fulfillmentFilter, fulfillmentSort, loadedAtMs, searchQuery, linesByOrderId, customers],
   );
-
-  // Counted over everything loaded, not over the current filter: this line answers "where do our
-  // orders come from", which a fulfilment filter has no bearing on.
-  const sourceCounts = useMemo(() => getOrderCountsBySource(orders), [orders]);
 
   // S7: the readout, over the SAME loaded state the list above renders. No second query, no second
   // loader, no second cache -- reloading refreshes both, because both read `orders`/`linesByOrderId`
@@ -492,8 +510,8 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
   }
 
   return (
-    <section className="grid gap-5 xl:grid-cols-[1fr_420px]" id="orders">
-      <div className="space-y-5">
+    <section className={getOrdersLayoutClass(selectedOrder !== null)} id="orders">
+      <div className="min-w-0 space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold">Orders</h3>
@@ -509,20 +527,11 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
 
         {tabBar}
 
-        {/* A cheap read, not a dashboard: one line of counts over the loaded orders. "Unknown" is
-            shown rather than hidden, so the named channels are never made to look more complete
-            than they are. */}
-        {sourceCounts.length > 0 ? (
-          <p className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[#6f5a4c]">
-            {sourceCounts.map((entry) => (
-              <span key={entry.source}>
-                <span className="capitalize">{sourceLabel(entry.source)}</span> <span className="font-semibold">{entry.count}</span>
-              </span>
-            ))}
-          </p>
-        ) : null}
-
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="grid min-w-[12rem] flex-1 gap-1 text-xs font-medium sm:max-w-xs">
+            Search
+            <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setSearchQuery(event.target.value)} placeholder="Customer, item or order id" type="search" value={searchQuery} />
+          </label>
           <label className="grid gap-1 text-xs font-medium">
             Show
             <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setFulfillmentFilter(event.target.value as FulfillmentFilter)} value={fulfillmentFilter}>
@@ -569,11 +578,14 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
 
         <div className="space-y-2">
           {!isLoading && orders.length === 0 ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders recorded yet. Use “New order” to add the first one.</p> : null}
-          {!isLoading && orders.length > 0 && visibleOrders.length === 0 ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match “{FILTER_LABELS[fulfillmentFilter]}”. The other {orders.length} {orders.length === 1 ? "order is" : "orders are"} still here — switch back to “All orders”.</p> : null}
+          {!isLoading && orders.length > 0 && visibleOrders.length === 0 && searchQuery.trim() !== "" ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match this search.{fulfillmentFilter !== "all" ? ` The “${FILTER_LABELS[fulfillmentFilter]}” filter is also on.` : ""}</p> : null}
+          {!isLoading && orders.length > 0 && visibleOrders.length === 0 && searchQuery.trim() === "" ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match “{FILTER_LABELS[fulfillmentFilter]}”. The other {orders.length} {orders.length === 1 ? "order is" : "orders are"} still here — switch back to “All orders”.</p> : null}
           {visibleOrders.map((order) => {
             const lines = linesByOrderId.get(order.id) ?? [];
             const total = getOrderTotals(lines).total;
             const customer = customers.find((entry) => entry.id === order.customerId);
+            const times = getOrderCardTimes(order);
+            const cardSource = getOrderCardSource(order);
             return (
               <button
                 className={`w-full rounded-lg border p-4 text-left text-sm ${order.id === selectedOrderId ? "border-[#8f5632] bg-[#fffaf3]" : "border-[#e1d4c4] bg-white hover:bg-[#fffaf3]"}`}
@@ -581,64 +593,72 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
                 onClick={() => setSelectedOrderId(order.id)}
                 type="button"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-semibold">{customer?.name ?? "Unknown customer"}</span>
-                  <span className="font-semibold">{formatPeso(total)}</span>
+                <div className="flex items-start justify-between gap-2">
+                  <span className="min-w-0 break-words font-semibold">{customer?.name ?? "Unknown customer"}</span>
+                  <span className="shrink-0 font-semibold">{formatPeso(total)}</span>
                 </div>
-                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[#6f5a4c]">
+                <p className="mt-1 break-words text-sm text-[#5f4a3d]">{formatOrderItemSummary(lines)}</p>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#6f5a4c]">
                   <Tag tone="warm">{order.status}</Tag>
-                  <span>{order.fulfillmentMethod === "delivery" ? "Delivery" : "Pickup"}</span>
-                  <span>· {formatWhen(order.fulfillmentAt)}</span>
-                  <span>· {sourceLabel(order.source)}</span>
+                  <Tag tone={getPaymentTone(order.paymentStatus)}>{order.paymentStatus}</Tag>
+                  <span>Placed {formatWhen(times.placed)}</span>
                 </div>
-                <p className="mt-1 text-xs text-[#6f5a4c]">{lines.length} item{lines.length === 1 ? "" : "s"}</p>
+                <p className="mt-1 text-xs text-[#6f5a4c]">
+                  {order.fulfillmentMethod === "delivery" ? "Delivery" : "Pickup"}
+                  {times.handover ? ` · Handover ${formatWhen(times.handover)}` : ""}
+                  {cardSource ? ` · ${cardSource}` : ""}
+                </p>
               </button>
             );
           })}
         </div>
       </div>
 
-      <OrderDetailPanel
-        actionBusy={actionBusy}
-        customer={customers.find((entry) => entry.id === selectedOrder?.customerId) ?? null}
-        lines={selectedLines}
-        onCancel={(reason) => {
-          if (!client || !selectedOrder) return;
-          const id = selectedOrder.id;
-          void runOrderAction(id, async () => {
-            const operationId = getTransitionOperationId(id, "cancelled");
-            const result = await updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString(), operationId });
-            if (result.ok) rotateTransitionOperationId(id, "cancelled");
-            return result;
-          });
-        }}
-        onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
-        onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
-        onEditAttribution={(attribution) => {
-          if (!client || !selectedOrder) return;
-          const id = selectedOrder.id;
-          void runOrderAction(id, () => updateOrderAttribution(client, { orderId: id, ...attribution, now: new Date().toISOString() }));
-        }}
-        onEditFulfillment={(fulfillment) => {
-          if (!client || !selectedOrder) return;
-          const id = selectedOrder.id;
-          void runOrderAction(id, () => updateOrderFulfillment(client, { orderId: id, ...fulfillment, now: new Date().toISOString() }));
-        }}
-        onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
-        onRefund={() => runPaymentAction({ kind: "refund" })}
-        rawCogs={selectedOrder ? rawCogsByOrderId.get(selectedOrder.id) ?? null : null}
-        onStatusChange={(to) => {
-          if (!client || !selectedOrder) return;
-          const id = selectedOrder.id;
-          void runOrderAction(id, async () => {
-            const operationId = getTransitionOperationId(id, to);
-            const result = await updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString(), operationId });
-            if (result.ok) rotateTransitionOperationId(id, to);
-            return result;
-          });
-        }}
-        order={selectedOrder}
-      />
+      {selectedOrder ? (
+      <div className="min-w-0" ref={detailRef}>
+        <OrderDetailPanel
+          actionBusy={actionBusy}
+          customer={customers.find((entry) => entry.id === selectedOrder?.customerId) ?? null}
+          lines={selectedLines}
+          onCancel={(reason) => {
+            if (!client || !selectedOrder) return;
+            const id = selectedOrder.id;
+            void runOrderAction(id, async () => {
+              const operationId = getTransitionOperationId(id, "cancelled");
+              const result = await updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString(), operationId });
+              if (result.ok) rotateTransitionOperationId(id, "cancelled");
+              return result;
+            });
+          }}
+          onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
+          onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
+          onEditAttribution={(attribution) => {
+            if (!client || !selectedOrder) return;
+            const id = selectedOrder.id;
+            void runOrderAction(id, () => updateOrderAttribution(client, { orderId: id, ...attribution, now: new Date().toISOString() }));
+          }}
+          onEditFulfillment={(fulfillment) => {
+            if (!client || !selectedOrder) return;
+            const id = selectedOrder.id;
+            void runOrderAction(id, () => updateOrderFulfillment(client, { orderId: id, ...fulfillment, now: new Date().toISOString() }));
+          }}
+          onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
+          onRefund={() => runPaymentAction({ kind: "refund" })}
+          rawCogs={selectedOrder ? rawCogsByOrderId.get(selectedOrder.id) ?? null : null}
+          onStatusChange={(to) => {
+            if (!client || !selectedOrder) return;
+            const id = selectedOrder.id;
+            void runOrderAction(id, async () => {
+              const operationId = getTransitionOperationId(id, to);
+              const result = await updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString(), operationId });
+              if (result.ok) rotateTransitionOperationId(id, to);
+              return result;
+            });
+          }}
+          order={selectedOrder}
+        />
+      </div>
+      ) : null}
     </section>
   );
 }
