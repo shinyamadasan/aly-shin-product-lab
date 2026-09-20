@@ -640,3 +640,41 @@ the new layouts are verified structurally and by behavior tests only.
 **Production boundary:** no schema, migration, RPC or data touched. No merge, no deploy.
 
 **Merge gate: `approved`** -- held for human merge and a real-device pass.
+
+## 2026-09-19 — Inventory cost verification: UX simplification + timeout handling
+
+**Scope:** `src/lib/cost-verification.ts` (new, pure), `src/components/inventory-page.tsx`
+(CertifyCostForm rewrite, row cost-mode action, "Verify cost" wording), `src/app/product-lab.tsx`
+(certify handler now delegates to `runCostCertification`; `loadSupabaseData` returns a boolean),
+tests `cost-verification.test.ts` (new) and `raw-inventory-ui.test.ts` (wording + focused-list
+updates), `docs/FEATURES.md`. Not touched: any migration, `certify_ingredient_cost_baseline`,
+`confirm_bake_v3`, purchase posting, weighted-average costing, Orders, Bake, CHANGELOG.md.
+
+**Verdict:** Sound. The owner's failed verification ("upstream request timeout") was a gateway 504 on
+the RPC request itself -- the message prefix exists only on the RPC error branch, and postgrest-js
+turns a non-JSON body into a code-less error. The RPC body is O(1) (two indexed statements, no
+firing triggers) and ran in ~190 ms including every rejection path in the disposable-Postgres smoke
+run, so the stall was before/around it (connection wait or a row lock), not in its logic; exact stage
+is not provable without server logs. A timeout cannot be assumed uncommitted, so it is now an
+uncertain outcome resolved by a read-back; the RPC is never retried (a replay is also rejected by
+the RPC's own stale-expected-value check, so no duplicate audit row either way). A post-commit reload
+failure could not previously flip the result to "failed"; it is now explicit (`refreshed`).
+
+**Not rubber-stamped:**
+- The generated evidence note is prefixed `Latest purchase:` (the brief's example had no prefix) so
+  an auto-generated note is distinguishable from a typed one in the audit trail.
+- "Verify this cost" accepts the latest purchase as the baseline; it is not a reconstructed
+  weighted average, and the panel says so.
+- Unit cost is computed in the Item's base unit (a kg purchase of a gram Item converts); the
+  pre-existing row "Latest purchase" line still shows cost per purchase unit.
+- Cost-focused mode now keeps an Item listed after it is verified (until the mode is left) so its
+  inline result stays visible.
+- Which stage inside the RPC stalled in production is inferred, not observed.
+
+**Human-only checks not done:** no real browser / phone pass; the panel is verified by typecheck,
+build, and behavior/source tests only -- `ship-pending-human-review` for layout and feel.
+
+**Production boundary:** no production write, certification, migration, or deploy. Postgres
+evidence came from the disposable Docker smoke harness only.
+
+**Merge gate: `approved`** -- held for human merge and a real-device pass.

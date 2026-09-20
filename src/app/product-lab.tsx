@@ -37,6 +37,7 @@ import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { InventoryPage } from "@/components/inventory-page";
 import { PurchaseItemField } from "@/components/purchase-item-field";
+import { CHECKING_RESULT_MESSAGE, runCostCertification, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline, type CostState } from "@/lib/cost-verification";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
@@ -351,9 +352,9 @@ export default function ProductLab({
     window.localStorage.setItem(storageKey, JSON.stringify(labState));
   }, [labState]);
 
-  async function loadSupabaseData() {
+  async function loadSupabaseData(): Promise<boolean> {
     if (!supabase) {
-      return;
+      return false;
     }
 
     const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult, productionExecutionResult, finishedStockMovementResult] = await Promise.all([
@@ -427,7 +428,7 @@ export default function ProductLab({
         brandProfileResult.error?.message;
       setMessage(`Could not load Supabase data: ${error}`);
       setMessageTone("bad");
-      return;
+      return false;
     }
 
     setLabState({
@@ -686,6 +687,7 @@ export default function ProductLab({
       productionExecutions: isMissingTableError(productionExecutionResult.error) ? [] : (productionExecutionResult.data ?? []).map(mapProductionExecutionRow),
       finishedStockMovements: isMissingTableError(finishedStockMovementResult.error) ? [] : (finishedStockMovementResult.data ?? []).map(mapFinishedStockMovementRow),
     });
+    return true;
   }
 
   async function saveAiReview(review: { productId: string; batchId: string; action: AiAction; specialists: SpecialistId[]; prompt: string; response: string }) {
@@ -1944,41 +1946,72 @@ export default function ProductLab({
   // exactly zero" indistinguishable to the optimistic-concurrency check below -- exactly the kind
   // of silent conflation this repair exists to eliminate. A stale read here still fails safely:
   // the database's own expected-value check rejects it, same as every other RPC in this file.
-  async function certifyIngredientCostBaseline(ingredientId: string, certifiedUnitCost: number, evidenceNote: string): Promise<boolean> {
+  //
+  // Orchestration (one RPC, never retried; a gateway timeout is an UNCERTAIN outcome resolved by a
+  // read-back, not reported as a failure) lives in runCostCertification -- see cost-verification.ts.
+  // The reload after a committed certification is separate: it can fail without changing the result.
+  async function certifyIngredientCostBaseline(ingredientId: string, certifiedUnitCost: number, evidenceNote: string, onCheckingResult?: () => void): Promise<CertifyCostResult> {
+    const report = (result: CertifyCostResult, ingredientName: string, baseUnit: string): CertifyCostResult => {
+      if (result.status === "verified") {
+        setMessage(result.refreshed ? `${ingredientName}: ${verifiedCostMessage(result.certifiedUnitCost, baseUnit)}` : `${ingredientName}: ${verifiedCostMessage(result.certifiedUnitCost, baseUnit)} The list could not refresh -- reload the page to see it.`);
+        setMessageTone("good");
+      } else {
+        setMessage(result.message);
+        setMessageTone(result.status === "uncertain" ? "info" : "bad");
+      }
+      return result;
+    };
+
     if (!supabase || !session) {
-      setMessage("Certifying a cost baseline requires a live connection.");
+      const result: CertifyCostResult = { status: "failed", message: "Verifying a cost requires a live connection." };
+      setMessage(result.message);
       setMessageTone("bad");
-      return false;
+      return result;
     }
     const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
     if (!ingredient) {
-      setMessage("Item not found.");
+      const result: CertifyCostResult = { status: "failed", message: "Item not found." };
+      setMessage(result.message);
       setMessageTone("bad");
-      return false;
+      return result;
     }
 
-    const { data: freshRow, error: fetchError } = await supabase
-      .from("ingredients").select("average_unit_cost").eq("id", ingredientId).single();
-    if (fetchError || !freshRow) {
-      setMessage("Could not read the current cost before certifying. Reload and try again.");
-      setMessageTone("bad");
-      return false;
-    }
-    const expectedCurrentCost = (freshRow as { average_unit_cost: number | null }).average_unit_cost;
+    const client = supabase;
+    const readState = async (): Promise<CostState | null> => {
+      const { data, error } = await client
+        .from("ingredients").select("average_unit_cost, cost_reconciled_at").eq("id", ingredientId).single();
+      if (error || !data) {
+        return null;
+      }
+      const row = data as { average_unit_cost: number | null; cost_reconciled_at: string | null };
+      return { averageUnitCost: row.average_unit_cost, costReconciledAt: row.cost_reconciled_at };
+    };
 
-    const { error } = await supabase.rpc("certify_ingredient_cost_baseline", certifyIngredientCostBaselineArgs(
-      ingredient, labState.inventoryTransactions, { certifiedUnitCost, evidenceNote, expectedCurrentCost },
-    ));
-    if (error) {
-      setMessage(`Cost baseline not certified: ${describeIngredientConstraintError(error)}`);
-      setMessageTone("bad");
-      return false;
-    }
+    const result = await runCostCertification({
+      readState,
+      callRpc: async (expectedCurrentCost) => {
+        const { error, status } = await client.rpc("certify_ingredient_cost_baseline", certifyIngredientCostBaselineArgs(
+          ingredient, labState.inventoryTransactions, { certifiedUnitCost, evidenceNote, expectedCurrentCost },
+        ));
+        return { error, status };
+      },
+      onCheckingResult: () => {
+        setMessage(CHECKING_RESULT_MESSAGE);
+        setMessageTone("info");
+        onCheckingResult?.();
+      },
+    }, certifiedUnitCost);
 
-    setMessage(`Cost baseline certified for ${ingredient.name}.`);
-    setMessageTone("good");
-    await loadSupabaseData();
-    return true;
+    if (result.status === "verified") {
+      let refreshed = false;
+      try {
+        refreshed = await loadSupabaseData();
+      } catch {
+        refreshed = false;
+      }
+      return report({ ...result, refreshed }, ingredient.name, ingredient.baseUnit);
+    }
+    return report(result, ingredient.name, ingredient.baseUnit);
   }
 
   // Reverses an adjustment by submitting another one (see reverseStockAdjustment's own comment) --
@@ -5646,7 +5679,7 @@ function InventoryWorkspace({
   initialTab?: InventoryTab;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEditIngredient: () => void;
-  certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
+  certifyIngredientCostBaseline: CertifyIngredientCostBaseline;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
   hardDeleteIngredient: (ingredientId: string) => void;

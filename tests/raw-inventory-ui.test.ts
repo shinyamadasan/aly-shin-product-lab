@@ -445,13 +445,15 @@ test("Inventory Stock table: does not duplicate row rendering for mobile vs desk
   assert.equal(mapCalls.length, 1, "a single responsive grid renders every row, not a separate mobile card list");
 });
 
-test("Manage Items: a Cost setup summary appears only when ingredients need verification, and the per-item Certify/Re-certify control still exists", () => {
+test("Manage Items: a Cost setup summary appears only when ingredients need verification, and the per-item Verify/Re-verify control still exists", () => {
   assert.match(inventory.text, /uncertifiedCostCount > 0/);
   assert.match(inventory.text, /isCostBaselineUncertified/);
   // The per-row action is unchanged in kind (a button toggling the same CertifyCostForm panel) --
-  // just relabeled from a fixed string to reflect the ingredient's own certified state.
-  button(inventory, "Certify cost");
-  assert.match(inventory.text, /uncertified \? "Certify cost" : "Re-certify cost"/);
+  // just relabeled from a fixed string to reflect the ingredient's own verified state. Operator
+  // language is "Verify cost"; "certify" stays only in code/RPC names.
+  button(inventory, "Verify cost");
+  assert.match(inventory.text, /uncertified \? "Verify cost" : "Re-verify cost"/);
+  assert.doesNotMatch(inventory.text, />\s*Certify|"Certify|Certifying\.\.\./);
   // Plain language replaces the internal term on the operator-facing row; the technical name stays
   // only in comments/docs.
   assert.match(inventory.text, /Cost needs verification/);
@@ -801,7 +803,7 @@ test("Manage Items: rows are concise by default; every maintenance action lives 
   // The always-visible part: name, muted category/unit context, exception tags, one Manage control.
   assert.match(collapsedPart, /\{isOpen \? "Close" : "Manage"\}/);
   // (">Edit<" rather than "Edit": the row's own isEditing prop would otherwise match.)
-  for (const label of [">Edit<", "Adjust Stock", "Archive", "Certify cost"]) {
+  for (const label of [">Edit<", "Adjust Stock", "Archive", "Verify cost"]) {
     assert.ok(!collapsedPart.includes(label), `${label} must not be a permanent row button`);
     assert.ok(expandedPart.includes(label), `${label} remains reachable inside Manage`);
   }
@@ -809,7 +811,7 @@ test("Manage Items: rows are concise by default; every maintenance action lives 
   for (const detail of ["Value", "Purchase history", "Latest purchase", "targetStockQuantity", "currentQuantity"]) {
     assert.ok(!collapsedPart.includes(detail), `${detail} is not part of the default row`);
   }
-  assert.match(expandedPart, /Re-certify cost/);
+  assert.match(expandedPart, /Re-verify cost/);
   assert.match(expandedPart, /<AdjustStockForm/);
   assert.match(expandedPart, /<CertifyCostForm/);
   // No healthy/stock status pills on Manage Items rows -- that is Stock's job.
@@ -836,17 +838,17 @@ test("Manage Items: Review costs narrows the list to Items needing verification,
   const focused = declaration("isCostFocused");
   assert.ok(visible && focused);
   const views = [
-    { ingredient: { name: "Flour", costReconciledAt: "2026-01-01", averageUnitCost: 1 } },
-    { ingredient: { name: "Brown Sugar", costReconciledAt: null, averageUnitCost: 1 } },
-    { ingredient: { name: "Egg", costReconciledAt: null, averageUnitCost: 0 } },
+    { ingredient: { id: "flour", name: "Flour", costReconciledAt: "2026-01-01", averageUnitCost: 1 } },
+    { ingredient: { id: "sugar", name: "Brown Sugar", costReconciledAt: null, averageUnitCost: 1 } },
+    { ingredient: { id: "egg", name: "Egg", costReconciledAt: null, averageUnitCost: 0 } },
   ];
   const helpers = {
     matchesStockSearch: (item: { name: string }, query: string) => item.name.toLowerCase().includes(query.trim().toLowerCase()),
     isCostBaselineUncertified: (item: { costReconciledAt: string | null; averageUnitCost: number }) => !item.costReconciledAt || !item.averageUnitCost || item.averageUnitCost <= 0,
   };
-  const names = (context: { search: string; costFocus: boolean; uncertifiedCostCount: number }) => {
+  const names = (context: { search: string; costFocus: boolean; uncertifiedCostCount: number; attempted?: string[] }) => {
     const isCostFocused = evaluate(focused.initializer?.getText(), context) as boolean;
-    const result = evaluate(visible.initializer?.getText(), { ...helpers, itemViews: views, search: context.search, isCostFocused }) as typeof views;
+    const result = evaluate(visible.initializer?.getText(), { ...helpers, itemViews: views, search: context.search, isCostFocused, attemptedIds: new Set(context.attempted ?? []) }) as typeof views;
     return result.map((view) => view.ingredient.name);
   };
   assert.deepEqual(names({ search: "", costFocus: false, uncertifiedCostCount: 2 }), ["Flour", "Brown Sugar", "Egg"]);
@@ -855,8 +857,12 @@ test("Manage Items: Review costs narrows the list to Items needing verification,
   assert.deepEqual(names({ search: "SUGAR", costFocus: false, uncertifiedCostCount: 2 }), ["Brown Sugar"], "search is case-insensitive");
   // Certifying the last one must not leave a stuck, empty filtered list.
   assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 0 }), ["Flour", "Brown Sugar", "Egg"]);
+  // An Item the operator just submitted stays listed (so its inline result is visible) even though it
+  // no longer needs verification; an Item never touched and already verified stays hidden.
+  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 2, attempted: ["flour"] }), ["Flour", "Brown Sugar", "Egg"]);
+  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 2, attempted: ["egg"] }), ["Brown Sugar", "Egg"]);
   // Certification semantics are untouched: this page still only calls the existing certify handler.
-  assert.match(inventory.text, /certifyIngredientCostBaseline\(ingredient\.id, certifiedUnitCost, evidenceNote\)/);
+  assert.match(inventory.text, /certifyIngredientCostBaseline\(\s*ingredient\.id, certifiedUnitCost, evidenceNote,/);
 });
 
 test("Manage Items: archived Items stay reachable but secondary, with Restore and the guarded Permanent delete intact", () => {
@@ -958,10 +964,21 @@ test("Manage Items: cost verification is an intentional mode -- Review costs act
   const page = component(inventory, "InventoryPage");
   const focusItemList = nodes(page, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "focusItemList")[0];
   assert.ok(focusItemList);
+  const changeCostFocus = nodes(page, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "changeCostFocus")[0];
+  assert.ok(changeCostFocus);
   const calls: boolean[] = [];
-  evaluateFunction(focusItemList, { onCostFocusChange: (value: boolean) => calls.push(value), document: { getElementById: () => null } })();
+  const attemptedResets: number[] = [];
+  const context = {
+    onCostFocusChange: (value: boolean) => calls.push(value),
+    setAttemptedIds: (next: Set<string>) => attemptedResets.push(next.size),
+    document: { getElementById: () => null },
+    Set,
+  } as Record<string, unknown>;
+  context.changeCostFocus = evaluateFunction(changeCostFocus, context);
+  evaluateFunction(focusItemList, context)();
   assert.deepEqual(calls, [true], "Review costs turns cost-focused mode on");
-  assert.match(page.getText(), /onClick=\{\(\) => onCostFocusChange\(false\)\}[^>]*>Show all items/);
+  assert.deepEqual(attemptedResets, [0], "entering or leaving the mode clears the per-review 'attempted' list");
+  assert.match(page.getText(), /onClick=\{\(\) => changeCostFocus\(false\)\}[^>]*>Show all items/);
   // The row receives the warning flag only from the focused mode.
   assert.match(page.getText(), /showCostWarning=\{isCostFocused\}/);
   assert.match(page.getText(), /const isCostFocused = costFocus && uncertifiedCostCount > 0/);

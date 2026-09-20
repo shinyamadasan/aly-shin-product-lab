@@ -6,6 +6,7 @@ import type { LabState } from "@/lib/lab-state";
 import { getStockValueDisplay, isCostBaselineUncertified } from "@/lib/inventory-cost";
 import { formatPesos, formatPesosPerUnit, formatPurchaseDate, getLatestPurchaseFacts } from "@/lib/inventory-display";
 import { formatQuantity } from "@/lib/quantity-display";
+import { CHECKING_RESULT_MESSAGE, resolveLatestPurchaseCost, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline } from "@/lib/cost-verification";
 import { getFlaggedIngredients, matchesStockSearch } from "@/lib/inventory-status";
 import { buildInventoryItemViews, type InventoryItemView } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
@@ -170,75 +171,164 @@ function AdjustStockForm({
   );
 }
 
-// Cost Baseline Repair: certifies average_unit_cost against evidence the owner has reviewed --
+// Cost Baseline Repair: verifies average_unit_cost against evidence the owner has reviewed --
 // deliberately a separate action from the ingredient edit form above (which explicitly protects
 // averageUnitCost as read-only, see that form's own "Recorded average unit cost" field), the same
 // way AdjustStockForm above is a separate action from editing quantity-adjacent fields.
-// suggestedUnitCost (the latest purchase's own unit price, already computed by
-// buildInventoryItemViews for the Purchases column) pre-fills the input as a starting point only
-// -- the owner must still explicitly submit a value; nothing here auto-certifies.
+//
+// Normal path: the latest purchase is usable (see resolveLatestPurchaseCost), so the owner reviews
+// it and confirms with one click; the evidence note the database requires is generated from that
+// purchase, never typed. It means "I reviewed this latest purchase and accept it as the current
+// verified cost" -- it does not rewrite purchase history or reconstruct a historical average.
+// Fallback: no usable purchase (or the owner disagrees with it) -> a clearly secondary manual entry
+// that still requires a short evidence note, since no purchase record backs it. Nothing here
+// auto-verifies: every item needs its own explicit confirmation.
+//
+// Feedback is inline (this panel), not only in the page-level message far above the list. On a
+// failure the panel stays open with the proposed cost still visible; a timeout is reported as an
+// uncertain result, never as "not verified".
 //
 // Form-only, matching AdjustStockForm's own split -- see IngredientRow for why the open/closed
-// toggle and the expanded panel now live at the row level instead of inside this component.
+// toggle and the expanded panel live at the row level instead of inside this component.
+type CostFeedback = { tone: "bad" | "info"; text: string };
+
 function CertifyCostForm({
   ingredient,
-  suggestedUnitCost,
+  latestPurchase,
   certifyIngredientCostBaseline,
+  onAttempt,
   onClose,
 }: {
   ingredient: Ingredient;
-  suggestedUnitCost: number | null;
-  certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
+  latestPurchase: SupplyEntry | undefined;
+  certifyIngredientCostBaseline: CertifyIngredientCostBaseline;
+  onAttempt: () => void;
   onClose: () => void;
 }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showManual, setShowManual] = useState(false);
+  const [feedback, setFeedback] = useState<CostFeedback | null>(null);
+  // An uncertain result blocks a second submit from this panel: the owner reloads and checks first.
+  const [isLocked, setIsLocked] = useState(false);
+  const [verified, setVerified] = useState<Extract<CertifyCostResult, { status: "verified" }> | null>(null);
   const guardRef = useRef(createMutationGuard<string>());
+  const latestCost = resolveLatestPurchaseCost(ingredient, latestPurchase);
+  const latest = latestPurchase ? getLatestPurchaseFacts(latestPurchase) : null;
 
-  async function handleSubmit(formData: FormData) {
+  async function submit(certifiedUnitCost: number, evidenceNote: string) {
     if (guardRef.current.isActive(ingredient.id)) {
       return;
     }
-    const certifiedUnitCost = Number(formData.get("certifiedUnitCost") || 0);
-    const evidenceNote = String(formData.get("evidenceNote") || "").trim();
+    setFeedback(null);
     setIsSubmitting(true);
+    onAttempt();
     try {
-      const ok = await guardRef.current.run(ingredient.id, () => certifyIngredientCostBaseline(ingredient.id, certifiedUnitCost, evidenceNote));
-      if (ok) {
-        onClose();
+      const result = await guardRef.current.run(ingredient.id, () => certifyIngredientCostBaseline(
+        ingredient.id, certifiedUnitCost, evidenceNote, () => setFeedback({ tone: "info", text: CHECKING_RESULT_MESSAGE }),
+      ));
+      if (!result) {
+        return;
       }
+      if (result.status === "verified") {
+        setFeedback(null);
+        setVerified(result);
+      } else {
+        setFeedback({ tone: result.status === "uncertain" ? "info" : "bad", text: result.message });
+        setIsLocked(result.status === "uncertain");
+      }
+    } catch {
+      setFeedback({ tone: "info", text: "Something went wrong and the result isn't confirmed. Reload the page and check whether this item shows Verified before trying again." });
+      setIsLocked(true);
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  function handleManualSubmit(formData: FormData) {
+    const certifiedUnitCost = Number(formData.get("certifiedUnitCost") || 0);
+    const evidenceNote = String(formData.get("evidenceNote") || "").trim();
+    if (!Number.isFinite(certifiedUnitCost) || certifiedUnitCost <= 0) {
+      setFeedback({ tone: "bad", text: "Could not verify cost: enter a cost greater than zero." });
+      return;
+    }
+    if (!evidenceNote) {
+      setFeedback({ tone: "bad", text: "Could not verify cost: add a short evidence note." });
+      return;
+    }
+    void submit(certifiedUnitCost, evidenceNote);
+  }
+
+  const storedCost = ingredient.costReconciledAt ? `${formatPesosPerUnit(ingredient.averageUnitCost, ingredient.baseUnit)} (verified)` : ingredient.averageUnitCost ? `${formatPesosPerUnit(ingredient.averageUnitCost, ingredient.baseUnit)} (needs verification)` : "Not set";
+  const closeButton = (
+    <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onClose} type="button">{verified ? "Close" : "Cancel"}</button>
+  );
+
+  if (verified) {
+    return (
+      <div className="grid gap-2 rounded-md border border-[#d8c7b7] bg-[#f7f2ea] p-3 text-sm">
+        <p className="rounded-md bg-emerald-50 p-3 font-semibold text-emerald-800" role="status">
+          {verifiedCostMessage(verified.certifiedUnitCost, ingredient.baseUnit)}
+          {verified.confirmedByReadBack ? " The request timed out, but the save was confirmed." : ""}
+          {verified.refreshed ? "" : " The list could not refresh -- reload the page to see it."}
+        </p>
+        <div>{closeButton}</div>
+      </div>
+    );
+  }
+
   return (
-    <form action={handleSubmit} className="grid gap-3 rounded-md border border-[#d8c7b7] bg-[#f7f2ea] p-3 sm:grid-cols-2">
-      <div className="grid gap-1 text-sm">
-        <span>Current quantity</span>
-        <p className="font-semibold">{ingredient.currentQuantity} {ingredient.baseUnit}</p>
-      </div>
-      <div className="grid gap-1 text-sm">
-        <span>Current average cost</span>
-        <p className="font-semibold">{ingredient.costReconciledAt ? `PHP ${ingredient.averageUnitCost} (verified)` : ingredient.averageUnitCost ? `PHP ${ingredient.averageUnitCost} (needs verification)` : "Not set"}</p>
-      </div>
-      <div className="grid gap-1">
-        <input
-          className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm"
-          defaultValue={suggestedUnitCost ?? undefined}
-          name="certifiedUnitCost"
-          placeholder={`Certified cost per ${ingredient.baseUnit}`}
-          required
-          step="0.0001"
-          type="number"
-        />
-        {suggestedUnitCost != null ? <p className="text-xs text-[#6f5a4c]">Suggested from the latest purchase: PHP {suggestedUnitCost.toFixed(4)}/{ingredient.baseUnit}. Confirm it&apos;s still right before submitting -- nothing is certified automatically.</p> : null}
-      </div>
-      <input className="h-11 self-start rounded-md border border-[#d8c7b7] bg-white px-3 text-base" name="evidenceNote" placeholder="Evidence (required) -- e.g. receipt, supplier, date" required />
-      <div className="col-span-full flex flex-wrap gap-2">
-        <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting} type="submit">{isSubmitting ? "Certifying..." : "Certify"}</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onClose} type="button">Cancel</button>
-      </div>
-    </form>
+    <div className="grid gap-3 rounded-md border border-[#d8c7b7] bg-[#f7f2ea] p-3 text-sm">
+      <p className="text-[#6f5a4c]">Current stock {formatQuantity(ingredient.currentQuantity, ingredient.baseUnit)} · stored cost {storedCost}</p>
+
+      {latestCost.usable && latest && !showManual ? (
+        <>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Latest purchase</p>
+            <p className="mt-1 break-words font-semibold">{[latest.brand, latest.supplier].filter(Boolean).join(" · ") || "Brand and supplier not set"}</p>
+            {formatPurchaseDate(latest.date, { year: true }) ? <p className="text-[#6f5a4c]">{formatPurchaseDate(latest.date, { year: true })}</p> : null}
+            <p className="break-words text-[#6f5a4c]">{latest.packQuantity} {latest.unit} · {formatPesos(latest.totalPaid)} total</p>
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Suggested cost to verify</p>
+            <p className="mt-1 text-base font-semibold">{formatPesosPerUnit(latestCost.unitCost, ingredient.baseUnit)}</p>
+          </div>
+          <p className="text-xs leading-5 text-[#6f5a4c]">Based on the latest recorded purchase. Review it before confirming. Verifying accepts this as the current verified cost -- purchase history is not changed.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked} onClick={() => void submit(latestCost.unitCost, latestCost.evidenceNote)} type="button">{isSubmitting ? "Verifying..." : "Verify this cost"}</button>
+            {closeButton}
+            <button className="h-9 px-2 text-xs font-semibold text-[#8f5632] underline disabled:opacity-60" disabled={isSubmitting} onClick={() => { setFeedback(null); setShowManual(true); }} type="button">Enter a different cost manually</button>
+          </div>
+        </>
+      ) : (
+        <>
+          {latestCost.usable ? null : (
+            <div className="rounded-md border border-[#e0a458] bg-[#fff2d8] p-3 text-[#7a531d]">
+              <p className="font-semibold">No usable purchase cost is available for this item yet.</p>
+              <p className="mt-1 text-xs">{latestCost.reason} Record or fix a purchase in Purchases, or enter a verified cost manually below.</p>
+            </div>
+          )}
+          {showManual ? (
+            <form action={handleManualSubmit} className="grid gap-2 sm:grid-cols-2">
+              <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" min="0" name="certifiedUnitCost" placeholder={`Verified cost per ${ingredient.baseUnit}`} required step="0.0001" type="number" />
+              <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="evidenceNote" placeholder="Evidence (required) -- e.g. supplier, date, price" required />
+              <div className="col-span-full flex flex-wrap gap-2">
+                <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked} type="submit">{isSubmitting ? "Verifying..." : "Verify cost"}</button>
+                {closeButton}
+              </div>
+            </form>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setShowManual(true)} type="button">Enter verified cost manually</button>
+              {closeButton}
+            </div>
+          )}
+        </>
+      )}
+
+      {feedback ? (
+        <p className={`rounded-md p-3 ${feedback.tone === "bad" ? "bg-red-50 text-red-800" : "bg-[#fff2d8] text-[#7a531d]"}`} role={feedback.tone === "bad" ? "alert" : "status"}>{feedback.text}</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -260,6 +350,7 @@ function IngredientRow({
   certifyIngredientCostBaseline,
   deleteIngredient,
   editIngredient,
+  onVerifyAttempt,
 }: {
   view: InventoryItemView;
   isEditing: boolean;
@@ -268,15 +359,19 @@ function IngredientRow({
   // there is work to do.
   showCostWarning: boolean;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
-  certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
+  certifyIngredientCostBaseline: CertifyIngredientCostBaseline;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
+  // Called when the operator submits a verification, so cost-focused mode keeps this Item on screen
+  // (showing its inline result) even once it stops needing verification.
+  onVerifyAttempt: (ingredientId: string) => void;
 }) {
-  const { ingredient: item, latestPurchase, latestUnitPrice, purchaseHistory } = view;
+  const { ingredient: item, latestPurchase, purchaseHistory } = view;
   const [isOpen, setIsOpen] = useState(false);
   const [openPanel, setOpenPanel] = useState<"adjust" | "certify" | null>(null);
   const stockValue = getStockValueDisplay(item);
   const latest = latestPurchase ? getLatestPurchaseFacts(latestPurchase) : null;
+  const latestCost = resolveLatestPurchaseCost(item, latestPurchase);
   // Cost Baseline Repair: isCostBaselineUncertified (costReconciledAt, not a non-null/positive
   // averageUnitCost) is what actually means "trustworthy" -- see certify_ingredient_cost_baseline's
   // own comment. Plain language on purpose -- "Cost baseline not certified" is the internal term;
@@ -293,9 +388,21 @@ function IngredientRow({
           {showCostWarning && uncertified ? <Tag tone="danger">Cost needs verification</Tag> : null}
           {needsReconciliation ? <Tag tone="danger">Needs reconciliation</Tag> : null}
         </div>
-        <button aria-expanded={isOpen} className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen((current) => !current)} type="button">
-          {isOpen ? "Close" : "Manage"}
-        </button>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {showCostWarning && uncertified ? (
+            latestCost.usable ? (
+              <>
+                <span className="text-sm text-[#6f5a4c]">Latest cost {formatPesosPerUnit(latestCost.unitCost, item.baseUnit)}</span>
+                <button className="h-9 rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" onClick={() => { setIsOpen(true); setOpenPanel("certify"); }} type="button">Verify latest cost</button>
+              </>
+            ) : (
+              <span className="text-sm text-[#6f5a4c]">No usable purchase cost yet</span>
+            )
+          ) : null}
+          <button aria-expanded={isOpen} className="h-9 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setIsOpen((current) => !current)} type="button">
+            {isOpen ? "Close" : "Manage"}
+          </button>
+        </div>
       </div>
 
       {isOpen ? (
@@ -358,13 +465,13 @@ function IngredientRow({
             <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => editIngredient(item)} type="button">Edit</button>
             <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "adjust" ? null : "adjust")} type="button">Adjust Stock</button>
             <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setOpenPanel(openPanel === "certify" ? null : "certify")} type="button">
-              {uncertified ? "Certify cost" : "Re-certify cost"}
+              {uncertified ? "Verify cost" : "Re-verify cost"}
             </button>
             <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#8a3827]" onClick={() => window.confirm(`Archive ${item.name}? It will be hidden from active workflows, but all purchase, stock, formula, and report history will be preserved.`) ? deleteIngredient(item.id) : undefined} type="button">Archive</button>
           </div>
           {openPanel === "adjust" ? <AdjustStockForm adjustStock={adjustStock} ingredient={item} onClose={() => setOpenPanel(null)} /> : null}
           {openPanel === "certify" ? (
-            <CertifyCostForm certifyIngredientCostBaseline={certifyIngredientCostBaseline} ingredient={item} onClose={() => setOpenPanel(null)} suggestedUnitCost={latestUnitPrice > 0 ? latestUnitPrice : null} />
+            <CertifyCostForm certifyIngredientCostBaseline={certifyIngredientCostBaseline} ingredient={item} latestPurchase={latestPurchase} onAttempt={() => onVerifyAttempt(item.id)} onClose={() => setOpenPanel(null)} />
           ) : null}
         </div>
       ) : null}
@@ -471,9 +578,9 @@ function IngredientEditor({
             <span>Recorded average unit cost</span>
             <p>
               {ingredient?.averageUnitCost ? `PHP ${ingredient.averageUnitCost}` : "Not recorded"}
-              {ingredient ? (ingredient.costReconciledAt ? " (certified)" : " (not certified)") : ""}
+              {ingredient ? (ingredient.costReconciledAt ? " (verified)" : " (not verified)") : ""}
             </p>
-            <span>Protected inventory value; not changed by item details or a quantity count. Certify it (from Manage on the item&apos;s row) after reviewing real purchase evidence.</span>
+            <span>Protected inventory value; not changed by item details or a quantity count. Verify it (from Manage on the item&apos;s row) after reviewing real purchase evidence.</span>
           </div>
         </div>
         <Textarea name="notes" label="Notes" placeholder="Storage notes, brand preference, anything worth remembering." defaultValue={ingredient?.notes} />
@@ -504,7 +611,7 @@ export function InventoryPage({
 }: {
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEdit: () => void;
-  certifyIngredientCostBaseline: (ingredientId: string, certifiedUnitCost: number, evidenceNote: string) => Promise<boolean>;
+  certifyIngredientCostBaseline: CertifyIngredientCostBaseline;
   // Cost-focused mode: narrows the list to Items needing verification. Owned by the workspace so it
   // can start on (?focus=costs) and stays as the operator left it when they switch tabs and back.
   costFocus: boolean;
@@ -532,13 +639,16 @@ export function InventoryPage({
   // closes again after a successful save or a cancel -- back to the calm list.
   const [isAdding, setIsAdding] = useState(false);
   const [search, setSearch] = useState("");
+  // Items the operator has submitted a verification for during this cost-focused review. They stay
+  // listed (showing their inline result) after they stop needing verification, until the mode is left.
+  const [attemptedIds, setAttemptedIds] = useState<Set<string>>(() => new Set());
   const isEditorOpen = Boolean(ingredient) || isAdding;
   // "Review costs" narrows the list to the Items that need verification; it lifts itself once none
   // remain, so certifying the last one can never leave an empty, confusing filtered list.
   const isCostFocused = costFocus && uncertifiedCostCount > 0;
   const visibleItemViews = itemViews
     .filter((view) => matchesStockSearch(view.ingredient, search))
-    .filter((view) => !isCostFocused || isCostBaselineUncertified(view.ingredient));
+    .filter((view) => !isCostFocused || isCostBaselineUncertified(view.ingredient) || attemptedIds.has(view.ingredient.id));
   const visibleArchived = archivedIngredients.filter((item) => matchesStockSearch(item, search));
 
   async function handleSave(formData: FormData) {
@@ -557,8 +667,13 @@ export function InventoryPage({
     }
   }
 
+  function changeCostFocus(focused: boolean) {
+    setAttemptedIds(new Set());
+    onCostFocusChange(focused);
+  }
+
   function focusItemList() {
-    onCostFocusChange(true);
+    changeCostFocus(true);
     document.getElementById("ingredient-master")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -606,7 +721,7 @@ export function InventoryPage({
             <p className="mt-1 text-xs">A recorded cost is not trustworthy until it&apos;s checked against real purchase evidence. It can need checking again later -- for example after a physical count -- not just once.</p>
           </div>
           {isCostFocused ? (
-            <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={() => onCostFocusChange(false)} type="button">Show all items</button>
+            <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={() => changeCostFocus(false)} type="button">Show all items</button>
           ) : (
             <button className="h-10 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-4 text-sm font-semibold text-[#5f4a3d]" onClick={focusItemList} type="button">Review costs</button>
           )}
@@ -649,6 +764,7 @@ export function InventoryPage({
               editIngredient={editIngredient}
               isEditing={view.ingredient.id === ingredient?.id}
               key={view.ingredient.id}
+              onVerifyAttempt={(ingredientId) => setAttemptedIds((current) => new Set(current).add(ingredientId))}
               showCostWarning={isCostFocused}
               view={view}
             />
