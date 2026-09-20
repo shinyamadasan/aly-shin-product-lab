@@ -3,8 +3,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyItemChoice, buildCatalogOrderLine, buildLinesFromDrafts, buildManualOrderLine, CUSTOM_ITEM_KEY, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, type DraftLine } from "../src/lib/orders/menu.ts";
+import { applyItemChoice, buildCatalogOrderLine, buildLinesFromDrafts, buildManualOrderLine, CUSTOM_ITEM_KEY, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, describePieceCount, sanitizeQuantityInput, settleQuantity, stepQuantity, type DraftLine } from "../src/lib/orders/menu.ts";
 import { validateOrderForSave } from "../src/lib/orders/validation.ts";
+import { getOrderTotals } from "../src/lib/orders/totals.ts";
+import { getPreparationTotals } from "../src/lib/orders/pieces.ts";
 import { navItems, type LabView } from "../src/lib/lab-state.ts";
 import type { Order } from "../src/lib/orders/types.ts";
 import type { CostingSummary, Product, ProductBatch, SellingFormat } from "../src/lib/product-lab-types.ts";
@@ -398,6 +400,79 @@ test("the New order form shows the empty-catalog message, keeps Custom item, and
   assert.match(source, /<option value=\{CUSTOM_ITEM_KEY\}>Custom item…<\/option>/);
   assert.match(source, /getSellableOptionLabel\(option\)/);
   assert.match(source, /href="\/costing"/);
+});
+
+// --- Quantity control ----------------------------------------------------------------------------
+
+test("+ increments the quantity, and lands on 1 from an empty or invalid entry", () => {
+  assert.equal(stepQuantity("1", 1), "2");
+  assert.equal(stepQuantity("9", 1), "10");
+  assert.equal(stepQuantity("", 1), "1");
+  assert.equal(stepQuantity("2.5", 1), "1");
+});
+
+test("- decrements but never goes below 1", () => {
+  assert.equal(stepQuantity("3", -1), "2");
+  assert.equal(stepQuantity("2", -1), "1");
+  assert.equal(stepQuantity("1", -1), "1");
+  assert.equal(stepQuantity("", -1), "1");
+  assert.equal(stepQuantity("0", -1), "1");
+});
+
+test("typing keeps whole numbers only, and leaving the field settles an invalid entry to 1", () => {
+  assert.equal(sanitizeQuantityInput("12"), "12");
+  assert.equal(sanitizeQuantityInput("2.5"), "25");
+  assert.equal(sanitizeQuantityInput("-3"), "3");
+  assert.equal(sanitizeQuantityInput(""), "");
+  assert.equal(settleQuantity("7"), "7");
+  assert.equal(settleQuantity(""), "1");
+  assert.equal(settleQuantity("0"), "1");
+});
+
+test("the piece helper multiplies selling units by pieces per unit, and shows nothing it cannot back", () => {
+  assert.equal(describePieceCount("2", 1), "2 pcs total");
+  assert.equal(describePieceCount("1", 1), "1 pc total");
+  assert.equal(describePieceCount("2", 2), "2 × 2 pcs = 4 pcs");
+  assert.equal(describePieceCount("3", 2), "3 × 2 pcs = 6 pcs");
+  assert.equal(describePieceCount("", 2), null);
+  assert.equal(describePieceCount("0", 2), null);
+  assert.equal(describePieceCount("2", 0), null);
+});
+
+test("quantity stays in selling units: the line, the total and the pieces snapshot are unchanged by the stepper", () => {
+  const twoBrownies = getSellableItems([BROWNIES], [BATCH_V2], [COSTING_V2], [format("fmt-2", "costing-v2", "2 brownies", { piecesPerUnit: 2, sellingPrice: 170 })]);
+
+  const lines = buildLinesFromDrafts([draft({ itemKey: "brownies::fmt-2", unitPrice: "170", quantity: "2" })], twoBrownies, "order-1");
+
+  // One line, not two; quantity is the number of "2 brownies" units sold.
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].quantity, 2);
+  assert.equal(lines[0].piecesPerUnitSnapshot, 2);
+  // Total is quantity x unit price: 2 x PHP 170 = PHP 340.
+  assert.equal(getOrderTotals(lines).total, 340);
+  // Pieces to prepare are derived from the snapshot: 2 units x 2 pcs = 4 pcs.
+  assert.equal(getPreparationTotals(lines).pieces, 4);
+  assert.equal(getPreparationTotals(lines).units, 2);
+});
+
+test("a single-piece format totals quantity x price and prepares that many pieces", () => {
+  const cookie = getSellableItems([BROWNIES], [BATCH_V2], [COSTING_V2], [format("fmt-c", "costing-v2", "Single cookie", { piecesPerUnit: 1, sellingPrice: 100 })]);
+  const lines = buildLinesFromDrafts([draft({ itemKey: "brownies::fmt-c", unitPrice: "100", quantity: "2" })], cookie, "order-1");
+
+  assert.equal(getOrderTotals(lines).total, 200);
+  assert.equal(getPreparationTotals(lines).pieces, 2);
+});
+
+test("the quantity control is a stepper with buttons and a text input, not the native number spinner", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/components/orders-page.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /aria-label="Decrease quantity"/);
+  assert.match(source, /aria-label="Increase quantity"/);
+  assert.match(source, /inputMode="numeric"/);
+  assert.match(source, /describePieceCount\(line\.quantity, item\.piecesPerUnit\)/);
+  // The Qty input is no longer type=number.
+  assert.doesNotMatch(source, /step=\{1\} type="number"/);
 });
 
 // --- Wiring --------------------------------------------------------------------------------------

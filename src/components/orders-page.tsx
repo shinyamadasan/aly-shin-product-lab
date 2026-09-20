@@ -26,7 +26,7 @@ import { createMutationGuard } from "@/lib/mutation-guard";
 import { getOrderCountsBySource } from "@/lib/orders/attribution";
 import { toDisplayPrice } from "@/lib/orders/money";
 import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getActiveDeliveryAddress, sortOrdersByFulfillment, type FulfillmentFilter, type FulfillmentSort } from "@/lib/orders/fulfillment";
-import { applyItemChoice, buildLinesFromDrafts, CUSTOM_ITEM_KEY, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, type DraftLine, type SellableProductGroup, type UnorderableProduct } from "@/lib/orders/menu";
+import { applyItemChoice, buildLinesFromDrafts, CUSTOM_ITEM_KEY, describePieceCount, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, sanitizeQuantityInput, settleQuantity, stepQuantity, type DraftLine, type SellableProductGroup, type UnorderableProduct } from "@/lib/orders/menu";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
@@ -747,7 +747,7 @@ function NewOrderForm({
         {draftLines.map((line) => {
           const item = line.itemKey && line.itemKey !== CUSTOM_ITEM_KEY ? findSellableItem(sellableGroups, line.itemKey) : null;
           return (
-            <div className="grid gap-2 rounded-md border border-[#e8dccd] p-3 sm:grid-cols-[minmax(0,2fr)_90px_110px_auto]" key={line.rowId}>
+            <div className="grid gap-2 rounded-md border border-[#e8dccd] p-3 sm:grid-cols-[minmax(0,2fr)_156px_110px_auto]" key={line.rowId}>
               <label className="grid gap-1 text-xs font-medium">
                 Item
                 <select
@@ -765,11 +765,16 @@ function NewOrderForm({
                 </select>
               </label>
 
-              <label className="grid gap-1 text-xs font-medium">
+              <div className="grid gap-1 text-xs font-medium" role="group" aria-label="Quantity in selling units">
                 Qty
-                {/* Integer stepper: bakery selling units are discrete, so 2.5 boxes is not enterable. */}
-                <input className="h-10 min-w-0 rounded-md border border-[#d8c7b7] bg-white px-2" min={1} onChange={(event) => updateLine(line.rowId, { quantity: event.target.value })} step={1} type="number" value={line.quantity} />
-              </label>
+                {/* Whole selling units only (2.5 boxes is not enterable). A text input with a numeric
+                    keypad instead of type=number, so there are no tiny native spinner arrows. */}
+                <div className="flex items-center gap-1">
+                  <button aria-label="Decrease quantity" className="h-11 w-11 shrink-0 rounded-md border border-[#d8c7b7] bg-white text-lg font-semibold text-[#5f4a3d] hover:bg-[#fffaf3]" onClick={() => updateLine(line.rowId, { quantity: stepQuantity(line.quantity, -1) })} type="button">−</button>
+                  <input aria-label="Quantity" className="h-11 w-14 min-w-0 rounded-md border border-[#d8c7b7] bg-white px-1 text-center text-base" inputMode="numeric" onBlur={() => updateLine(line.rowId, { quantity: settleQuantity(line.quantity) })} onChange={(event) => updateLine(line.rowId, { quantity: sanitizeQuantityInput(event.target.value) })} pattern="[0-9]*" type="text" value={line.quantity} />
+                  <button aria-label="Increase quantity" className="h-11 w-11 shrink-0 rounded-md border border-[#d8c7b7] bg-white text-lg font-semibold text-[#5f4a3d] hover:bg-[#fffaf3]" onClick={() => updateLine(line.rowId, { quantity: stepQuantity(line.quantity, 1) })} type="button">+</button>
+                </div>
+              </div>
 
               <label className="grid gap-1 text-xs font-medium">
                 Unit price
@@ -790,7 +795,11 @@ function NewOrderForm({
               {item ? (
                 // Read-only: the pack size comes from the format and is never typed. It is
                 // snapshotted onto the line so it survives the format being deleted later.
-                <p className="text-xs text-[#6f5a4c] sm:col-span-4">{item.piecesPerUnit} pieces per unit · snapshotted with this line</p>
+                <p className="text-xs text-[#6f5a4c] sm:col-span-4">
+                  {describePieceCount(line.quantity, item.piecesPerUnit) ? <span className="font-semibold text-[#5f4a3d]">{describePieceCount(line.quantity, item.piecesPerUnit)}</span> : null}
+                  {describePieceCount(line.quantity, item.piecesPerUnit) ? " · " : null}
+                  {item.piecesPerUnit} pieces per unit · snapshotted with this line
+                </p>
               ) : null}
             </div>
           );

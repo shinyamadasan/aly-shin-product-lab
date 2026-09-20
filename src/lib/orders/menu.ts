@@ -252,6 +252,45 @@ export function applyItemChoice(line: DraftLine, nextKey: string, sellableGroups
   };
 }
 
+// --- Quantity control ---------------------------------------------------------------------------
+//
+// Quantity is always SELLING UNITS (2 x "2 brownies" = 2 units), never pieces. These helpers only
+// shape what the operator types and reads; buildLinesFromDrafts still turns the string into the
+// line's quantity, and totals stay quantity x unit price.
+
+// A stepper click. Anything that is not already a whole number >= 1 (empty, half-typed, 2.5) is
+// treated as "nothing entered yet": + lands on 1, and - never goes below 1.
+export function stepQuantity(current: string, delta: 1 | -1): string {
+  const value = Number(current);
+  const base = current.trim() !== "" && Number.isInteger(value) && value >= 1 ? value : 0;
+  return String(Math.max(1, base + delta));
+}
+
+// Typing filter: digits only, so a decimal or minus sign can never be entered. Empty is allowed
+// while the operator is mid-edit.
+export function sanitizeQuantityInput(typed: string): string {
+  return typed.replace(/\D/g, "");
+}
+
+// On leaving the field: an empty or zero entry becomes 1 rather than staying invalid.
+export function settleQuantity(typed: string): string {
+  const value = Number(typed);
+  return typed.trim() !== "" && Number.isInteger(value) && value >= 1 ? String(value) : "1";
+}
+
+// "2 x 2 pcs = 4 pcs" for a catalog line; null when there is nothing truthful to show (no valid
+// quantity, or a pack size that is not a positive whole number -- never guessed).
+export function describePieceCount(quantity: string, piecesPerUnit: number): string | null {
+  const units = Number(quantity);
+  if (quantity.trim() === "" || !Number.isInteger(units) || units < 1 || !Number.isInteger(piecesPerUnit) || piecesPerUnit < 1) {
+    return null;
+  }
+
+  const total = units * piecesPerUnit;
+  const pcs = (count: number) => `${count} ${count === 1 ? "pc" : "pcs"}`;
+  return piecesPerUnit === 1 ? `${pcs(total)} total` : `${units} × ${pcs(piecesPerUnit)} = ${pcs(total)}`;
+}
+
 // Turns the form's rows into real OrderLines, taking the snapshots at this moment. Pure: the same
 // drafts and the same menu always produce the same lines.
 //
