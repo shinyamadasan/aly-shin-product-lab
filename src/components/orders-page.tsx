@@ -28,6 +28,7 @@ import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getA
 import { applyItemChoice, buildLinesFromDrafts, CUSTOM_ITEM_KEY, describePieceCount, describeUnorderableReason, findSellableItem, getSellableItems, getSellableOptionLabel, getUnorderableProducts, sanitizeQuantityInput, settleQuantity, stepQuantity, type DraftLine, type SellableProductGroup, type UnorderableProduct } from "@/lib/orders/menu";
 import { filterOrdersBySearch, formatOrderItemSummary, getOrderCardSource, getOrderCardTimes, getOrdersLayoutClass, getPaymentTone } from "@/lib/orders/list-view";
 import { appearsSafeToDelete, buildDeleteConfirmation } from "@/lib/orders/delete-eligibility";
+import { describeDraftStockRow, describeOrderStockRow, getStockReadiness, type StockReadiness } from "@/lib/orders/stock-readiness";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
@@ -351,6 +352,12 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
   // Keeping it out of render also means the id ref is never read during render.
   const previewLines = useMemo(() => buildLinesFromDrafts(draftLines, sellableGroups, "preview"), [draftLines, sellableGroups]);
   const previewTotal = getOrderTotals(previewLines).total;
+  // Informational only -- Place order is never blocked by stock, and a new order reserves nothing.
+  // Confirm re-checks availability in the database.
+  const draftStockReadiness = useMemo(
+    () => getStockReadiness(previewLines, labState.products, labState.finishedStockMovements),
+    [previewLines, labState.products, labState.finishedStockMovements],
+  );
 
   // Filter first, then sort. Both are pure reads over the loaded list, and the clock they need is
   // the load stamp above rather than a fresh reading -- so this stays a pure render.
@@ -545,6 +552,9 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
 
   const selectedOrder = orders.find((order) => order.id === selectedOrderId) ?? null;
   const selectedLines = selectedOrder ? linesByOrderId.get(selectedOrder.id) ?? [] : [];
+  // Only a NEW order has stock still to be reserved. Confirmed/ready orders already hold their
+  // reservation and completed/cancelled ones are history, so no readout is made for them.
+  const selectedStockReadiness = selectedOrder?.status === "new" ? getStockReadiness(selectedLines, labState.products, labState.finishedStockMovements) : null;
 
   function runPaymentAction(action: PaymentAction) {
     if (!client || !selectedOrder) return;
@@ -605,6 +615,7 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
             onSave={() => void handleSave()}
             possibleDuplicateCustomer={possibleDuplicateCustomer}
             previewTotal={previewTotal}
+            stockReadiness={draftStockReadiness}
             sellableGroups={sellableGroups}
             unorderableProducts={unorderableProducts}
             setCustomerId={setCustomerId}
@@ -674,6 +685,7 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
             });
           }}
           onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
+          stockReadiness={selectedStockReadiness}
           onDelete={() => {
             if (selectedOrder) void runDeleteOrder(selectedOrder.id, selectedOrder.updatedAt);
           }}
@@ -721,6 +733,7 @@ function NewOrderForm({
   onSave,
   possibleDuplicateCustomer,
   previewTotal,
+  stockReadiness,
   sellableGroups,
   unorderableProducts,
   setCustomerId,
@@ -744,6 +757,7 @@ function NewOrderForm({
   onSave: () => void;
   possibleDuplicateCustomer: { id: string; name: string } | null;
   previewTotal: number;
+  stockReadiness: StockReadiness;
   sellableGroups: SellableProductGroup[];
   unorderableProducts: UnorderableProduct[];
   setCustomerId: (value: string) => void;
@@ -873,6 +887,23 @@ function NewOrderForm({
         <div>
           <SecondaryButton onClick={() => setDraftLines((lines) => [...lines, newDraftLine()])}>Add item</SecondaryButton>
         </div>
+        {stockReadiness.rows.length > 0 || stockReadiness.hasUncheckedLines ? (
+          // Informational. "Available" is on hand minus stock already reserved by confirmed orders;
+          // nothing is reserved by placing this order.
+          <div className="grid gap-1 rounded-md bg-[#fffaf3] p-3 text-xs leading-5 text-[#5f4a3d]">
+            <p className="font-semibold">Finished stock</p>
+            {stockReadiness.rows.map((row) => {
+              const described = describeDraftStockRow(row);
+              return (
+                <p key={row.productId}>
+                  <span className="font-semibold">{row.productName}</span> · {described.summary} · <span className={described.isShort ? "font-semibold text-[#a3392b]" : "text-[#2f6b3a]"}>{described.outcome}</span>
+                </p>
+              );
+            })}
+            {stockReadiness.hasUncheckedLines ? <p>Stock not tracked for custom item.</p> : null}
+            <p>Stock is checked again when you Confirm the order. Nothing is reserved until then.</p>
+          </div>
+        ) : null}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -921,6 +952,7 @@ function OrderDetailPanel({
   onCancel,
   onClearPaymentRecord,
   onDelete,
+  stockReadiness,
   onCorrectPaymentRecord,
   onEditAttribution,
   onEditFulfillment,
@@ -938,6 +970,8 @@ function OrderDetailPanel({
   // Permanent delete of an accidental order. Offered only when it appears safe; the database has the
   // final say and can still refuse it.
   onDelete: () => void;
+  // Set only for a NEW order. Informational: Confirm still asks the database, which decides.
+  stockReadiness: StockReadiness | null;
   onCorrectPaymentRecord: (correction: { paidAmount: number; paidAt: string; method: PaymentMethod }) => void;
   // Both carry expectedUpdatedAt: the version of the order the edit form was populated from, so a
   // stale form is rejected by the conditional update rather than silently overwriting a newer row.
@@ -1081,6 +1115,22 @@ function OrderDetailPanel({
         ) : null}
 
         {order.notes ? <p className="text-xs">{order.notes}</p> : null}
+
+        {stockReadiness && stockReadiness.rows.length > 0 ? (
+          <div className="grid gap-1 rounded-md bg-[#fffaf3] p-3 text-xs leading-5 text-[#5f4a3d]">
+            <p className="font-semibold">Stock for confirmation</p>
+            {stockReadiness.rows.map((row) => {
+              const described = describeOrderStockRow(row);
+              return (
+                <p key={row.productId}>
+                  <span className="font-semibold">{row.productName}</span> · {described.summary} · <span className={described.isShort ? "font-semibold text-[#a3392b]" : "text-[#2f6b3a]"}>{described.outcome}</span>
+                </p>
+              );
+            })}
+            {stockReadiness.hasUncheckedLines ? <p>Stock not tracked for custom item.</p> : null}
+            <p>Availability is checked again when you Confirm.</p>
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap gap-2 border-t border-[#e8dccd] pt-3">
           {forwardTransitions.map((next) => (
