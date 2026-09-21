@@ -30,7 +30,7 @@ import { filterOrdersBySearch, formatOrderItemSummary, getOrderCardSource, getOr
 import { appearsSafeToDelete, buildDeleteConfirmation } from "@/lib/orders/delete-eligibility";
 import { describeDraftStockRow, describeOrderStockRow, getStockReadiness, type StockReadiness } from "@/lib/orders/stock-readiness";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
-import { getAllowedOrderTransitions, isValidOrderTransition } from "@/lib/orders/transitions";
+import { getAllowedOrderTransitions, isValidOrderTransition, orderStatusChangeMovesStock } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
 import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type FulfillmentMethod, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
 import { listCustomers, listOrderLines, listOrderRawCogs, listOrders, safeDeleteOrder, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
@@ -90,7 +90,15 @@ function sourceLabel(source: OrderSource): string {
   return source === "unknown" ? "Unknown source" : source.replace(/_/g, " ");
 }
 
-export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChange }: { initialOrdersTab?: OrdersTab; labState: LabState; onDirtyChange: (isDirty: boolean) => void }) {
+export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChange, onStockChanged }: {
+  initialOrdersTab?: OrdersTab;
+  labState: LabState;
+  onDirtyChange: (isDirty: boolean) => void;
+  // Reloads the parent's authoritative LabState (finished-stock movements included) after an order
+  // change that moved stock. Resolves false when that reload did not succeed. Orders never queries
+  // finished stock itself -- see the stock-readiness memos below, which read labState.
+  onStockChanged: () => Promise<boolean>;
+}) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [linesByOrderId, setLinesByOrderId] = useState<Map<string, OrderLine[]>>(new Map());
   // Wave 3: derived raw-production COGS per order, keyed by order id. Supplementary -- see
@@ -292,8 +300,12 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
     });
   }
 
+  // movesStock: this action was a confirm / complete / release, so the stock-readiness readout's
+  // source data (labState.finishedStockMovements) is now out of date and is reloaded -- but only after
+  // the database accepted the change. A refused change moves nothing, so it claims nothing and reloads
+  // nothing here beyond the orders list it always reloaded.
   const runOrderAction = useCallback(
-    async (orderId: string, action: () => Promise<{ ok: true; order: Order } | { ok: false; message: string }>) => {
+    async (orderId: string, action: () => Promise<{ ok: true; order: Order } | { ok: false; message: string }>, options: { movesStock?: boolean } = {}) => {
       if (actionGuardRef.current.isActive(orderId)) {
         return;
       }
@@ -314,12 +326,19 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
           setMessage("Order updated.");
           setMessageTone("good");
           reload();
+          if (options.movesStock) {
+            const refreshed = await onStockChanged().catch(() => false);
+            if (!refreshed) {
+              setMessage("Order updated. Stock availability could not refresh -- reload the page to see it.");
+              setMessageTone("info");
+            }
+          }
         } finally {
           setActionBusy(false);
         }
       });
     },
-    [reload],
+    [reload, onStockChanged],
   );
 
   // Every editable field on the new-order form counts, not just customer and lines: an operator who
@@ -682,7 +701,7 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
               const result = await updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString(), operationId });
               if (result.ok) rotateTransitionOperationId(id, "cancelled");
               return result;
-            });
+            }, { movesStock: orderStatusChangeMovesStock(selectedOrder.status, "cancelled") });
           }}
           onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
           stockReadiness={selectedStockReadiness}
@@ -711,7 +730,7 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
               const result = await updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString(), operationId });
               if (result.ok) rotateTransitionOperationId(id, to);
               return result;
-            });
+            }, { movesStock: orderStatusChangeMovesStock(selectedOrder.status, to) });
           }}
           order={selectedOrder}
         />

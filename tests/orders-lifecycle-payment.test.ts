@@ -9,7 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createMutationGuard } from "../src/lib/mutation-guard.ts";
-import { getAllowedOrderTransitions, isValidOrderTransition } from "../src/lib/orders/transitions.ts";
+import { getAllowedOrderTransitions, isValidOrderTransition, orderStatusChangeMovesStock } from "../src/lib/orders/transitions.ts";
 import { getPaymentDivergence } from "../src/lib/orders/totals.ts";
 import { grossRevenue, netRevenue, refunds } from "../src/lib/orders/revenue.ts";
 import { getOrderDetail, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "../src/lib/orders-repository.ts";
@@ -624,4 +624,27 @@ test("the actions offered to the operator match the domain transition function e
       assert.equal(offered, isValidOrderTransition(status, candidate), `${status} -> ${candidate}`);
     }
   }
+});
+
+// Ops polish: the UI's "does this move stock?" rule must match what the repository actually routes
+// through a reservation RPC, for every valid transition -- so it can never drift from the database
+// path it mirrors.
+test("orderStatusChangeMovesStock matches exactly the transitions the repository sends to a reservation RPC", async () => {
+  for (const from of ORDER_STATUSES) {
+    for (const to of getAllowedOrderTransitions(from)) {
+      const client = createStubClient({ persisted: orderRow({ status: from }) });
+      const result = await updateOrderStatus(client, { orderId: ORDER_ID, to, now: NOW, operationId: `op-${from}-${to}` });
+      assert.equal(result.ok, true, `${from} -> ${to}`);
+      assert.equal(orderStatusChangeMovesStock(from, to), client.rpcCalls.length === 1, `${from} -> ${to}`);
+    }
+  }
+});
+
+test("Confirm always reaches the database RPC, whatever finished stock the client last loaded", async () => {
+  // The client sends no stock figure at all: the only arguments are the operation and order ids, so a
+  // stale readiness readout can neither block nor authorize a confirm.
+  const client = createStubClient({ persisted: orderRow({ status: "new" }) });
+  const result = await updateOrderStatus(client, { orderId: ORDER_ID, to: "confirmed", now: NOW, operationId: "op-confirm" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(client.rpcCalls, [{ name: "confirm_order_with_reservation", args: { p_operation_id: "op-confirm", p_order_id: ORDER_ID } }]);
 });

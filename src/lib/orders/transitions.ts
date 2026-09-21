@@ -37,6 +37,15 @@ export function getAllowedOrderTransitions(from: OrderStatus): readonly OrderSta
   return ALLOWED_ORDER_TRANSITIONS[from];
 }
 
+// Whether a lifecycle change moves physical finished stock -- the three transitions
+// updateOrderStatus routes through a reservation/fulfillment RPC (confirm reserves, complete fulfills,
+// cancelling a confirmed/ready order releases). Everything else (new -> cancelled, -> ready) moves no
+// stock. The UI uses this only to decide whether its stock-readiness source data needs refreshing; the
+// database stays the authority on every one of these.
+export function orderStatusChangeMovesStock(from: OrderStatus, to: OrderStatus): boolean {
+  return to === "confirmed" || to === "completed" || (to === "cancelled" && (from === "confirmed" || from === "ready"));
+}
+
 export type OrderTransitionResult = { ok: true; order: Order } | { ok: false; message: string };
 
 // Applies a lifecycle transition, writing the status and its timestamp in one step.

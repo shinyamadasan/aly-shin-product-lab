@@ -3298,7 +3298,7 @@ export default function ProductLab({
             </section>
           ) : null}
 
-          {view === "orders" ? <OrdersPage initialOrdersTab={initialOrdersTab} labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_ORDER_MESSAGE } : null)} /> : null}
+          {view === "orders" ? <OrdersPage initialOrdersTab={initialOrdersTab} labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_ORDER_MESSAGE } : null)} onStockChanged={loadSupabaseData} /> : null}
 
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
           {view === "inventory" ? (
