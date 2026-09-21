@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { buildBakeBatchChoices, formatBakeBatchOption, isOlderBakeBatch, resolveBakeBatchId } from "../src/lib/bake-batch-option.ts";
+import { isVoidedBatch } from "../src/lib/batch-safety.ts";
 
 type Product = { id: string; name: string };
 type Batch = { id: string; productId: string; batchVersion: string; usablePieces: number; dateMade: string };
@@ -263,10 +264,73 @@ test("Bake tells the truth about voided recipes and leaves confirm authority unt
   assert.match(bakeText, /No proof batches yet -- record one on Proof Day first\./, "the plain empty state is kept for no batches");
   assert.match(bakeText, /No current recipe for \{batchChoices\.noCurrent\.map/);
   assert.match(bakeText, /selectedBatch && isVoidedBatch\(selectedBatch\) \?[^\n]*This recipe version is voided and cannot be baked\./);
-  // Presentation only: readyToConfirm and the confirm call are exactly as before...
+  // The confirm call is exactly as before (readyToConfirm's voided guard is covered by its own tests below)...
   assert.match(bakeText, /confirmBake\(selectedBatch\.id, selectedBatch\.productId, batchLabel, multiplier, actualPieces, deductions, canOverrideNegative && allowNegative, bakeOperationId\)/);
-  assert.doesNotMatch(bakeText.slice(bakeText.indexOf("readyToConfirm =")).split(";")[0], /isVoidedBatch/);
   // ...and the database still refuses a voided batch.
   const migration = readFileSync(new URL("../supabase/migrations/20260912090000_cost_baseline_repair.sql", import.meta.url), "utf8");
   assert.match(migration, /v_batch\.voided_at is not null or v_batch\.status = 'voided'[\s\S]{0,80}This batch is voided and cannot be baked/);
+});
+
+// ---- Ops polish: a voided batch can be viewed but never confirmed ---------------------------------------
+
+// The real readyToConfirm expression from bake-page.tsx, evaluated with every OTHER requirement satisfied,
+// so the only thing under test is the batch itself.
+const readyDeclaration = nodes(bake, (node) => ts.isVariableDeclaration(node) && node.name.getText() === "readyToConfirm")[0] as ts.VariableDeclaration;
+function readyToConfirm(selectedBatch: { status?: string; voidedAt?: string } | null, overrides: Record<string, unknown> = {}) {
+  return run(readyDeclaration.initializer?.getText(), {
+    fullyResolved: true, isMultiplierValid: true, isActualPiecesValid: true, deductions: [{}], canOverrideNegative: false, allowNegative: false,
+    insufficient: [], remotePosting: true, uncertifiedCostIngredientNames: [], selectedBatch, isVoidedBatch, ...overrides,
+  });
+}
+
+test("a voided selected batch is never ready to confirm, however it is marked voided and whatever else is valid", () => {
+  for (const voided of [{ status: "voided" }, { voidedAt: "2026-09-13T00:00:00Z" }, { status: "Cancelled" }, { status: "completed", voidedAt: "2026-09-13T00:00:00Z" }]) {
+    assert.equal(readyToConfirm(voided), false, JSON.stringify(voided));
+    // Still false in the local-only demo (no remote guard) and with a negative-stock override.
+    assert.equal(readyToConfirm(voided, { remotePosting: false }), false);
+    assert.equal(readyToConfirm(voided, { remotePosting: false, canOverrideNegative: true, allowNegative: true, insufficient: [{}] }), false);
+  }
+});
+
+test("a non-voided valid batch keeps its previous behavior, including every existing blocker", () => {
+  for (const ok of [{ status: "completed" }, { status: "draft" }, { status: "" }, {}]) {
+    assert.equal(readyToConfirm(ok), true, JSON.stringify(ok));
+  }
+  const batch = { status: "completed" };
+  assert.equal(readyToConfirm(batch, { fullyResolved: false }), false);
+  assert.equal(readyToConfirm(batch, { isMultiplierValid: false }), false);
+  assert.equal(readyToConfirm(batch, { isActualPiecesValid: false }), false);
+  assert.equal(readyToConfirm(batch, { deductions: [] }), false);
+  assert.equal(readyToConfirm(batch, { insufficient: [{}] }), false);
+  assert.equal(readyToConfirm(batch, { insufficient: [{}], canOverrideNegative: true, allowNegative: true }), true, "the local override still works");
+  assert.equal(readyToConfirm(batch, { uncertifiedCostIngredientNames: ["Flour"] }), false);
+  assert.equal(readyToConfirm(batch, { uncertifiedCostIngredientNames: ["Flour"], remotePosting: false }), true, "local demo never had the remote cost guard");
+});
+
+test("the voided guard is null-safe: with no selected batch it adds nothing, and the handler still requires a batch", () => {
+  assert.equal(readyToConfirm(null), true, "the guard adds nothing when there is no batch; handleConfirm and the button still require one");
+  assert.match(bakeText, /if \(isConfirmingRef\.current \|\| !selectedBatch \|\| !readyToConfirm\) \{/);
+});
+
+test("the Confirm button and handler are both gated by readyToConfirm, so a voided batch cannot be confirmed from the UI", () => {
+  assert.match(bakeText, /disabled=\{!readyToConfirm \|\| isConfirming\}/);
+  assert.match(bakeText, /if \(isConfirmingRef\.current \|\| !selectedBatch \|\| !readyToConfirm\) \{/);
+  assert.match(readyDeclaration.initializer?.getText() ?? "", /&& !\(selectedBatch && isVoidedBatch\(selectedBatch\)\)$/);
+});
+
+test("a deep-linked voided batch stays selected and visibly warned; selection logic is unchanged", () => {
+  const voided = [statusBatch("bl-v3", "blondies", "V3", "2026-09-10", { status: "voided" }), statusBatch("bl-v2", "blondies", "V2", "2026-09-01")];
+  const result = buildBakeBatchChoices(products, voided);
+  assert.equal(resolveBakeBatchId(result, voided, "bl-v3"), "bl-v3", "the deep link is honored, not replaced");
+  assert.equal(isOlderBakeBatch(result, "bl-v3"), true);
+  assert.match(bakeText, /selectedBatch && isVoidedBatch\(selectedBatch\) \?[^\n]*role="alert">This recipe version is voided and cannot be baked\./);
+  // The disappeared-batch fallback only reacts to a batch that no longer exists -- never to a voided one.
+  assert.match(bakeText, /if \(selectedBatchId && labState\.batches\.some\(\(item\) => item\.id === selectedBatchId\)\) \{\s*return;\s*\}/);
+});
+
+test("confirm_bake_v3 authority and the confirmBake call are untouched by the client guard", () => {
+  const migration = readFileSync(new URL("../supabase/migrations/20260912090000_cost_baseline_repair.sql", import.meta.url), "utf8");
+  assert.match(migration, /v_batch\.voided_at is not null or v_batch\.status = 'voided'[\s\S]{0,80}This batch is voided and cannot be baked/);
+  assert.match(bakeText, /confirmBake\(selectedBatch\.id, selectedBatch\.productId, batchLabel, multiplier, actualPieces, deductions, canOverrideNegative && allowNegative, bakeOperationId\)/);
+  assert.match(bakeText, /const bakeOperationKey = `\$\{selectedBatchId\}:\$\{multiplierText\}:\$\{actualPiecesText\}`/);
 });

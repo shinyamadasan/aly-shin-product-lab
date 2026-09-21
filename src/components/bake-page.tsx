@@ -127,7 +127,10 @@ export function BakePage({
   // going to reject.
   const readyToConfirm = fullyResolved && isMultiplierValid && isActualPiecesValid && deductions.length > 0
     && ((canOverrideNegative && allowNegative) || insufficient.length === 0)
-    && (!remotePosting || uncertifiedCostIngredientNames.length === 0);
+    && (!remotePosting || uncertifiedCostIngredientNames.length === 0)
+    // A voided historical batch can be selected and viewed, never confirmed. confirm_bake_v3 refuses it
+    // remotely; this keeps the button honest with the alert above and covers the local-only demo path.
+    && !(selectedBatch && isVoidedBatch(selectedBatch));
 
   function handleAssign(row: ResolvedBakeRow, ingredientId: string) {
     saveIngredientAlias(row.ingredientName, ingredientId, "bake");
