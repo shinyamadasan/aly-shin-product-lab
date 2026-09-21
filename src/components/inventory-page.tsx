@@ -249,6 +249,13 @@ function CertifyCostForm({
     }
   }
 
+  // Editing the paid / quantity / unit makes a previous definite failure (or validation message)
+  // stale, so it clears. An info message (checking / uncertain result) is never cleared here, and
+  // isLocked is untouched: editing the numbers must not unlock an uncertain result.
+  function clearFailedFeedback() {
+    setFeedback((current) => (current?.tone === "bad" ? null : current));
+  }
+
   function handleManualSubmit() {
     if (manualCost.status !== "ok") {
       setFeedback({ tone: "bad", text: `Could not verify cost: ${manualCost.status === "invalid" ? manualCost.reason : "enter how much you paid and how much you got."}` });
@@ -311,16 +318,16 @@ function CertifyCostForm({
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Enter cost manually</p>
               <label className="grid gap-1 text-xs font-semibold text-[#5f4a3d]">
                 Total paid (PHP)
-                <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" inputMode="decimal" min="0" name="totalPaid" onChange={(event) => setManualTotal(event.target.value)} placeholder="e.g. 250" step="any" type="number" value={manualTotal} />
+                <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" inputMode="decimal" min="0" name="totalPaid" onChange={(event) => { setManualTotal(event.target.value); clearFailedFeedback(); }} placeholder="e.g. 250" step="any" type="number" value={manualTotal} />
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <label className="grid gap-1 text-xs font-semibold text-[#5f4a3d]">
                   Quantity
-                  <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" inputMode="decimal" min="0" name="quantity" onChange={(event) => setManualQuantity(event.target.value)} placeholder="e.g. 500" step="any" type="number" value={manualQuantity} />
+                  <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" inputMode="decimal" min="0" name="quantity" onChange={(event) => { setManualQuantity(event.target.value); clearFailedFeedback(); }} placeholder="e.g. 500" step="any" type="number" value={manualQuantity} />
                 </label>
                 <label className="grid gap-1 text-xs font-semibold text-[#5f4a3d]">
                   Unit
-                  <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm font-normal" name="unit" onChange={(event) => setManualUnit(event.target.value)} value={manualUnit}>
+                  <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm font-normal" name="unit" onChange={(event) => { setManualUnit(event.target.value); clearFailedFeedback(); }} value={manualUnit}>
                     {manualCostUnitOptions(ingredient.baseUnit).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
                   </select>
                 </label>

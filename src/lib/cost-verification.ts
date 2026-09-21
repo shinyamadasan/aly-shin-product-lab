@@ -204,7 +204,9 @@ export type CertifyCostIo = {
 
 export const UNCERTAIN_UNREADABLE_MESSAGE =
   "Verification result is uncertain because the request timed out and the item could not be re-read to check. Don't submit again yet -- reload the page and check whether this item now shows Verified.";
-export const TIMEOUT_NOT_SAVED_MESSAGE = "The request timed out and the cost was not saved. You can try again.";
+// An unchanged read-back right after a gateway timeout is strong evidence, not proof -- a slow request
+// could still commit later -- so this never claims the cost "was not saved".
+export const TIMEOUT_NOT_SAVED_MESSAGE = "The request timed out and no saved change was found yet. Check again before retrying.";
 export const CHANGED_DURING_TIMEOUT_MESSAGE =
   "The request timed out, and this item's cost changed in a way that doesn't match what you submitted. Reload and review the item before trying again.";
 

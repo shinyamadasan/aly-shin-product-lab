@@ -415,7 +415,7 @@ test("timeout + read-back shows the certification committed -> verified (confirm
   assert.equal(log.rpcs, 1, "no retry");
 });
 
-test("timeout + read-back shows nothing changed -> a clear 'not saved' failure the owner may retry; still no automatic retry", async () => {
+test("timeout + read-back shows nothing changed -> a cautious no-saved-change-found failure; still no automatic retry", async () => {
   const { io: fake, log } = io([before, { ...before }], timeout);
   const result = await runCostCertification(fake, 0.38);
   assert.deepEqual(result, { status: "failed", message: TIMEOUT_NOT_SAVED_MESSAGE });
@@ -530,4 +530,47 @@ test("Bake's certified-cost requirement is unchanged: same shared helper client-
   // Nothing in this change auto-certifies from purchases: the only callers of the certify callback are the two explicit buttons.
   assert.equal((inventory.text.match(/certifyIngredientCostBaseline\(/g) ?? []).length, 1);
   assert.doesNotMatch(read("src/lib/cost-verification.ts"), /auto-?certif|verify all|bulk/i);
+});
+
+// ---- Ops polish: stale failure feedback + softened timeout wording ---------------------------------
+
+function feedbackHarness(initial: { tone: string; text: string } | null) {
+  const state = { feedback: initial, locked: true };
+  const clear = evaluateFunction(fn(fn(inventory, "CertifyCostForm"), "clearFailedFeedback"), {
+    setFeedback: (update: (current: typeof initial) => typeof initial) => { state.feedback = update(state.feedback); },
+    setIsLocked: (value: boolean) => { state.locked = value; },
+  });
+  return { state, clear };
+}
+
+test("editing total paid, quantity or unit clears a definite failure (and a validation message), not an info message", () => {
+  const form = fn(inventory, "CertifyCostForm").getText();
+  for (const setter of ["setManualTotal", "setManualQuantity", "setManualUnit"]) {
+    assert.match(form, new RegExp(`${setter}\\(event\\.target\\.value\\); clearFailedFeedback\\(\\);`), `${setter} clears stale failure`);
+  }
+  const failed = feedbackHarness({ tone: "bad", text: "Could not verify cost: Cost baseline changed." });
+  failed.clear();
+  assert.equal(failed.state.feedback, null);
+
+  const info = { tone: "info", text: "Verification result is uncertain because the request timed out." };
+  const uncertain = feedbackHarness(info);
+  uncertain.clear();
+  assert.equal(uncertain.state.feedback, info, "an uncertain / checking message survives edits");
+  assert.equal(uncertain.state.locked, true, "editing never unlocks an uncertain result");
+
+  const none = feedbackHarness(null);
+  none.clear();
+  assert.equal(none.state.feedback, null);
+});
+
+test("clearing stale feedback never touches the lock: no setIsLocked call and the confirm gate is unchanged", () => {
+  const clearFn = fn(fn(inventory, "CertifyCostForm"), "clearFailedFeedback").getText();
+  assert.doesNotMatch(clearFn, /setIsLocked|setVerified|submit\(/);
+  assert.match(fn(inventory, "CertifyCostForm").getText(), /disabled=\{isSubmitting \|\| isLocked \|\| manualCost\.status !== "ok"\}/);
+});
+
+test("the unchanged-read-back timeout message no longer claims the cost was not saved, and still invites no blind retry", () => {
+  assert.doesNotMatch(TIMEOUT_NOT_SAVED_MESSAGE, /was not saved|You can try again/);
+  assert.match(TIMEOUT_NOT_SAVED_MESSAGE, /no saved change was found yet/);
+  assert.match(TIMEOUT_NOT_SAVED_MESSAGE, /Check again before retrying/);
 });
