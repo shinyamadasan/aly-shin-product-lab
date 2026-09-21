@@ -1,13 +1,15 @@
 "use client";
 
-import type { Ingredient } from "@/lib/product-lab-types";
+import { ingredientCategoryLabel, ingredientCategoryOptions } from "@/components/inventory-page";
+import type { Ingredient, IngredientCategory } from "@/lib/product-lab-types";
 import { CANONICAL_UNITS } from "@/lib/product-lab-types";
 import type { PurchaseItemPlan } from "@/lib/purchase-item-resolution";
 
 const ITEM_OPTIONS_LIST_ID = "purchase-item-options";
 const baseUnitChoices = Object.values(CANONICAL_UNITS);
 
-// The Ingredient input of the manual purchase form. The operator just types what they bought;
+// The Item input of the manual purchase form (an Item can be an ingredient, packaging, a consumable
+// or something else). The operator just types what they bought;
 // everything about whether that is an existing Item, a near-duplicate, or genuinely new is decided
 // by the pure plan (planPurchaseItem) passed in -- this component only renders it and reports the
 // operator's explicit choices. Nothing here writes anything: a new Item is only created when the
@@ -15,16 +17,19 @@ const baseUnitChoices = Object.values(CANONICAL_UNITS);
 //
 // Lives inside PurchaseLogPage's own <form>, so the plan is also serialized into hidden inputs the
 // save path reads: ingredientId (a resolved Item), or newItemName + newItemBaseUnit (create on
-// save), plus createAnyway so the save path can re-run the same resolution.
+// save), plus createAnyway so the save path can re-run the same resolution. newItemCategory is only
+// emitted when a new Item will be created -- an existing Item never has its category touched here.
 export function PurchaseItemField({
   chosenBaseUnit,
   createAnywayActive,
   ingredients,
   isLocked,
   isRestoring,
+  newItemCategory,
   onChangeSelection,
   onChosenBaseUnitChange,
   onCreateAnyway,
+  onNewItemCategoryChange,
   onRestoreAndUse,
   onTypedNameChange,
   onUseIngredient,
@@ -37,9 +42,11 @@ export function PurchaseItemField({
   ingredients: Ingredient[];
   isLocked: boolean;
   isRestoring: boolean;
+  newItemCategory: IngredientCategory;
   onChangeSelection: () => void;
   onChosenBaseUnitChange: (value: string) => void;
   onCreateAnyway: () => void;
+  onNewItemCategoryChange: (value: IngredientCategory) => void;
   onRestoreAndUse: (ingredient: Ingredient) => void;
   onTypedNameChange: (value: string) => void;
   onUseIngredient: (ingredientId: string) => void;
@@ -48,14 +55,26 @@ export function PurchaseItemField({
   typedName: string;
 }) {
   const resolvedIngredient = plan.status === "use-existing" ? plan.ingredient : undefined;
+  // Shown only while a genuinely new Item is about to be created (its base unit known, or being chosen).
+  const categoryField = (
+    <label className="flex items-center gap-2 text-xs font-normal text-[#6f5a4c]">
+      Category
+      <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" onChange={(event) => onNewItemCategoryChange(event.target.value as IngredientCategory)} value={newItemCategory}>
+        {ingredientCategoryOptions.map((option) => (
+          <option key={option} value={option}>{ingredientCategoryLabel[option]}</option>
+        ))}
+      </select>
+    </label>
+  );
 
   return (
     <div className="grid gap-1 text-sm font-medium">
-      <label htmlFor="purchase-item-input">Ingredient</label>
+      <label htmlFor="purchase-item-input">Item</label>
       <input name="ingredientId" type="hidden" value={resolvedIngredient?.id ?? ""} />
       <input name="ingredientName" type="hidden" value={selectedIngredient?.name ?? typedName} />
       <input name="newItemName" type="hidden" value={plan.status === "create" ? plan.name : ""} />
       <input name="newItemBaseUnit" type="hidden" value={plan.status === "create" ? plan.baseUnit : ""} />
+      <input name="newItemCategory" type="hidden" value={plan.status === "create" ? newItemCategory : ""} />
       <input name="createAnyway" type="hidden" value={createAnywayActive ? "1" : ""} />
       {selectedIngredient ? (
         <div className="flex h-10 items-center justify-between gap-2 rounded-md border border-[#d8c7b7] bg-white px-3">
@@ -93,9 +112,12 @@ export function PurchaseItemField({
       ) : null}
 
       {plan.status === "create" ? (
-        <p className="text-xs font-normal text-[#6f5a4c]">
-          New item &ldquo;{plan.name}&rdquo; will be created when you save this purchase, tracked in {plan.baseUnit}.
-        </p>
+        <div className="grid gap-1">
+          <p className="text-xs font-normal text-[#6f5a4c]">
+            New item &ldquo;{plan.name}&rdquo; will be created when you save this purchase, tracked in {plan.baseUnit}.
+          </p>
+          {categoryField}
+        </div>
       ) : null}
 
       {plan.status === "needs-base-unit" ? (
@@ -110,6 +132,7 @@ export function PurchaseItemField({
               ))}
             </select>
           </label>
+          {categoryField}
         </div>
       ) : null}
 

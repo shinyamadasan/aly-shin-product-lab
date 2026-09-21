@@ -81,7 +81,7 @@ export function InventoryStockPage({
       </div>
 
       <div>
-        {allIngredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No ingredients yet. Add one in Manage Items.</p> : null}
+        {allIngredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No items yet. Add one in Manage Items.</p> : null}
         {allIngredients.length > 0 && ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">Nothing matches right now.</p> : null}
         {ingredients.length > 0 ? (
           <div>

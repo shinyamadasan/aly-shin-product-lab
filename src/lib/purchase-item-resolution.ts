@@ -1,7 +1,7 @@
-import type { CanonicalUnit, Ingredient } from "./product-lab-types.ts";
+import type { CanonicalUnit, Ingredient, IngredientCategory } from "./product-lab-types.ts";
 import { CANONICAL_UNITS } from "./product-lab-types.ts";
 import { normalizeIngredientName } from "./ingredient-normalization.ts";
-import { inferCanonicalUnit } from "./unit-conversion.ts";
+import { convertToBaseUnit, inferCanonicalUnit } from "./unit-conversion.ts";
 
 // Decides what "the ingredient the operator just typed" means for a NEW manual purchase, so the
 // operator never has to decide whether a catalog Item exists before recording that they bought
@@ -175,15 +175,32 @@ export function isBlockingPurchaseItemPlan(plan: PurchaseItemPlan): boolean {
   return plan.status === "needs-base-unit" || plan.status === "needs-choice" || plan.status === "archived" || plan.status === "ambiguous";
 }
 
+// Whether the purchase's own quantity + unit convert into the base unit a NEW Item would be created
+// with. Run BEFORE the Item is created: applySupplyPurchaseEffect refuses an unconvertible unit with
+// this exact conversion, so checking it afterwards would leave a zero-stock stray Item behind whenever
+// only the purchase unit was wrong (e.g. "kg" bought for a piece-counted Item). Same authority as that
+// effect -- convertToBaseUnit -- not a second rule.
+export function checkNewItemPurchaseUnit(input: { name: string; baseUnit: CanonicalUnit; purchaseUnit: string; packQuantity: number }): { ok: true } | { ok: false; message: string } {
+  const unit = input.purchaseUnit.trim();
+  if (!unit) {
+    return { ok: false, message: `Enter the purchase unit before saving -- "${input.name}" was not created.` };
+  }
+  if (convertToBaseUnit(input.packQuantity, unit, { baseUnit: input.baseUnit }) === null) {
+    return { ok: false, message: `"${unit}" doesn't convert to ${input.baseUnit}, so "${input.name}" was not created. Change the purchase unit, or how this new item is tracked.` };
+  }
+  return { ok: true };
+}
+
 // The in-memory shape of an Item created a moment ago by the purchase flow, mirroring exactly what
-// saveIngredient writes for a brand-new Item (zero stock, zero cost, active, no thresholds) so the
-// purchase that follows can be computed before the reloaded catalog reaches this render.
-export function buildNewPurchaseItem(id: string, name: string, baseUnit: CanonicalUnit): Ingredient {
+// saveIngredient writes for a brand-new Item (zero stock, zero cost, active, no thresholds, the
+// category the operator chose) so the purchase that follows can be computed before the reloaded
+// catalog reaches this render.
+export function buildNewPurchaseItem(id: string, name: string, baseUnit: CanonicalUnit, category: IngredientCategory): Ingredient {
   return {
     id,
     name,
     baseUnit,
-    category: "",
+    category,
     currentQuantity: 0,
     lowStockThreshold: 0,
     targetStockQuantity: 0,

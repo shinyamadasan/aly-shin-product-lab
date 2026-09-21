@@ -5,7 +5,11 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { inventoryTabs } from "../src/lib/inventory-tabs.ts";
 import { normalizeIngredientName } from "../src/lib/ingredient-normalization.ts";
-import { buildNewPurchaseItem, isCanonicalUnit, resolvePurchaseItem } from "../src/lib/purchase-item-resolution.ts";
+import { buildNewPurchaseItem, checkNewItemPurchaseUnit, isCanonicalUnit, resolvePurchaseItem } from "../src/lib/purchase-item-resolution.ts";
+import { applySupplyPurchaseEffect } from "../src/lib/supply-inventory-effect.ts";
+import { buildInventoryItemViews } from "../src/lib/inventory-items.ts";
+import { groupPurchasesByItem } from "../src/lib/purchase-history.ts";
+import { matchesStockFilter, matchesStockSearch } from "../src/lib/inventory-status.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
 // Exercise the actual JSX control expressions and handlers without a browser or new
@@ -579,7 +583,8 @@ function itemStepHarness(ingredients: Ingredient[]) {
   const run = evaluateFunction(ensure, {
     itemsCreatedForPurchaseRef: ref,
     get labState() { return { ingredients: state.ingredients }; },
-    normalizeIngredientName, resolvePurchaseItem, isCanonicalUnit, buildNewPurchaseItem,
+    normalizeIngredientName, resolvePurchaseItem, isCanonicalUnit, buildNewPurchaseItem, checkNewItemPurchaseUnit,
+    ingredientCategoryOptions: ["ingredient", "packaging", "consumable", "other"],
     FormData: FakeFormData,
     setMessage: (message: string) => { messages.push(message); },
     setMessageTone: () => {},
@@ -589,7 +594,12 @@ function itemStepHarness(ingredients: Ingredient[]) {
       return `new-${state.nextId++}`;
     },
   }) as (form: { get: (key: string) => string | null }) => Promise<{ ok: boolean; ingredient: Ingredient | null; createdForThisPurchase: boolean }>;
-  const form = (values: Record<string, string>) => ({ get: (key: string) => values[key] ?? null });
+  // A purchase always carries a quantity and unit; these compatible defaults (1 g) keep the tests that
+  // are about something else focused. Tests about the unit override them explicitly.
+  const form = (values: Record<string, string>) => {
+    const all: Record<string, string> = { unit: "g", packQuantity: "1", ...values };
+    return { get: (key: string) => all[key] ?? null };
+  };
   return { run, form, created, messages, state, ref };
 }
 
@@ -600,7 +610,7 @@ test("Purchases E/F: a genuinely new Item is created only at save time, with the
   assert.equal(result.ingredient?.id, "new-1");
   assert.equal(result.ingredient?.baseUnit, "g");
   assert.equal(result.createdForThisPurchase, true);
-  assert.deepEqual(harness.created, [{ name: "Rice Flour", baseUnit: "g", category: "" }]);
+  assert.deepEqual(harness.created, [{ name: "Rice Flour", baseUnit: "g", category: "ingredient" }], "Ingredient is the default category");
 });
 
 test("Purchases: nothing is created when the form already resolved an Item, or nothing was typed", async () => {
@@ -1065,4 +1075,173 @@ test("Bake: the posting authority is unchanged -- same readyToConfirm guards, sa
   }
   assert.match(bake.text, /confirmBake\(selectedBatch\.id, selectedBatch\.productId, batchLabel, multiplier, actualPieces, deductions,/);
   assert.match(bake.text, /const \[actualPiecesText, setActualPiecesText\] = useState\(""\)/);
+});
+
+const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+
+// ---- Ops polish: purchase-time Item creation validates the unit first, and takes a category ------------
+
+test("Purchases: an incompatible purchase unit blocks BEFORE the new Item is created (no stray Item)", async () => {
+  const harness = itemStepHarness([]);
+  const result = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "kg", packQuantity: "100" }));
+  assert.equal(result.ok, false);
+  assert.equal(harness.created.length, 0, "saveIngredient was never called");
+  assert.equal(harness.ref.current.size, 0, "nothing remembered as created either");
+  assert.match(harness.messages.at(-1) ?? "", /"kg" doesn't convert to pcs, so "Brownie Box" was not created\./);
+  // Same for an unknown unit and a cross-dimension unit.
+  for (const [baseUnit, unit] of [["pcs", "box"], ["g", "ml"], ["ml", "g"]]) {
+    const refused = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: baseUnit, unit, packQuantity: "10" }));
+    assert.equal(refused.ok, false, `${unit} -> ${baseUnit}`);
+  }
+  assert.equal(harness.created.length, 0);
+});
+
+test("Purchases: compatible units create the Item (g/kg, ml/L, pcs) and use the converted base unit", async () => {
+  for (const [baseUnit, unit] of [["g", "g"], ["g", "kg"], ["ml", "ml"], ["ml", "L"], ["pcs", "pcs"]]) {
+    const harness = itemStepHarness([]);
+    const result = await harness.run(harness.form({ newItemName: "Thing", newItemBaseUnit: baseUnit, unit, packQuantity: "2" }));
+    assert.equal(result.ok, true, `${unit} -> ${baseUnit}`);
+    assert.equal(harness.created.length, 1);
+    assert.equal(harness.created[0].baseUnit, baseUnit);
+  }
+});
+
+test("Purchases: fixing the unit after a refusal and saving again creates the Item exactly once (retry-safe)", async () => {
+  const harness = itemStepHarness([]);
+  const refused = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "kg", packQuantity: "100" }));
+  assert.equal(refused.ok, false);
+  const fixed = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "pcs", packQuantity: "100" }));
+  assert.equal(fixed.ok, true);
+  assert.equal(fixed.createdForThisPurchase, true);
+  const retryAfterFailedPost = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "pcs", packQuantity: "100" }));
+  assert.equal(retryAfterFailedPost.ingredient?.id, fixed.ingredient?.id, "the created Item is reused, as before");
+  assert.equal(harness.created.length, 1);
+});
+
+test("Purchases: the chosen category reaches saveIngredient for a new Item (packaging, consumable, other, ingredient)", async () => {
+  for (const category of ["packaging", "consumable", "other", "ingredient"]) {
+    const harness = itemStepHarness([]);
+    const result = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "pcs", packQuantity: "100", newItemCategory: category }));
+    assert.equal(result.ok, true, category);
+    assert.deepEqual(harness.created, [{ name: "Brownie Box", baseUnit: "pcs", category }]);
+    assert.equal(result.ingredient?.category, category, "the in-memory Item the purchase is computed against has it too");
+  }
+});
+
+test("Purchases: an unusable category is refused before anything is created; a missing one defaults to Ingredient", async () => {
+  const harness = itemStepHarness([]);
+  const refused = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "pcs", newItemCategory: "equipment" }));
+  assert.equal(refused.ok, false);
+  assert.equal(harness.created.length, 0);
+  assert.match(harness.messages.at(-1) ?? "", /Choose a category for this new Item/);
+  const defaulted = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "pcs" }));
+  assert.equal(defaulted.ok, true);
+  assert.equal(harness.created[0].category, "ingredient");
+});
+
+test("Purchases: using an existing Item ignores the new-item category and unit pre-check entirely", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "box", name: "Brownie Box", baseUnit: "pcs", category: "packaging" })]);
+  // A resolved Item id: nothing is created, whatever category or (irrelevant) unit the form carries.
+  const byId = await harness.run(harness.form({ ingredientId: "box", newItemCategory: "consumable", unit: "kg" }));
+  assert.equal(byId.ok, true);
+  assert.equal(harness.created.length, 0);
+  // An exact typed match reuses the existing Item and never re-categorizes it.
+  const byName = await harness.run(harness.form({ newItemName: "brownie box", newItemBaseUnit: "pcs", newItemCategory: "consumable", unit: "pcs" }));
+  assert.equal(byName.ok, true);
+  assert.equal(byName.ingredient?.id, "box");
+  assert.equal(byName.ingredient?.category, "packaging", "category untouched");
+  assert.equal(harness.created.length, 0);
+});
+
+test("Purchases: archived, ambiguous and near-match refusals still fire before the unit or category are even read", async () => {
+  const harness = itemStepHarness([catalogItem({ id: "a", name: "Cake Box", isActive: false }), catalogItem({ id: "s", name: "Brown Sugar" })]);
+  for (const [name, expected] of [["Cake Box", /archived Item named "Cake Box" already exists/], ["Brown Sugr", /looks like an existing Item/]] as const) {
+    const result = await harness.run(harness.form({ newItemName: name, newItemBaseUnit: "g", unit: "kg", newItemCategory: "bogus" }));
+    assert.equal(result.ok, false);
+    assert.match(harness.messages.at(-1) ?? "", expected);
+  }
+  assert.equal(harness.created.length, 0);
+});
+
+test("Purchases: the unit and category checks both run before saveIngredient, and post_raw_purchase authority is untouched", () => {
+  const ensureSource = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "ensureItemForNewPurchase")[0].getText();
+  const saveAt = ensureSource.indexOf("saveIngredient(");
+  assert.ok(ensureSource.indexOf("checkNewItemPurchaseUnit(") > 0 && ensureSource.indexOf("checkNewItemPurchaseUnit(") < saveAt);
+  assert.ok(ensureSource.indexOf('formData.get("newItemCategory")') > 0 && ensureSource.indexOf('formData.get("newItemCategory")') < saveAt);
+  assert.equal((ensureSource.match(/saveIngredient\(/g) ?? []).length, 1);
+  assert.doesNotMatch(ensureSource, /supabase|post_raw_purchase|current_quantity/);
+  const category = read("src/components/inventory-page.tsx").match(/export const ingredientCategoryOptions: IngredientCategory\[\] = (\[[^\]]*\])/);
+  assert.equal(category?.[1], '["ingredient", "packaging", "consumable", "other"]', "the harness list mirrors the real one");
+});
+
+test("Purchases: a Packaging item can be created and purchased, and a Consumable too -- stock reflects the purchase truthfully", async () => {
+  for (const [category, name] of [["packaging", "Brownie Box"], ["consumable", "Parchment Paper"]] as const) {
+    const harness = itemStepHarness([]);
+    const step = await harness.run(harness.form({ newItemName: name, newItemBaseUnit: "pcs", unit: "pcs", packQuantity: "100", newItemCategory: category }));
+    assert.equal(step.ok, true);
+    const effect = applySupplyPurchaseEffect(step.ingredient as Ingredient, { packQuantity: 100, unit: "pcs", totalCost: 450 }, "purchase-1", "2026-09-21T00:00:00Z");
+    assert.ok(!("error" in effect), "the purchase computes against the just-created Item");
+    if ("error" in effect) continue;
+    assert.equal(effect.ingredient.currentQuantity, 100);
+    assert.equal(effect.ingredient.averageUnitCost, 4.5);
+    assert.equal(effect.ingredient.category, category);
+    assert.equal(effect.transaction.quantityChange, 100);
+  }
+});
+
+test("Packaging and consumable Items are not filtered out of current stock, Purchases or Manage Items", () => {
+  const box = catalogItem({ id: "box", name: "Brownie Box", baseUnit: "pcs", category: "packaging", currentQuantity: 100, lowStockThreshold: 10 });
+  const paper = catalogItem({ id: "paper", name: "Parchment Paper", baseUnit: "pcs", category: "consumable", currentQuantity: 5, lowStockThreshold: 10 });
+  const flour = catalogItem({ id: "flour", name: "Flour", category: "ingredient", currentQuantity: 500 });
+  const items = [box, paper, flour];
+  // Current stock: active items, then status filter + name search -- neither looks at category.
+  const stock = items.filter((item) => item.isActive).filter((item) => matchesStockFilter(item, "all", "2026-09-21")).filter((item) => matchesStockSearch(item, ""));
+  assert.deepEqual(stock.map((item) => item.name), ["Brownie Box", "Parchment Paper", "Flour"]);
+  assert.deepEqual(items.filter((item) => matchesStockSearch(item, "box")).map((item) => item.id), ["box"]);
+  // Manage Items: every item gets a view, category shown as a label rather than used as a filter.
+  const views = buildInventoryItemViews(items, []);
+  assert.deepEqual(views.map((view) => view.ingredient.id).sort(), ["box", "flour", "paper"]);
+  // Purchases: the packaging purchase is grouped under its Item like any other.
+  const purchase = { id: "p1", ingredientId: "box", ingredientName: "Brownie Box", brandName: "", supplierName: "", purchaseDate: "2026-09-21", createdAt: "2026-09-21T00:00:00Z", packQuantity: 100, unit: "pcs", totalCost: 450, qualityRating: 0, notes: "" };
+  const groups = groupPurchasesByItem(items, [purchase]);
+  assert.ok(JSON.stringify(groups).includes("p1"), "the packaging purchase appears in the Purchases groups");
+  // No category test anywhere in those three surfaces.
+  for (const file of ["src/components/inventory-stock-page.tsx", "src/lib/inventory-items.ts", "src/lib/purchase-history.ts", "src/lib/inventory-status.ts"]) {
+    assert.doesNotMatch(read(file), /\.category\b|excludeCategories|scopeToCategory/, file);
+  }
+});
+
+test("The Purchase item field asks for a category only when a new Item will be created, and says Item, not Ingredient", () => {
+  const field = read("src/components/purchase-item-field.tsx");
+  assert.match(field, /<label htmlFor="purchase-item-input">Item<\/label>/);
+  assert.doesNotMatch(field, />Ingredient</, "no operator-facing 'Ingredient' label remains in the purchase field");
+  // Options come from the one shared list (Ingredient, Packaging, Consumable, Other) -- not a copy.
+  assert.match(field, /ingredientCategoryOptions\.map\(/);
+  assert.match(field, /ingredientCategoryLabel\[option\]/);
+  // Shown for a create / needs-base-unit plan, and only serialized for a create plan.
+  assert.equal((field.match(/\{categoryField\}/g) ?? []).length, 2);
+  assert.match(field, /name="newItemCategory" type="hidden" value=\{plan\.status === "create" \? newItemCategory : ""\}/);
+  const create = field.slice(field.indexOf('plan.status === "create" ? ('), field.indexOf('plan.status === "needs-base-unit" ? ('));
+  assert.match(create, /\{categoryField\}/);
+  const existingBranch = field.slice(field.indexOf("Using existing item"), field.indexOf('plan.status === "create" ? ('));
+  assert.doesNotMatch(existingBranch, /categoryField/, "an existing Item shows no category question");
+  const labels = read("src/components/inventory-page.tsx").match(/ingredientCategoryLabel: Record<IngredientCategory, string> = \{[^}]*\}/)?.[0] ?? "";
+  for (const label of ["Ingredient", "Packaging", "Consumable", "Other"]) assert.ok(labels.includes(`"${label}"`), label);
+});
+
+test("PurchaseLogPage keeps the category default at Ingredient and wires it to the field", () => {
+  const text = component(app, "PurchaseLogPage").getText();
+  assert.match(text, /useState<IngredientCategory>\("ingredient"\)/);
+  assert.match(text, /newItemCategory=\{newItemCategory\}/);
+  assert.match(text, /onNewItemCategoryChange=\{\(value\) => \{\s*setNewItemCategory\(value\);\s*bumpPickerNonce\(\);\s*\}\}/);
+});
+
+test("Purchase copy is generic to Items: no 'Ingredient' column or label where packaging can appear", () => {
+  const purchaseText = component(app, "PurchaseLogPage").getText();
+  assert.doesNotMatch(purchaseText, /Choose an [Ii]ngredient|>Ingredient</);
+  // The purchase report's heading row (Brand, Item, Supplier, ...): other tables keep their own headings.
+  const reportHeader = app.text.slice(app.text.indexOf("<th>Brand</th>"), app.text.indexOf("<th>Brand</th>") + 120);
+  assert.match(reportHeader, /<th>Brand<\/th>\s*<th>Item<\/th>\s*<th>Supplier<\/th>/);
+  assert.match(stockPage.text, /No items yet\. Add one in Manage Items\./);
+  assert.doesNotMatch(stockPage.text, /No ingredients yet/);
 });

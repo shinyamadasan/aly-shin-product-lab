@@ -32,10 +32,10 @@ import {
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { mapFinishedStockMovementRow, mapProductionExecutionRow } from "@/lib/supabase-mappers";
-import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, FinishedStockExceptionType, Ingredient, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
+import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, FinishedStockExceptionType, Ingredient, IngredientCategory, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
-import { InventoryPage } from "@/components/inventory-page";
+import { InventoryPage, ingredientCategoryOptions } from "@/components/inventory-page";
 import { PurchaseItemField } from "@/components/purchase-item-field";
 import { CHECKING_RESULT_MESSAGE, runCostCertification, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline, type CostState } from "@/lib/cost-verification";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
@@ -141,7 +141,7 @@ import {
 } from "@/lib/batches";
 import { archiveItem, buildHardDeleteBlockedMessage, canHardDeleteItem, getItemReferenceSummary, restoreItem } from "@/lib/inventory-safety";
 import { normalizeIngredientName } from "@/lib/ingredient-normalization";
-import { buildNewPurchaseItem, isBlockingPurchaseItemPlan, isCanonicalUnit, planPurchaseItem, resolvePurchaseItem } from "@/lib/purchase-item-resolution";
+import { buildNewPurchaseItem, checkNewItemPurchaseUnit, isBlockingPurchaseItemPlan, isCanonicalUnit, planPurchaseItem, resolvePurchaseItem } from "@/lib/purchase-item-resolution";
 import { canDeleteDraftBatch, canVoidBatch, getBatchReferenceSummary, getEffectiveBatchStatus, markBatchCompleted, voidBatch } from "@/lib/batch-safety";
 import { canDeleteProduct, getProductReferenceCount, totalProductReferenceCount } from "@/lib/product-safety";
 
@@ -1621,15 +1621,31 @@ export default function ProductLab({
       setMessageTone("bad");
       return { ok: false };
     }
+    // Both checks run BEFORE anything is created, so a purchase that can only fail on its own unit (or an
+    // unusable category) never leaves a zero-stock stray Item behind. The category is only read here, on
+    // the create path -- an existing Item keeps whatever category it already has.
+    const purchaseUnitCheck = checkNewItemPurchaseUnit({ name: newItemName, baseUnit, purchaseUnit: String(formData.get("unit") || ""), packQuantity: Number(formData.get("packQuantity") || 0) });
+    if (!purchaseUnitCheck.ok) {
+      setMessage(purchaseUnitCheck.message);
+      setMessageTone("bad");
+      return { ok: false };
+    }
+    const rawCategory = String(formData.get("newItemCategory") || "ingredient");
+    const category = ingredientCategoryOptions.find((option) => option === rawCategory);
+    if (!category) {
+      setMessage("Choose a category for this new Item before saving this purchase.");
+      setMessageTone("bad");
+      return { ok: false };
+    }
     const itemForm = new FormData();
     itemForm.set("name", newItemName);
     itemForm.set("baseUnit", baseUnit);
-    itemForm.set("category", "");
+    itemForm.set("category", category);
     const newId = await saveIngredient(itemForm);
     if (!newId) {
       return { ok: false };
     }
-    const created = buildNewPurchaseItem(newId, newItemName, baseUnit);
+    const created = buildNewPurchaseItem(newId, newItemName, baseUnit, category);
     itemsCreatedForPurchaseRef.current.set(key, created);
     return { ok: true, ingredient: created, createdForThisPurchase: true };
   }
@@ -5992,7 +6008,7 @@ function PurchaseLogPage({
     setPickerNonce((current) => current + 1);
   }
 
-  // What the Ingredient field means for this purchase -- see planPurchaseItem. The operator just
+  // What the Item field means for this purchase -- see planPurchaseItem. The operator just
   // types what they bought; nothing is created until the purchase is saved (saveSupply).
   const [selectedIngredientId, setSelectedIngredientId] = useState(
     () => (labState.ingredients.find((item) => item.id === supply?.ingredientId) ?? labState.ingredients.find((item) => item.name === supply?.ingredientName))?.id ?? "",
@@ -6000,6 +6016,9 @@ function PurchaseLogPage({
   const [typedIngredientName, setTypedIngredientName] = useState(() => (selectedIngredientId ? "" : (supply?.ingredientName ?? "")));
   const [createAnywayFor, setCreateAnywayFor] = useState("");
   const [chosenBaseUnit, setChosenBaseUnit] = useState("");
+  // Only used when this purchase creates a genuinely new Item; Ingredient is the default, and the
+  // operator can change it before Save (packaging and consumables are purchased here too).
+  const [newItemCategory, setNewItemCategory] = useState<IngredientCategory>("ingredient");
   const [purchaseUnit, setPurchaseUnit] = useState(supply?.unit ?? "");
   const [isRestoringItem, setIsRestoringItem] = useState(false);
   const itemPlan = planPurchaseItem({ typedName: typedIngredientName, ingredients: labState.ingredients, selectedIngredientId, createAnywayFor, purchaseUnit, chosenBaseUnit });
@@ -6095,8 +6114,13 @@ function PurchaseLogPage({
                 setChosenBaseUnit(value);
                 bumpPickerNonce();
               }}
+              newItemCategory={newItemCategory}
               onCreateAnyway={() => {
                 setCreateAnywayFor(normalizeIngredientName(typedIngredientName));
+                bumpPickerNonce();
+              }}
+              onNewItemCategoryChange={(value) => {
+                setNewItemCategory(value);
                 bumpPickerNonce();
               }}
               onRestoreAndUse={restoreAndUseItem}
@@ -6220,7 +6244,7 @@ function SuppliesPrintReport({ supplies }: { supplies: SupplyEntry[] }) {
         <thead>
           <tr>
             <th>Brand</th>
-            <th>Ingredient</th>
+            <th>Item</th>
             <th>Supplier</th>
             <th>Date</th>
             <th>Pack</th>

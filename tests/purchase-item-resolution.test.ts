@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { arePossibleNameMatch, buildNewPurchaseItem, isBlockingPurchaseItemPlan, planPurchaseItem, resolvePurchaseItem } from "../src/lib/purchase-item-resolution.ts";
+import { arePossibleNameMatch, buildNewPurchaseItem, checkNewItemPurchaseUnit, isBlockingPurchaseItemPlan, planPurchaseItem, resolvePurchaseItem } from "../src/lib/purchase-item-resolution.ts";
 import { inferCanonicalUnit } from "../src/lib/unit-conversion.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
@@ -248,10 +248,36 @@ test("planning and resolving are pure: the catalog passed in is never mutated", 
 });
 
 test("buildNewPurchaseItem mirrors a brand-new Item: zero stock, zero cost, active", () => {
-  const created = buildNewPurchaseItem("id-1", "Rice Flour", "g");
+  const created = buildNewPurchaseItem("id-1", "Rice Flour", "g", "ingredient");
+  assert.equal(created.category, "ingredient");
   assert.equal(created.currentQuantity, 0);
   assert.equal(created.averageUnitCost, 0);
   assert.equal(created.isActive, true);
   assert.equal(created.baseUnit, "g");
   assert.equal(created.name, "Rice Flour");
+});
+
+// ---- Ops polish: a purchase unit is checked before a new Item exists -------------------------------
+
+test("checkNewItemPurchaseUnit accepts g/kg for g, ml/L for ml, and pcs for pcs", () => {
+  for (const [baseUnit, purchaseUnit] of [["g", "g"], ["g", "kg"], ["ml", "ml"], ["ml", "L"], ["pcs", "pcs"], ["pcs", "pc"], ["g", "Kilogram"]] as const) {
+    assert.deepEqual(checkNewItemPurchaseUnit({ name: "Thing", baseUnit, purchaseUnit, packQuantity: 5 }), { ok: true }, `${purchaseUnit} -> ${baseUnit}`);
+  }
+});
+
+test("checkNewItemPurchaseUnit rejects incompatible, unknown and blank units and a non-finite quantity, naming the Item that was not created", () => {
+  for (const [baseUnit, purchaseUnit] of [["pcs", "kg"], ["g", "ml"], ["ml", "kg"], ["pcs", "box"], ["g", "pack"], ["g", "tbsp"]] as const) {
+    const result = checkNewItemPurchaseUnit({ name: "Brownie Box", baseUnit, purchaseUnit, packQuantity: 100 });
+    assert.equal(result.ok, false, `${purchaseUnit} -> ${baseUnit}`);
+    assert.match((result as { message: string }).message, new RegExp(`"${purchaseUnit}" doesn't convert to ${baseUnit}, so "Brownie Box" was not created\\.`));
+  }
+  const blank = checkNewItemPurchaseUnit({ name: "Brownie Box", baseUnit: "pcs", purchaseUnit: "  ", packQuantity: 100 });
+  assert.match((blank as { message: string }).message, /Enter the purchase unit before saving -- "Brownie Box" was not created\./);
+  assert.equal(checkNewItemPurchaseUnit({ name: "Brownie Box", baseUnit: "pcs", purchaseUnit: "pcs", packQuantity: Number.NaN }).ok, false);
+});
+
+test("buildNewPurchaseItem carries the chosen category", () => {
+  for (const category of ["ingredient", "packaging", "consumable", "other"] as const) {
+    assert.equal(buildNewPurchaseItem("id", "Brownie Box", "pcs", category).category, category);
+  }
 });
