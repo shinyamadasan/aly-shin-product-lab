@@ -4,13 +4,13 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import {
-  buildLatestPurchaseEvidenceNote, CHANGED_DURING_TIMEOUT_MESSAGE, classifyCostReadBack, isUncertainTransportFailure,
-  resolveLatestPurchaseCost, runCostCertification, TIMEOUT_NOT_SAVED_MESSAGE, UNCERTAIN_UNREADABLE_MESSAGE,
+  buildLatestPurchaseEvidenceNote, buildManualCostEvidence, calculateManualCostBasis, CHANGED_DURING_TIMEOUT_MESSAGE, classifyCostReadBack,
+  isUncertainTransportFailure, manualCostUnitOptions, resolveLatestPurchaseCost, runCostCertification, TIMEOUT_NOT_SAVED_MESSAGE, UNCERTAIN_UNREADABLE_MESSAGE,
   type CostState, type RpcOutcome,
 } from "../src/lib/cost-verification.ts";
 import { createMutationGuard } from "../src/lib/mutation-guard.ts";
 import { certifyIngredientCostBaselineArgs } from "../src/lib/raw-inventory-authority.ts";
-import type { Ingredient, InventoryTransaction, SupplyEntry } from "../src/lib/product-lab-types.ts";
+import type { CanonicalUnit, Ingredient, InventoryTransaction, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
 const source = (file: string) => ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -113,7 +113,9 @@ test("UI: only a usable latest purchase renders 'Verify this cost'; otherwise th
   const normalPath = form.slice(branchStart, branchEnd);
   const fallbackPath = form.slice(branchEnd);
   assert.match(normalPath, /Verify this cost/);
-  assert.doesNotMatch(fallbackPath, /Verify this cost/);
+  // The one-click path is the only place a cost is submitted straight from the latest purchase.
+  assert.match(normalPath, /submit\(latestCost\.unitCost, latestCost\.evidenceNote\)/);
+  assert.doesNotMatch(fallbackPath, /latestCost\.unitCost|latestCost\.evidenceNote/);
   assert.match(fallbackPath, /No usable purchase cost is available for this item yet\./);
   assert.match(fallbackPath, /Enter verified cost manually/);
   assert.match(fallbackPath, /Record or fix a purchase in Purchases/);
@@ -124,40 +126,173 @@ test("UI: only a usable latest purchase renders 'Verify this cost'; otherwise th
 
 // ---- 6-8. Manual fallback, no textbox in the normal path, generated note is what is submitted --
 
-test("normal latest-purchase path has no manual evidence textbox; the evidence input exists only in the secondary manual form", () => {
+test("no evidence textbox and no typed PHP/base-unit cost field anywhere in the verification form", () => {
   const form = fn(inventory, "CertifyCostForm").getText();
   const branchStart = form.indexOf("latestCost.usable && latest && !showManual ? (");
   const branchEnd = form.indexOf(") : (", branchStart);
   const normalPath = form.slice(branchStart, branchEnd);
-  assert.doesNotMatch(normalPath, /<input|name="evidenceNote"|Evidence \(required\)/);
-  assert.equal((form.match(/name="evidenceNote"/g) ?? []).length, 1, "exactly one evidence input, in the manual form");
-  assert.match(form, /name="evidenceNote"[^>]*required/);
+  assert.doesNotMatch(normalPath, /<input|<select|Evidence \(required\)/);
+  assert.doesNotMatch(form, /name="evidenceNote"|Evidence \(required\)|placeholder="Evidence/);
+  assert.doesNotMatch(form, /name="certifiedUnitCost"|Verified cost per|formData/);
   // The manual entry is offered as a clearly secondary text link next to the primary button.
   assert.match(normalPath, /Enter a different cost manually/);
 });
 
-test("manual fallback still submits a typed cost + required evidence note through the same callback, and rejects blanks", () => {
-  const manual = fn(inventory, "CertifyCostForm");
-  const handler = nodes(manual, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "handleManualSubmit")[0];
+test("the manual form asks for real-world facts: total paid, quantity, unit -- with the calculated cost, helper line and 'Verify this cost'", () => {
+  const form = fn(inventory, "CertifyCostForm").getText();
+  const manual = form.slice(form.indexOf("<form"), form.indexOf("</form>"));
+  for (const text of ["Enter cost manually", "Total paid (PHP)", "Quantity", "Unit", "Calculated cost", "Verify this cost"]) {
+    assert.ok(manual.includes(text), text);
+  }
+  assert.match(manual, /Enter what you actually paid and how much you received\. The app will calculate the unit cost\./);
+  // Exactly three fields -- paid, quantity, unit -- and no free-text field.
+  assert.deepEqual([...manual.matchAll(/name="(\w+)"/g)].map((match) => match[1]), ["totalPaid", "quantity", "unit"]);
+  assert.equal((manual.match(/type="text"|<textarea/g) ?? []).length, 0);
+  // The calculation comes from the pure helper, not inline math.
+  assert.match(form, /calculateManualCostBasis\(ingredient, \{ totalPaid: manualTotal, quantity: manualQuantity, unit: manualUnit \}\)/);
+  assert.doesNotMatch(manual, /\.toFixed\(| \/ /);
+});
+
+test("'Enter a different cost manually' opens the same fact-based form as the no-purchase fallback", () => {
+  const form = fn(inventory, "CertifyCostForm").getText();
+  // One branch renders the form for both entries: the latest purchase is hidden once showManual is set.
+  assert.equal((form.match(/<form/g) ?? []).length, 1, "a single manual form");
+  assert.match(form, /onClick=\{\(\) => \{ setFeedback\(null\); setShowManual\(true\); \}\}[^>]*>Enter a different cost manually/);
+  assert.match(form, /latestCost\.usable && latest && !showManual \? \(/);
+  assert.match(form, /\{showManual \? \(\s*<form/);
+});
+
+function manualHandler(input: { totalPaid: string; quantity: string; unit: string }, baseUnit: CanonicalUnit = "g") {
+  const handler = nodes(fn(inventory, "CertifyCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "handleManualSubmit")[0];
   assert.ok(handler);
   const submitted: Array<[number, string]> = [];
   const feedback: Array<{ tone: string; text: string }> = [];
-  const run = (cost: string, note: string) => {
-    const data = new Map([["certifiedUnitCost", cost], ["evidenceNote", note]]);
-    evaluateFunction(handler, {
-      setFeedback: (value: { tone: string; text: string }) => feedback.push(value),
-      submit: (c: number, n: string) => submitted.push([c, n]),
-      Number, String, FormData: Map,
-    })({ get: (key: string) => data.get(key) });
-  };
-  run("0.38", "  supplier quote, Sep 17  ");
-  assert.deepEqual(submitted, [[0.38, "supplier quote, Sep 17"]]);
-  run("0", "note");
-  run("-1", "note");
-  run("0.4", "   ");
-  assert.equal(submitted.length, 1, "zero, negative and blank-evidence submissions never reach the callback");
-  assert.equal(feedback.length, 3);
-  assert.ok(feedback.every((entry) => entry.tone === "bad" && entry.text.startsWith("Could not verify cost:")));
+  evaluateFunction(handler, {
+    manualCost: calculateManualCostBasis({ baseUnit }, input),
+    setFeedback: (value: { tone: string; text: string }) => feedback.push(value),
+    submit: (cost: number, note: string) => submitted.push([cost, note]),
+  })();
+  return { submitted, feedback };
+}
+
+test("manual submit sends the calculated cost + generated evidence through the same callback; invalid input never reaches it", () => {
+  assert.deepEqual(manualHandler({ totalPaid: "250", quantity: "500", unit: "g" }).submitted, [[0.5, "Manual cost basis: PHP 250.00 / 500 g = PHP 0.50/g"]]);
+  assert.deepEqual(manualHandler({ totalPaid: "220", quantity: "1", unit: "kg" }).submitted, [[0.22, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g"]]);
+  for (const bad of [
+    { totalPaid: "0", quantity: "500", unit: "g" }, { totalPaid: "-5", quantity: "500", unit: "g" },
+    { totalPaid: "250", quantity: "0", unit: "g" }, { totalPaid: "250", quantity: "-1", unit: "g" },
+    { totalPaid: "250", quantity: "500", unit: "ml" }, { totalPaid: "250", quantity: "500", unit: "box" },
+    { totalPaid: "", quantity: "500", unit: "g" }, { totalPaid: "250", quantity: "", unit: "g" },
+  ]) {
+    const { submitted, feedback } = manualHandler(bad);
+    assert.equal(submitted.length, 0, JSON.stringify(bad));
+    assert.equal(feedback.length, 1);
+    assert.ok(feedback[0].tone === "bad" && feedback[0].text.startsWith("Could not verify cost:"), JSON.stringify(bad));
+  }
+  assert.match(manualHandler({ totalPaid: "250", quantity: "500", unit: "ml" }).feedback[0].text, /That unit cannot be converted to this ingredient's base unit \(g\)\./);
+});
+
+// ---- Manual cost basis: pure calculation -------------------------------------------------------
+
+function manualOk(ingredient: Pick<Ingredient, "baseUnit">, input: { totalPaid: string | number; quantity: string | number; unit: string }) {
+  const result = calculateManualCostBasis(ingredient, input);
+  assert.equal(result.status, "ok", JSON.stringify(result));
+  return result as Extract<typeof result, { status: "ok" }>;
+}
+
+test("manual cost basis: PHP 250 / 500 g -> PHP 0.50/g", () => {
+  const result = manualOk({ baseUnit: "g" }, { totalPaid: "250", quantity: "500", unit: "g" });
+  assert.equal(result.unitCost, 0.5);
+  assert.equal(result.evidenceNote, "Manual cost basis: PHP 250.00 / 500 g = PHP 0.50/g");
+});
+
+test("manual cost basis: PHP 220 / 1 kg for a gram ingredient -> PHP 0.22/g, raw kg kept in the evidence", () => {
+  const result = manualOk({ baseUnit: "g" }, { totalPaid: 220, quantity: 1, unit: "kg" });
+  assert.equal(result.unitCost, 0.22);
+  assert.equal(result.evidenceNote, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
+});
+
+test("manual cost basis: PHP 150 / 500 ml -> PHP 0.30/ml, and litres convert for a ml ingredient", () => {
+  assert.equal(manualOk({ baseUnit: "ml" }, { totalPaid: "150", quantity: "500", unit: "ml" }).unitCost, 0.3);
+  const litre = manualOk({ baseUnit: "ml" }, { totalPaid: "150", quantity: "1.5", unit: "L" });
+  assert.equal(litre.unitCost, 0.1);
+  assert.equal(litre.evidenceNote, "Manual cost basis: PHP 150.00 / 1.5 L = PHP 0.10/ml");
+});
+
+test("manual cost basis: PHP 120 / 12 pcs -> PHP 10/pc", () => {
+  const result = manualOk({ baseUnit: "pcs" }, { totalPaid: "120", quantity: "12", unit: "pcs" });
+  assert.equal(result.unitCost, 10);
+  assert.equal(result.evidenceNote, "Manual cost basis: PHP 120.00 / 12 pcs = PHP 10.00/pcs");
+});
+
+test("manual cost basis rejects an incompatible dimension and an unknown unit with the base-unit message", () => {
+  const cases: Array<[CanonicalUnit, string]> = [["g", "ml"], ["g", "pcs"], ["ml", "kg"], ["pcs", "kg"], ["pcs", "L"], ["g", "box"], ["g", "sack"]];
+  for (const [baseUnit, unit] of cases) {
+    const result = calculateManualCostBasis({ baseUnit }, { totalPaid: "100", quantity: "5", unit });
+    assert.deepEqual(result, { status: "invalid", reason: `That unit cannot be converted to this ingredient's base unit (${baseUnit}).` }, `${baseUnit} <- ${unit}`);
+  }
+});
+
+test("manual cost basis rejects zero, negative and non-finite totals and quantities", () => {
+  const base: Pick<Ingredient, "baseUnit"> = { baseUnit: "g" };
+  for (const totalPaid of ["0", "-1", "-0.01", "abc", "Infinity", "NaN", 0, -250, Infinity, NaN]) {
+    const result = calculateManualCostBasis(base, { totalPaid, quantity: "500", unit: "g" });
+    assert.equal(result.status, "invalid", `total ${String(totalPaid)}`);
+  }
+  for (const quantity of ["0", "-1", "abc", "Infinity", "NaN", 0, -500, Infinity, NaN]) {
+    const result = calculateManualCostBasis(base, { totalPaid: "250", quantity, unit: "g" });
+    assert.equal(result.status, "invalid", `quantity ${String(quantity)}`);
+  }
+  assert.equal((calculateManualCostBasis(base, { totalPaid: "0", quantity: "500", unit: "g" }) as { reason: string }).reason, "Total paid must be greater than zero.");
+  assert.equal((calculateManualCostBasis(base, { totalPaid: "250", quantity: "-1", unit: "g" }) as { reason: string }).reason, "Quantity must be greater than zero.");
+});
+
+test("manual cost basis: a quantity that underflows or a cost that overflows is rejected, never a zero or Infinity cost", () => {
+  assert.equal(calculateManualCostBasis({ baseUnit: "g" }, { totalPaid: "1", quantity: "1e-400", unit: "g" }).status, "invalid");
+  assert.equal(calculateManualCostBasis({ baseUnit: "g" }, { totalPaid: "1e308", quantity: "1e-300", unit: "g" }).status, "invalid");
+});
+
+test("manual cost basis is incomplete (no cost, no error) until paid, quantity and unit are all present", () => {
+  for (const input of [
+    { totalPaid: "", quantity: "", unit: "g" }, { totalPaid: "250", quantity: "", unit: "g" },
+    { totalPaid: "", quantity: "500", unit: "g" }, { totalPaid: "  ", quantity: "500", unit: "g" }, { totalPaid: "250", quantity: "500", unit: "" },
+  ]) {
+    assert.deepEqual(calculateManualCostBasis({ baseUnit: "g" }, input), { status: "incomplete" });
+  }
+});
+
+test("the certified cost keeps full precision -- only the evidence display is rounded", () => {
+  const result = manualOk({ baseUnit: "g" }, { totalPaid: "100", quantity: "3", unit: "g" });
+  assert.equal(result.unitCost, 100 / 3);
+  assert.equal(result.evidenceNote, "Manual cost basis: PHP 100.00 / 3 g = PHP 33.3333/g");
+  assert.equal(manualOk({ baseUnit: "g" }, { totalPaid: "219", quantity: "1", unit: "kg" }).unitCost, 0.219);
+});
+
+test("generated evidence carries the raw entered amount, quantity and unit plus the calculated canonical unit cost", () => {
+  const note = buildManualCostEvidence(220, 1, " kg ", "g", 0.22);
+  assert.equal(note, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
+  assert.ok(note.includes("PHP 220.00") && note.includes("1 kg") && note.includes("PHP 0.22/g"));
+  // Deterministic, and never claims a purchase, receipt or supplier it does not have.
+  assert.equal(buildManualCostEvidence(220, 1, "kg", "g", 0.22), note);
+  assert.doesNotMatch(note, /receipt|supplier|Latest purchase/i);
+});
+
+test("the unit picker only offers units that convert to the ingredient's base unit", () => {
+  assert.deepEqual(manualCostUnitOptions("g"), ["g", "kg"]);
+  assert.deepEqual(manualCostUnitOptions("ml"), ["ml", "L"]);
+  assert.deepEqual(manualCostUnitOptions("pcs"), ["pcs"]);
+  const canonicalUnits: CanonicalUnit[] = ["g", "ml", "pcs"];
+  for (const baseUnit of canonicalUnits) {
+    for (const unit of manualCostUnitOptions(baseUnit)) {
+      assert.equal(calculateManualCostBasis({ baseUnit }, { totalPaid: "10", quantity: "1", unit }).status, "ok");
+    }
+  }
+});
+
+test("the manual calculation reuses the shared unit-conversion authority, with no second conversion table", () => {
+  const source = read("src/lib/cost-verification.ts");
+  assert.match(source, /import \{ convertToBaseUnit \} from "\.\/unit-conversion\.ts"/);
+  assert.doesNotMatch(source, /1000|0\.001|kg: |METRIC/);
 });
 
 test("the generated note is what reaches the existing certification RPC args (evidence argument unchanged)", () => {
@@ -168,6 +303,25 @@ test("the generated note is what reaches the existing certification RPC args (ev
   const args = certifyIngredientCostBaselineArgs(ingredient, [], { certifiedUnitCost: 0.38, evidenceNote: note, expectedCurrentCost: 0.2714285714 });
   assert.equal(args.p_evidence_note, note);
   assert.equal(args.p_certified_unit_cost, 0.38);
+});
+
+test("a manual cost reaches the same six RPC args: calculated cost + generated evidence + expected values from the ledger", () => {
+  const manual = manualOk({ baseUnit: "g" }, { totalPaid: "220", quantity: "1", unit: "kg" });
+  const ingredient = { id: "i1", currentQuantity: 70 } as Ingredient;
+  const args = certifyIngredientCostBaselineArgs(ingredient, [], { certifiedUnitCost: manual.unitCost, evidenceNote: manual.evidenceNote, expectedCurrentCost: 0.2 });
+  assert.deepEqual(Object.keys(args).sort(), ["p_certified_unit_cost", "p_evidence_note", "p_expected_current_cost", "p_expected_latest_id", "p_expected_quantity", "p_ingredient_id"]);
+  assert.equal(args.p_certified_unit_cost, 0.22);
+  assert.equal(args.p_evidence_note, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
+  assert.equal(args.p_expected_current_cost, 0.2);
+  assert.equal(args.p_expected_quantity, 70);
+});
+
+test("the manual form adds no client-side database write, RPC call or schema change", () => {
+  assert.doesNotMatch(read("src/lib/cost-verification.ts"), /supabase|\.rpc\(|\.from\(|\.insert\(|\.update\(/);
+  const form = fn(inventory, "CertifyCostForm").getText();
+  assert.doesNotMatch(form, /supabase|\.rpc\(|average_unit_cost|averageUnitCost\s*=/);
+  // Every submit path, latest purchase or manual, goes through the one submit() -> certify callback.
+  assert.equal((form.match(/certifyIngredientCostBaseline\(/g) ?? []).length, 1);
 });
 
 // ---- 9-10. Inline feedback ----------------------------------------------------------------

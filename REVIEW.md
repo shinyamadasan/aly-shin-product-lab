@@ -706,3 +706,35 @@ disclosure's look and the primary select's "Older version selected below" placeh
 **Production boundary:** no schema, migration, RPC or data touched. No merge, no deploy.
 
 **Merge gate: `approved`** -- held for human merge and a real-device pass.
+
+## 2026-09-21 — Cost verification: manual fallback takes purchase facts, not unit-cost math
+
+**Scope:** `src/lib/cost-verification.ts` (pure `calculateManualCostBasis`, `buildManualCostEvidence`,
+`manualCostUnitOptions`), `src/components/inventory-page.tsx` (CertifyCostForm's manual form only),
+`tests/cost-verification.test.ts`, `docs/FEATURES.md`. Not touched: the latest-purchase one-click
+path, `certify_ingredient_cost_baseline` and its args, `runCostCertification` / timeout read-back,
+Bake's verified-cost guard, purchase posting, any migration or schema, Orders, CHANGELOG.md.
+
+**Verdict:** Sound. The operator enters total paid + quantity + unit; the cost is total / quantity
+converted to the ingredient's base unit via the existing `convertToBaseUnit` (no second conversion
+table), kept at full precision, and the evidence note is generated
+(`Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g`). The same form serves both "no usable purchase"
+and "Enter a different cost manually". The RPC still receives the same six args.
+
+**Not rubber-stamped:**
+- The unit is a picker limited to units that convert to the base unit, so an incompatible unit cannot
+  be chosen in the UI; the helper still rejects incompatible/unknown units (tested) as defence in depth.
+- Zero/negative/non-finite paid or quantity, an underflowing quantity and an overflowing cost are all
+  rejected; free or unknown-cost stock is deliberately NOT accepted (separate policy decision).
+- Three older UI assertions encoded the removed manual form (evidence textbox, typed PHP/unit field,
+  "no Verify this cost in the fallback") and were rewritten to the new contract, not deleted.
+- The evidence display rounds to 4 decimals (the stored cost does not), so a cost below PHP 0.00005
+  per unit would display as PHP 0.00 in the note; the certified value is still exact.
+
+**Human-only checks not done:** no browser/phone pass -- `ship-pending-human-review` for the compact
+layout on mobile (paid / quantity + unit / calculated cost / button).
+
+**Production boundary:** no schema, migration, RPC or data touched; no certification performed.
+No merge, no deploy.
+
+**Merge gate: `approved`** -- held for human merge and a real-device pass.

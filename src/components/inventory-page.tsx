@@ -6,7 +6,7 @@ import type { LabState } from "@/lib/lab-state";
 import { getStockValueDisplay, isCostBaselineUncertified } from "@/lib/inventory-cost";
 import { formatPesos, formatPesosPerUnit, formatPurchaseDate, getLatestPurchaseFacts } from "@/lib/inventory-display";
 import { formatQuantity } from "@/lib/quantity-display";
-import { CHECKING_RESULT_MESSAGE, resolveLatestPurchaseCost, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline } from "@/lib/cost-verification";
+import { calculateManualCostBasis, CHECKING_RESULT_MESSAGE, manualCostUnitOptions, resolveLatestPurchaseCost, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline } from "@/lib/cost-verification";
 import { getFlaggedIngredients, matchesStockSearch } from "@/lib/inventory-status";
 import { buildInventoryItemViews, type InventoryItemView } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
@@ -181,8 +181,9 @@ function AdjustStockForm({
 // purchase, never typed. It means "I reviewed this latest purchase and accept it as the current
 // verified cost" -- it does not rewrite purchase history or reconstruct a historical average.
 // Fallback: no usable purchase (or the owner disagrees with it) -> a clearly secondary manual entry
-// that still requires a short evidence note, since no purchase record backs it. Nothing here
-// auto-verifies: every item needs its own explicit confirmation.
+// of real-world facts (total paid, quantity, unit). calculateManualCostBasis derives the unit cost
+// and the evidence note the database requires, so the owner never does the per-unit math or types
+// a note. Nothing here auto-verifies: every item needs its own explicit confirmation.
 //
 // Feedback is inline (this panel), not only in the page-level message far above the list. On a
 // failure the panel stays open with the proposed cost still visible; a timeout is reported as an
@@ -207,6 +208,9 @@ function CertifyCostForm({
 }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showManual, setShowManual] = useState(false);
+  const [manualTotal, setManualTotal] = useState("");
+  const [manualQuantity, setManualQuantity] = useState("");
+  const [manualUnit, setManualUnit] = useState<string>(ingredient.baseUnit);
   const [feedback, setFeedback] = useState<CostFeedback | null>(null);
   // An uncertain result blocks a second submit from this panel: the owner reloads and checks first.
   const [isLocked, setIsLocked] = useState(false);
@@ -214,6 +218,7 @@ function CertifyCostForm({
   const guardRef = useRef(createMutationGuard<string>());
   const latestCost = resolveLatestPurchaseCost(ingredient, latestPurchase);
   const latest = latestPurchase ? getLatestPurchaseFacts(latestPurchase) : null;
+  const manualCost = calculateManualCostBasis(ingredient, { totalPaid: manualTotal, quantity: manualQuantity, unit: manualUnit });
 
   async function submit(certifiedUnitCost: number, evidenceNote: string) {
     if (guardRef.current.isActive(ingredient.id)) {
@@ -244,18 +249,12 @@ function CertifyCostForm({
     }
   }
 
-  function handleManualSubmit(formData: FormData) {
-    const certifiedUnitCost = Number(formData.get("certifiedUnitCost") || 0);
-    const evidenceNote = String(formData.get("evidenceNote") || "").trim();
-    if (!Number.isFinite(certifiedUnitCost) || certifiedUnitCost <= 0) {
-      setFeedback({ tone: "bad", text: "Could not verify cost: enter a cost greater than zero." });
+  function handleManualSubmit() {
+    if (manualCost.status !== "ok") {
+      setFeedback({ tone: "bad", text: `Could not verify cost: ${manualCost.status === "invalid" ? manualCost.reason : "enter how much you paid and how much you got."}` });
       return;
     }
-    if (!evidenceNote) {
-      setFeedback({ tone: "bad", text: "Could not verify cost: add a short evidence note." });
-      return;
-    }
-    void submit(certifiedUnitCost, evidenceNote);
+    void submit(manualCost.unitCost, manualCost.evidenceNote);
   }
 
   const storedCost = ingredient.costReconciledAt ? `${formatPesosPerUnit(ingredient.averageUnitCost, ingredient.baseUnit)} (verified)` : ingredient.averageUnitCost ? `${formatPesosPerUnit(ingredient.averageUnitCost, ingredient.baseUnit)} (needs verification)` : "Not set";
@@ -308,11 +307,34 @@ function CertifyCostForm({
             </div>
           )}
           {showManual ? (
-            <form action={handleManualSubmit} className="grid gap-2 sm:grid-cols-2">
-              <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" min="0" name="certifiedUnitCost" placeholder={`Verified cost per ${ingredient.baseUnit}`} required step="0.0001" type="number" />
-              <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="evidenceNote" placeholder="Evidence (required) -- e.g. supplier, date, price" required />
-              <div className="col-span-full flex flex-wrap gap-2">
-                <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked} type="submit">{isSubmitting ? "Verifying..." : "Verify cost"}</button>
+            <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); handleManualSubmit(); }}>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Enter cost manually</p>
+              <label className="grid gap-1 text-xs font-semibold text-[#5f4a3d]">
+                Total paid (PHP)
+                <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" inputMode="decimal" min="0" name="totalPaid" onChange={(event) => setManualTotal(event.target.value)} placeholder="e.g. 250" step="any" type="number" value={manualTotal} />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="grid gap-1 text-xs font-semibold text-[#5f4a3d]">
+                  Quantity
+                  <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" inputMode="decimal" min="0" name="quantity" onChange={(event) => setManualQuantity(event.target.value)} placeholder="e.g. 500" step="any" type="number" value={manualQuantity} />
+                </label>
+                <label className="grid gap-1 text-xs font-semibold text-[#5f4a3d]">
+                  Unit
+                  <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm font-normal" name="unit" onChange={(event) => setManualUnit(event.target.value)} value={manualUnit}>
+                    {manualCostUnitOptions(ingredient.baseUnit).map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+                  </select>
+                </label>
+              </div>
+              {manualCost.status === "ok" ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Calculated cost</p>
+                  <p className="mt-1 text-base font-semibold">{formatPesosPerUnit(manualCost.unitCost, ingredient.baseUnit)}</p>
+                </div>
+              ) : null}
+              {manualCost.status === "invalid" ? <p className="text-xs text-[#b3441f]" role="status">{manualCost.reason}</p> : null}
+              <p className="text-xs text-[#6f5a4c]">Enter what you actually paid and how much you received. The app will calculate the unit cost.</p>
+              <div className="flex flex-wrap gap-2">
+                <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked || manualCost.status !== "ok"} type="submit">{isSubmitting ? "Verifying..." : "Verify this cost"}</button>
                 {closeButton}
               </div>
             </form>

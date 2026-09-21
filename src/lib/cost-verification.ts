@@ -1,4 +1,4 @@
-import type { Ingredient, SupplyEntry } from "./product-lab-types.ts";
+import type { CanonicalUnit, Ingredient, SupplyEntry } from "./product-lab-types.ts";
 import { describeIngredientConstraintError } from "./inventory-errors.ts";
 import { formatPesos, formatPesosPerUnit, formatPurchaseDate } from "./inventory-display.ts";
 import { convertToBaseUnit } from "./unit-conversion.ts";
@@ -7,8 +7,9 @@ import { convertToBaseUnit } from "./unit-conversion.ts";
 // is a pure helper: the database RPC stays the only authority that writes average_unit_cost /
 // cost_reconciled_at, and it still requires a non-empty evidence note and its optimistic-concurrency
 // check. This file only decides (a) whether the latest purchase is trustworthy enough to offer a
-// one-click verification, what evidence note it generates, and (b) how a certify call's outcome --
-// including an uncertain network timeout -- is classified and reconciled.
+// one-click verification, what evidence note it generates, (b) how a manually entered purchase fact
+// (paid / quantity / unit) becomes a unit cost and evidence note, and (c) how a certify call's
+// outcome -- including an uncertain network timeout -- is classified and reconciled.
 
 // ---------------------------------------------------------------------------------------------
 // Latest purchase -> proposed cost + generated evidence note
@@ -59,6 +60,65 @@ export function resolveLatestPurchaseCost(ingredient: Pick<Ingredient, "baseUnit
     return { usable: false, reason: "The latest purchase doesn't give a valid unit cost." };
   }
   return { usable: true, unitCost, evidenceNote: buildLatestPurchaseEvidenceNote(purchase, ingredient.baseUnit, unitCost) };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Manual cost basis: real-world purchase facts -> verified unit cost + generated evidence note
+// ---------------------------------------------------------------------------------------------
+
+// The operator enters what they paid, how much they got and in which unit -- never a unit price.
+// The conversion is unit-conversion.ts's (no second system): a unit that does not convert to the
+// ingredient's base unit is rejected, never guessed. Positive money is always required; free or
+// unknown-cost stock is a separate policy decision and is deliberately not accepted here.
+export type ManualCostBasis =
+  // Not enough entered yet to say anything -- the UI shows no calculated cost and no error.
+  | { status: "incomplete" }
+  | { status: "invalid"; reason: string }
+  // unitCost is per the ingredient's base unit, at full precision (only the display is rounded).
+  | { status: "ok"; unitCost: number; evidenceNote: string };
+
+export type ManualCostInput = { totalPaid: string | number; quantity: string | number; unit: string };
+
+// The units offered for a manual cost, limited to those that convert to the ingredient's base unit.
+const MANUAL_COST_UNIT_CANDIDATES = ["g", "kg", "ml", "L", "pcs"];
+
+export function manualCostUnitOptions(baseUnit: CanonicalUnit): string[] {
+  return MANUAL_COST_UNIT_CANDIDATES.filter((unit) => convertToBaseUnit(1, unit, { baseUnit }) !== null);
+}
+
+// Raw entered amount, raw entered quantity and unit, and the calculated per-base-unit cost, so the
+// audit note shows both what the operator entered and what was certified.
+export function buildManualCostEvidence(totalPaid: number, quantity: number, unit: string, baseUnit: string, unitCost: number): string {
+  return `Manual cost basis: ${formatPesos(totalPaid)} / ${quantityText(quantity)} ${unit.trim()} = ${formatPesosPerUnit(unitCost, baseUnit)}`;
+}
+
+export function calculateManualCostBasis(ingredient: Pick<Ingredient, "baseUnit">, input: ManualCostInput): ManualCostBasis {
+  const totalRaw = String(input.totalPaid).trim();
+  const quantityRaw = String(input.quantity).trim();
+  const unit = input.unit.trim();
+  if (!totalRaw || !quantityRaw || !unit) {
+    return { status: "incomplete" };
+  }
+  const totalPaid = Number(totalRaw);
+  const quantity = Number(quantityRaw);
+  if (!Number.isFinite(totalPaid) || !Number.isFinite(quantity)) {
+    return { status: "invalid", reason: "Enter the amounts as numbers." };
+  }
+  if (totalPaid <= 0) {
+    return { status: "invalid", reason: "Total paid must be greater than zero." };
+  }
+  if (quantity <= 0) {
+    return { status: "invalid", reason: "Quantity must be greater than zero." };
+  }
+  const baseQuantity = convertToBaseUnit(quantity, unit, ingredient);
+  if (baseQuantity === null || !Number.isFinite(baseQuantity) || baseQuantity <= 0) {
+    return { status: "invalid", reason: `That unit cannot be converted to this ingredient's base unit (${ingredient.baseUnit}).` };
+  }
+  const unitCost = totalPaid / baseQuantity;
+  if (!Number.isFinite(unitCost) || unitCost <= 0) {
+    return { status: "invalid", reason: "Those amounts don't give a valid unit cost." };
+  }
+  return { status: "ok", unitCost, evidenceNote: buildManualCostEvidence(totalPaid, quantity, unit, ingredient.baseUnit, unitCost) };
 }
 
 // ---------------------------------------------------------------------------------------------
