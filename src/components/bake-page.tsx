@@ -5,6 +5,7 @@ import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
 import type { FinishedStockExceptionType } from "@/lib/product-lab-types";
 import { parseBatchIngredients } from "@/lib/batches";
+import { isVoidedBatch } from "@/lib/batch-safety";
 import { isCostBaselineUncertified } from "@/lib/inventory-cost";
 import { buildBakeBatchChoices, formatBakeBatchOption, isOlderBakeBatch, resolveBakeBatchId } from "@/lib/bake-batch-option";
 import { formatQuantity } from "@/lib/quantity-display";
@@ -182,9 +183,17 @@ export function BakePage({
               ))}
             </select>
           ) : (
-            <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">No proof batches yet -- record one on Proof Day first.</p>
+            <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">
+              {batchChoices.noCurrent.length > 0 ? "Every proof batch is voided -- record a new one on Proof Day first." : "No proof batches yet -- record one on Proof Day first."}
+            </p>
           )}
         </label>
+        {batchChoices.noCurrent.length > 0 && batchChoices.current.length > 0 ? (
+          <p className="mt-2 rounded-md bg-[#fff2d8] px-3 py-2 text-sm text-[#7a531d]" role="status">
+            No current recipe for {batchChoices.noCurrent.map((product) => product.name).join(", ")}: every proof batch is voided. Record a new one on Proof Day.
+          </p>
+        ) : null}
+        {selectedBatch && isVoidedBatch(selectedBatch) ? <p className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">This recipe version is voided and cannot be baked.</p> : null}
         {selectedIsOlder ? <p className="mt-2 rounded-md bg-[#fff2d8] px-3 py-2 text-sm text-[#7a531d]" role="status">Using an older recipe version.</p> : null}
         {batchChoices.older.length > 0 ? (
           <details className="mt-2 text-sm" onToggle={(event) => setIsOlderOpen(event.currentTarget.open)} open={isOlderOpen}>

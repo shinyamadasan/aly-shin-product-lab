@@ -29,9 +29,15 @@ function normalizeBatchStatus(status: string | undefined): EffectiveBatchStatus 
   return "";
 }
 
+// Voided is decided by the stored status or a voidedAt timestamp alone -- never by ledger rows -- so
+// a picker can ask it without loading inventory transactions.
+export function isVoidedBatch(batch: { status?: string; voidedAt?: string }): boolean {
+  return normalizeBatchStatus(batch.status) === "voided" || Boolean(batch.voidedAt);
+}
+
 export function getEffectiveBatchStatus(batch: ProductBatch, inventoryTransactions: InventoryTransaction[]): EffectiveBatchStatus {
   const storedStatus = normalizeBatchStatus(batch.status);
-  if (storedStatus === "voided" || batch.voidedAt) return "voided";
+  if (isVoidedBatch(batch)) return "voided";
   if (storedStatus === "completed" || batch.completedAt) return "completed";
   if (inventoryTransactions.some((transaction) => transaction.sourceType === "bake" && transaction.sourceId === batch.id)) return "completed";
   return "draft";

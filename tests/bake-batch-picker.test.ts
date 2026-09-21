@@ -186,3 +186,87 @@ test("confirmBake still receives the exact selected batch's id and product id, a
   assert.match(bakeText, /isCostBaselineUncertified\(ingredient\)/);
   assert.match(bakeText, /readyToConfirm = fullyResolved && isMultiplierValid && isActualPiecesValid && deductions\.length > 0\s*&& \(\(canOverrideNegative && allowNegative\) \|\| insufficient\.length === 0\)\s*&& \(!remotePosting \|\| uncertifiedCostIngredientNames\.length === 0\)/);
 });
+
+// ---- Ops polish: a voided batch is never the primary/current recipe -------------------------------
+
+type StatusBatch = Batch & { status?: string; voidedAt?: string };
+const statusBatch = (id: string, productId: string, batchVersion: string, dateMade: string, extra: { status?: string; voidedAt?: string } = {}): StatusBatch => ({ ...batch(id, productId, batchVersion, dateMade), ...extra });
+
+test("a newer voided batch does not displace the newest non-voided batch as current", () => {
+  const result = buildBakeBatchChoices(products, [
+    statusBatch("bl-v3", "blondies", "V3", "2026-09-10", { status: "voided" }),
+    statusBatch("bl-v2", "blondies", "V2", "2026-09-01"),
+    statusBatch("bl-v1", "blondies", "V1", "2026-08-03"),
+  ]);
+  assert.deepEqual(result.current.map((entry) => entry.batch.id), ["bl-v2"]);
+  assert.deepEqual(result.noCurrent, []);
+});
+
+test("the newest non-voided batch is current, including when only voidedAt marks a batch voided", () => {
+  const result = buildBakeBatchChoices(products, [
+    statusBatch("bl-v4", "blondies", "V4", "2026-09-12", { voidedAt: "2026-09-13T00:00:00Z" }),
+    statusBatch("bl-v3", "blondies", "V3", "2026-09-10", { status: "completed" }),
+    statusBatch("bl-v2", "blondies", "V2", "2026-09-01", { status: "draft" }),
+  ]);
+  assert.deepEqual(result.current.map((entry) => entry.batch.id), ["bl-v3"]);
+});
+
+test("voided batches stay reachable as history: older keeps every other batch, voided ones included, in the same order", () => {
+  const all = [
+    statusBatch("bl-v4", "blondies", "V4", "2026-09-12", { status: "voided" }),
+    statusBatch("bl-v3", "blondies", "V3", "2026-09-10"),
+    statusBatch("bl-v2", "blondies", "V2", "2026-09-01", { status: "voided" }),
+    statusBatch("bl-v1", "blondies", "V1", "2026-08-03"),
+  ];
+  const result = buildBakeBatchChoices(products, all);
+  assert.deepEqual(result.current.map((entry) => entry.batch.id), ["bl-v3"]);
+  assert.deepEqual(result.older[0].batches.map((entry) => entry.id), ["bl-v4", "bl-v2", "bl-v1"]);
+  const ids = [...result.current.map((entry) => entry.batch.id), ...result.older.flatMap((group) => group.batches.map((entry) => entry.id))];
+  assert.deepEqual([...ids].sort(), all.map((entry) => entry.id).sort(), "nothing lost, nothing duplicated");
+});
+
+test("a product whose every batch is voided has no current recipe: reported as noCurrent, history still reachable", () => {
+  const result = buildBakeBatchChoices(products, [
+    statusBatch("bl-v2", "blondies", "V2", "2026-09-10", { status: "voided" }),
+    statusBatch("bl-v1", "blondies", "V1", "2026-08-03", { status: "voided" }),
+    statusBatch("co-1", "cookies", "V1", "2026-09-17"),
+  ]);
+  assert.deepEqual(result.current.map((entry) => entry.product.id), ["cookies"]);
+  assert.deepEqual(result.noCurrent.map((product) => product.id), ["blondies"]);
+  assert.deepEqual(result.older[0].batches.map((entry) => entry.id), ["bl-v2", "bl-v1"]);
+  // A product with no batches at all is still simply absent (not "noCurrent").
+  assert.equal(result.noCurrent.some((product) => product.id === "empty"), false);
+});
+
+test("with no non-voided batch anywhere there is no default selection; a voided deep link is still honored exactly", () => {
+  const onlyVoided = [statusBatch("bl-v1", "blondies", "V1", "2026-08-03", { status: "voided" })];
+  const result = buildBakeBatchChoices(products, onlyVoided);
+  assert.deepEqual(result.current, []);
+  assert.equal(resolveBakeBatchId(result, onlyVoided, null), "", "no voided recipe is ever preselected as current");
+  assert.equal(resolveBakeBatchId(result, onlyVoided, "bl-v1"), "bl-v1", "an explicit link still opens it");
+  assert.equal(isOlderBakeBatch(result, "bl-v1"), true, "and it is presented as history, not current");
+});
+
+test("without a ?batch link a voided newest batch is never preselected", () => {
+  const mixed = [statusBatch("bl-v3", "blondies", "V3", "2026-09-10", { status: "voided" }), statusBatch("bl-v2", "blondies", "V2", "2026-09-01")];
+  assert.equal(resolveBakeBatchId(buildBakeBatchChoices(products, mixed), mixed, null), "bl-v2");
+});
+
+test("a voided batch option is labeled Voided; other labels are unchanged", () => {
+  assert.equal(formatBakeBatchOption("Blondies", { batchVersion: "V3", usablePieces: 16, dateMade: "2026-09-10", status: "voided" }), "Blondies · V3 · 16 pcs · Sep 10, 2026 · Voided");
+  assert.equal(formatBakeBatchOption("Blondies", { batchVersion: "V3", usablePieces: 16, dateMade: "2026-09-10", voidedAt: "2026-09-11T00:00:00Z" }).endsWith("· Voided"), true);
+  assert.equal(formatBakeBatchOption("Blondies", { batchVersion: "V3", usablePieces: 16, dateMade: "2026-09-10" }), "Blondies · V3 · 16 pcs · Sep 10, 2026");
+});
+
+test("Bake tells the truth about voided recipes and leaves confirm authority untouched", () => {
+  assert.match(bakeText, /Every proof batch is voided -- record a new one on Proof Day first\./);
+  assert.match(bakeText, /No proof batches yet -- record one on Proof Day first\./, "the plain empty state is kept for no batches");
+  assert.match(bakeText, /No current recipe for \{batchChoices\.noCurrent\.map/);
+  assert.match(bakeText, /selectedBatch && isVoidedBatch\(selectedBatch\) \?[^\n]*This recipe version is voided and cannot be baked\./);
+  // Presentation only: readyToConfirm and the confirm call are exactly as before...
+  assert.match(bakeText, /confirmBake\(selectedBatch\.id, selectedBatch\.productId, batchLabel, multiplier, actualPieces, deductions, canOverrideNegative && allowNegative, bakeOperationId\)/);
+  assert.doesNotMatch(bakeText.slice(bakeText.indexOf("readyToConfirm =")).split(";")[0], /isVoidedBatch/);
+  // ...and the database still refuses a voided batch.
+  const migration = readFileSync(new URL("../supabase/migrations/20260912090000_cost_baseline_repair.sql", import.meta.url), "utf8");
+  assert.match(migration, /v_batch\.voided_at is not null or v_batch\.status = 'voided'[\s\S]{0,80}This batch is voided and cannot be baked/);
+});
