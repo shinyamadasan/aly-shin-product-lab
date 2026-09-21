@@ -738,3 +738,38 @@ layout on mobile (paid / quantity + unit / calculated cost / button).
 No merge, no deploy.
 
 **Merge gate: `approved`** -- held for human merge and a real-device pass.
+
+## 2026-09-21 — Ops polish V2 (consolidated wave)
+
+**Scope:** manual-cost feedback + timeout wording (`inventory-page.tsx` CertifyCostForm, `cost-verification.ts`);
+Orders stock refresh (`orders-page.tsx`, `orders/transitions.ts`, one prop in `product-lab.tsx`); Bake
+voided-current (`bake-batch-option.ts`, `batch-safety.ts` `isVoidedBatch`, `bake-page.tsx`); Purchases new-Item
+unit pre-check, category and copy (`purchase-item-resolution.ts`, `purchase-item-field.tsx`, `ensureItemForNewPurchase`
+and PurchaseLogPage in `product-lab.tsx`, `inventory-stock-page.tsx` empty copy); tests; `docs/FEATURES.md`. Not
+touched: `certify_ingredient_cost_baseline`, `confirm_bake_v3`, the order-lifecycle RPCs and `updateOrderStatus`,
+`post_raw_purchase`, `saveIngredient`, any migration or schema, public ordering, CHANGELOG.md.
+
+**Verdict:** Sound. Each part is client-side presentation or ordering; every write still goes through the same database
+authority.
+
+**Not rubber-stamped:**
+- Orders refresh reuses the parent's `loadSupabaseData` (no second finished-stock query). It runs only after a
+  DB-accepted Confirm / Complete / release; `orderStatusChangeMovesStock` is tied by a parity test to the transitions the
+  repository routes through an RPC. A refused change reloads no stock. Known limit: if another tab moved an order and this
+  screen still shows the old status, a Cancel decided from the stale status may skip the stock reload; the orders list
+  still reloads, and the database is unaffected.
+- The stock reload is awaited inside the action's busy state, so buttons stay disabled for the length of one full reload.
+- Bake: a voided newest batch no longer displaces a valid recipe; a voided deep link is still honored, labeled Voided and
+  flagged, but `readyToConfirm` is deliberately NOT changed (presentation only) -- the database refuses it, as before.
+- New-Item purchases: unit and category are checked before `saveIngredient`. Only the unit conversion is pre-checked; a
+  zero quantity or price would still fail after creation (pre-existing, unchanged).
+- Copy: only the purchase field label, purchase report column and empty stock state changed. The count-correction panel
+  still says "ingredient" throughout (out of the purchase flow).
+- Lint: the pre-existing `react-hooks/set-state-in-effect` in Bake's fallback effect is unchanged and untouched.
+
+**Human-only checks not done:** no browser/phone pass -- `ship-pending-human-review` for the manual-cost form, the Bake
+"no current recipe" / voided notices, and the Purchase form's category row.
+
+**Production boundary:** no schema, migration, RPC, data or production write. No merge, no deploy.
+
+**Merge gate: `approved`** -- held for the independent review pass and a real-device check.

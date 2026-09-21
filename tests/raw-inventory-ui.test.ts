@@ -8,6 +8,7 @@ import { normalizeIngredientName } from "../src/lib/ingredient-normalization.ts"
 import { buildNewPurchaseItem, checkNewItemPurchaseUnit, isCanonicalUnit, resolvePurchaseItem } from "../src/lib/purchase-item-resolution.ts";
 import { applySupplyPurchaseEffect } from "../src/lib/supply-inventory-effect.ts";
 import { buildInventoryItemViews } from "../src/lib/inventory-items.ts";
+import { getEligibleIngredientsForPicker } from "../src/lib/ingredient-picker-filter.ts";
 import { groupPurchasesByItem } from "../src/lib/purchase-history.ts";
 import { matchesStockFilter, matchesStockSearch } from "../src/lib/inventory-status.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
@@ -1244,4 +1245,24 @@ test("Purchase copy is generic to Items: no 'Ingredient' column or label where p
   assert.match(reportHeader, /<th>Brand<\/th>\s*<th>Item<\/th>\s*<th>Supplier<\/th>/);
   assert.match(stockPage.text, /No items yet\. Add one in Manage Items\./);
   assert.doesNotMatch(stockPage.text, /No ingredients yet/);
+});
+
+test("Packaging purchased through Purchases is selectable for Selling Format packaging and never for Bake, with the purchase's own cost", async () => {
+  const harness = itemStepHarness([]);
+  const step = await harness.run(harness.form({ newItemName: "Brownie Box", newItemBaseUnit: "pcs", unit: "pcs", packQuantity: "100", newItemCategory: "packaging" }));
+  const box = step.ingredient as Ingredient;
+  const effect = applySupplyPurchaseEffect(box, { packQuantity: 100, unit: "pcs", totalCost: 450 }, "p1", "2026-09-21T00:00:00Z");
+  assert.ok(!("error" in effect));
+  if ("error" in effect) return;
+  const catalog = [effect.ingredient, catalogItem({ id: "flour", name: "Flour", category: "ingredient" })];
+  // Selling Formats' packaging-line picker scopes to category "packaging": the new Item is in it, flour is not.
+  assert.deepEqual(getEligibleIngredientsForPicker(catalog, { scopeToCategory: "packaging" }).map((item) => item.name), ["Brownie Box"]);
+  // Bake's formula picker excludes packaging by design -- packaging is never consumed by a recipe here.
+  assert.deepEqual(getEligibleIngredientsForPicker(catalog, { excludeCategories: ["packaging"] }).map((item) => item.name), ["Flour"]);
+  // The packaging line's snapshot cost falls back to the Item's own average, which the purchase set: PHP 4.50/pc.
+  assert.equal(effect.ingredient.averageUnitCost, 4.5);
+  const resolver = nodes(app, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "resolvePackagingItemUnitCost")[0].getText();
+  assert.match(resolver, /return ingredient\.averageUnitCost;/);
+  // No automatic packaging consumption exists or was added: a bake/fulfillment never touches packaging stock here.
+  assert.doesNotMatch(read("src/lib/bake-deduction.ts"), /packaging/i);
 });
