@@ -62,6 +62,18 @@ export function resolveLatestPurchaseCost(ingredient: Pick<Ingredient, "baseUnit
   return { usable: true, unitCost, evidenceNote: buildLatestPurchaseEvidenceNote(purchase, ingredient.baseUnit, unitCost) };
 }
 
+// The operator verifies what they paid and received, not a unit price: these are the two spellings
+// of those purchase facts (the unit cost is always the derived, secondary output).
+// "PHP 19.00 for 50 g" -- the panel's primary line.
+export function formatPurchaseToVerify(totalPaid: number, quantity: number, unit: string): string {
+  return `${formatPesos(totalPaid)} for ${quantityText(quantity)} ${unit.trim()}`.trim();
+}
+
+// "PHP 19 / 50 g" -- the collapsed row's compact form (whole pesos drop the ".00").
+export function formatPurchaseCompact(totalPaid: number, quantity: number, unit: string): string {
+  return `${formatPesos(totalPaid).replace(/\.00$/, "")} / ${quantityText(quantity)} ${unit.trim()}`.trim();
+}
+
 // ---------------------------------------------------------------------------------------------
 // Manual cost basis: real-world purchase facts -> verified unit cost + generated evidence note
 // ---------------------------------------------------------------------------------------------
@@ -141,6 +153,33 @@ export type CertifyIngredientCostBaseline = (
   onCheckingResult?: () => void,
 ) => Promise<CertifyCostResult>;
 
+// One entry per Item with a certification in flight or an uncertain outcome. It lives above the
+// panel (in the page component), so closing and reopening the panel -- which discards the panel's
+// own state -- can never make a second submit possible while the first is still running or its
+// outcome is unknown. An uncertain entry is only cleared by a page reload, which is exactly what the
+// operator is told to do. A definite result (verified or failed) clears it.
+export type CertifyAttemptTracker = {
+  // The blocking state for this Item, or null when a new submit is safe.
+  blocked: (ingredientId: string) => "in-flight" | "uncertain" | null;
+  begin: (ingredientId: string) => void;
+  finish: (ingredientId: string, result: CertifyCostResult) => void;
+};
+
+export function createCertifyAttemptTracker(): CertifyAttemptTracker {
+  const attempts = new Map<string, "in-flight" | "uncertain">();
+  return {
+    blocked: (ingredientId) => attempts.get(ingredientId) ?? null,
+    begin: (ingredientId) => { attempts.set(ingredientId, "in-flight"); },
+    finish: (ingredientId, result) => {
+      if (result.status === "uncertain") {
+        attempts.set(ingredientId, "uncertain");
+      } else {
+        attempts.delete(ingredientId);
+      }
+    },
+  };
+}
+
 export type CostState = { averageUnitCost: number | null; costReconciledAt: string | null };
 
 export type RpcOutcome = {
@@ -193,34 +232,79 @@ export function classifyCostReadBack(before: CostState, after: CostState, certif
   return "changed";
 }
 
+// A request that has not answered by then is treated exactly like the gateway's own timeout: an
+// uncertain outcome resolved by a read-back. The database's statement timeout is far shorter than
+// this, so a healthy request never reaches it; it only bounds how long the button can wait.
+export const CERTIFY_REQUEST_DEADLINE_MS = 15_000;
+
 export type CertifyCostIo = {
   // A fresh, direct read of the raw values (null on any read failure) -- never the lossy client type.
-  readState: () => Promise<CostState | null>;
+  // The signal is aborted when the deadline passes; honoring it is an optimization, not a requirement.
+  readState: (signal?: AbortSignal) => Promise<CostState | null>;
   // Exactly one RPC per call; the database's own optimistic-concurrency check compares
   // expectedCurrentCost (the fresh average_unit_cost) plus quantity / latest ledger row.
-  callRpc: (expectedCurrentCost: number | null) => Promise<RpcOutcome>;
+  callRpc: (expectedCurrentCost: number | null, signal?: AbortSignal) => Promise<RpcOutcome>;
   onCheckingResult?: () => void;
+  // Overrides CERTIFY_REQUEST_DEADLINE_MS (tests use a tiny value).
+  deadlineMs?: number;
 };
 
 export const UNCERTAIN_UNREADABLE_MESSAGE =
   "Verification result is uncertain because the request timed out and the item could not be re-read to check. Don't submit again yet -- reload the page and check whether this item now shows Verified.";
-// An unchanged read-back right after a gateway timeout is strong evidence, not proof -- a slow request
-// could still commit later -- so this never claims the cost "was not saved".
-export const TIMEOUT_NOT_SAVED_MESSAGE = "The request timed out and no saved change was found yet. Check again before retrying.";
+// An unchanged read-back right after a timeout is strong evidence, not proof -- a slow request could
+// still commit later -- so this never claims the cost "was not saved", and it is an uncertain (locked)
+// outcome, not a definite failure: submitting again before the owner has checked is the one thing to prevent.
+export const TIMEOUT_NOT_SAVED_MESSAGE =
+  "The request timed out and no saved change was found yet. Reload and check whether this item shows Verified before retrying.";
 export const CHANGED_DURING_TIMEOUT_MESSAGE =
   "The request timed out, and this item's cost changed in a way that doesn't match what you submitted. Reload and review the item before trying again.";
+// Returned without sending anything when this Item already has a verification in flight or an
+// uncertain one -- e.g. the panel was closed and reopened.
+export const ALREADY_IN_FLIGHT_MESSAGE =
+  "A verification for this item is still being checked. Reload the page and check whether it now shows Verified before trying again.";
+
+class DeadlineExceeded extends Error {
+  constructor() {
+    super("request timed out on this device");
+  }
+}
+
+// Runs one request under the deadline. The abort is best-effort (it releases the connection); the
+// race is what guarantees the caller moves on even if the request ignores the signal.
+async function withDeadline<T>(run: (signal: AbortSignal) => Promise<T>, deadlineMs: number): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(new DeadlineExceeded()); }, deadlineMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readWithin(io: CertifyCostIo, deadlineMs: number): Promise<CostState | null> {
+  try {
+    return await withDeadline((signal) => io.readState(signal), deadlineMs);
+  } catch {
+    return null;
+  }
+}
 
 // The single place a certify attempt is orchestrated. Never retries: the RPC is called at most once,
 // and a timeout is resolved only by a read -- so a blind retry can never create a second audit row.
+// Every request is bounded, so this always settles and the caller's button can never wait forever.
 export async function runCostCertification(io: CertifyCostIo, certifiedUnitCost: number): Promise<CertifyCostResult> {
-  const before = await io.readState();
+  const deadlineMs = io.deadlineMs ?? CERTIFY_REQUEST_DEADLINE_MS;
+  const before = await readWithin(io, deadlineMs);
   if (!before) {
     return { status: "failed", message: "Could not read the current cost before verifying. Reload and try again." };
   }
 
   let outcome: RpcOutcome;
   try {
-    outcome = await io.callRpc(before.averageUnitCost);
+    outcome = await withDeadline((signal) => io.callRpc(before.averageUnitCost, signal), deadlineMs);
   } catch (thrown) {
     outcome = { error: { message: thrown instanceof Error ? thrown.message : "request failed" }, status: 0 };
   }
@@ -233,7 +317,7 @@ export async function runCostCertification(io: CertifyCostIo, certifiedUnitCost:
   }
 
   io.onCheckingResult?.();
-  const after = await io.readState();
+  const after = await readWithin(io, deadlineMs);
   if (!after) {
     return { status: "uncertain", message: UNCERTAIN_UNREADABLE_MESSAGE };
   }
@@ -241,9 +325,7 @@ export async function runCostCertification(io: CertifyCostIo, certifiedUnitCost:
   if (verdict === "committed") {
     return { status: "verified", certifiedUnitCost, confirmedByReadBack: true, refreshed: true };
   }
-  return verdict === "unchanged"
-    ? { status: "failed", message: TIMEOUT_NOT_SAVED_MESSAGE }
-    : { status: "uncertain", message: CHANGED_DURING_TIMEOUT_MESSAGE };
+  return { status: "uncertain", message: verdict === "unchanged" ? TIMEOUT_NOT_SAVED_MESSAGE : CHANGED_DURING_TIMEOUT_MESSAGE };
 }
 
 export const CHECKING_RESULT_MESSAGE = "Verification result is uncertain because the request timed out. Reloading the item to check whether it was saved...";

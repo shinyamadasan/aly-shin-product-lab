@@ -6,7 +6,7 @@ import type { LabState } from "@/lib/lab-state";
 import { getStockValueDisplay, isCostBaselineUncertified } from "@/lib/inventory-cost";
 import { formatPesos, formatPesosPerUnit, formatPurchaseDate, getLatestPurchaseFacts } from "@/lib/inventory-display";
 import { formatQuantity } from "@/lib/quantity-display";
-import { calculateManualCostBasis, CHECKING_RESULT_MESSAGE, manualCostUnitOptions, resolveLatestPurchaseCost, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline } from "@/lib/cost-verification";
+import { calculateManualCostBasis, CHECKING_RESULT_MESSAGE, formatPurchaseCompact, formatPurchaseToVerify, manualCostUnitOptions, resolveLatestPurchaseCost, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline } from "@/lib/cost-verification";
 import { getFlaggedIngredients, matchesStockSearch } from "@/lib/inventory-status";
 import { buildInventoryItemViews, type InventoryItemView } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
@@ -206,30 +206,36 @@ function CertifyCostForm({
   onAttempt: () => void;
   onClose: () => void;
 }) {
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  // idle -> saving (request sent) -> checking (the request was slow / failed at the transport level,
+  // and the app is reading the Item back to find out whether it saved) -> idle. Always back to idle
+  // in `finally`, so the button can never be left on a working label.
+  const [phase, setPhase] = useState<"idle" | "saving" | "checking">("idle");
   const [showManual, setShowManual] = useState(false);
   const [manualTotal, setManualTotal] = useState("");
   const [manualQuantity, setManualQuantity] = useState("");
   const [manualUnit, setManualUnit] = useState<string>(ingredient.baseUnit);
   const [feedback, setFeedback] = useState<CostFeedback | null>(null);
   // An uncertain result blocks a second submit from this panel: the owner reloads and checks first.
+  // (The page also refuses a second submit for the Item if this panel is closed and reopened.)
   const [isLocked, setIsLocked] = useState(false);
   const [verified, setVerified] = useState<Extract<CertifyCostResult, { status: "verified" }> | null>(null);
   const guardRef = useRef(createMutationGuard<string>());
   const latestCost = resolveLatestPurchaseCost(ingredient, latestPurchase);
   const latest = latestPurchase ? getLatestPurchaseFacts(latestPurchase) : null;
   const manualCost = calculateManualCostBasis(ingredient, { totalPaid: manualTotal, quantity: manualQuantity, unit: manualUnit });
+  const isSubmitting = phase !== "idle";
+  const verifyLabel = phase === "saving" ? "Saving..." : phase === "checking" ? "Checking result..." : "Verify purchase";
 
   async function submit(certifiedUnitCost: number, evidenceNote: string) {
     if (guardRef.current.isActive(ingredient.id)) {
       return;
     }
     setFeedback(null);
-    setIsSubmitting(true);
+    setPhase("saving");
     onAttempt();
     try {
       const result = await guardRef.current.run(ingredient.id, () => certifyIngredientCostBaseline(
-        ingredient.id, certifiedUnitCost, evidenceNote, () => setFeedback({ tone: "info", text: CHECKING_RESULT_MESSAGE }),
+        ingredient.id, certifiedUnitCost, evidenceNote, () => { setPhase("checking"); setFeedback({ tone: "info", text: CHECKING_RESULT_MESSAGE }); },
       ));
       if (!result) {
         return;
@@ -245,7 +251,7 @@ function CertifyCostForm({
       setFeedback({ tone: "info", text: "Something went wrong and the result isn't confirmed. Reload the page and check whether this item shows Verified before trying again." });
       setIsLocked(true);
     } finally {
-      setIsSubmitting(false);
+      setPhase("idle");
     }
   }
 
@@ -289,20 +295,20 @@ function CertifyCostForm({
       {latestCost.usable && latest && !showManual ? (
         <>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Latest purchase</p>
-            <p className="mt-1 break-words font-semibold">{[latest.brand, latest.supplier].filter(Boolean).join(" · ") || "Brand and supplier not set"}</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Purchase to verify</p>
+            <p className="mt-1 break-words text-base font-semibold">{formatPurchaseToVerify(latest.totalPaid, latest.packQuantity, latest.unit)}</p>
+            <p className="mt-1 break-words text-[#6f5a4c]">{[latest.brand, latest.supplier].filter(Boolean).join(" · ") || "Brand and supplier not set"}</p>
             {formatPurchaseDate(latest.date, { year: true }) ? <p className="text-[#6f5a4c]">{formatPurchaseDate(latest.date, { year: true })}</p> : null}
-            <p className="break-words text-[#6f5a4c]">{latest.packQuantity} {latest.unit} · {formatPesos(latest.totalPaid)} total</p>
           </div>
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Suggested cost to verify</p>
-            <p className="mt-1 text-base font-semibold">{formatPesosPerUnit(latestCost.unitCost, ingredient.baseUnit)}</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Calculated cost</p>
+            <p className="mt-1 font-semibold">{formatPesosPerUnit(latestCost.unitCost, ingredient.baseUnit)}</p>
           </div>
-          <p className="text-xs leading-5 text-[#6f5a4c]">Based on the latest recorded purchase. Review it before confirming. Verifying accepts this as the current verified cost -- purchase history is not changed.</p>
+          <p className="text-xs leading-5 text-[#6f5a4c]">Verify that this is what you paid and received. The app calculates the cost per {ingredient.baseUnit}. Purchase history is not changed.</p>
           <div className="flex flex-wrap items-center gap-2">
-            <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked} onClick={() => void submit(latestCost.unitCost, latestCost.evidenceNote)} type="button">{isSubmitting ? "Verifying..." : "Verify this cost"}</button>
+            <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked} onClick={() => void submit(latestCost.unitCost, latestCost.evidenceNote)} type="button">{verifyLabel}</button>
             {closeButton}
-            <button className="h-9 px-2 text-xs font-semibold text-[#8f5632] underline disabled:opacity-60" disabled={isSubmitting} onClick={() => { setFeedback(null); setShowManual(true); }} type="button">Enter a different cost manually</button>
+            <button className="h-9 px-2 text-xs font-semibold text-[#8f5632] underline disabled:opacity-60" disabled={isSubmitting} onClick={() => { setFeedback(null); setShowManual(true); }} type="button">Enter a different purchase manually</button>
           </div>
         </>
       ) : (
@@ -315,7 +321,7 @@ function CertifyCostForm({
           )}
           {showManual ? (
             <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); handleManualSubmit(); }}>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Enter cost manually</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Enter purchase manually</p>
               <label className="grid gap-1 text-xs font-semibold text-[#5f4a3d]">
                 Total paid (PHP)
                 <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-normal" inputMode="decimal" min="0" name="totalPaid" onChange={(event) => { setManualTotal(event.target.value); clearFailedFeedback(); }} placeholder="e.g. 250" step="any" type="number" value={manualTotal} />
@@ -335,19 +341,19 @@ function CertifyCostForm({
               {manualCost.status === "ok" ? (
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Calculated cost</p>
-                  <p className="mt-1 text-base font-semibold">{formatPesosPerUnit(manualCost.unitCost, ingredient.baseUnit)}</p>
+                  <p className="mt-1 font-semibold">{formatPesosPerUnit(manualCost.unitCost, ingredient.baseUnit)}</p>
                 </div>
               ) : null}
               {manualCost.status === "invalid" ? <p className="text-xs text-[#b3441f]" role="status">{manualCost.reason}</p> : null}
-              <p className="text-xs text-[#6f5a4c]">Enter what you actually paid and how much you received. The app will calculate the unit cost.</p>
+              <p className="text-xs text-[#6f5a4c]">Enter what you actually paid and how much you received. The app calculates the cost per {ingredient.baseUnit}.</p>
               <div className="flex flex-wrap gap-2">
-                <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked || manualCost.status !== "ok"} type="submit">{isSubmitting ? "Verifying..." : "Verify this cost"}</button>
+                <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting || isLocked || manualCost.status !== "ok"} type="submit">{verifyLabel}</button>
                 {closeButton}
               </div>
             </form>
           ) : (
             <div className="flex flex-wrap gap-2">
-              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setShowManual(true)} type="button">Enter verified cost manually</button>
+              <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={() => setShowManual(true)} type="button">Enter purchase manually</button>
               {closeButton}
             </div>
           )}
@@ -419,10 +425,10 @@ function IngredientRow({
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           {showCostWarning && uncertified ? (
-            latestCost.usable ? (
+            latestCost.usable && latest ? (
               <>
-                <span className="text-sm text-[#6f5a4c]">Latest cost {formatPesosPerUnit(latestCost.unitCost, item.baseUnit)}</span>
-                <button className="h-9 rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" onClick={() => { setIsOpen(true); setOpenPanel("certify"); }} type="button">Verify latest cost</button>
+                <span className="text-sm text-[#6f5a4c]">Latest purchase {formatPurchaseCompact(latest.totalPaid, latest.packQuantity, latest.unit)}</span>
+                <button className="h-9 rounded-md bg-[#8f5632] px-3 text-sm font-semibold text-white" onClick={() => { setIsOpen(true); setOpenPanel("certify"); }} type="button">Verify purchase</button>
               </>
             ) : (
               <span className="text-sm text-[#6f5a4c]">No usable purchase cost yet</span>

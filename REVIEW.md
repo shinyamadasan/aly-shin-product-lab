@@ -773,3 +773,41 @@ authority.
 **Production boundary:** no schema, migration, RPC, data or production write. No merge, no deploy.
 
 **Merge gate: `approved`** -- held for the independent review pass and a real-device check.
+
+## 2026-09-21 — Cost verification + Inventory polish V3
+
+**Scope:** `src/lib/cost-verification.ts` (purchase-fact formatters, request deadline, attempt tracker, uncertain
+timeout outcome), `src/components/inventory-page.tsx` (CertifyCostForm layout + Saving/Checking phase, row copy),
+`src/app/product-lab.tsx` (`certifyIngredientCostBaseline`: tracker gate, abort signals, background reload, Item-named
+messages), tests `cost-verification.test.ts` (extended) and `raw-inventory-ui.test.ts` (one assertion narrowed),
+`docs/FEATURES.md`. Not touched: any migration, `certify_ingredient_cost_baseline`, `confirm_bake_v3`, Orders, Bake,
+purchase posting, costing, CHANGELOG.md.
+
+**Verdict:** Sound for UX and client reliability; the production timeout's exact stage is inferred, not observed.
+- Root cause (inferred): the RPC body is not slow. Disposable Postgres at 1.2M ledger rows (200k on one Item): latest-row
+  lookup 0.3 ms via `inventory_transactions_ingredient_idx`, RPC ~6-8 ms end to end, no trigger fires (the only
+  `ingredients` triggers are `before update of base_unit` / `of name`). A row-lock wait returned a CODED `57014` at the 8 s
+  statement timeout, whereas production returned an uncoded gateway "upstream request timeout" -- so the stall was most
+  likely upstream of SQL execution (connection/pool/gateway), not lock wait or a scan. No server logs were reachable, so this
+  is not proven; the RPC also worked in production before (Dari Creme Butter Milk, 2026-09-12). No SQL change is justified.
+- Client contributors that ARE real and fixed: the button was held for the full-page reload (21 unbounded selects incl. the
+  whole ledger) after a successful save; no request had a deadline; closing and reopening a panel discarded the lock.
+- Behaviour change to check: a timeout whose read-back shows no saved change is now UNCERTAIN and locked (was a
+  re-submittable failure), because a slow request can still commit. The owner must reload to unlock -- intended.
+
+**Not rubber-stamped:**
+- A 15 s deadline can classify a merely-slow request as uncertain; it is resolved by the read-back and never retried, so the
+  worst case is one extra reload, not a duplicate audit row.
+- The tracker's uncertain state lasts until a page reload (a ref, not persisted). A reload clears it, matching the message.
+- `CertifyCostResult.verified.refreshed` is now always true from the handler (refresh failure is reported at page level);
+  the panel's `refreshed` branch is dead-but-harmless and was left rather than widening the change.
+- One pre-existing assertion (default row shows no "Latest purchase") was narrowed to "not outside the cost-focused branch".
+
+**Human-only checks not done:** no browser/phone pass -- `ship-pending-human-review` for the new panel layout, the
+Saving -> Checking result labels under a throttled connection, and the compact row copy.
+
+**Production boundary:** no production write, data mutation, migration, certification, merge or deploy. Read-only
+production facts came from the `product-lab` MCP (`ingredient_inspect`, `inventory_list`); measurements ran in a
+throwaway local Docker Postgres.
+
+**Merge gate: `approved`** -- held for the single post-wave review and a real-device check.

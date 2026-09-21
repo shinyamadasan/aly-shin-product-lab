@@ -819,9 +819,15 @@ test("Manage Items: rows are concise by default; every maintenance action lives 
     assert.ok(expandedPart.includes(label), `${label} remains reachable inside Manage`);
   }
   // Nothing analytical or monetary on the collapsed row.
-  for (const detail of ["Value", "Purchase history", "Latest purchase", "targetStockQuantity", "currentQuantity"]) {
+  for (const detail of ["Value", "Purchase history", "targetStockQuantity", "currentQuantity"]) {
     assert.ok(!collapsedPart.includes(detail), `${detail} is not part of the default row`);
   }
+  // The compact "Latest purchase PHP 19 / 50 g" is the cost-verification action's own context: it may
+  // appear only inside the cost-focused branch (never on the default list).
+  const costBranch = collapsedPart.indexOf("{showCostWarning && uncertified ? (");
+  assert.ok(costBranch > 0, "cost-focused branch");
+  assert.ok(!collapsedPart.slice(0, costBranch).includes("Latest purchase"), "Latest purchase is not part of the default row");
+  assert.match(collapsedPart.slice(costBranch), /Latest purchase \{formatPurchaseCompact\(/);
   assert.match(expandedPart, /Re-verify cost/);
   assert.match(expandedPart, /<AdjustStockForm/);
   assert.match(expandedPart, /<CertifyCostForm/);

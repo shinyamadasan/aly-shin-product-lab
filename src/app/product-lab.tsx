@@ -37,7 +37,7 @@ import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { InventoryPage, ingredientCategoryOptions } from "@/components/inventory-page";
 import { PurchaseItemField } from "@/components/purchase-item-field";
-import { CHECKING_RESULT_MESSAGE, runCostCertification, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline, type CostState } from "@/lib/cost-verification";
+import { ALREADY_IN_FLIGHT_MESSAGE, CHECKING_RESULT_MESSAGE, createCertifyAttemptTracker, runCostCertification, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline, type CostState } from "@/lib/cost-verification";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
@@ -229,6 +229,9 @@ export default function ProductLab({
   // A retry after "Item created, but the purchase failed" must reuse that Item even if the reloaded
   // catalog has not reached this render yet -- otherwise a fast retry could create it a second time.
   const itemsCreatedForPurchaseRef = useRef(new Map<string, Ingredient>());
+  // Items with a cost verification in flight or an uncertain outcome. Held here, above the Inventory
+  // panel, so closing and reopening a panel cannot allow a second submit (see createCertifyAttemptTracker).
+  const certifyAttemptsRef = useRef(createCertifyAttemptTracker());
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
@@ -1965,14 +1968,18 @@ export default function ProductLab({
   //
   // Orchestration (one RPC, never retried; a gateway timeout is an UNCERTAIN outcome resolved by a
   // read-back, not reported as a failure) lives in runCostCertification -- see cost-verification.ts.
-  // The reload after a committed certification is separate: it can fail without changing the result.
+  // The reload after a committed certification is separate: it runs in the background, so the
+  // operator's button is released the moment the save is known, and it can fail without changing the
+  // result. The attempt tracker refuses a second submit for an Item that is still in flight or whose
+  // outcome is uncertain, even if the panel that started it has since been closed and reopened.
   async function certifyIngredientCostBaseline(ingredientId: string, certifiedUnitCost: number, evidenceNote: string, onCheckingResult?: () => void): Promise<CertifyCostResult> {
+    const attempts = certifyAttemptsRef.current;
     const report = (result: CertifyCostResult, ingredientName: string, baseUnit: string): CertifyCostResult => {
       if (result.status === "verified") {
-        setMessage(result.refreshed ? `${ingredientName}: ${verifiedCostMessage(result.certifiedUnitCost, baseUnit)}` : `${ingredientName}: ${verifiedCostMessage(result.certifiedUnitCost, baseUnit)} The list could not refresh -- reload the page to see it.`);
+        setMessage(`${ingredientName}: ${verifiedCostMessage(result.certifiedUnitCost, baseUnit)}`);
         setMessageTone("good");
       } else {
-        setMessage(result.message);
+        setMessage(`${ingredientName}: ${result.message}`);
         setMessageTone(result.status === "uncertain" ? "info" : "bad");
       }
       return result;
@@ -1992,10 +1999,15 @@ export default function ProductLab({
       return result;
     }
 
+    if (attempts.blocked(ingredientId)) {
+      return report({ status: "uncertain", message: ALREADY_IN_FLIGHT_MESSAGE }, ingredient.name, ingredient.baseUnit);
+    }
+    attempts.begin(ingredientId);
+
     const client = supabase;
-    const readState = async (): Promise<CostState | null> => {
-      const { data, error } = await client
-        .from("ingredients").select("average_unit_cost, cost_reconciled_at").eq("id", ingredientId).single();
+    const readState = async (signal?: AbortSignal): Promise<CostState | null> => {
+      const query = client.from("ingredients").select("average_unit_cost, cost_reconciled_at").eq("id", ingredientId);
+      const { data, error } = await (signal ? query.abortSignal(signal) : query).single();
       if (error || !data) {
         return null;
       }
@@ -2003,29 +2015,39 @@ export default function ProductLab({
       return { averageUnitCost: row.average_unit_cost, costReconciledAt: row.cost_reconciled_at };
     };
 
-    const result = await runCostCertification({
-      readState,
-      callRpc: async (expectedCurrentCost) => {
-        const { error, status } = await client.rpc("certify_ingredient_cost_baseline", certifyIngredientCostBaselineArgs(
-          ingredient, labState.inventoryTransactions, { certifiedUnitCost, evidenceNote, expectedCurrentCost },
-        ));
-        return { error, status };
-      },
-      onCheckingResult: () => {
-        setMessage(CHECKING_RESULT_MESSAGE);
-        setMessageTone("info");
-        onCheckingResult?.();
-      },
-    }, certifiedUnitCost);
+    let result: CertifyCostResult;
+    try {
+      result = await runCostCertification({
+        readState,
+        callRpc: async (expectedCurrentCost, signal) => {
+          const call = client.rpc("certify_ingredient_cost_baseline", certifyIngredientCostBaselineArgs(
+            ingredient, labState.inventoryTransactions, { certifiedUnitCost, evidenceNote, expectedCurrentCost },
+          ));
+          const { error, status } = await (signal ? call.abortSignal(signal) : call);
+          return { error, status };
+        },
+        onCheckingResult: () => {
+          setMessage(`${ingredient.name}: ${CHECKING_RESULT_MESSAGE}`);
+          setMessageTone("info");
+          onCheckingResult?.();
+        },
+      }, certifiedUnitCost);
+    } catch {
+      // Not reachable through runCostCertification's own handling, but if anything ever throws the
+      // outcome is unknown: keep this Item blocked rather than releasing it to a second submit.
+      result = { status: "uncertain", message: ALREADY_IN_FLIGHT_MESSAGE };
+    }
+    attempts.finish(ingredientId, result);
 
     if (result.status === "verified") {
-      let refreshed = false;
-      try {
-        refreshed = await loadSupabaseData();
-      } catch {
-        refreshed = false;
-      }
-      return report({ ...result, refreshed }, ingredient.name, ingredient.baseUnit);
+      const reported = report(result, ingredient.name, ingredient.baseUnit);
+      const verifiedText = verifiedCostMessage(result.certifiedUnitCost, ingredient.baseUnit);
+      const refreshFailed = () => {
+        setMessage(`${ingredient.name}: ${verifiedText} The list could not refresh -- reload the page to see it.`);
+        setMessageTone("good");
+      };
+      loadSupabaseData().then((refreshed) => { if (!refreshed) refreshFailed(); }, refreshFailed);
+      return reported;
     }
     return report(result, ingredient.name, ingredient.baseUnit);
   }
