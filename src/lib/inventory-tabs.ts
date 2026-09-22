@@ -20,8 +20,8 @@ export function resolveInventoryTab(value: string | string[] | undefined): Inven
 }
 
 // A narrow, presentation-only focus for Manage Items: /inventory?tab=ingredients&focus=costs opens
-// it already narrowed to the Items whose cost needs verification. It never changes which tab is
-// active and any other (or missing) value means "no focus", so every existing link is unaffected.
+// it already narrowed to the Items that need an opening cost. It never changes which tab is active
+// and any other (or missing) value means "no focus", so every existing link is unaffected.
 export type InventoryFocus = "costs";
 
 export function resolveInventoryFocus(value: string | string[] | undefined): InventoryFocus | undefined {

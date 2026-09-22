@@ -37,14 +37,18 @@ import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { InventoryPage, ingredientCategoryOptions } from "@/components/inventory-page";
 import { PurchaseItemField } from "@/components/purchase-item-field";
-import { ALREADY_IN_FLIGHT_MESSAGE, CHECKING_RESULT_MESSAGE, createCertifyAttemptTracker, runCostCertification, verifiedCostMessage, type CertifyCostResult, type CertifyIngredientCostBaseline, type CostState } from "@/lib/cost-verification";
+import {
+  ATTEMPT_MESSAGES, CHECKING_RESULT_MESSAGE, createOpeningCostAttemptTracker, openingCostSavedMessage, runOpeningCostSetup,
+  type OpeningCostAttempt, type OpeningCostAttemptTracker, type OpeningCostResult, type SetOpeningCostBasis, type CostState,
+} from "@/lib/opening-cost";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
 import {
-  certifyIngredientCostBaselineArgs, confirmBakeArgs, deletePostedPurchaseIfReversibleArgs, getPurchaseDeleteEligibility,
+  confirmBakeArgs, deletePostedPurchaseIfReversibleArgs, getPurchaseDeleteEligibility,
   ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
-  rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, recordFinishedStockExceptionArgs, updatePostedPurchaseMetadataArgs,
+  rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, recordFinishedStockExceptionArgs,
+  setOpeningCostBasisArgs, updatePostedPurchaseMetadataArgs,
 } from "@/lib/raw-inventory-authority";
 import { inventoryTabs, type InventoryFocus, type InventoryTab } from "@/lib/inventory-tabs";
 import type { OrdersTab } from "@/lib/orders-tabs";
@@ -229,9 +233,11 @@ export default function ProductLab({
   // A retry after "Item created, but the purchase failed" must reuse that Item even if the reloaded
   // catalog has not reached this render yet -- otherwise a fast retry could create it a second time.
   const itemsCreatedForPurchaseRef = useRef(new Map<string, Ingredient>());
-  // Items with a cost verification in flight or an uncertain outcome. Held here, above the Inventory
-  // panel, so closing and reopening a panel cannot allow a second submit (see createCertifyAttemptTracker).
-  const certifyAttemptsRef = useRef(createCertifyAttemptTracker());
+  // Items with an Opening Cost Setup in flight, unconfirmed, or saved and awaiting refresh. Held
+  // here, above the Inventory panel, so closing and reopening a panel cannot allow a second submit,
+  // and a freshly saved setup cannot present a stale, re-enabled button before the refresh lands
+  // (see createOpeningCostAttemptTracker).
+  const openingCostAttemptsRef = useRef(createOpeningCostAttemptTracker());
   const [isSuppliesTableMissing, setIsSuppliesTableMissing] = useState(false);
   const [isEquipmentTableMissing, setIsEquipmentTableMissing] = useState(false);
   const [isAiReviewsTableMissing, setIsAiReviewsTableMissing] = useState(false);
@@ -1954,53 +1960,58 @@ export default function ProductLab({
     setMessageTone("good");
   }
 
-  // Cost Baseline Repair: certifies an ingredient's average_unit_cost against real evidence the
-  // owner has reviewed. Remote-only (owner action, always against the live database) -- there is
-  // no local-demo fallback, matching apply_raw_inventory_adjustment's own remote-only shape for
-  // the same reason: this is a database-authoritative fact, not client display state.
+  // Cost System Simplification V4 -- Opening Cost Setup: sets an ingredient's opening average_unit_cost
+  // (and cost trust) against evidence the owner has reviewed, for the one exceptional case normal
+  // purchases can't resolve on their own (legacy stock recorded before reliable cost tracking).
+  // Remote-only (owner action, always against the live database) -- there is no local-demo
+  // fallback, matching apply_raw_inventory_adjustment's own remote-only shape for the same reason:
+  // this is a database-authoritative fact, not client display state.
   //
   // Fetches average_unit_cost fresh, directly, rather than from labState.ingredients: the client
   // Ingredient type coerces a null DB value to 0 at load time (see loadSupabaseData's ingredient
-  // mapping), which would make "never certified, cost genuinely unknown" and "certified cost is
-  // exactly zero" indistinguishable to the optimistic-concurrency check below -- exactly the kind
-  // of silent conflation this repair exists to eliminate. A stale read here still fails safely:
-  // the database's own expected-value check rejects it, same as every other RPC in this file.
+  // mapping), which would make "never trusted, cost genuinely unknown" and "trusted cost is exactly
+  // zero" indistinguishable to the optimistic-concurrency check below -- exactly the kind of silent
+  // conflation this repair exists to eliminate. A stale read here still fails safely: the
+  // database's own expected-value check rejects it, same as every other RPC in this file.
   //
   // Orchestration (one RPC, never retried; a gateway timeout is an UNCERTAIN outcome resolved by a
-  // read-back, not reported as a failure) lives in runCostCertification -- see cost-verification.ts.
-  // The reload after a committed certification is separate: it runs in the background, so the
-  // operator's button is released the moment the save is known, and it can fail without changing the
-  // result. The attempt tracker refuses a second submit for an Item that is still in flight or whose
-  // outcome is uncertain, even if the panel that started it has since been closed and reopened.
-  async function certifyIngredientCostBaseline(ingredientId: string, certifiedUnitCost: number, evidenceNote: string, onCheckingResult?: () => void): Promise<CertifyCostResult> {
-    const attempts = certifyAttemptsRef.current;
-    const report = (result: CertifyCostResult, ingredientName: string, baseUnit: string): CertifyCostResult => {
-      if (result.status === "verified") {
-        setMessage(`${ingredientName}: ${verifiedCostMessage(result.certifiedUnitCost, baseUnit)}`);
+  // read-back, not reported as a failure) lives in runOpeningCostSetup -- see opening-cost.ts. The
+  // reload after a committed save is separate: it runs in the background, so the operator's button
+  // is released the moment the save is known, and it can fail without changing the result. The
+  // attempt tracker refuses a second submit for an Item that is still in flight, whose outcome is
+  // uncertain, or that just saved and is still waiting for that reload to land -- even if the panel
+  // that started it has since been closed and reopened (see openingCostAttemptsRef).
+  async function setOpeningCostBasis(ingredientId: string, unitCost: number, evidenceNote: string, onCheckingResult?: () => void): Promise<OpeningCostResult> {
+    const attempts = openingCostAttemptsRef.current;
+    const report = (result: OpeningCostResult, ingredientName: string, baseUnit: string): OpeningCostResult => {
+      if (result.status === "saved") {
+        setMessage(`${ingredientName}: ${openingCostSavedMessage(result.unitCost, baseUnit)}`);
         setMessageTone("good");
       } else {
         setMessage(`${ingredientName}: ${result.message}`);
-        setMessageTone(result.status === "uncertain" ? "info" : "bad");
+        setMessageTone(result.status === "failed" ? "bad" : "info");
       }
       return result;
     };
 
     if (!supabase || !session) {
-      const result: CertifyCostResult = { status: "failed", message: "Verifying a cost requires a live connection." };
+      const result: OpeningCostResult = { status: "failed", message: "Setting an opening cost requires a live connection." };
       setMessage(result.message);
       setMessageTone("bad");
       return result;
     }
     const ingredient = labState.ingredients.find((item) => item.id === ingredientId);
     if (!ingredient) {
-      const result: CertifyCostResult = { status: "failed", message: "Item not found." };
+      const result: OpeningCostResult = { status: "failed", message: "Item not found." };
       setMessage(result.message);
       setMessageTone("bad");
       return result;
     }
 
-    if (attempts.blocked(ingredientId)) {
-      return report({ status: "uncertain", message: ALREADY_IN_FLIGHT_MESSAGE }, ingredient.name, ingredient.baseUnit);
+    const blocked = attempts.blocked(ingredientId);
+    if (blocked) {
+      const attempt: OpeningCostAttempt = blocked;
+      return report({ status: "blocked", message: ATTEMPT_MESSAGES[attempt] }, ingredient.name, ingredient.baseUnit);
     }
     attempts.begin(ingredientId);
 
@@ -2015,13 +2026,13 @@ export default function ProductLab({
       return { averageUnitCost: row.average_unit_cost, costReconciledAt: row.cost_reconciled_at };
     };
 
-    let result: CertifyCostResult;
+    let result: OpeningCostResult;
     try {
-      result = await runCostCertification({
+      result = await runOpeningCostSetup({
         readState,
         callRpc: async (expectedCurrentCost, signal) => {
-          const call = client.rpc("certify_ingredient_cost_baseline", certifyIngredientCostBaselineArgs(
-            ingredient, labState.inventoryTransactions, { certifiedUnitCost, evidenceNote, expectedCurrentCost },
+          const call = client.rpc("certify_ingredient_cost_baseline", setOpeningCostBasisArgs(
+            ingredient, labState.inventoryTransactions, { unitCost, evidenceNote, expectedCurrentCost },
           ));
           const { error, status } = await (signal ? call.abortSignal(signal) : call);
           return { error, status };
@@ -2031,22 +2042,25 @@ export default function ProductLab({
           setMessageTone("info");
           onCheckingResult?.();
         },
-      }, certifiedUnitCost);
+      }, unitCost);
     } catch {
-      // Not reachable through runCostCertification's own handling, but if anything ever throws the
+      // Not reachable through runOpeningCostSetup's own handling, but if anything ever throws the
       // outcome is unknown: keep this Item blocked rather than releasing it to a second submit.
-      result = { status: "uncertain", message: ALREADY_IN_FLIGHT_MESSAGE };
+      result = { status: "uncertain", message: ATTEMPT_MESSAGES.uncertain };
     }
     attempts.finish(ingredientId, result);
 
-    if (result.status === "verified") {
+    if (result.status === "saved") {
       const reported = report(result, ingredient.name, ingredient.baseUnit);
-      const verifiedText = verifiedCostMessage(result.certifiedUnitCost, ingredient.baseUnit);
-      const refreshFailed = () => {
-        setMessage(`${ingredient.name}: ${verifiedText} The list could not refresh -- reload the page to see it.`);
-        setMessageTone("good");
+      const savedText = openingCostSavedMessage(result.unitCost, ingredient.baseUnit);
+      const afterRefresh = (refreshed: boolean) => {
+        attempts.settle(ingredientId);
+        if (!refreshed) {
+          setMessage(`${ingredient.name}: ${savedText} The list could not refresh -- reload the page to see it.`);
+          setMessageTone("good");
+        }
       };
-      loadSupabaseData().then((refreshed) => { if (!refreshed) refreshFailed(); }, refreshFailed);
+      loadSupabaseData().then(afterRefresh, () => afterRefresh(false));
       return reported;
     }
     return report(result, ingredient.name, ingredient.baseUnit);
@@ -3346,7 +3360,8 @@ export default function ProductLab({
               deleteAndRepairPaused={Boolean(supabase && session)}
               adjustStock={adjustStock}
               cancelEditIngredient={cancelIngredientEdit}
-              certifyIngredientCostBaseline={certifyIngredientCostBaseline}
+              costAttempts={openingCostAttemptsRef.current}
+              setOpeningCostBasis={setOpeningCostBasis}
               cancelEditSupply={cancelSupplyEdit}
               confirmPurchaseImport={confirmPurchaseImport}
               createPurchaseImportDraft={createPurchaseImportDraft}
@@ -5684,7 +5699,8 @@ function InventoryWorkspace({
   initialTab,
   adjustStock,
   cancelEditIngredient,
-  certifyIngredientCostBaseline,
+  setOpeningCostBasis,
+  costAttempts,
   deleteIngredient,
   editIngredient,
   hardDeleteIngredient,
@@ -5717,7 +5733,8 @@ function InventoryWorkspace({
   initialTab?: InventoryTab;
   adjustStock: (ingredientId: string, quantity: number, unit: string, reason: StockAdjustmentReason, direction: "increase" | "decrease", note: string, allowNegative: boolean) => Promise<void>;
   cancelEditIngredient: () => void;
-  certifyIngredientCostBaseline: CertifyIngredientCostBaseline;
+  setOpeningCostBasis: SetOpeningCostBasis;
+  costAttempts: OpeningCostAttemptTracker;
   deleteIngredient: (ingredientId: string) => void;
   editIngredient: (ingredient: Ingredient) => void;
   hardDeleteIngredient: (ingredientId: string) => void;
@@ -5920,7 +5937,7 @@ function InventoryWorkspace({
       {tab === "history" ? <InventoryTimeline labState={labState} reverseInventoryAdjustment={reverseInventoryAdjustment} /> : null}
 
       {tab === "ingredients" ? (
-        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} certifyIngredientCostBaseline={certifyIngredientCostBaseline} costFocus={costFocus} onCostFocusChange={setCostFocus} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} />
+        <InventoryPage adjustStock={adjustStock} cancelEdit={cancelEditIngredient} costAttempts={costAttempts} costFocus={costFocus} deleteIngredient={deleteIngredient} editIngredient={editIngredient} hardDeleteIngredient={hardDeleteIngredient} ingredient={ingredient} isInventoryTableMissing={isInventoryTableMissing} key={ingredient?.id ?? "new-ingredient"} labState={labState} onCostFocusChange={setCostFocus} onDirtyChange={onIngredientDirtyChange} restoreIngredient={restoreIngredient} saveIngredient={saveIngredient} setOpeningCostBasis={setOpeningCostBasis} />
       ) : null}
     </div>
   );

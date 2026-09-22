@@ -680,6 +680,81 @@ reconciliation, any adjustment, any Bake, any alias, any costing entry, any othe
 import, any Selling Format packaging line -- continues to block permanent deletion exactly as
 before.
 
+## Cost System Simplification V4 — automatic purchase-established cost trust
+
+`supabase/migrations/20260921120000_cost_system_simplification_v4.sql` (not applied to production)
+removes the routine human "verify cost" step Cost Baseline Repair's own certification RPC made
+possible but did not require after every purchase. `cost_reconciled_at` keeps its exact meaning
+("the current `average_unit_cost` is safe to use") and its exact column name; what changes is who
+sets it in the common case.
+
+**The rule**, centralized in one new pure SQL function,
+`inventory_private.resolve_purchase_cost_trust(previous_quantity, previous_trust, is_priced, now)`,
+called from both purchase paths so they cannot drift apart:
+
+- previous quantity `< 0` → stays unresolved (a negative balance is unresolved stock history; a
+  purchase never launders it into a trusted cost).
+- the purchase carries no price → trust is unchanged either way (an unpriced purchase can never
+  establish trust, matching the existing unpriced-purchase valuation-at-current-average behavior).
+- previous quantity `= 0`, priced → trusted **now**, atomically with the purchase: the resulting
+  stock is entirely explained by this one purchase.
+- previous quantity `> 0` and already trusted, priced → **stays** trusted (the existing timestamp is
+  left untouched — this is not a re-stamp — and the weighted average remains authoritative).
+- previous quantity `> 0` and not yet trusted, priced → **stays unresolved**: the new units' price
+  says nothing about what the older, already-present units cost.
+
+`post_raw_purchase` and `confirm_purchase_import_v2` both read the ingredient's own locked
+`cost_reconciled_at` and quantity, call this function, and write the result in the same statement
+that writes `average_unit_cost` — the decision happens server-side, under the same row lock as the
+purchase, so no client-side race is possible. `confirm_purchase_import_v2` treats an Item's import
+rows as "priced" only when every row for it carries a price (`v_added_unpriced = 0`): a mixed
+import can preserve trust but never establish it, for the same reason a single unpriced purchase
+can't.
+
+**Reversal.** Because a purchase can now change trust, reversing one must restore exactly the trust
+state it found — `post_raw_purchase` extends its existing `purchase_reversal_snapshot` with
+`cost_trust_managed: true` alongside the pre-purchase `previous_cost_reconciled_at` it already
+captured for cost-reversal auditing; `delete_posted_purchase_if_reversible` restores that value when
+the marker is present. A purchase posted before V4 has no marker, so its reversal leaves trust
+untouched exactly as it always did — the fix is additive, not a reinterpretation of old ledger rows.
+
+**Stock adjustments.** `apply_raw_inventory_adjustment` already cleared trust when a physical count
+found more stock than the ledger explained (Cost Baseline Repair); V4 closes the matching gap on the
+adjustment side — an "Increase stock" delta adjustment (`mode = 'delta'`, positive) now also clears
+it, since it introduces stock a purchase never priced. A decrease, an exact-match recount, and
+reversing an earlier adjustment still leave trust untouched (none of them add unknown-cost stock).
+
+**No backfill.** The migration does not mark any existing ingredient trusted. An ingredient's trust
+state after this migration is exactly whatever the owner already certified, or the one-time Cost
+Baseline Repair backfill already proved — positive stock with a null `cost_reconciled_at` needs
+Opening Cost Setup; zero stock with a null one needs nothing until its next priced purchase.
+
+**Operator-facing surface (`src/lib/opening-cost.ts`, renamed from `cost-verification.ts`;
+`src/components/inventory-page.tsx`).** The exceptional path — legacy/opening stock whose older
+units were never priced — is "Opening Cost Setup", reusing `certify_ingredient_cost_baseline`
+unchanged (owner-only, positive cost, evidence required, optimistic concurrency, one audit row);
+only the operator-facing wording moved ("Cost setup needed" / "Use latest purchase price" / "Set
+opening cost", nowhere "Verify"/"certify"). `needsOpeningCostSetup()` (`src/lib/inventory-cost.ts`)
+gates the nag on `currentQuantity > 0`, so a zero-stock Item is never asked to do anything — its next
+priced purchase resolves it automatically. `certify_ingredient_cost_baseline`'s own expected-cost
+check was also fixed while touching this path: it compared a stored unbounded `numeric` exactly
+against the `double`-precision value the client can round-trip, which rejected every repeating-decimal
+average (e.g. `19/70`) as "changed" on every attempt; it now compares with a `1e-9` relative
+tolerance, the same one the client's own read-back already uses, while quantity and the latest
+ledger row are still compared exactly.
+
+`OpeningCostAttemptTracker` (`src/lib/opening-cost.ts`) extends the V3 in-flight/uncertain tracker
+with a third state, `"saved"`: a freshly successful setup blocks a second submit through the short
+window before the background list refresh lands (closed by `settle()`, called once that refresh
+settles either way — a failed refresh still relies on the database's own optimistic-concurrency
+check as the real backstop, the same trust boundary every RPC in this file already draws). The
+tracker is subscribable (`useSyncExternalStore` in `OpeningCostForm`), so a panel or row reopened
+mid-attempt renders the correct blocked state immediately, not only after a click.
+
+Bake's guard (`confirm_bake_v3`) and its frozen-cost snapshots are unchanged; only its rejection
+message changed, from "Cost baseline is not certified for: %" to "Opening cost setup is needed for
+% before this Bake can be confirmed."
+
 ## Claude Inventory Operator V1A
 
 The project-scoped Claude Code skill at `.claude/skills/product-lab-inventory/SKILL.md` turns a

@@ -127,8 +127,10 @@ export function updatePostedPurchaseMetadataArgs(supply: SupplyEntry) {
   };
 }
 
-// Cost Baseline Repair: certify_ingredient_cost_baseline is the cost-side mirror of
-// rawAdjustmentArgs above -- same optimistic-concurrency shape, but writes only
+// Cost System Simplification V4: setOpeningCostBasisArgs is the client-layer name for the args to
+// the certify_ingredient_cost_baseline RPC -- the RPC itself keeps its SQL name (see that migration's
+// Part 7: reuse the existing owner-only/evidence/concurrency authority, rename only what the operator
+// sees). Same optimistic-concurrency shape as rawAdjustmentArgs above, but writes only
 // average_unit_cost + cost_reconciled_at, never current_quantity or inventory_reconciled_at.
 //
 // p_expected_current_cost is taken from expectedCurrentCost, NOT from ingredient.averageUnitCost:
@@ -138,12 +140,12 @@ export function updatePostedPurchaseMetadataArgs(supply: SupplyEntry) {
 // repair exists to eliminate. Callers must pass the RAW value from a fresh read (null included),
 // not the lossy display type, so a stale/wrong guess can never slip past the database's own
 // optimistic-concurrency check.
-export function certifyIngredientCostBaselineArgs(ingredient: Ingredient, movements: InventoryTransaction[], input: {
-  certifiedUnitCost: number; evidenceNote: string; expectedCurrentCost: number | null;
+export function setOpeningCostBasisArgs(ingredient: Ingredient, movements: InventoryTransaction[], input: {
+  unitCost: number; evidenceNote: string; expectedCurrentCost: number | null;
 }) {
   return {
     p_ingredient_id: ingredient.id,
-    p_certified_unit_cost: input.certifiedUnitCost,
+    p_certified_unit_cost: input.unitCost,
     p_evidence_note: input.evidenceNote,
     p_expected_current_cost: input.expectedCurrentCost,
     p_expected_quantity: ingredient.currentQuantity,

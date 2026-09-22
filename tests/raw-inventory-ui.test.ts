@@ -450,18 +450,17 @@ test("Inventory Stock table: does not duplicate row rendering for mobile vs desk
   assert.equal(mapCalls.length, 1, "a single responsive grid renders every row, not a separate mobile card list");
 });
 
-test("Manage Items: a Cost setup summary appears only when ingredients need verification, and the per-item Verify/Re-verify control still exists", () => {
-  assert.match(inventory.text, /uncertifiedCostCount > 0/);
-  assert.match(inventory.text, /isCostBaselineUncertified/);
-  // The per-row action is unchanged in kind (a button toggling the same CertifyCostForm panel) --
-  // just relabeled from a fixed string to reflect the ingredient's own verified state. Operator
-  // language is "Verify cost"; "certify" stays only in code/RPC names.
-  button(inventory, "Verify cost");
-  assert.match(inventory.text, /uncertified \? "Verify cost" : "Re-verify cost"/);
-  assert.doesNotMatch(inventory.text, />\s*Certify|"Certify|Certifying\.\.\./);
+test("Manage Items: a Cost setup summary appears only when ingredients need an opening cost, and the per-item control only exists for those (never a permanent Verify/Re-verify action)", () => {
+  assert.match(inventory.text, /setupNeededCount > 0/);
+  assert.match(inventory.text, /needsOpeningCostSetup/);
+  // The per-row action only exists when needsSetup is true -- a trusted Item has no cost action at
+  // all. Operator language is "Set opening cost"; "certify" stays only in code/RPC names.
+  button(inventory, "Set opening cost");
+  assert.match(inventory.text, /needsSetup \? \(/);
+  assert.doesNotMatch(inventory.text, />\s*Certify|"Certify|Certifying\.\.\.|Verify cost|Re-verify cost/);
   // Plain language replaces the internal term on the operator-facing row; the technical name stays
   // only in comments/docs.
-  assert.match(inventory.text, /Cost needs verification/);
+  assert.match(inventory.text, /Cost setup needed/);
 });
 
 test("Bake: cost certification uses the same shared helper as Inventory, not a re-derived condition", () => {
@@ -505,14 +504,13 @@ test("Bake: preflight shows one short message per short ingredient, sourced from
 
 test("Bake: multiple uncertified costs are summarized as one Preflight line, never one card per ingredient", () => {
   // Compact by default: a count and the fact the bake is blocked; the names sit behind a disclosure.
-  assert.match(bake.text, /need\{uncertifiedCostIngredientNames\.length === 1 \? "s" : ""\} verification before this bake can be posted\./);
+  assert.match(bake.text, /Opening cost setup is needed for \$\{uncertifiedCostIngredientNames\.length\} ingredients before this Bake can be confirmed\./);
   assert.match(bake.text, /Show ingredients \(\{uncertifiedCostIngredientNames\.length\}\)/);
   assert.match(bake.text, /\{uncertifiedCostIngredientNames\.join\(", "\)\}/);
-  assert.doesNotMatch(bake.text, /Cost setup needed/);
   // The per-deduction card no longer renders its own separate "not certified" line -- that
   // information now lives once, in the grouped Preflight message above.
   assert.doesNotMatch(bake.text, /isCostUncertified/);
-  assert.doesNotMatch(bake.text, /Cost baseline not certified/);
+  assert.doesNotMatch(bake.text, /Cost baseline not certified|not certified/i);
 });
 
 test("Bake: Review costs deep-links to Manage Items already narrowed to Items needing verification", () => {
@@ -814,7 +812,7 @@ test("Manage Items: rows are concise by default; every maintenance action lives 
   // The always-visible part: name, muted category/unit context, exception tags, one Manage control.
   assert.match(collapsedPart, /\{isOpen \? "Close" : "Manage"\}/);
   // (">Edit<" rather than "Edit": the row's own isEditing prop would otherwise match.)
-  for (const label of [">Edit<", "Adjust Stock", "Archive", "Verify cost"]) {
+  for (const label of [">Edit<", "Adjust Stock", "Archive"]) {
     assert.ok(!collapsedPart.includes(label), `${label} must not be a permanent row button`);
     assert.ok(expandedPart.includes(label), `${label} remains reachable inside Manage`);
   }
@@ -822,21 +820,23 @@ test("Manage Items: rows are concise by default; every maintenance action lives 
   for (const detail of ["Value", "Purchase history", "targetStockQuantity", "currentQuantity"]) {
     assert.ok(!collapsedPart.includes(detail), `${detail} is not part of the default row`);
   }
-  // The compact "Latest purchase PHP 19 / 50 g" is the cost-verification action's own context: it may
+  // The compact "Latest purchase PHP 19 / 50 g" is the opening-cost action's own context: it may
   // appear only inside the cost-focused branch (never on the default list).
-  const costBranch = collapsedPart.indexOf("{showCostWarning && uncertified ? (");
+  const costBranch = collapsedPart.indexOf("{showCostWarning && needsSetup ? (");
   assert.ok(costBranch > 0, "cost-focused branch");
   assert.ok(!collapsedPart.slice(0, costBranch).includes("Latest purchase"), "Latest purchase is not part of the default row");
   assert.match(collapsedPart.slice(costBranch), /Latest purchase \{formatPurchaseCompact\(/);
-  assert.match(expandedPart, /Re-verify cost/);
+  // "Set opening cost" is reachable inside Manage, but only for an Item that needs it -- a trusted
+  // Item has no cost action at all.
+  assert.match(expandedPart, /needsSetup \? \([\s\S]*Set opening cost/);
   assert.match(expandedPart, /<AdjustStockForm/);
-  assert.match(expandedPart, /<CertifyCostForm/);
+  assert.match(expandedPart, /<OpeningCostForm/);
   // No healthy/stock status pills on Manage Items rows -- that is Stock's job.
   assert.doesNotMatch(row, /stockStatusLabel|getStockStatus|Good/);
-  // Only exception tags: cost verification and manual reconciliation.
-  // ...and the cost warning only in cost-focused mode, so ~24 uncertified Items don't turn the whole
-  // default list red again.
-  assert.match(collapsedPart, /\{showCostWarning && uncertified \? <Tag tone="danger">Cost needs verification<\/Tag> : null\}/);
+  // Only exception tags: cost setup and manual reconciliation.
+  // ...and the cost warning only in cost-focused mode, so a large uncertified count doesn't turn the
+  // whole default list red again.
+  assert.match(collapsedPart, /\{showCostWarning && needsSetup \? <Tag tone="danger">Cost setup needed<\/Tag> : null\}/);
   assert.match(collapsedPart, /\{needsReconciliation \? <Tag tone="danger">Needs reconciliation<\/Tag> : null\}/);
 });
 
@@ -848,38 +848,43 @@ test("Manage Items: the list is searchable by name, client-side, over already-lo
   assert.match(text, /archivedIngredients\.filter\(\(item\) => matchesStockSearch\(item, search\)\)/);
 });
 
-test("Manage Items: Review costs narrows the list to Items needing verification, and lifts itself once none remain", () => {
+test("Manage Items: Set up costs narrows the list to Items needing an opening cost, and lifts itself once none remain", () => {
   const page = component(inventory, "InventoryPage");
   const declaration = (name: string) => nodes(page, (node) => ts.isVariableDeclaration(node) && node.name.getText() === name)[0] as ts.VariableDeclaration;
   const visible = declaration("visibleItemViews");
   const focused = declaration("isCostFocused");
   assert.ok(visible && focused);
   const views = [
-    { ingredient: { id: "flour", name: "Flour", costReconciledAt: "2026-01-01", averageUnitCost: 1 } },
-    { ingredient: { id: "sugar", name: "Brown Sugar", costReconciledAt: null, averageUnitCost: 1 } },
-    { ingredient: { id: "egg", name: "Egg", costReconciledAt: null, averageUnitCost: 0 } },
+    { ingredient: { id: "flour", name: "Flour", costReconciledAt: "2026-01-01", averageUnitCost: 1, currentQuantity: 10 } },
+    { ingredient: { id: "sugar", name: "Brown Sugar", costReconciledAt: null, averageUnitCost: 1, currentQuantity: 10 } },
+    { ingredient: { id: "egg", name: "Egg", costReconciledAt: null, averageUnitCost: 0, currentQuantity: 5 } },
+    // Zero stock, untrusted -- never nags, so it's excluded from cost-focused mode even though its
+    // cost is genuinely untrusted (needsOpeningCostSetup, not isCostBaselineUncertified, gates this).
+    { ingredient: { id: "zero", name: "Zero Stock Spice", costReconciledAt: null, averageUnitCost: 0, currentQuantity: 0 } },
   ];
   const helpers = {
     matchesStockSearch: (item: { name: string }, query: string) => item.name.toLowerCase().includes(query.trim().toLowerCase()),
     isCostBaselineUncertified: (item: { costReconciledAt: string | null; averageUnitCost: number }) => !item.costReconciledAt || !item.averageUnitCost || item.averageUnitCost <= 0,
+    needsOpeningCostSetup: (item: { costReconciledAt: string | null; averageUnitCost: number; currentQuantity: number }) =>
+      item.currentQuantity > 0 && (!item.costReconciledAt || !item.averageUnitCost || item.averageUnitCost <= 0),
   };
-  const names = (context: { search: string; costFocus: boolean; uncertifiedCostCount: number; attempted?: string[] }) => {
+  const names = (context: { search: string; costFocus: boolean; setupNeededCount: number; attempted?: string[] }) => {
     const isCostFocused = evaluate(focused.initializer?.getText(), context) as boolean;
     const result = evaluate(visible.initializer?.getText(), { ...helpers, itemViews: views, search: context.search, isCostFocused, attemptedIds: new Set(context.attempted ?? []) }) as typeof views;
     return result.map((view) => view.ingredient.name);
   };
-  assert.deepEqual(names({ search: "", costFocus: false, uncertifiedCostCount: 2 }), ["Flour", "Brown Sugar", "Egg"]);
-  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 2 }), ["Brown Sugar", "Egg"]);
-  assert.deepEqual(names({ search: "sugar", costFocus: true, uncertifiedCostCount: 2 }), ["Brown Sugar"]);
-  assert.deepEqual(names({ search: "SUGAR", costFocus: false, uncertifiedCostCount: 2 }), ["Brown Sugar"], "search is case-insensitive");
-  // Certifying the last one must not leave a stuck, empty filtered list.
-  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 0 }), ["Flour", "Brown Sugar", "Egg"]);
+  assert.deepEqual(names({ search: "", costFocus: false, setupNeededCount: 2 }), ["Flour", "Brown Sugar", "Egg", "Zero Stock Spice"]);
+  assert.deepEqual(names({ search: "", costFocus: true, setupNeededCount: 2 }), ["Brown Sugar", "Egg"], "the zero-stock Item never appears in cost-focused mode");
+  assert.deepEqual(names({ search: "sugar", costFocus: true, setupNeededCount: 2 }), ["Brown Sugar"]);
+  assert.deepEqual(names({ search: "SUGAR", costFocus: false, setupNeededCount: 2 }), ["Brown Sugar"], "search is case-insensitive");
+  // Setting up the last one must not leave a stuck, empty filtered list.
+  assert.deepEqual(names({ search: "", costFocus: true, setupNeededCount: 0 }), ["Flour", "Brown Sugar", "Egg", "Zero Stock Spice"]);
   // An Item the operator just submitted stays listed (so its inline result is visible) even though it
-  // no longer needs verification; an Item never touched and already verified stays hidden.
-  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 2, attempted: ["flour"] }), ["Flour", "Brown Sugar", "Egg"]);
-  assert.deepEqual(names({ search: "", costFocus: true, uncertifiedCostCount: 2, attempted: ["egg"] }), ["Brown Sugar", "Egg"]);
-  // Certification semantics are untouched: this page still only calls the existing certify handler.
-  assert.match(inventory.text, /certifyIngredientCostBaseline\(\s*ingredient\.id, certifiedUnitCost, evidenceNote,/);
+  // no longer needs setup; an Item never touched and already trusted stays hidden.
+  assert.deepEqual(names({ search: "", costFocus: true, setupNeededCount: 2, attempted: ["flour"] }), ["Flour", "Brown Sugar", "Egg"]);
+  assert.deepEqual(names({ search: "", costFocus: true, setupNeededCount: 2, attempted: ["egg"] }), ["Brown Sugar", "Egg"]);
+  // Opening Cost Setup semantics are untouched: this page still only calls the existing setup handler.
+  assert.match(inventory.text, /setOpeningCostBasis\(\s*ingredient\.id, unitCost, evidenceNote,/);
 });
 
 test("Manage Items: archived Items stay reachable but secondary, with Restore and the guarded Permanent delete intact", () => {
@@ -998,7 +1003,7 @@ test("Manage Items: cost verification is an intentional mode -- Review costs act
   assert.match(page.getText(), /onClick=\{\(\) => changeCostFocus\(false\)\}[^>]*>Show all items/);
   // The row receives the warning flag only from the focused mode.
   assert.match(page.getText(), /showCostWarning=\{isCostFocused\}/);
-  assert.match(page.getText(), /const isCostFocused = costFocus && uncertifiedCostCount > 0/);
+  assert.match(page.getText(), /const isCostFocused = costFocus && setupNeededCount > 0/);
 });
 
 test("Manage Items: ?focus=costs starts cost-focused mode; the tab key and old links are untouched", () => {
@@ -1007,10 +1012,11 @@ test("Manage Items: ?focus=costs starts cost-focused mode; the tab key and old l
   assert.match(route, /resolveInventoryTab\(tab\)/);
   const workspace = component(app, "InventoryWorkspace").getText();
   assert.match(workspace, /const \[costFocus, setCostFocus\] = useState\(initialFocus === "costs"\)/);
-  assert.match(workspace, /costFocus=\{costFocus\} onCostFocusChange=\{setCostFocus\}/);
+  assert.match(workspace, /costFocus=\{costFocus\} deleteIngredient=/);
+  assert.match(workspace, /onCostFocusChange=\{setCostFocus\}/);
 });
 
-test("Manage Items: cost basis, latest purchase and stock value are separate, and value is only shown for a verified cost", () => {
+test("Manage Items: cost basis, latest purchase and stock value are separate, and value is only shown for a trusted cost", () => {
   const row = component(inventory, "IngredientRow").getText();
   for (const heading of ["Current stock", "Target", "Cost basis", "Latest purchase", "Stock value"]) {
     assert.ok(row.includes(`>${heading}</dt>`), heading);
@@ -1020,12 +1026,14 @@ test("Manage Items: cost basis, latest purchase and stock value are separate, an
   assert.match(row, /formatPesosPerUnit\(latest\.unitCost, latest\.unit\)/);
   assert.match(row, /formatPurchaseDate\(latest\.date, \{ year: true \}\)/);
   assert.match(row, /latest\.brand \|\| "Brand not set", latest\.supplier \|\| "Supplier not set"/);
-  // Cost basis is labeled Verified / Needs verification, on its own.
-  assert.match(row, /uncertified \? "Needs verification" : "Verified"/);
-  // Stock value comes from the trust rule: a confident amount only when verified.
+  // Cost basis shows "Setup needed" (with the button) when it needs one; a quiet sublabel, not a
+  // "Verified" badge, when it doesn't.
+  assert.match(row, /needsSetup \? \([\s\S]*Setup needed/);
+  assert.match(row, /Purchase-backed/);
+  // Stock value comes from the trust rule: a confident amount only when trusted.
   assert.match(row, /getStockValueDisplay\(item\)/);
   assert.match(row, /stockValue\.kind === "value" \? \(/);
-  assert.match(row, /-- Verify cost first/);
+  assert.match(row, /-- Set up cost first/);
   assert.doesNotMatch(row, /getInventoryValue/);
   // Quantities use the shared formatter.
   assert.match(row, /formatQuantity\(item\.currentQuantity, item\.baseUnit\)/);

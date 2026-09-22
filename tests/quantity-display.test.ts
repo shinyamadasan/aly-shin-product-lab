@@ -131,15 +131,15 @@ test("a By Item group stays visible when its Item name, or any purchase's brand/
 
 // --- stock value trust rule -----------------------------------------------------------------------
 
-test("an unverified cost never yields a confident stock value; a verified one does", () => {
-  const unverified = { currentQuantity: 70, averageUnitCost: 0.2714, costReconciledAt: null };
-  assert.deepEqual(getStockValueDisplay(unverified), { kind: "verify-cost-first" });
-  assert.deepEqual(getStockValueDisplay({ currentQuantity: 70, averageUnitCost: 0, costReconciledAt: "2026-09-01" }), { kind: "verify-cost-first" });
-  const verified = getStockValueDisplay({ currentQuantity: 70, averageUnitCost: 0.38, costReconciledAt: "2026-09-01T00:00:00Z" });
-  assert.equal(verified.kind, "value");
-  assert.equal(verified.kind === "value" && Math.round(verified.amount * 100) / 100, 26.6);
-  assert.equal(verified.kind === "value" && verified.quantity, 70);
-  assert.equal(verified.kind === "value" && verified.unitCost, 0.38);
+test("an untrusted cost never yields a confident stock value; a trusted one does", () => {
+  const untrusted = { currentQuantity: 70, averageUnitCost: 0.2714, costReconciledAt: null };
+  assert.deepEqual(getStockValueDisplay(untrusted), { kind: "setup-needed" });
+  assert.deepEqual(getStockValueDisplay({ currentQuantity: 70, averageUnitCost: 0, costReconciledAt: "2026-09-01" }), { kind: "setup-needed" });
+  const trusted = getStockValueDisplay({ currentQuantity: 70, averageUnitCost: 0.38, costReconciledAt: "2026-09-01T00:00:00Z" });
+  assert.equal(trusted.kind, "value");
+  assert.equal(trusted.kind === "value" && Math.round(trusted.amount * 100) / 100, 26.6);
+  assert.equal(trusted.kind === "value" && trusted.quantity, 70);
+  assert.equal(trusted.kind === "value" && trusted.unitCost, 0.38);
 });
 
 // --- Bake batch option label ----------------------------------------------------------------------

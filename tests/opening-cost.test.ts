@@ -4,13 +4,13 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import {
-  ALREADY_IN_FLIGHT_MESSAGE, buildLatestPurchaseEvidenceNote, buildManualCostEvidence, calculateManualCostBasis, CERTIFY_REQUEST_DEADLINE_MS, CHANGED_DURING_TIMEOUT_MESSAGE,
-  classifyCostReadBack, createCertifyAttemptTracker, formatPurchaseCompact, formatPurchaseToVerify,
-  isUncertainTransportFailure, manualCostUnitOptions, resolveLatestPurchaseCost, runCostCertification, TIMEOUT_NOT_SAVED_MESSAGE, UNCERTAIN_UNREADABLE_MESSAGE,
-  type CertifyCostResult, type CostState, type RpcOutcome,
-} from "../src/lib/cost-verification.ts";
+  buildLatestPurchaseEvidenceNote, buildManualCostEvidence, calculateManualCostBasis, OPENING_COST_REQUEST_DEADLINE_MS, CHANGED_DURING_TIMEOUT_MESSAGE,
+  classifyCostReadBack, createOpeningCostAttemptTracker, formatPurchaseCompact, formatPurchaseFacts,
+  isUncertainTransportFailure, manualCostUnitOptions, resolveLatestPurchaseCost, runOpeningCostSetup, TIMEOUT_NOT_SAVED_MESSAGE, UNCERTAIN_UNREADABLE_MESSAGE,
+  type OpeningCostResult, type CostState, type RpcOutcome,
+} from "../src/lib/opening-cost.ts";
 import { createMutationGuard } from "../src/lib/mutation-guard.ts";
-import { certifyIngredientCostBaselineArgs } from "../src/lib/raw-inventory-authority.ts";
+import { setOpeningCostBasisArgs } from "../src/lib/raw-inventory-authority.ts";
 import type { CanonicalUnit, Ingredient, InventoryTransaction, SupplyEntry } from "../src/lib/product-lab-types.ts";
 
 const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
@@ -47,46 +47,46 @@ function usable(result: ReturnType<typeof resolveLatestPurchaseCost>) {
   return result as Extract<typeof result, { usable: true }>;
 }
 
-// ---- 1-3. Generated evidence ---------------------------------------------------------------
+// ---- Generated evidence ---------------------------------------------------------------------
 
-test("a valid latest purchase generates the exact, deterministic evidence text", () => {
+test("a valid latest purchase generates the exact, deterministic evidence text, spelled as an opening cost basis", () => {
   const result = usable(resolveLatestPurchaseCost(baking, purchase()));
-  assert.equal(result.evidenceNote, "Latest purchase: Calumet · Ayala · Sep 17, 2026 · PHP 19.00 / 50 g = PHP 0.38/g");
+  assert.equal(result.evidenceNote, "Opening cost basis from latest purchase: PHP 19.00 / 50 g = PHP 0.38/g (Calumet · Ayala · Sep 17, 2026)");
   assert.equal(result.unitCost, 0.38);
   // Deterministic: same facts, same text.
   assert.equal(usable(resolveLatestPurchaseCost(baking, purchase())).evidenceNote, result.evidenceNote);
 });
 
-test("generated evidence includes brand, supplier, date, total, quantity, unit and calculated cost -- and never calls it a receipt", () => {
+test("generated evidence includes brand, supplier, date, total, quantity, unit and calculated cost -- and never calls it a receipt or a certification", () => {
   const note = usable(resolveLatestPurchaseCost(baking, purchase({ packQuantity: 500, totalCost: 250 }))).evidenceNote;
-  for (const part of ["Calumet", "Ayala", "Sep 17, 2026", "PHP 250.00", "500 g", "PHP 0.50/g"]) {
+  for (const part of ["Calumet", "Ayala", "Sep 17, 2026", "PHP 250.00", "500 g", "PHP 0.50/g", "Opening cost basis"]) {
     assert.ok(note.includes(part), `${part} in ${note}`);
   }
-  assert.doesNotMatch(note, /receipt/i);
+  assert.doesNotMatch(note, /receipt|certif/i);
 });
 
 test("missing optional brand, supplier or date are left out, not invented", () => {
   const noBrand = usable(resolveLatestPurchaseCost(baking, purchase({ brandName: "  " }))).evidenceNote;
-  assert.equal(noBrand, "Latest purchase: Ayala · Sep 17, 2026 · PHP 19.00 / 50 g = PHP 0.38/g");
+  assert.equal(noBrand, "Opening cost basis from latest purchase: PHP 19.00 / 50 g = PHP 0.38/g (Ayala · Sep 17, 2026)");
   const bare = usable(resolveLatestPurchaseCost(baking, purchase({ brandName: "", supplierName: "", purchaseDate: "" }))).evidenceNote;
-  assert.equal(bare, "Latest purchase: PHP 19.00 / 50 g = PHP 0.38/g");
+  assert.equal(bare, "Opening cost basis from latest purchase: PHP 19.00 / 50 g = PHP 0.38/g");
   assert.doesNotMatch(bare, /not set|unknown|n\/a/i);
-  assert.equal(buildLatestPurchaseEvidenceNote(purchase({ brandName: "", supplierName: "" }), "g", 0.38), "Latest purchase: Sep 17, 2026 · PHP 19.00 / 50 g = PHP 0.38/g");
+  assert.equal(buildLatestPurchaseEvidenceNote(purchase({ brandName: "", supplierName: "" }), "g", 0.38), "Opening cost basis from latest purchase: PHP 19.00 / 50 g = PHP 0.38/g (Sep 17, 2026)");
 });
 
 test("a purchase in a convertible unit is costed per the item's base unit (kg purchase of a gram item)", () => {
   const result = usable(resolveLatestPurchaseCost(baking, purchase({ packQuantity: 1, unit: "kg", totalCost: 190 })));
   assert.equal(result.unitCost, 0.19);
-  assert.match(result.evidenceNote, /PHP 190\.00 \/ 1 kg = PHP 0\.19\/g$/);
+  assert.match(result.evidenceNote, /PHP 190\.00 \/ 1 kg = PHP 0\.19\/g/);
 });
 
-// ---- 4-5. Which purchases enable one-click verification ------------------------------------
+// ---- Which purchases enable one-click opening cost ------------------------------------------
 
-test("a valid latest purchase is usable (one-click verification is offered)", () => {
+test("a valid latest purchase is usable (one-click opening cost is offered)", () => {
   assert.equal(resolveLatestPurchaseCost(baking, purchase()).usable, true);
 });
 
-test("a missing or invalid latest purchase is not usable, so one-click verification is never offered", () => {
+test("a missing or invalid latest purchase is not usable, so one-click opening cost is never offered", () => {
   const cases: Array<[string, SupplyEntry | undefined]> = [
     ["no purchase", undefined],
     ["zero quantity", purchase({ packQuantity: 0 })],
@@ -106,43 +106,42 @@ test("a missing or invalid latest purchase is not usable, so one-click verificat
   }
 });
 
-test("UI: only a usable latest purchase renders 'Verify purchase'; otherwise the 'No usable purchase cost' state with a manual option", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
+test("UI: only a usable latest purchase renders 'Use latest purchase price'; otherwise the 'No usable purchase price' state with a manual option", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
   const branchStart = form.indexOf("latestCost.usable && latest && !showManual ? (");
   const branchEnd = form.indexOf(") : (", branchStart);
   assert.ok(branchStart > 0 && branchEnd > branchStart);
   const normalPath = form.slice(branchStart, branchEnd);
   const fallbackPath = form.slice(branchEnd);
-  assert.match(normalPath, /\{verifyLabel\}/);
+  assert.match(normalPath, /\{primaryLabel\}/);
   // The one-click path is the only place a cost is submitted straight from the latest purchase.
   assert.match(normalPath, /submit\(latestCost\.unitCost, latestCost\.evidenceNote\)/);
   assert.doesNotMatch(fallbackPath, /latestCost\.unitCost|latestCost\.evidenceNote/);
-  assert.match(fallbackPath, /No usable purchase cost is available for this item yet\./);
-  assert.match(fallbackPath, /Enter purchase manually/);
+  assert.match(fallbackPath, /No usable purchase price is available for this item yet\./);
+  assert.match(fallbackPath, /Enter a different opening cost/);
   assert.match(fallbackPath, /Record or fix a purchase in Purchases/);
-  // Collapsed cost-mode row: same gate -- "Verify purchase" only for a usable purchase.
+  // Collapsed cost-mode row: same gate -- "Use latest purchase price" only for a usable purchase.
   const row = fn(inventory, "IngredientRow").getText();
-  assert.match(row, /latestCost\.usable && latest \? \(\s*<>[\s\S]*Verify purchase[\s\S]*<\/>\s*\) : \(\s*<span[^>]*>No usable purchase cost yet<\/span>/);
+  assert.match(row, /latestCost\.usable && latest \? \(\s*<>[\s\S]*Use latest purchase price[\s\S]*<\/>\s*\) : \(\s*<span[^>]*>No usable purchase price yet<\/span>/);
 });
 
-// ---- 6-8. Manual fallback, no textbox in the normal path, generated note is what is submitted --
+// ---- Manual fallback, no textbox in the normal path, generated note is what is submitted ------
 
-test("no evidence textbox and no typed PHP/base-unit cost field anywhere in the verification form", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
+test("no evidence textbox and no typed PHP/base-unit cost field anywhere in the setup form", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
   const branchStart = form.indexOf("latestCost.usable && latest && !showManual ? (");
   const branchEnd = form.indexOf(") : (", branchStart);
   const normalPath = form.slice(branchStart, branchEnd);
   assert.doesNotMatch(normalPath, /<input|<select|Evidence \(required\)/);
   assert.doesNotMatch(form, /name="evidenceNote"|Evidence \(required\)|placeholder="Evidence/);
-  assert.doesNotMatch(form, /name="certifiedUnitCost"|Verified cost per|formData/);
-  // The manual entry is offered as a clearly secondary text link next to the primary button.
-  assert.match(normalPath, /Enter a different purchase manually/);
+  assert.doesNotMatch(form, /name="certifiedUnitCost"|name="unitCost"|Cost per|formData/);
+  assert.match(normalPath, /Enter a different opening cost/);
 });
 
-test("the manual form asks for real-world facts: total paid, quantity, unit -- with the calculated cost, helper line and the same verify button", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
+test("the manual form asks for real-world facts: total paid, quantity, unit -- with the calculated cost and the same set button", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
   const manual = form.slice(form.indexOf("<form"), form.indexOf("</form>"));
-  for (const text of ["Enter purchase manually", "Total paid (PHP)", "Quantity", "Unit", "Calculated cost", "{verifyLabel}"]) {
+  for (const text of ["Total paid (PHP)", "Quantity", "Unit", "Calculated", "{manualLabel}"]) {
     assert.ok(manual.includes(text), text);
   }
   assert.match(manual, /Enter what you actually paid and how much you received\. The app calculates the cost per \{ingredient\.baseUnit\}\./);
@@ -154,17 +153,16 @@ test("the manual form asks for real-world facts: total paid, quantity, unit -- w
   assert.doesNotMatch(manual, /\.toFixed\(| \/ /);
 });
 
-test("'Enter a different purchase manually' opens the same fact-based form as the no-purchase fallback", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
+test("'Enter a different opening cost' opens the same fact-based form whether a latest purchase exists or not", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
   // One branch renders the form for both entries: the latest purchase is hidden once showManual is set.
   assert.equal((form.match(/<form/g) ?? []).length, 1, "a single manual form");
-  assert.match(form, /onClick=\{\(\) => \{ setFeedback\(null\); setShowManual\(true\); \}\}[^>]*>Enter a different purchase manually/);
   assert.match(form, /latestCost\.usable && latest && !showManual \? \(/);
   assert.match(form, /\{showManual \? \(\s*<form/);
 });
 
 function manualHandler(input: { totalPaid: string; quantity: string; unit: string }, baseUnit: CanonicalUnit = "g") {
-  const handler = nodes(fn(inventory, "CertifyCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "handleManualSubmit")[0];
+  const handler = nodes(fn(inventory, "OpeningCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "handleManualSubmit")[0];
   assert.ok(handler);
   const submitted: Array<[number, string]> = [];
   const feedback: Array<{ tone: string; text: string }> = [];
@@ -177,8 +175,8 @@ function manualHandler(input: { totalPaid: string; quantity: string; unit: strin
 }
 
 test("manual submit sends the calculated cost + generated evidence through the same callback; invalid input never reaches it", () => {
-  assert.deepEqual(manualHandler({ totalPaid: "250", quantity: "500", unit: "g" }).submitted, [[0.5, "Manual cost basis: PHP 250.00 / 500 g = PHP 0.50/g"]]);
-  assert.deepEqual(manualHandler({ totalPaid: "220", quantity: "1", unit: "kg" }).submitted, [[0.22, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g"]]);
+  assert.deepEqual(manualHandler({ totalPaid: "250", quantity: "500", unit: "g" }).submitted, [[0.5, "Opening cost basis: PHP 250.00 / 500 g = PHP 0.50/g"]]);
+  assert.deepEqual(manualHandler({ totalPaid: "220", quantity: "1", unit: "kg" }).submitted, [[0.22, "Opening cost basis: PHP 220.00 / 1 kg = PHP 0.22/g"]]);
   for (const bad of [
     { totalPaid: "0", quantity: "500", unit: "g" }, { totalPaid: "-5", quantity: "500", unit: "g" },
     { totalPaid: "250", quantity: "0", unit: "g" }, { totalPaid: "250", quantity: "-1", unit: "g" },
@@ -188,7 +186,7 @@ test("manual submit sends the calculated cost + generated evidence through the s
     const { submitted, feedback } = manualHandler(bad);
     assert.equal(submitted.length, 0, JSON.stringify(bad));
     assert.equal(feedback.length, 1);
-    assert.ok(feedback[0].tone === "bad" && feedback[0].text.startsWith("Could not verify cost:"), JSON.stringify(bad));
+    assert.ok(feedback[0].tone === "bad" && feedback[0].text.startsWith("Could not set opening cost:"), JSON.stringify(bad));
   }
   assert.match(manualHandler({ totalPaid: "250", quantity: "500", unit: "ml" }).feedback[0].text, /That unit cannot be converted to this ingredient's base unit \(g\)\./);
 });
@@ -204,26 +202,26 @@ function manualOk(ingredient: Pick<Ingredient, "baseUnit">, input: { totalPaid: 
 test("manual cost basis: PHP 250 / 500 g -> PHP 0.50/g", () => {
   const result = manualOk({ baseUnit: "g" }, { totalPaid: "250", quantity: "500", unit: "g" });
   assert.equal(result.unitCost, 0.5);
-  assert.equal(result.evidenceNote, "Manual cost basis: PHP 250.00 / 500 g = PHP 0.50/g");
+  assert.equal(result.evidenceNote, "Opening cost basis: PHP 250.00 / 500 g = PHP 0.50/g");
 });
 
 test("manual cost basis: PHP 220 / 1 kg for a gram ingredient -> PHP 0.22/g, raw kg kept in the evidence", () => {
   const result = manualOk({ baseUnit: "g" }, { totalPaid: 220, quantity: 1, unit: "kg" });
   assert.equal(result.unitCost, 0.22);
-  assert.equal(result.evidenceNote, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
+  assert.equal(result.evidenceNote, "Opening cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
 });
 
 test("manual cost basis: PHP 150 / 500 ml -> PHP 0.30/ml, and litres convert for a ml ingredient", () => {
   assert.equal(manualOk({ baseUnit: "ml" }, { totalPaid: "150", quantity: "500", unit: "ml" }).unitCost, 0.3);
   const litre = manualOk({ baseUnit: "ml" }, { totalPaid: "150", quantity: "1.5", unit: "L" });
   assert.equal(litre.unitCost, 0.1);
-  assert.equal(litre.evidenceNote, "Manual cost basis: PHP 150.00 / 1.5 L = PHP 0.10/ml");
+  assert.equal(litre.evidenceNote, "Opening cost basis: PHP 150.00 / 1.5 L = PHP 0.10/ml");
 });
 
 test("manual cost basis: PHP 120 / 12 pcs -> PHP 10/pc", () => {
   const result = manualOk({ baseUnit: "pcs" }, { totalPaid: "120", quantity: "12", unit: "pcs" });
   assert.equal(result.unitCost, 10);
-  assert.equal(result.evidenceNote, "Manual cost basis: PHP 120.00 / 12 pcs = PHP 10.00/pcs");
+  assert.equal(result.evidenceNote, "Opening cost basis: PHP 120.00 / 12 pcs = PHP 10.00/pcs");
 });
 
 test("manual cost basis rejects an incompatible dimension and an unknown unit with the base-unit message", () => {
@@ -262,16 +260,16 @@ test("manual cost basis is incomplete (no cost, no error) until paid, quantity a
   }
 });
 
-test("the certified cost keeps full precision -- only the evidence display is rounded", () => {
+test("the opening cost keeps full precision -- only the evidence display is rounded", () => {
   const result = manualOk({ baseUnit: "g" }, { totalPaid: "100", quantity: "3", unit: "g" });
   assert.equal(result.unitCost, 100 / 3);
-  assert.equal(result.evidenceNote, "Manual cost basis: PHP 100.00 / 3 g = PHP 33.3333/g");
+  assert.equal(result.evidenceNote, "Opening cost basis: PHP 100.00 / 3 g = PHP 33.3333/g");
   assert.equal(manualOk({ baseUnit: "g" }, { totalPaid: "219", quantity: "1", unit: "kg" }).unitCost, 0.219);
 });
 
 test("generated evidence carries the raw entered amount, quantity and unit plus the calculated canonical unit cost", () => {
   const note = buildManualCostEvidence(220, 1, " kg ", "g", 0.22);
-  assert.equal(note, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
+  assert.equal(note, "Opening cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
   assert.ok(note.includes("PHP 220.00") && note.includes("1 kg") && note.includes("PHP 0.22/g"));
   // Deterministic, and never claims a purchase, receipt or supplier it does not have.
   assert.equal(buildManualCostEvidence(220, 1, "kg", "g", 0.22), note);
@@ -291,84 +289,87 @@ test("the unit picker only offers units that convert to the ingredient's base un
 });
 
 test("the manual calculation reuses the shared unit-conversion authority, with no second conversion table", () => {
-  const source = read("src/lib/cost-verification.ts");
-  assert.match(source, /import \{ convertToBaseUnit \} from "\.\/unit-conversion\.ts"/);
-  assert.doesNotMatch(source, /1000|0\.001|kg: |METRIC/);
+  const src = read("src/lib/opening-cost.ts");
+  assert.match(src, /import \{ convertToBaseUnit \} from "\.\/unit-conversion\.ts"/);
+  assert.doesNotMatch(src, /1000|0\.001|kg: |METRIC/);
 });
 
-test("the generated note is what reaches the existing certification RPC args (evidence argument unchanged)", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
+test("the generated note is what reaches the existing RPC args (evidence argument unchanged; RPC name unchanged)", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
   assert.match(form, /submit\(latestCost\.unitCost, latestCost\.evidenceNote\)/);
   const note = usable(resolveLatestPurchaseCost(baking, purchase())).evidenceNote;
   const ingredient = { id: "i1", currentQuantity: 70 } as Ingredient;
-  const args = certifyIngredientCostBaselineArgs(ingredient, [], { certifiedUnitCost: 0.38, evidenceNote: note, expectedCurrentCost: 0.2714285714 });
+  const args = setOpeningCostBasisArgs(ingredient, [], { unitCost: 0.38, evidenceNote: note, expectedCurrentCost: 0.2714285714 });
   assert.equal(args.p_evidence_note, note);
   assert.equal(args.p_certified_unit_cost, 0.38);
+  const handler = fn(app, "setOpeningCostBasis").getText();
+  assert.match(handler, /"certify_ingredient_cost_baseline"/);
 });
 
 test("a manual cost reaches the same six RPC args: calculated cost + generated evidence + expected values from the ledger", () => {
   const manual = manualOk({ baseUnit: "g" }, { totalPaid: "220", quantity: "1", unit: "kg" });
   const ingredient = { id: "i1", currentQuantity: 70 } as Ingredient;
-  const args = certifyIngredientCostBaselineArgs(ingredient, [], { certifiedUnitCost: manual.unitCost, evidenceNote: manual.evidenceNote, expectedCurrentCost: 0.2 });
+  const args = setOpeningCostBasisArgs(ingredient, [], { unitCost: manual.unitCost, evidenceNote: manual.evidenceNote, expectedCurrentCost: 0.2 });
   assert.deepEqual(Object.keys(args).sort(), ["p_certified_unit_cost", "p_evidence_note", "p_expected_current_cost", "p_expected_latest_id", "p_expected_quantity", "p_ingredient_id"]);
   assert.equal(args.p_certified_unit_cost, 0.22);
-  assert.equal(args.p_evidence_note, "Manual cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
+  assert.equal(args.p_evidence_note, "Opening cost basis: PHP 220.00 / 1 kg = PHP 0.22/g");
   assert.equal(args.p_expected_current_cost, 0.2);
   assert.equal(args.p_expected_quantity, 70);
 });
 
 test("the manual form adds no client-side database write, RPC call or schema change", () => {
-  assert.doesNotMatch(read("src/lib/cost-verification.ts"), /supabase|\.rpc\(|\.from\(|\.insert\(|\.update\(/);
-  const form = fn(inventory, "CertifyCostForm").getText();
+  assert.doesNotMatch(read("src/lib/opening-cost.ts"), /supabase|\.rpc\(|\.from\(|\.insert\(|\.update\(/);
+  const form = fn(inventory, "OpeningCostForm").getText();
   assert.doesNotMatch(form, /supabase|\.rpc\(|average_unit_cost|averageUnitCost\s*=/);
-  // Every submit path, latest purchase or manual, goes through the one submit() -> certify callback.
-  assert.equal((form.match(/certifyIngredientCostBaseline\(/g) ?? []).length, 1);
+  // Every submit path, latest purchase or manual, goes through the one submit() -> setOpeningCostBasis callback.
+  assert.equal((form.match(/setOpeningCostBasis\(/g) ?? []).length, 1);
 });
 
-// ---- 9-10. Inline feedback ----------------------------------------------------------------
+// ---- Inline feedback -------------------------------------------------------------------------
 
 function harness(result: unknown) {
   const events: string[] = [];
-  const state: { feedback?: { tone: string; text: string } | null; locked?: boolean; verified?: unknown } = {};
+  const state: { feedback?: { tone: string; text: string } | null; saved?: unknown } = {};
   const calls: unknown[][] = [];
-  const submit = evaluateFunction(nodes(fn(inventory, "CertifyCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "submit")[0], {
+  const attempts = createOpeningCostAttemptTracker();
+  const submit = evaluateFunction(nodes(fn(inventory, "OpeningCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "submit")[0], {
     guardRef: { current: createMutationGuard<string>() },
     ingredient: { id: "i1" },
+    attempts,
     onAttempt: () => events.push("attempt"),
     setFeedback: (value: { tone: string; text: string } | null) => { state.feedback = value; events.push(`feedback:${value?.tone ?? "clear"}`); },
     setPhase: (value: string) => events.push(`phase:${value}`),
-    setIsLocked: (value: boolean) => { state.locked = value; },
-    setVerified: (value: unknown) => { state.verified = value; },
+    setSaved: (value: unknown) => { state.saved = value; },
     CHECKING_RESULT_MESSAGE: "checking",
     // `result` may be a function so a test can drive the onCheckingResult callback / throw / stay pending.
-    certifyIngredientCostBaseline: async (...args: unknown[]) => { calls.push(args); return typeof result === "function" ? result(...args) : result; },
+    setOpeningCostBasis: async (...args: unknown[]) => { calls.push(args); return typeof result === "function" ? result(...args) : result; },
   });
-  return { submit, events, state, calls };
+  return { submit, events, state, calls, attempts };
 }
 
-test("a failed verification shows an inline error, keeps the panel open (no verified state) and does not lock", async () => {
-  const { submit, state, calls } = harness({ status: "failed", message: "Could not verify cost: Cost baseline changed. Reload and verify the cost again." });
+test("a failed setup shows an inline error, keeps the panel open (no saved state) and does not lock the tracker", async () => {
+  const { submit, state, calls, attempts } = harness({ status: "failed", message: "Could not set opening cost: Cost details changed. Reload and set the opening cost again." });
   await submit(0.38, "note");
-  assert.deepEqual({ ...state.feedback }, { tone: "bad", text: "Could not verify cost: Cost baseline changed. Reload and verify the cost again." });
-  assert.equal(state.locked, false);
-  assert.equal(state.verified, undefined, "panel not converted to a verified state");
+  assert.deepEqual({ ...state.feedback }, { tone: "bad", text: "Could not set opening cost: Cost details changed. Reload and set the opening cost again." });
+  assert.equal(attempts.blocked("i1"), null);
+  assert.equal(state.saved, undefined, "panel not converted to a saved state");
   assert.equal(calls.length, 1);
   // The inline error is rendered as an alert inside the panel itself.
-  assert.match(fn(inventory, "CertifyCostForm").getText(), /role=\{feedback\.tone === "bad" \? "alert" : "status"\}/);
+  assert.match(fn(inventory, "OpeningCostForm").getText(), /role=\{shownFeedback\.tone === "bad" \? "alert" : "status"\}/);
 });
 
-test("a successful verification clears feedback and resolves the panel to a compact inline 'Cost verified at ...' state", async () => {
-  const verified = { status: "verified", certifiedUnitCost: 0.38, confirmedByReadBack: false, refreshed: true };
-  const { submit, state, events } = harness(verified);
+test("a successful setup clears feedback and resolves the panel to a compact inline 'Opening cost set at ...' state", async () => {
+  const saved = { status: "saved", unitCost: 0.38, confirmedByReadBack: false };
+  const { submit, state, events } = harness(saved);
   await submit(0.38, "note");
-  assert.equal(state.verified, verified);
+  assert.equal(state.saved, saved);
   assert.equal(state.feedback, null);
   assert.ok(events.includes("attempt"), "the row is told to stay visible in cost-focused mode");
-  const form = fn(inventory, "CertifyCostForm").getText();
-  assert.match(form, /if \(verified\) \{[\s\S]*role="status"[\s\S]*verifiedCostMessage\(verified\.certifiedUnitCost, ingredient\.baseUnit\)/);
+  const form = fn(inventory, "OpeningCostForm").getText();
+  assert.match(form, /if \(saved\) \{[\s\S]*role="status"[\s\S]*openingCostSavedMessage\(saved\.unitCost, ingredient\.baseUnit\)/);
 });
 
-// ---- 11-14. Timeout = uncertain, resolved by read-back, never blindly retried ----------------
+// ---- Timeout = uncertain, resolved by read-back, never blindly retried -----------------------
 
 const before: CostState = { averageUnitCost: 0.2714285714, costReconciledAt: null };
 const committed: CostState = { averageUnitCost: 0.38, costReconciledAt: "2026-09-19T03:00:00.123456+00:00" };
@@ -396,30 +397,30 @@ test("the observed 'upstream request timeout' (no code, gateway 504 or bare mess
   assert.equal(isUncertainTransportFailure({ error: { message: "TypeError: fetch failed" }, status: 0 }), true);
   assert.equal(isUncertainTransportFailure({ error: { message: "<html>bad gateway</html>", code: "" }, status: 502 }), true);
   // Errors the database itself returned (with a code) are definite: the transaction did not commit.
-  assert.equal(isUncertainTransportFailure({ error: { code: "40001", message: "Cost baseline changed. Reload and verify the cost again." }, status: 400 }), false);
+  assert.equal(isUncertainTransportFailure({ error: { code: "40001", message: "Cost details changed. Reload and set the opening cost again." }, status: 400 }), false);
   assert.equal(isUncertainTransportFailure({ error: { code: "57014", message: "canceling statement due to statement timeout" }, status: 500 }), false);
-  assert.equal(isUncertainTransportFailure({ error: { code: "42501", message: "Only the product lab owner may certify an ingredient cost baseline" }, status: 403 }), false);
+  assert.equal(isUncertainTransportFailure({ error: { code: "42501", message: "Only the product lab owner may set an opening cost" }, status: 403 }), false);
   assert.equal(isUncertainTransportFailure({ error: null, status: 200 }), false);
 });
 
 test("a timeout is never reported as a definite failure before the read-back; the owner is told it is being checked", async () => {
   const { io: fake, log } = io([before, committed], timeout);
-  const result = await runCostCertification(fake, 0.38);
+  const result = await runOpeningCostSetup(fake, 0.38);
   assert.equal(log.checking, 1, "the 'reloading to check' notice fires once, before the read-back");
   assert.notEqual(result.status, "failed");
   assert.equal(log.rpcs, 1);
 });
 
-test("timeout + read-back shows the certification committed -> verified (confirmed by read-back)", async () => {
+test("timeout + read-back shows the setup committed -> saved (confirmed by read-back)", async () => {
   const { io: fake, log } = io([before, committed], timeout);
-  const result = await runCostCertification(fake, 0.38);
-  assert.deepEqual(result, { status: "verified", certifiedUnitCost: 0.38, confirmedByReadBack: true, refreshed: true });
+  const result = await runOpeningCostSetup(fake, 0.38);
+  assert.deepEqual(result, { status: "saved", unitCost: 0.38, confirmedByReadBack: true });
   assert.equal(log.rpcs, 1, "no retry");
 });
 
 test("timeout + read-back shows nothing changed -> an uncertain (locked) no-saved-change-found result telling the owner to reload and check; still no automatic retry", async () => {
   const { io: fake, log } = io([before, { ...before }], timeout);
-  const result = await runCostCertification(fake, 0.38);
+  const result = await runOpeningCostSetup(fake, 0.38);
   // Uncertain, not a definite failure: a slow request could still commit, so a second submit must stay blocked.
   assert.deepEqual(result, { status: "uncertain", message: TIMEOUT_NOT_SAVED_MESSAGE });
   assert.equal(log.rpcs, 1);
@@ -429,51 +430,43 @@ test("timeout + read-back shows nothing changed -> an uncertain (locked) no-save
 test("timeout + a read-back that shows a different change -> uncertain, no retry", async () => {
   const other: CostState = { averageUnitCost: 0.5, costReconciledAt: "2026-09-19T03:00:00Z" };
   const { io: fake, log } = io([before, other], timeout);
-  assert.deepEqual(await runCostCertification(fake, 0.38), { status: "uncertain", message: CHANGED_DURING_TIMEOUT_MESSAGE });
+  assert.deepEqual(await runOpeningCostSetup(fake, 0.38), { status: "uncertain", message: CHANGED_DURING_TIMEOUT_MESSAGE });
   assert.equal(log.rpcs, 1);
 });
 
-test("timeout + failed read-back -> uncertain, never 'not verified', and the RPC is not submitted again", async () => {
+test("timeout + failed read-back -> uncertain, never 'not saved', and the RPC is not submitted again", async () => {
   const { io: fake, log } = io([before, null], timeout);
-  const result = await runCostCertification(fake, 0.38);
+  const result = await runOpeningCostSetup(fake, 0.38);
   assert.deepEqual(result, { status: "uncertain", message: UNCERTAIN_UNREADABLE_MESSAGE });
   assert.match(UNCERTAIN_UNREADABLE_MESSAGE, /uncertain/i);
-  assert.doesNotMatch(UNCERTAIN_UNREADABLE_MESSAGE, /not (certified|verified)/i);
+  assert.doesNotMatch(UNCERTAIN_UNREADABLE_MESSAGE, /not saved/i);
   assert.equal(log.rpcs, 1, "exactly one RPC -- no blind retry, so no duplicate audit row");
   assert.equal(log.reads, 2, "one pre-read + one read-back, nothing more");
 });
 
 test("a thrown transport error (fetch rejects) is treated as uncertain and resolved by read-back too", async () => {
   const { io: fake, log } = io([before, committed], () => { throw new Error("network down"); });
-  assert.equal((await runCostCertification(fake, 0.38)).status, "verified");
+  assert.equal((await runOpeningCostSetup(fake, 0.38)).status, "saved");
   assert.equal(log.rpcs, 1);
-});
-
-test("an uncertain result locks the panel's confirm button and asks the owner to reload (UI)", async () => {
-  const { submit, state } = harness({ status: "uncertain", message: UNCERTAIN_UNREADABLE_MESSAGE });
-  await submit(0.38, "note");
-  assert.equal(state.locked, true);
-  assert.equal(state.feedback?.tone, "info");
-  assert.match(fn(inventory, "CertifyCostForm").getText(), /disabled=\{isSubmitting \|\| isLocked\} onClick=\{\(\) => void submit/);
 });
 
 test("classifyCostReadBack: cost_reconciled_at moving to a fresh value at our exact cost proves the commit", () => {
   assert.equal(classifyCostReadBack(before, committed, 0.38), "committed");
   assert.equal(classifyCostReadBack(before, { ...before }, 0.38), "unchanged");
-  assert.equal(classifyCostReadBack({ averageUnitCost: 0.38, costReconciledAt: "2026-01-01T00:00:00Z" }, committed, 0.38), "committed", "re-verifying at an identical cost still moves the timestamp");
-  assert.equal(classifyCostReadBack(before, { averageUnitCost: 0.38, costReconciledAt: null }, 0.38), "changed", "cost moved but no verification recorded");
+  assert.equal(classifyCostReadBack({ averageUnitCost: 0.38, costReconciledAt: "2026-01-01T00:00:00Z" }, committed, 0.38), "committed", "re-setting at an identical cost still moves the timestamp");
+  assert.equal(classifyCostReadBack(before, { averageUnitCost: 0.38, costReconciledAt: null }, 0.38), "changed", "cost moved but no trust recorded");
   assert.equal(classifyCostReadBack(before, { averageUnitCost: 0.99, costReconciledAt: "2026-09-19T03:00:00Z" }, 0.38), "changed");
 });
 
-// ---- 15. Optimistic concurrency + RPC authority unchanged ----------------------------------
+// ---- Optimistic concurrency + RPC authority unchanged ------------------------------------------
 
 test("optimistic concurrency: the expected cost is the fresh raw read (null preserved), a 40001 conflict is a definite failure with no read-back or retry", async () => {
-  const neverCertified: CostState = { averageUnitCost: null, costReconciledAt: null };
-  const conflict: RpcOutcome = { error: { code: "40001", message: "Cost baseline changed. Reload and verify the cost again." }, status: 400 };
-  const { io: fake, log } = io([neverCertified], conflict);
-  const result = await runCostCertification(fake, 0.38);
+  const neverTrusted: CostState = { averageUnitCost: null, costReconciledAt: null };
+  const conflict: RpcOutcome = { error: { code: "40001", message: "Cost details changed. Reload and set the opening cost again." }, status: 400 };
+  const { io: fake, log } = io([neverTrusted], conflict);
+  const result = await runOpeningCostSetup(fake, 0.38);
   assert.deepEqual(log.expected, [null], "raw null is passed, never coerced to 0");
-  assert.deepEqual(result, { status: "failed", message: "Could not verify cost: Cost baseline changed. Reload and verify the cost again." });
+  assert.deepEqual(result, { status: "failed", message: "Could not set opening cost: Cost details changed. Reload and set the opening cost again." });
   assert.equal(log.reads, 1, "no read-back for a definite database rejection");
   assert.equal(log.rpcs, 1);
   assert.equal(log.checking, 0);
@@ -481,7 +474,7 @@ test("optimistic concurrency: the expected cost is the fresh raw read (null pres
 
 test("an unreadable pre-check sends nothing", async () => {
   const { io: fake, log } = io([null], { error: null });
-  const result = await runCostCertification(fake, 0.38);
+  const result = await runOpeningCostSetup(fake, 0.38);
   assert.equal(result.status, "failed");
   assert.equal(log.rpcs, 0);
 });
@@ -493,102 +486,86 @@ test("the RPC argument contract is unchanged: same six args, evidence still pass
     { id: "t2", ingredientId: "i1", createdAt: "2026-09-10T00:00:00Z" },
     { id: "t3", ingredientId: "other", createdAt: "2026-09-18T00:00:00Z" },
   ] as InventoryTransaction[];
-  const args = certifyIngredientCostBaselineArgs(ingredient, movements, { certifiedUnitCost: 0.38, evidenceNote: "note", expectedCurrentCost: null });
+  const args = setOpeningCostBasisArgs(ingredient, movements, { unitCost: 0.38, evidenceNote: "note", expectedCurrentCost: null });
   assert.deepEqual(Object.keys(args).sort(), ["p_certified_unit_cost", "p_evidence_note", "p_expected_current_cost", "p_expected_latest_id", "p_expected_quantity", "p_ingredient_id"]);
   assert.equal(args.p_expected_latest_id, "t2");
   assert.equal(args.p_expected_quantity, 70);
   assert.equal(args.p_expected_current_cost, null);
 });
 
-test("the database authority is untouched: the RPC still requires evidence, checks expected values and writes only cost + cost_reconciled_at", () => {
+test("the database authority is untouched by client wording: the RPC still requires evidence, checks expected values and writes only cost + cost_reconciled_at", () => {
   const migration = read("supabase/migrations/20260912090000_cost_baseline_repair.sql");
   assert.match(migration, /p_evidence_note text/);
   assert.match(migration, /A note describing the evidence for this cost is required/);
-  assert.match(migration, /i\.average_unit_cost is distinct from p_expected_current_cost/);
   assert.match(migration, /insert into public\.inventory_transactions[\s\S]*'cost_certification'/);
   assert.match(migration, /set average_unit_cost = p_certified_unit_cost, cost_reconciled_at = v_time/);
   // The client never writes the cost itself: no direct ingredients.average_unit_cost update anywhere in the handler.
-  const handler = fn(app, "certifyIngredientCostBaseline").getText();
+  const handler = fn(app, "setOpeningCostBasis").getText();
   assert.doesNotMatch(handler, /\.update\(|\.upsert\(|\.insert\(/);
   assert.match(handler, /"certify_ingredient_cost_baseline"/);
   assert.equal((handler.match(/\.rpc\(/g) ?? []).length, 1, "one RPC call site -- no retry loop");
 });
 
-test("post-commit reload failure cannot turn a successful verification into a reported failure, and never holds the button", () => {
-  const handler = fn(app, "certifyIngredientCostBaseline").getText();
-  // The reload starts only after a verified result, is NOT awaited (the button is released as soon as
-  // the save is known), and its failure only adds a "could not refresh" note to the verified message.
-  assert.match(handler, /if \(result\.status === "verified"\) \{[\s\S]*loadSupabaseData\(\)\.then\(\(refreshed\) => \{ if \(!refreshed\) refreshFailed\(\); \}, refreshFailed\);\s*return reported;/);
+test("post-commit reload failure cannot turn a successful setup into a reported failure, and never holds the button", () => {
+  const handler = fn(app, "setOpeningCostBasis").getText();
+  // The reload starts only after a saved result, is NOT awaited (the button is released as soon as
+  // the save is known), and its failure only adds a "could not refresh" note to the saved message.
+  assert.match(handler, /if \(result\.status === "saved"\) \{[\s\S]*loadSupabaseData\(\)\.then\(afterRefresh, \(\) => afterRefresh\(false\)\);\s*return reported;/);
   assert.doesNotMatch(handler, /await loadSupabaseData\(\)/);
   assert.match(handler, /The list could not refresh -- reload the page to see it\./);
   assert.doesNotMatch(handler, /not certified/i);
   assert.match(read("src/app/product-lab.tsx"), /async function loadSupabaseData\(\): Promise<boolean>/);
 });
 
-// ---- 16. Bake requirement unchanged --------------------------------------------------------
+// ---- Bake requirement unchanged ----------------------------------------------------------------
 
-test("Bake's certified-cost requirement is unchanged: same shared helper client-side, same guard server-side", () => {
+test("Bake's cost-trust requirement is unchanged: same shared helper client-side, same guard server-side, cost-setup wording not 'certified'", () => {
   const bake = read("src/components/bake-page.tsx");
   assert.match(bake, /isCostBaselineUncertified/);
-  const migration = read("supabase/migrations/20260912090000_cost_baseline_repair.sql");
+  assert.match(bake, /Opening cost setup is needed for/);
+  assert.doesNotMatch(bake, /Cost baseline not certified|need.*verification before this bake/i);
+  const migration = read("supabase/migrations/20260921120000_cost_system_simplification_v4.sql");
   assert.match(migration, /ing\.cost_reconciled_at is null or ing\.average_unit_cost is null or ing\.average_unit_cost <= 0/);
-  assert.match(migration, /Cannot confirm this Bake\. Cost baseline is not certified for:/);
-  // Nothing in this change auto-certifies from purchases: the only callers of the certify callback are the two explicit buttons.
-  assert.equal((inventory.text.match(/certifyIngredientCostBaseline\(/g) ?? []).length, 1);
-  assert.doesNotMatch(read("src/lib/cost-verification.ts"), /auto-?certif|verify all|bulk/i);
+  assert.match(migration, /Opening cost setup is needed for %/);
+  // Nothing in this change auto-sets from a Bake: the only callers of the setOpeningCostBasis callback are the two explicit buttons.
+  assert.equal((inventory.text.match(/setOpeningCostBasis\(/g) ?? []).length, 1);
+  assert.doesNotMatch(read("src/lib/opening-cost.ts"), /auto-?certif|verify all|bulk/i);
 });
 
-// ---- Ops polish: stale failure feedback + softened timeout wording ---------------------------------
+// ---- No routine "Verify cost" wording anywhere in the touched Inventory cost workflow -----------
 
-function feedbackHarness(initial: { tone: string; text: string } | null) {
-  const state = { feedback: initial, locked: true };
-  const clear = evaluateFunction(fn(fn(inventory, "CertifyCostForm"), "clearFailedFeedback"), {
-    setFeedback: (update: (current: typeof initial) => typeof initial) => { state.feedback = update(state.feedback); },
-    setIsLocked: (value: boolean) => { state.locked = value; },
-  });
-  return { state, clear };
-}
-
-test("editing total paid, quantity or unit clears a definite failure (and a validation message), not an info message", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
-  for (const setter of ["setManualTotal", "setManualQuantity", "setManualUnit"]) {
-    assert.match(form, new RegExp(`${setter}\\(event\\.target\\.value\\); clearFailedFeedback\\(\\);`), `${setter} clears stale failure`);
+test("no operator-facing 'Verify cost' / 'certification' leftovers anywhere in the touched Inventory cost surface", () => {
+  const surfaces = [read("src/components/inventory-page.tsx"), read("src/lib/opening-cost.ts"), read("src/components/bake-page.tsx")];
+  for (const text of surfaces) {
+    assert.doesNotMatch(text, /Verify cost|Re-verify cost|Verify purchase|Verify latest cost|Suggested cost to verify|Enter verified cost manually|Cost needs verification/);
   }
-  const failed = feedbackHarness({ tone: "bad", text: "Could not verify cost: Cost baseline changed." });
-  failed.clear();
-  assert.equal(failed.state.feedback, null);
-
-  const info = { tone: "info", text: "Verification result is uncertain because the request timed out." };
-  const uncertain = feedbackHarness(info);
-  uncertain.clear();
-  assert.equal(uncertain.state.feedback, info, "an uncertain / checking message survives edits");
-  assert.equal(uncertain.state.locked, true, "editing never unlocks an uncertain result");
-
-  const none = feedbackHarness(null);
-  none.clear();
-  assert.equal(none.state.feedback, null);
 });
 
-test("clearing stale feedback never touches the lock: no setIsLocked call and the confirm gate is unchanged", () => {
-  const clearFn = fn(fn(inventory, "CertifyCostForm"), "clearFailedFeedback").getText();
-  assert.doesNotMatch(clearFn, /setIsLocked|setVerified|submit\(/);
-  assert.match(fn(inventory, "CertifyCostForm").getText(), /disabled=\{isSubmitting \|\| isLocked \|\| manualCost\.status !== "ok"\}/);
+test("a normal trusted Item has no cost action at all -- 'Set opening cost' only renders when needsSetup is true", () => {
+  const row = fn(inventory, "IngredientRow").getText();
+  assert.match(row, /needsSetup \? \(/);
+  assert.match(row, /Set opening cost/);
+  // The old unconditional row-level action button is gone.
+  assert.doesNotMatch(row, /\{uncertified \? "Verify cost" : "Re-verify cost"\}/);
 });
 
-test("the unchanged-read-back timeout message no longer claims the cost was not saved, and still invites no blind retry", () => {
-  assert.doesNotMatch(TIMEOUT_NOT_SAVED_MESSAGE, /was not saved|You can try again/);
-  assert.match(TIMEOUT_NOT_SAVED_MESSAGE, /no saved change was found yet/);
-  // Names the next action: reload, look for Verified, only then consider trying again.
-  assert.equal(TIMEOUT_NOT_SAVED_MESSAGE, "The request timed out and no saved change was found yet. Reload and check whether this item shows Verified before retrying.");
+test("a zero-stock Item never nags for an opening cost, even when its cost is untrusted", async () => {
+  const { needsOpeningCostSetup, isCostBaselineUncertified } = await import("../src/lib/inventory-cost.ts");
+  const untrustedZero = { currentQuantity: 0, averageUnitCost: 0, costReconciledAt: null };
+  const untrustedNegative = { currentQuantity: -5, averageUnitCost: 0.2, costReconciledAt: null };
+  const untrustedPositive = { currentQuantity: 20, averageUnitCost: 0, costReconciledAt: null };
+  assert.equal(isCostBaselineUncertified(untrustedZero), true, "still genuinely untrusted");
+  assert.equal(needsOpeningCostSetup(untrustedZero), false, "but zero stock never nags");
+  assert.equal(needsOpeningCostSetup(untrustedNegative), false, "negative stock never nags either");
+  assert.equal(needsOpeningCostSetup(untrustedPositive), true, "positive untrusted stock does");
 });
 
-// ---- Cost Verification + Inventory Polish V3 ---------------------------------------------------
-// Purchase facts first: the operator verifies what they paid and received; the unit cost is derived.
+// ---- Purchase facts first: the operator recognises what they paid and received; the unit cost is derived. --
 
 test("purchase facts are spelled as 'PHP 19.00 for 50 g' (panel) and 'PHP 19 / 50 g' (compact row)", () => {
-  assert.equal(formatPurchaseToVerify(19, 50, "g"), "PHP 19.00 for 50 g");
+  assert.equal(formatPurchaseFacts(19, 50, "g"), "PHP 19.00 for 50 g");
   assert.equal(formatPurchaseCompact(19, 50, "g"), "PHP 19 / 50 g");
-  assert.equal(formatPurchaseToVerify(190, 1, " kg "), "PHP 190.00 for 1 kg");
+  assert.equal(formatPurchaseFacts(190, 1, " kg "), "PHP 190.00 for 1 kg");
   assert.equal(formatPurchaseCompact(190, 1, "kg"), "PHP 190 / 1 kg");
   assert.equal(formatPurchaseCompact(19.5, 0.5, "kg"), "PHP 19.50 / 0.5 kg", "non-whole pesos keep their cents");
   // The compact form is the purchase, not a unit price.
@@ -596,46 +573,42 @@ test("purchase facts are spelled as 'PHP 19.00 for 50 g' (panel) and 'PHP 19 / 5
 });
 
 test("UI: the latest-purchase panel leads with the purchase facts; the calculated unit cost is a derived secondary line", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
+  const form = fn(inventory, "OpeningCostForm").getText();
   const start = form.indexOf("latestCost.usable && latest && !showManual ? (");
   const normalPath = form.slice(start, form.indexOf(") : (", start));
-  const heading = normalPath.indexOf("Purchase to verify");
-  const facts = normalPath.indexOf("formatPurchaseToVerify(latest.totalPaid, latest.packQuantity, latest.unit)");
-  const derived = normalPath.indexOf("Calculated cost");
+  const heading = normalPath.indexOf("Latest purchase");
+  const facts = normalPath.indexOf("formatPurchaseFacts(latest.totalPaid, latest.packQuantity, latest.unit)");
+  const derived = normalPath.indexOf("Calculated");
   const perUnit = normalPath.indexOf("formatPesosPerUnit(latestCost.unitCost, ingredient.baseUnit)");
   assert.ok(heading > 0 && facts > heading && derived > facts && perUnit > derived, "purchase facts precede the derived cost");
-  // Same context the operator recognizes the purchase by, and the helper that says what is being confirmed.
   assert.match(normalPath, /latest\.brand, latest\.supplier/);
   assert.match(normalPath, /formatPurchaseDate\(latest\.date, \{ year: true \}\)/);
-  assert.match(normalPath, /Verify that this is what you paid and received\. The app calculates the cost per \{ingredient\.baseUnit\}\./);
-  // Unit-cost-only language no longer stands in for the purchase.
+  assert.match(normalPath, /It does not change stock quantity or purchase history\./);
   assert.doesNotMatch(form, /Suggested cost to verify|Verify this cost|Verify latest cost|Enter a different cost manually|Enter verified cost manually/);
 });
 
-test("UI: the collapsed row shows the latest purchase (paid / quantity), not a per-unit cost, next to 'Verify purchase'", () => {
+test("UI: the collapsed row shows the latest purchase (paid / quantity), not a per-unit cost, next to 'Use latest purchase price'", () => {
   const row = fn(inventory, "IngredientRow").getText();
   assert.match(row, /Latest purchase \{formatPurchaseCompact\(latest\.totalPaid, latest\.packQuantity, latest\.unit\)\}/);
-  assert.match(row, />Verify purchase<\/button>/);
+  assert.match(row, />Use latest purchase price<\/button>/);
   assert.doesNotMatch(row, /Latest cost|Verify latest cost/);
 });
 
-test("UI: the latest-purchase path and the manual path are one concept -- same verify button, same submit(), same helper idea", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
-  assert.equal((form.match(/\{verifyLabel\}/g) ?? []).length, 2, "both paths use the one label");
+test("UI: the latest-purchase path and the manual path are one concept -- same submit(), same helper idea", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
   assert.match(form, /submit\(latestCost\.unitCost, latestCost\.evidenceNote\)/);
   assert.match(form, /void submit\(manualCost\.unitCost, manualCost\.evidenceNote\)/);
-  assert.equal((form.match(/Calculated cost/g) ?? []).length, 2, "both show the calculated cost as the derived output");
-  assert.equal((form.match(/The app calculates the cost per \{ingredient\.baseUnit\}/g) ?? []).length, 2);
+  assert.equal((form.match(/Calculated<\/p>/g) ?? []).length, 2, "both show the calculated cost as the derived output");
   // Still no unit-price input: manual has exactly total paid, quantity, unit.
   const manual = form.slice(form.indexOf("<form"), form.indexOf("</form>"));
   assert.deepEqual([...manual.matchAll(/name="(\w+)"/g)].map((match) => match[1]), ["totalPaid", "quantity", "unit"]);
 });
 
-// ---- Loading / request state machine -------------------------------------------------------------
+// ---- Loading / request state machine -----------------------------------------------------------
 
-test("the button reads 'Verify purchase' -> 'Saving...' -> 'Checking result...', and never 'Verifying...'", () => {
-  const form = fn(inventory, "CertifyCostForm").getText();
-  assert.match(form, /const verifyLabel = phase === "saving" \? "Saving\.\.\." : phase === "checking" \? "Checking result\.\.\." : "Verify purchase";/);
+test("the button reads 'Use latest purchase price' -> 'Saving...' -> 'Checking result...', and never 'Verifying...'", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
+  assert.match(form, /const primaryLabel = phase === "saving" \? "Saving\.\.\." : phase === "checking" \? "Checking result\.\.\." : "Use latest purchase price";/);
   assert.match(form, /const isSubmitting = phase !== "idle";/);
   assert.doesNotMatch(inventory.text, /Verifying\.\.\./);
 });
@@ -643,78 +616,78 @@ test("the button reads 'Verify purchase' -> 'Saving...' -> 'Checking result...',
 test("submit: idle -> saving immediately, onCheckingResult moves it to checking, and the result returns it to idle", async () => {
   const { submit, events, state } = harness(async (...args: unknown[]) => {
     (args[3] as () => void)();
-    return { status: "verified", certifiedUnitCost: 0.38, confirmedByReadBack: true, refreshed: true };
+    return { status: "saved", unitCost: 0.38, confirmedByReadBack: true };
   });
   await submit(0.38, "note");
   assert.deepEqual(events.filter((event) => event.startsWith("phase:")), ["phase:saving", "phase:checking", "phase:idle"]);
   assert.deepEqual(events.slice(0, 2), ["feedback:clear", "phase:saving"], "Saving... is shown before anything is awaited");
-  assert.equal(state.verified !== undefined, true);
+  assert.equal(state.saved !== undefined, true);
 });
 
-test("submit: while checking, the panel shows the checking message; a still-uncertain result then locks it", async () => {
-  const { submit, events, state } = harness(async (...args: unknown[]) => {
+test("submit: while checking, the panel shows the checking message; a still-uncertain result then locks the tracker", async () => {
+  const { submit, events, state, attempts } = harness(async (...args: unknown[]) => {
     (args[3] as () => void)();
     return { status: "uncertain", message: TIMEOUT_NOT_SAVED_MESSAGE };
   });
   await submit(0.38, "note");
   assert.deepEqual(events.filter((event) => event.startsWith("feedback:")), ["feedback:clear", "feedback:info", "feedback:info"]);
   assert.equal(state.feedback?.text, TIMEOUT_NOT_SAVED_MESSAGE);
-  assert.equal(state.locked, true);
+  assert.equal(attempts.blocked("i1"), "uncertain");
   assert.equal(events.at(-1), "phase:idle");
 });
 
-test("submit: a thrown error still clears the working state, keeps the panel locked and tells the owner to reload", async () => {
-  const { submit, events, state } = harness(async () => { throw new Error("boom"); });
+test("submit: a thrown error still clears the working state, keeps the tracker locked and tells the owner to reload", async () => {
+  const { submit, events, state, attempts } = harness(async () => { throw new Error("boom"); });
   await submit(0.38, "note");
   assert.equal(events.at(-1), "phase:idle", "isSubmitting always clears");
-  assert.equal(state.locked, true);
-  assert.match(state.feedback?.text ?? "", /Reload the page and check whether this item shows Verified/);
+  assert.equal(attempts.blocked("i1"), "uncertain");
+  assert.match(state.feedback?.text ?? "", /Reload the page and check whether this Item still needs an opening cost/);
 });
 
 test("submit: a second click while one is running sends nothing (one call, one RPC)", async () => {
-  let release: (result: CertifyCostResult) => void = () => {};
-  const { submit, calls, events } = harness(() => new Promise<CertifyCostResult>((resolve) => { release = resolve; }));
+  let release: (result: OpeningCostResult) => void = () => {};
+  const { submit, calls, events } = harness(() => new Promise<OpeningCostResult>((resolve) => { release = resolve; }));
   const first = submit(0.38, "note");
   await submit(0.38, "note");
   await submit(0.38, "note");
   assert.equal(calls.length, 1);
   assert.equal(events.filter((event) => event === "phase:saving").length, 1);
-  release({ status: "failed", message: "Could not verify cost: x" });
+  release({ status: "failed", message: "Could not set opening cost: x" });
   await first;
   assert.equal(events.at(-1), "phase:idle");
 });
 
-test("a definite failure is not locked, an uncertain one is; the confirm buttons honor both", async () => {
-  const failed = harness({ status: "failed", message: "Could not verify cost: Cost baseline changed." });
+test("a definite failure does not lock the tracker; an uncertain one does; the confirm buttons honor both", async () => {
+  const failed = harness({ status: "failed", message: "Could not set opening cost: Cost details changed." });
   await failed.submit(0.38, "note");
-  assert.equal(failed.state.locked, false);
+  assert.equal(failed.attempts.blocked("i1"), null);
   const uncertain = harness({ status: "uncertain", message: CHANGED_DURING_TIMEOUT_MESSAGE });
   await uncertain.submit(0.38, "note");
-  assert.equal(uncertain.state.locked, true);
-  const form = fn(inventory, "CertifyCostForm").getText();
+  assert.equal(uncertain.attempts.blocked("i1"), "uncertain");
+  const form = fn(inventory, "OpeningCostForm").getText();
   assert.match(form, /disabled=\{isSubmitting \|\| isLocked\} onClick=\{\(\) => void submit\(latestCost/);
   assert.match(form, /disabled=\{isSubmitting \|\| isLocked \|\| manualCost\.status !== "ok"\} type="submit"/);
 });
 
-// ---- Every request is bounded: the certify attempt always settles ------------------------------------
+// ---- Every request is bounded: the setup attempt always settles --------------------------------
 
 const never = () => new Promise<never>(() => {});
 
 test("a request that never answers is bounded: the deadline turns it into the same uncertain path and the read-back decides", async () => {
   const log = { rpcs: 0, reads: 0, checking: 0, aborted: false };
-  const result = await runCostCertification({
+  const result = await runOpeningCostSetup({
     deadlineMs: 20,
     readState: async () => (log.reads++ === 0 ? before : committed),
-    callRpc: (_expected, signal) => { log.rpcs++; signal?.addEventListener("abort", () => { log.aborted = true; }); return never(); },
+    callRpc: (_expected: number | null, signal?: AbortSignal) => { log.rpcs++; signal?.addEventListener("abort", () => { log.aborted = true; }); return never(); },
     onCheckingResult: () => { log.checking++; },
   }, 0.38);
-  assert.deepEqual(result, { status: "verified", certifiedUnitCost: 0.38, confirmedByReadBack: true, refreshed: true });
+  assert.deepEqual(result, { status: "saved", unitCost: 0.38, confirmedByReadBack: true });
   assert.deepEqual(log, { rpcs: 1, reads: 2, checking: 1, aborted: true });
 });
 
 test("a request that never answers and changed nothing ends as an uncertain, reload-and-check result -- never stuck, never retried", async () => {
   const log = { rpcs: 0, reads: 0 };
-  const result = await runCostCertification({
+  const result = await runOpeningCostSetup({
     deadlineMs: 20,
     readState: async () => { log.reads++; return { ...before }; },
     callRpc: () => { log.rpcs++; return never(); },
@@ -725,12 +698,12 @@ test("a request that never answers and changed nothing ends as an uncertain, rel
 
 test("a pre-read that never answers sends nothing; a read-back that never answers is uncertain", async () => {
   const noPreRead = { rpcs: 0 };
-  const stuckBefore = await runCostCertification({ deadlineMs: 20, readState: () => never(), callRpc: async () => { noPreRead.rpcs++; return { error: null }; } }, 0.38);
+  const stuckBefore = await runOpeningCostSetup({ deadlineMs: 20, readState: () => never(), callRpc: async () => { noPreRead.rpcs++; return { error: null }; } }, 0.38);
   assert.equal(stuckBefore.status, "failed");
   assert.equal(noPreRead.rpcs, 0);
 
   let reads = 0;
-  const stuckAfter = await runCostCertification({
+  const stuckAfter = await runOpeningCostSetup({
     deadlineMs: 20,
     readState: () => (reads++ === 0 ? Promise.resolve(before) : never()),
     callRpc: () => never(),
@@ -739,16 +712,16 @@ test("a pre-read that never answers sends nothing; a read-back that never answer
 });
 
 test("the deadline is short of the gateway's but long enough that a healthy request never reaches it", () => {
-  assert.ok(CERTIFY_REQUEST_DEADLINE_MS >= 10_000 && CERTIFY_REQUEST_DEADLINE_MS <= 30_000);
-  const handler = fn(app, "certifyIngredientCostBaseline").getText();
+  assert.ok(OPENING_COST_REQUEST_DEADLINE_MS >= 10_000 && OPENING_COST_REQUEST_DEADLINE_MS <= 30_000);
+  const handler = fn(app, "setOpeningCostBasis").getText();
   assert.match(handler, /\.abortSignal\(signal\)/);
   assert.equal((handler.match(/\.rpc\(/g) ?? []).length, 1, "still one RPC call site");
 });
 
-// ---- Close / reopen cannot allow an unsafe resubmit ----------------------------------------------------
+// ---- Close / reopen cannot allow an unsafe resubmit ---------------------------------------------
 
 test("attempt tracker: in-flight and uncertain block a second submit for that Item only; a definite result releases it", () => {
-  const tracker = createCertifyAttemptTracker();
+  const tracker = createOpeningCostAttemptTracker();
   assert.equal(tracker.blocked("a"), null);
   tracker.begin("a");
   assert.equal(tracker.blocked("a"), "in-flight");
@@ -759,39 +732,75 @@ test("attempt tracker: in-flight and uncertain block a second submit for that It
   tracker.finish("b", { status: "failed", message: "x" });
   assert.equal(tracker.blocked("b"), null);
   tracker.begin("c");
-  tracker.finish("c", { status: "verified", certifiedUnitCost: 1, confirmedByReadBack: false, refreshed: true });
-  assert.equal(tracker.blocked("c"), null);
+  tracker.finish("c", { status: "saved", unitCost: 1, confirmedByReadBack: false });
+  assert.equal(tracker.blocked("c"), "saved", "a fresh success is still blocked until the refresh settles it (V4 Part 12A)");
+  tracker.settle("c");
+  assert.equal(tracker.blocked("c"), null, "settle() releases it once the refresh lands");
+});
+
+test("settle() only releases a 'saved' attempt -- it never clears in-flight or uncertain", () => {
+  const tracker = createOpeningCostAttemptTracker();
+  tracker.begin("a");
+  tracker.settle("a");
+  assert.equal(tracker.blocked("a"), "in-flight", "settle is not a general-purpose unblock");
+});
+
+test("the tracker is subscribable, so a panel or row reopened mid-attempt renders the block immediately, not only after a click (V4 Part 12B)", () => {
+  const tracker = createOpeningCostAttemptTracker();
+  let notified = 0;
+  const unsubscribe = tracker.subscribe(() => { notified++; });
+  tracker.begin("a");
+  assert.equal(notified, 1, "begin notifies subscribers");
+  tracker.finish("a", { status: "uncertain", message: "x" });
+  assert.equal(notified, 2, "finish notifies subscribers");
+  unsubscribe();
+  tracker.begin("b");
+  assert.equal(notified, 2, "unsubscribed listeners are not called again");
+});
+
+test("the panel reads the tracker live (useSyncExternalStore) so a reopened panel shows the blocked state without a click", () => {
+  const form = fn(inventory, "OpeningCostForm").getText();
+  assert.match(form, /useSyncExternalStore\(attempts\.subscribe, \(\) => attempts\.blocked\(ingredient\.id\)\)/);
+  assert.match(form, /const isLocked = attempt !== null;/);
+});
+
+test("CertifyCostResult.refreshed no longer exists -- the dead branch V4 Part 12C asked to remove is gone", () => {
+  const src = read("src/lib/opening-cost.ts");
+  assert.doesNotMatch(src, /refreshed:\s*(true|false|boolean)/);
+  assert.doesNotMatch(src, /status:\s*"saved".*refreshed/);
+  const handler = fn(app, "setOpeningCostBasis").getText();
+  assert.doesNotMatch(handler, /\.refreshed\b/);
 });
 
 test("the page handler refuses a blocked Item before reading or sending anything, and records every outcome", () => {
-  const handler = fn(app, "certifyIngredientCostBaseline").getText();
+  const handler = fn(app, "setOpeningCostBasis").getText();
   const blocked = handler.indexOf("attempts.blocked(ingredientId)");
   const begin = handler.indexOf("attempts.begin(ingredientId)");
-  const call = handler.indexOf("runCostCertification(");
+  const call = handler.indexOf("runOpeningCostSetup(");
   const finish = handler.indexOf("attempts.finish(ingredientId, result)");
   assert.ok(blocked > 0 && begin > blocked && call > begin && finish > call, "check -> begin -> run -> finish");
-  assert.match(handler, /attempts\.blocked\(ingredientId\)\) \{\s*return report\(\{ status: "uncertain", message: ALREADY_IN_FLIGHT_MESSAGE \}/);
+  assert.match(handler, /status: "blocked", message: ATTEMPT_MESSAGES\[attempt\]/);
   // Anything unexpected keeps the Item blocked rather than releasing it.
-  assert.match(handler, /\} catch \{[\s\S]*result = \{ status: "uncertain", message: ALREADY_IN_FLIGHT_MESSAGE \};/);
+  assert.match(handler, /\} catch \{[\s\S]*result = \{ status: "uncertain", message: ATTEMPT_MESSAGES\.uncertain \};/);
   // The tracker lives in the page component (survives a panel closing), not in the panel.
-  assert.match(app.text, /const certifyAttemptsRef = useRef\(createCertifyAttemptTracker\(\)\)/);
-  assert.doesNotMatch(fn(inventory, "CertifyCostForm").getText(), /createCertifyAttemptTracker/);
-  assert.match(ALREADY_IN_FLIGHT_MESSAGE, /Reload the page and check whether it now shows Verified/);
+  assert.match(app.text, /const openingCostAttemptsRef = useRef\(createOpeningCostAttemptTracker\(\)\)/);
+  assert.doesNotMatch(fn(inventory, "OpeningCostForm").getText(), /createOpeningCostAttemptTracker/);
 });
 
 test("page-level messages name the Item, so feedback is never ambiguous about which cost it is about", () => {
-  const handler = fn(app, "certifyIngredientCostBaseline").getText();
+  const handler = fn(app, "setOpeningCostBasis").getText();
   assert.match(handler, /setMessage\(`\$\{ingredientName\}: \$\{result\.message\}`\)/);
   assert.match(handler, /setMessage\(`\$\{ingredient\.name\}: \$\{CHECKING_RESULT_MESSAGE\}`\)/);
 });
 
-test("the certification authority is unchanged by this wave: no migration, RPC, or Bake guard was touched", () => {
+test("the underlying database authority is unchanged by this wave beyond wording: no owner check, evidence requirement, or audit row was touched", () => {
   const migration = read("supabase/migrations/20260912090000_cost_baseline_repair.sql");
   for (const rule of [
-    /public\.is_product_lab_owner\(\) is not true/, /p_certified_unit_cost <= 0/, /length\(trim\(p_evidence_note\)\) = 0/,
+    /public\.is_product_lab_owner\(\) is not true/, /length\(trim\(p_evidence_note\)\) = 0/,
     /latest\.id is distinct from p_expected_latest_id/, /'cost_certification'/, /set average_unit_cost = p_certified_unit_cost, cost_reconciled_at = v_time/,
-    /Cannot confirm this Bake\. Cost baseline is not certified for:/,
   ]) {
     assert.match(migration, rule);
   }
+  const v4 = read("supabase/migrations/20260921120000_cost_system_simplification_v4.sql");
+  assert.match(v4, /raise exception 'Opening cost must be a positive, finite number'/);
 });

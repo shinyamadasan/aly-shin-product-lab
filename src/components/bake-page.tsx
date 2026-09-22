@@ -289,8 +289,10 @@ export function BakePage({
               ) : null}
               {remotePosting && uncertifiedCostIngredientNames.length > 0 ? (
                 <li className="font-semibold text-[#8a3827]">
-                  {"⚠"} {uncertifiedCostIngredientNames.length} ingredient cost{uncertifiedCostIngredientNames.length === 1 ? "" : "s"} need{uncertifiedCostIngredientNames.length === 1 ? "s" : ""} verification before this bake can be posted.{" "}
-                  <a className="underline" href="/inventory?tab=ingredients&focus=costs">Review costs</a>
+                  {"⚠"} {uncertifiedCostIngredientNames.length === 1
+                    ? `Opening cost setup is needed for ${uncertifiedCostIngredientNames[0]} before this Bake can be confirmed.`
+                    : `Opening cost setup is needed for ${uncertifiedCostIngredientNames.length} ingredients before this Bake can be confirmed.`}{" "}
+                  <a className="underline" href="/inventory?tab=ingredients&focus=costs">Set up costs</a>
                   <details className="mt-1 font-normal">
                     <summary className="cursor-pointer text-xs">Show ingredients ({uncertifiedCostIngredientNames.length})</summary>
                     <p className="mt-1 text-xs">{uncertifiedCostIngredientNames.join(", ")}</p>
