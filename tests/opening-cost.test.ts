@@ -6,7 +6,7 @@ import ts from "typescript";
 import {
   buildLatestPurchaseEvidenceNote, buildManualCostEvidence, calculateManualCostBasis, OPENING_COST_REQUEST_DEADLINE_MS, CHANGED_DURING_TIMEOUT_MESSAGE,
   classifyCostReadBack, createOpeningCostAttemptTracker, formatPurchaseCompact, formatPurchaseFacts,
-  isUncertainTransportFailure, manualCostUnitOptions, resolveLatestPurchaseCost, runOpeningCostSetup, TIMEOUT_NOT_SAVED_MESSAGE, UNCERTAIN_UNREADABLE_MESSAGE,
+  isUncertainTransportFailure, manualCostUnitOptions, resolveLatestPurchaseCost, runOpeningCostSetup, runTargetedCostRefresh, TIMEOUT_NOT_SAVED_MESSAGE, UNCERTAIN_UNREADABLE_MESSAGE,
   type OpeningCostResult, type CostState, type RpcOutcome,
 } from "../src/lib/opening-cost.ts";
 import { createMutationGuard } from "../src/lib/mutation-guard.ts";
@@ -327,10 +327,58 @@ test("the manual form adds no client-side database write, RPC call or schema cha
 
 // ---- Inline feedback -------------------------------------------------------------------------
 
+// The fake setOpeningCostBasis mirrors the REAL parent's own contract (blocked-check -> begin ->
+// run -> finish, see product-lab.tsx's setOpeningCostBasis) -- the fake, not submit(), owns the
+// tracker here, exactly like production after the V4 hotfix. This is what makes these tests prove
+// the single-ownership fix: submit() itself never touches attempts.begin/finish (see the
+// `select:submit` source-pattern test below), so any tracker state observed here can only have
+// come from this mock's own parent-shaped logic -- the same as it can only come from the real
+// setOpeningCostBasis in production.
 function harness(result: unknown) {
   const events: string[] = [];
   const state: { feedback?: { tone: string; text: string } | null; saved?: unknown } = {};
   const calls: unknown[][] = [];
+  const counts = { rpc: 0 };
+  const attempts = createOpeningCostAttemptTracker();
+  const ingredientId = "i1";
+  const setOpeningCostBasis = async (...args: unknown[]) => {
+    calls.push(args);
+    const blocked = attempts.blocked(ingredientId);
+    if (blocked) {
+      return { status: "blocked", message: `blocked:${blocked}` };
+    }
+    attempts.begin(ingredientId);
+    let outcome: unknown;
+    try {
+      counts.rpc++;
+      // `result` may be a function so a test can drive the onCheckingResult callback / throw / stay pending.
+      outcome = typeof result === "function" ? await (result as (...args: unknown[]) => unknown)(...args) : result;
+    } catch {
+      outcome = { status: "uncertain", message: "" };
+    }
+    attempts.finish(ingredientId, outcome as OpeningCostResult);
+    return outcome;
+  };
+  const submit = evaluateFunction(nodes(fn(inventory, "OpeningCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "submit")[0], {
+    guardRef: { current: createMutationGuard<string>() },
+    ingredient: { id: ingredientId },
+    attempts,
+    onAttempt: () => events.push("attempt"),
+    setFeedback: (value: { tone: string; text: string } | null) => { state.feedback = value; events.push(`feedback:${value?.tone ?? "clear"}`); },
+    setPhase: (value: string) => events.push(`phase:${value}`),
+    setSaved: (value: unknown) => { state.saved = value; },
+    CHECKING_RESULT_MESSAGE: "checking",
+    setOpeningCostBasis,
+  });
+  return { submit, events, state, calls, counts, attempts };
+}
+
+// A bare passthrough, with no tracker awareness at all -- unlike harness() above, this simulates
+// setOpeningCostBasis's promise rejecting before its own internal handling could run (nothing was
+// ever marked in-flight). Used only to test submit()'s own local catch in true isolation.
+function rawHarness(setOpeningCostBasisImpl: (...args: unknown[]) => Promise<unknown>) {
+  const events: string[] = [];
+  const state: { feedback?: { tone: string; text: string } | null; saved?: unknown } = {};
   const attempts = createOpeningCostAttemptTracker();
   const submit = evaluateFunction(nodes(fn(inventory, "OpeningCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "submit")[0], {
     guardRef: { current: createMutationGuard<string>() },
@@ -341,10 +389,9 @@ function harness(result: unknown) {
     setPhase: (value: string) => events.push(`phase:${value}`),
     setSaved: (value: unknown) => { state.saved = value; },
     CHECKING_RESULT_MESSAGE: "checking",
-    // `result` may be a function so a test can drive the onCheckingResult callback / throw / stay pending.
-    setOpeningCostBasis: async (...args: unknown[]) => { calls.push(args); return typeof result === "function" ? result(...args) : result; },
+    setOpeningCostBasis: setOpeningCostBasisImpl,
   });
-  return { submit, events, state, calls, attempts };
+  return { submit, events, state, attempts };
 }
 
 test("a failed setup shows an inline error, keeps the panel open (no saved state) and does not lock the tracker", async () => {
@@ -506,15 +553,42 @@ test("the database authority is untouched by client wording: the RPC still requi
   assert.equal((handler.match(/\.rpc\(/g) ?? []).length, 1, "one RPC call site -- no retry loop");
 });
 
-test("post-commit reload failure cannot turn a successful setup into a reported failure, and never holds the button", () => {
+test("V4 hotfix (Bug 2): the post-save refresh is targeted (one ingredient row), not the full ~21-table loadSupabaseData(), and never holds the button", () => {
   const handler = fn(app, "setOpeningCostBasis").getText();
-  // The reload starts only after a saved result, is NOT awaited (the button is released as soon as
-  // the save is known), and its failure only adds a "could not refresh" note to the saved message.
-  assert.match(handler, /if \(result\.status === "saved"\) \{[\s\S]*loadSupabaseData\(\)\.then\(afterRefresh, \(\) => afterRefresh\(false\)\);\s*return reported;/);
+  // The targeted refresh starts only after a saved result and is NOT awaited (the button is
+  // released as soon as the save is known); its failure only adds a "could not refresh" note.
+  assert.match(handler, /if \(result\.status === "saved"\) \{[\s\S]*runTargetedCostRefresh\(readState\)\.then\(\(refresh\) => \{/);
   assert.doesNotMatch(handler, /await loadSupabaseData\(\)/);
+  assert.doesNotMatch(handler, /await runTargetedCostRefresh\(/);
   assert.match(handler, /The list could not refresh -- reload the page to see it\./);
   assert.doesNotMatch(handler, /not certified/i);
+  // The full reload still exists as an optional, best-effort background catch-up, but it is no
+  // longer what determines whether the Item appears saved or what releases the tracker lock.
+  assert.match(handler, /loadSupabaseData\(\)\.then\(\(refreshed\) => \{\s*if \(refreshed\) \{\s*attempts\.settle\(ingredientId\);/);
   assert.match(read("src/app/product-lab.tsx"), /async function loadSupabaseData\(\): Promise<boolean>/);
+});
+
+test("V4 hotfix (Bug 2): a successful save applies averageUnitCost + costReconciledAt from the targeted read, never a client-guessed value, and only settles the tracker once that read is trustworthy", () => {
+  const handler = fn(app, "setOpeningCostBasis").getText();
+  assert.match(handler, /refresh\.status === "applied"/);
+  assert.match(handler, /averageUnitCost: refresh\.averageUnitCost, costReconciledAt: refresh\.costReconciledAt/);
+  const applyBlockEnd = handler.indexOf("attempts.settle(ingredientId);");
+  const setLabStateCall = handler.indexOf("setLabState((current) => ({");
+  assert.ok(setLabStateCall > 0 && applyBlockEnd > setLabStateCall, "local state is patched before the tracker is released");
+});
+
+test("runTargetedCostRefresh: applies the fresh averageUnitCost + costReconciledAt once both are set on the row", async () => {
+  const refresh = await runTargetedCostRefresh(async () => ({ averageUnitCost: 0.38, costReconciledAt: "2026-09-22T00:00:00Z" }));
+  assert.deepEqual(refresh, { status: "applied", averageUnitCost: 0.38, costReconciledAt: "2026-09-22T00:00:00Z" });
+});
+
+test("runTargetedCostRefresh: a read failure (null) is unavailable -- it never invents a value", async () => {
+  assert.deepEqual(await runTargetedCostRefresh(async () => null), { status: "unavailable" });
+});
+
+test("runTargetedCostRefresh: a row whose columns are not both set yet is unavailable too, not a partial guess", async () => {
+  assert.deepEqual(await runTargetedCostRefresh(async () => ({ averageUnitCost: null, costReconciledAt: "2026-09-22T00:00:00Z" })), { status: "unavailable" });
+  assert.deepEqual(await runTargetedCostRefresh(async () => ({ averageUnitCost: 0.38, costReconciledAt: null })), { status: "unavailable" });
 });
 
 // ---- Bake requirement unchanged ----------------------------------------------------------------
@@ -636,12 +710,45 @@ test("submit: while checking, the panel shows the checking message; a still-unce
   assert.equal(events.at(-1), "phase:idle");
 });
 
-test("submit: a thrown error still clears the working state, keeps the tracker locked and tells the owner to reload", async () => {
-  const { submit, events, state, attempts } = harness(async () => { throw new Error("boom"); });
+test("submit: if the parent's promise itself rejects, submit's own catch still clears working state and shows a safe message -- and never touches the tracker itself (V4 hotfix)", async () => {
+  const { submit, events, state, attempts } = rawHarness(async () => { throw new Error("boom"); });
   await submit(0.38, "note");
   assert.equal(events.at(-1), "phase:idle", "isSubmitting always clears");
-  assert.equal(attempts.blocked("i1"), "uncertain");
+  // Before the V4 hotfix, submit()'s own catch called attempts.finish(id, {status:"uncertain"}) --
+  // a second writer to the tracker. Nothing marked this attempt in-flight before the throw (this
+  // fake never touches the tracker, simulating an exception outside the real parent's own
+  // begin/finish window), so nothing should be left blocked either.
+  assert.equal(attempts.blocked("i1"), null);
   assert.match(state.feedback?.text ?? "", /Reload the page and check whether this Item still needs an opening cost/);
+});
+
+// ---- V4 hotfix: OpeningCostForm must never own attempts.begin/finish (Bug 1) -------------------
+
+test("OpeningCostForm.submit never calls attempts.begin or attempts.finish -- setOpeningCostBasis (the parent) is the sole owner", () => {
+  const submitSource = nodes(fn(inventory, "OpeningCostForm"), (node) => ts.isFunctionDeclaration(node) && node.name?.text === "submit")[0].getText();
+  assert.doesNotMatch(submitSource, /attempts\.begin\(/);
+  assert.doesNotMatch(submitSource, /attempts\.finish\(/);
+  // The only tracker access left is the read-only early-return check.
+  assert.match(submitSource, /attempts\.blocked\(ingredient\.id\)/);
+});
+
+test("integration: idle tracker -> submit -> exactly one call reaches the parent mutation (one RPC-equivalent attempt) -> the result can become saved", async () => {
+  const { submit, state, calls, counts, attempts } = harness({ status: "saved", unitCost: 0.38, confirmedByReadBack: false });
+  assert.equal(attempts.blocked("i1"), null, "starts idle");
+  await submit(0.38, "note");
+  assert.equal(calls.length, 1, "exactly one call reached the parent mutation handler");
+  assert.equal(counts.rpc, 1, "exactly one underlying RPC-equivalent attempt was made");
+  assert.equal(state.saved !== undefined, true, "the result became saved");
+  assert.equal(attempts.blocked("i1"), "saved", "held until settle() -- never released by the form itself");
+});
+
+test("integration: an already in-flight Item refuses a second submission before it ever reaches the parent -- zero RPCs (reproduces the reported self-block bug)", async () => {
+  const { submit, calls, counts, attempts } = harness({ status: "saved", unitCost: 0.38, confirmedByReadBack: false });
+  attempts.begin("i1"); // simulates a still-running attempt, owned by the real parent elsewhere
+  await submit(0.38, "note");
+  assert.equal(calls.length, 0, "submit's own read-only guard refuses before calling the parent at all");
+  assert.equal(counts.rpc, 0, "no RPC-equivalent attempt was made");
+  assert.equal(attempts.blocked("i1"), "in-flight", "unchanged -- the form never writes to the tracker");
 });
 
 test("submit: a second click while one is running sends nothing (one call, one RPC)", async () => {

@@ -247,6 +247,13 @@ function OpeningCostForm({
   const primaryLabel = phase === "saving" ? "Saving..." : phase === "checking" ? "Checking result..." : "Use latest purchase price";
   const manualLabel = phase === "saving" ? "Saving..." : phase === "checking" ? "Checking result..." : "Set opening cost";
 
+  // V4 hotfix: attempts.blocked() here is a read-only pre-check (a fast, no-op early return, and
+  // it skips starting the local mutation guard for a call that would just come back blocked) --
+  // it never calls begin()/finish(). setOpeningCostBasis (product-lab.tsx) is the ONE owner of that
+  // lifecycle; this form only reads the tracker to render lock state (see the useSyncExternalStore
+  // above) and uses its own guardRef for double-click protection. A second writer here previously
+  // self-blocked every submit (begin() here made attempts.blocked() true by the time
+  // setOpeningCostBasis checked it, so no RPC was ever sent) -- see REVIEW.md.
   async function submit(unitCost: number, evidenceNote: string) {
     if (guardRef.current.isActive(ingredient.id) || attempts.blocked(ingredient.id)) {
       return;
@@ -254,7 +261,6 @@ function OpeningCostForm({
     setFeedback(null);
     setPhase("saving");
     onAttempt();
-    attempts.begin(ingredient.id);
     try {
       const result = await guardRef.current.run(ingredient.id, () => setOpeningCostBasis(
         ingredient.id, unitCost, evidenceNote, () => { setPhase("checking"); setFeedback({ tone: "info", text: CHECKING_RESULT_MESSAGE }); },
@@ -262,7 +268,6 @@ function OpeningCostForm({
       if (!result) {
         return;
       }
-      attempts.finish(ingredient.id, result);
       if (result.status === "saved") {
         setFeedback(null);
         setSaved(result);
@@ -270,7 +275,6 @@ function OpeningCostForm({
         setFeedback({ tone: result.status === "uncertain" ? "info" : "bad", text: result.message });
       }
     } catch {
-      attempts.finish(ingredient.id, { status: "uncertain", message: "" });
       setFeedback({ tone: "info", text: "Something went wrong and the result isn't confirmed. Reload the page and check whether this Item still needs an opening cost before trying again." });
     } finally {
       setPhase("idle");

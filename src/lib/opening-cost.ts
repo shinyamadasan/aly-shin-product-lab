@@ -370,3 +370,25 @@ export const CHECKING_RESULT_MESSAGE = "The result is uncertain because the requ
 export function openingCostSavedMessage(unitCost: number, baseUnit: string): string {
   return `Opening cost set at ${formatPesosPerUnit(unitCost, baseUnit)}.`;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Post-save targeted refresh: after a confirmed save, the row must stop asking for Opening Cost
+// Setup the moment the server confirms it -- not once the app's full ~21-table reload happens to
+// land. One read of the two columns the RPC just wrote, never a client-guessed value: "unavailable"
+// (a read failure, or a row whose columns are not both set yet) leaves the caller holding the
+// Item's saved-but-unconfirmed state rather than show a cost the server never actually confirmed.
+// ---------------------------------------------------------------------------------------------
+
+export type TargetedCostRefresh =
+  | { status: "applied"; averageUnitCost: number; costReconciledAt: string }
+  | { status: "unavailable" };
+
+export async function runTargetedCostRefresh(
+  readState: (signal?: AbortSignal) => Promise<CostState | null>,
+): Promise<TargetedCostRefresh> {
+  const state = await readState();
+  if (!state || state.averageUnitCost === null || !state.costReconciledAt) {
+    return { status: "unavailable" };
+  }
+  return { status: "applied", averageUnitCost: state.averageUnitCost, costReconciledAt: state.costReconciledAt };
+}

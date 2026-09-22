@@ -38,7 +38,7 @@ import { BrandFoundationPage } from "@/components/brand-foundation-page";
 import { InventoryPage, ingredientCategoryOptions } from "@/components/inventory-page";
 import { PurchaseItemField } from "@/components/purchase-item-field";
 import {
-  ATTEMPT_MESSAGES, CHECKING_RESULT_MESSAGE, createOpeningCostAttemptTracker, openingCostSavedMessage, runOpeningCostSetup,
+  ATTEMPT_MESSAGES, CHECKING_RESULT_MESSAGE, createOpeningCostAttemptTracker, openingCostSavedMessage, runOpeningCostSetup, runTargetedCostRefresh,
   type OpeningCostAttempt, type OpeningCostAttemptTracker, type OpeningCostResult, type SetOpeningCostBasis, type CostState,
 } from "@/lib/opening-cost";
 import { InventoryStockPage } from "@/components/inventory-stock-page";
@@ -1976,11 +1976,17 @@ export default function ProductLab({
   //
   // Orchestration (one RPC, never retried; a gateway timeout is an UNCERTAIN outcome resolved by a
   // read-back, not reported as a failure) lives in runOpeningCostSetup -- see opening-cost.ts. The
-  // reload after a committed save is separate: it runs in the background, so the operator's button
+  // refresh after a committed save is separate: it runs in the background, so the operator's button
   // is released the moment the save is known, and it can fail without changing the result. The
   // attempt tracker refuses a second submit for an Item that is still in flight, whose outcome is
-  // uncertain, or that just saved and is still waiting for that reload to land -- even if the panel
+  // uncertain, or that just saved and is still waiting for that refresh to land -- even if the panel
   // that started it has since been closed and reopened (see openingCostAttemptsRef).
+  //
+  // This function is the ONE place attempts.blocked / begin / finish are called for a setup attempt
+  // -- OpeningCostForm (inventory-page.tsx) only ever reads the tracker (to render lock state) and
+  // must never call begin()/finish() itself. A second writer there previously self-blocked every
+  // submit: the form's own begin() made attempts.blocked() true by the time this function checked
+  // it below, so the RPC was never sent (V4 hotfix; see REVIEW.md).
   async function setOpeningCostBasis(ingredientId: string, unitCost: number, evidenceNote: string, onCheckingResult?: () => void): Promise<OpeningCostResult> {
     const attempts = openingCostAttemptsRef.current;
     const report = (result: OpeningCostResult, ingredientName: string, baseUnit: string): OpeningCostResult => {
@@ -2053,14 +2059,33 @@ export default function ProductLab({
     if (result.status === "saved") {
       const reported = report(result, ingredient.name, ingredient.baseUnit);
       const savedText = openingCostSavedMessage(result.unitCost, ingredient.baseUnit);
-      const afterRefresh = (refreshed: boolean) => {
-        attempts.settle(ingredientId);
-        if (!refreshed) {
+      // V4 hotfix: a targeted, single-row read of just this ingredient -- not the full ~21-table
+      // loadSupabaseData() Promise.all -- so "Cost setup needed" clears the moment the server
+      // confirms it. settle() (releasing the tracker's "saved" hold) only runs once that read is
+      // trustworthy; an unavailable read leaves the hold in place rather than guess at the row.
+      runTargetedCostRefresh(readState).then((refresh) => {
+        if (refresh.status === "applied") {
+          setLabState((current) => ({
+            ...current,
+            ingredients: current.ingredients.map((item) => (item.id === ingredientId
+              ? { ...item, averageUnitCost: refresh.averageUnitCost, costReconciledAt: refresh.costReconciledAt }
+              : item)),
+          }));
+          attempts.settle(ingredientId);
+        } else {
           setMessage(`${ingredient.name}: ${savedText} The list could not refresh -- reload the page to see it.`);
           setMessageTone("good");
         }
-      };
-      loadSupabaseData().then(afterRefresh, () => afterRefresh(false));
+      });
+      // Best-effort background catch-up for every other table (Timeline, other pages) -- never
+      // awaited and never required: it must not gate the button, the "saved" state above, or the
+      // tracker lock. It only gets a chance to release that lock too, if the targeted read above
+      // could not.
+      loadSupabaseData().then((refreshed) => {
+        if (refreshed) {
+          attempts.settle(ingredientId);
+        }
+      }, () => {});
       return reported;
     }
     return report(result, ingredient.name, ingredient.baseUnit);
