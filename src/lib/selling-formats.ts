@@ -357,6 +357,86 @@ export function calculateMoveToSellingFormatAmount(
   return (wholeBatchAmount / costingYield) * piecesPerUnit;
 }
 
+// --- Save-success read-back verification ---
+//
+// The normal remote save path (saveCosting in product-lab.tsx) writes selling_formats and
+// selling_format_packaging_lines, then must prove -- not assume -- the write landed before telling
+// the operator it's safe to walk away. These two functions are the pure comparison at the heart of
+// that proof: given what was submitted and what a targeted read-back (scoped to this costing's
+// format ids, never a full-table load) actually returned, do they agree? A numeric tolerance
+// absorbs float round-tripping through Postgres numeric columns without masking a real mismatch.
+const SELLING_FORMAT_READBACK_NUMERIC_TOLERANCE = 0.005;
+
+function numbersMatch(a: number, b: number): boolean {
+  return Math.abs(a - b) < SELLING_FORMAT_READBACK_NUMERIC_TOLERANCE;
+}
+
+function sellingFormatMatchesPersisted(submitted: SellingFormat, persisted: SellingFormat): boolean {
+  return (
+    submitted.costingId === persisted.costingId &&
+    submitted.name === persisted.name &&
+    numbersMatch(submitted.piecesPerUnit, persisted.piecesPerUnit) &&
+    numbersMatch(submitted.sellingPrice, persisted.sellingPrice) &&
+    submitted.isActive === persisted.isActive &&
+    submitted.sortOrder === persisted.sortOrder &&
+    submitted.notes === persisted.notes
+  );
+}
+
+// Returns null when every submitted format was found, by id, among the persisted rows and every
+// checked field agrees; otherwise a ready-to-display description of the first mismatch found.
+// Only checks that every *submitted* format round-tripped correctly -- persistedFormats may
+// legitimately contain other costings' formats if a caller ever passed an unscoped read, though
+// the caller here always scopes its query to this costing's id first.
+export function verifySellingFormatsReadback(submittedFormats: SellingFormat[], persistedFormats: SellingFormat[]): string | null {
+  const persistedById = new Map(persistedFormats.map((format) => [format.id, format]));
+  for (const submitted of submittedFormats) {
+    const persisted = persistedById.get(submitted.id);
+    const label = submitted.name || "A selling format";
+    if (!persisted) {
+      return `"${label}" was not found when read back from the database.`;
+    }
+    if (!sellingFormatMatchesPersisted(submitted, persisted)) {
+      return `"${label}" did not match when read back from the database.`;
+    }
+  }
+  return null;
+}
+
+function sellingFormatPackagingLineMatchesPersisted(submitted: SellingFormatPackagingLine, persisted: SellingFormatPackagingLine): boolean {
+  return (
+    submitted.sellingFormatId === persisted.sellingFormatId &&
+    (submitted.ingredientId || "") === (persisted.ingredientId || "") &&
+    submitted.name === persisted.name &&
+    numbersMatch(submitted.quantity, persisted.quantity) &&
+    submitted.unit === persisted.unit &&
+    numbersMatch(submitted.unitCostSnapshot, persisted.unitCostSnapshot) &&
+    submitted.isManualCost === persisted.isManualCost &&
+    submitted.note === persisted.note &&
+    submitted.sortOrder === persisted.sortOrder
+  );
+}
+
+// Same shape as verifySellingFormatsReadback, one level down. persistedLines should already be
+// scoped (by the caller's query) to the selling_format_id set that was just submitted.
+export function verifySellingFormatPackagingLinesReadback(
+  submittedLines: SellingFormatPackagingLine[],
+  persistedLines: SellingFormatPackagingLine[],
+): string | null {
+  const persistedById = new Map(persistedLines.map((line) => [line.id, line]));
+  for (const submitted of submittedLines) {
+    const persisted = persistedById.get(submitted.id);
+    const label = submitted.name || "A packaging line";
+    if (!persisted) {
+      return `"${label}" was not found when read back from the database.`;
+    }
+    if (!sellingFormatPackagingLineMatchesPersisted(submitted, persisted)) {
+      return `"${label}" did not match when read back from the database.`;
+    }
+  }
+  return null;
+}
+
 // The actual mutation, deliberately a separate function from the calculation above -- called only
 // once an amount has been confirmed. Mirrors the shape of a manual packaging line added by hand
 // (isManualCost true, no ingredientId), just pre-filled from the moved row's name/note.

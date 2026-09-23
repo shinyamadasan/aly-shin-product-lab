@@ -811,3 +811,59 @@ production facts came from the `product-lab` MCP (`ingredient_inspect`, `invento
 throwaway local Docker Postgres.
 
 **Merge gate: `approved`** -- held for the single post-wave review and a real-device check.
+
+## 2026-09-22 — Selling Format save trust (read-back verification + honest draft copy)
+
+**Scope:** `src/lib/selling-formats.ts` (`verifySellingFormatsReadback`, `verifySellingFormatPackagingLinesReadback` --
+pure comparison, 0.005 numeric tolerance), `src/app/product-lab.tsx` (`addSellingFormat`/`removeSellingFormat` copy +
+tone; `saveCosting`'s normal remote save path gets a targeted read-back before the success message), new test file
+`tests/selling-format-save-trust.test.ts` (22 tests). Not touched: the duplicate-new-version RPC save path
+(`create_batch_with_costing`), any migration, any Supabase write beyond what already existed, `loadSupabaseData`'s own
+shape, the dirty-state snapshot architecture (`costing-form-snapshot.ts`).
+
+**Root cause:** "Add selling format" only pushed a row into local React state (`formatRows`) and told the operator
+"Selling format added." in green success styling -- indistinguishable from an actual save. The remote save path had
+the mirror problem the other direction: it upserted `selling_formats` / `selling_format_packaging_lines` and
+immediately said "Costing updated."/"Costing saved." without ever reading back what Supabase actually persisted, so a
+silent partial write (e.g. an RLS policy or trigger quietly dropping/altering a row) would still show as success.
+
+**Verdict:** Sound and narrowly scoped.
+- `addSellingFormat`/`removeSellingFormat` now use `info` (amber) tone, not `good` (green), with copy that says the
+  row is only "in this draft" and names the exact button ("Update costing") that persists it.
+- The normal save path, after every selling-format/packaging-line write and delete already in that function
+  succeeds, re-reads `selling_formats` scoped by `.eq("costing_id", costingSummaryId)` and, only if any formats were
+  submitted, `selling_format_packaging_lines` scoped by `.in("selling_format_id", submittedFormatIds)` -- never the
+  broad `loadSupabaseData()` full-table load as the verification authority. `verifySellingFormatsReadback` /
+  `verifySellingFormatPackagingLinesReadback` compare the submitted rows against what came back (id, every field,
+  numeric tolerance for float round-tripping) and return a description of the first mismatch, or `null`.
+- On a read-back error or mismatch: `setMessageTone("bad")`, a message containing the required exact sentence
+  ("Costing was written, but the selling format did not match when read back from the database. The editor was left
+  open; review the format and save again."), and a `return` with **no** `setEditingCosting(null)` -- the editor stays
+  open, and no branch issues a second `.upsert(`/`.insert(` call (asserted directly in the new test file's
+  "never a blind second write" test, which slices exactly that code block and greps it).
+- Only after every check passes does the success message change to "Costing updated and verified." / "Costing saved
+  and verified.".
+- The read-back is skipped entirely when `isSellingFormatsTableMissing` is true, matching every other
+  `selling_formats` access in this function -- legacy/local configs never see a readback attempt against a table that
+  doesn't exist.
+- Existing dirty-state architecture (`formatRows`/`packagingLineRows` diffed by `costing-form-snapshot.ts`) was not
+  touched; both local actions still call `setFormatRows`/`setPackagingLineRows`, so the unsaved-changes guard still
+  fires exactly as before.
+
+**Not rubber-stamped:**
+- The mismatch/error messages append a parenthetical detail (e.g. `(...)` with the specific field or Supabase error)
+  after the required exact sentence, for operator/debugging value -- verified by a test that the exact sentence is
+  present as a substring, not that the message is only that sentence.
+- A brand-new (not-yet-saved) costing's save button reads "Save costing", not "Update costing" -- the draft-added-row
+  copy's "Click Update costing below" wording was specified verbatim by the task as the preferred copy and is used
+  as given, even though it's only literally accurate once a costing already has an id.
+- The duplicate-new-version save path (`create_batch_with_costing` RPC) was deliberately left alone per the task's
+  scope -- it still reports "New version and costing saved." without a read-back.
+
+**Production boundary:** no Supabase write beyond what this save path already performed before this change (the new
+code only adds `.select()` reads); no migration; no Cookies-product data created or touched; verified against
+production only by reading the task's supplied evidence (`costing_id 8e3be560-...`, batch `c2ca3b64-...`), never by
+querying production directly. No merge, no deploy.
+
+**Merge gate: `approved`** -- held for human review before merge to `main` per the task's explicit instruction not
+to merge or deploy.

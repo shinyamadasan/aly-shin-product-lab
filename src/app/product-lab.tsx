@@ -103,6 +103,8 @@ import {
   replaceSellingFormatPackagingLinesForCosting,
   replaceSellingFormatsForCosting,
   validateSellingFormatsForSave,
+  verifySellingFormatPackagingLinesReadback,
+  verifySellingFormatsReadback,
   type SellingFormatMoveInterpretation,
 } from "@/lib/selling-formats";
 import { isDuplicateKeyError } from "@/lib/database-errors";
@@ -1487,7 +1489,58 @@ export default function ProductLab({
         }
       }
 
-      setMessage(costingId ? "Costing updated." : "Costing saved.");
+      // Targeted read-back verification: "saved" is a claim, not an assumption, so before making
+      // it we re-read exactly what this save just touched -- this costing's format ids, and the
+      // packaging lines scoped to those ids -- and compare it against what was submitted. Never
+      // the broad loadSupabaseData() full-table load as the authority here, and never a second
+      // blind write if something doesn't match; a mismatch reports and leaves the editor open
+      // instead. Skipped when selling_formats itself is unavailable (legacy/local configs), same
+      // as every other selling_formats access above.
+      if (!isSellingFormatsTableMissing) {
+        const { data: persistedFormatRows, error: formatsReadBackError } = await supabase
+          .from("selling_formats")
+          .select("*")
+          .eq("costing_id", costingSummaryId);
+        if (formatsReadBackError) {
+          setMessage(`Costing was written, but the selling formats could not be verified after saving (${formatsReadBackError.message}). The editor was left open; review and save again.`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+
+        const persistedFormats = (persistedFormatRows ?? []).map(mapSellingFormatRow);
+        const formatsMismatch = verifySellingFormatsReadback(sellingFormats, persistedFormats);
+        if (formatsMismatch) {
+          setMessage(`Costing was written, but the selling format did not match when read back from the database. The editor was left open; review the format and save again. (${formatsMismatch})`);
+          setMessageTone("bad");
+          await loadSupabaseData();
+          return;
+        }
+
+        if (submittedFormatIds.length > 0) {
+          const { data: persistedLineRows, error: linesReadBackError } = await supabase
+            .from("selling_format_packaging_lines")
+            .select("*")
+            .in("selling_format_id", submittedFormatIds);
+          if (linesReadBackError) {
+            setMessage(`Costing was written, but the selling format packaging lines could not be verified after saving (${linesReadBackError.message}). The editor was left open; review and save again.`);
+            setMessageTone("bad");
+            await loadSupabaseData();
+            return;
+          }
+
+          const persistedLines = (persistedLineRows ?? []).map(mapSellingFormatPackagingLineRow);
+          const linesMismatch = verifySellingFormatPackagingLinesReadback(sellingFormatPackagingLines, persistedLines);
+          if (linesMismatch) {
+            setMessage(`Costing was written, but the selling format did not match when read back from the database. The editor was left open; review the format and save again. (${linesMismatch})`);
+            setMessageTone("bad");
+            await loadSupabaseData();
+            return;
+          }
+        }
+      }
+
+      setMessage(costingId ? "Costing updated and verified." : "Costing saved and verified.");
       setMessageTone("good");
       setEditingCosting(null);
       setDuplicatingCostingSource(null);
@@ -7286,8 +7339,8 @@ function CostingForm({
       ...current,
       { id: crypto.randomUUID(), costingId: costing?.id ?? "", name: "", piecesPerUnit: 1, sellingPrice: 0, isActive: true, sortOrder: current.length, notes: "" },
     ]);
-    setLocalMessage("Selling format added.");
-    setLocalMessageTone("good");
+    setLocalMessage("Selling format added to this draft. Click Update costing below to save it.");
+    setLocalMessageTone("info");
   }
 
   function updateSellingFormat(formatId: string, changes: Partial<SellingFormat>) {
@@ -7297,8 +7350,8 @@ function CostingForm({
   function removeSellingFormat(formatId: string) {
     setFormatRows((current) => current.filter((format) => format.id !== formatId));
     setPackagingLineRows((current) => current.filter((line) => line.sellingFormatId !== formatId));
-    setLocalMessage("Selling format removed.");
-    setLocalMessageTone("good");
+    setLocalMessage("Selling format removed from this draft. Click Update costing below to save this change.");
+    setLocalMessageTone("info");
   }
 
   function addPackagingLine(formatId: string) {
