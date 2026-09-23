@@ -867,3 +867,56 @@ querying production directly. No merge, no deploy.
 
 **Merge gate: `approved`** -- held for human review before merge to `main` per the task's explicit instruction not
 to merge or deploy.
+
+## 2026-09-23 — Selling Format save trust: fix completeness gap found by independent review (BLOCK)
+
+**Scope:** Same two files as 2026-09-22 above, `src/lib/selling-formats.ts` and `src/app/product-lab.tsx`, plus
+`tests/selling-format-save-trust.test.ts` (22 -> 32 tests). Nothing else touched: same boundary as the prior entry
+(no migration, no duplicate-new-version RPC path, no inventory/orders/Cookies data, no production write).
+
+**Root cause (the blocker):** An independent review of the 2026-09-22 fix reproduced a real gap:
+`verifySellingFormatsReadback`/`verifySellingFormatPackagingLinesReadback` only checked that every *submitted* row
+round-tripped correctly (a subset check), never that every *persisted* row was one of the submitted ones (the other
+half of set equality). Concretely, `verifySellingFormatsReadback([], [staleFormat])` returned `null` -- "verified" --
+even though a stale row was still in the database. This is reachable in production: `selling_formats` DELETE calls
+in the write path (`.delete().in("id", removedFormatIds)`) do not error on Supabase/PostgREST when they silently
+match zero rows (RLS exclusion, a stale client-cached id list from a concurrent edit, etc.), and the read-back that
+exists specifically to catch a silent partial write could not catch a silent partial *delete*.
+
+**Repair:**
+- Both `verifySellingFormatsReadback` and `verifySellingFormatPackagingLinesReadback` now also check the reverse
+  direction: after the existing per-submitted-row loop, build a `Set` of submitted ids and look for any persisted row
+  whose id isn't in it. Any such row returns a `"... is still in the database even though it should have been
+  removed."` mismatch. `null` is now returned only when the submitted and persisted id sets are exactly equal, not
+  merely when submitted is a subset of persisted.
+- `saveCosting`'s packaging-line read-back query is now scoped to `[...submittedFormatIds, ...removedFormatIds]`
+  (`relevantFormatIdsForLineReadback`), not just `submittedFormatIds` -- so when every format for a costing is
+  removed (`submittedFormatIds.length === 0`), the packaging-line read-back no longer skips entirely; it verifies
+  that the removed formats' lines are actually gone too, rather than trusting `ON DELETE CASCADE` as unverified proof.
+- No change to the write path itself (still one upsert + one scoped delete per table, no blind retry), no change to
+  the numeric tolerance, no change to which fields are compared, no change to the success/failure message wiring
+  (still exactly one `"...verified."` success message, still `setMessageTone("bad")` + editor-stays-open + no second
+  write on any mismatch).
+
+**New behavioral coverage (not source-regex):** exact-set-of-many passes; empty-submitted/empty-persisted passes;
+empty-submitted-with-a-stale-persisted-row fails (the reproduced case); a reduced submitted set with one leftover
+removed row fails; the same four shapes for packaging lines; a "bounded save-flow" test that calls the real
+`verifySellingFormatsReadback`/`verifySellingFormatPackagingLinesReadback` in the same sequential order `saveCosting`
+does and asserts the all-formats-removed-with-a-stale-row case cannot reach `{ verified: true }`. The one previously
+passing test whose expectation the new completeness rule intentionally overturns (an unrelated-costing's persisted
+row was tolerated before; is now reported as stale, on the reasoning that the real caller already scopes its query
+to this costing's id, so an extra row here means that scoping broke and should fail loud) was updated in place, not
+deleted, with its rationale documented alongside it.
+
+**Not rubber-stamped / accepted trade-off:** the new completeness check does not distinguish "a delete silently
+no-op'd" from "someone else concurrently added a format to this same costing between this operator's load and this
+save" -- both now report as a mismatch. Given this app's single/small-operator usage pattern and that the task
+explicitly asked for strict, unconditional set equality (not a concurrency-aware exception), this is treated as the
+correct fail-loud trade-off: a rare false-positive "please reopen and check" is preferable to a false "verified" that
+was the actual bug.
+
+**Production boundary:** identical to the 2026-09-22 entry -- no new Supabase write, no migration, no production
+access, no merge/push/deploy.
+
+**Merge gate: `approved`** -- held for human review before merge to `main`, per the same explicit instruction as the
+prior entry.

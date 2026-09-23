@@ -1490,12 +1490,16 @@ export default function ProductLab({
       }
 
       // Targeted read-back verification: "saved" is a claim, not an assumption, so before making
-      // it we re-read exactly what this save just touched -- this costing's format ids, and the
-      // packaging lines scoped to those ids -- and compare it against what was submitted. Never
-      // the broad loadSupabaseData() full-table load as the authority here, and never a second
-      // blind write if something doesn't match; a mismatch reports and leaves the editor open
-      // instead. Skipped when selling_formats itself is unavailable (legacy/local configs), same
-      // as every other selling_formats access above.
+      // it we re-read exactly what this save just touched -- every selling format now persisted
+      // for this costing, and the packaging lines scoped to every format id this save is
+      // responsible for (kept and removed) -- and compare it against what was submitted. The
+      // comparison below checks completeness both ways: a submitted row missing from the
+      // read-back is a mismatch, and so is a persisted row that should have been removed but
+      // wasn't (e.g. a delete that silently matched zero rows). Never the broad
+      // loadSupabaseData() full-table load as the authority here, and never a second blind write
+      // if something doesn't match; a mismatch reports and leaves the editor open instead.
+      // Skipped when selling_formats itself is unavailable (legacy/local configs), same as every
+      // other selling_formats access above.
       if (!isSellingFormatsTableMissing) {
         const { data: persistedFormatRows, error: formatsReadBackError } = await supabase
           .from("selling_formats")
@@ -1517,11 +1521,17 @@ export default function ProductLab({
           return;
         }
 
-        if (submittedFormatIds.length > 0) {
+        // Scoped to every format id this save touched -- kept (submitted) AND removed -- not just
+        // submitted, so a removed format's packaging lines are proven gone too, rather than
+        // silently skipped just because nothing was submitted for them. Relying on the
+        // ON DELETE CASCADE alone would not catch a removed format's delete having silently
+        // no-op'd (see verifySellingFormatsReadback's own completeness check above).
+        const relevantFormatIdsForLineReadback = [...submittedFormatIds, ...removedFormatIds];
+        if (relevantFormatIdsForLineReadback.length > 0) {
           const { data: persistedLineRows, error: linesReadBackError } = await supabase
             .from("selling_format_packaging_lines")
             .select("*")
-            .in("selling_format_id", submittedFormatIds);
+            .in("selling_format_id", relevantFormatIdsForLineReadback);
           if (linesReadBackError) {
             setMessage(`Costing was written, but the selling format packaging lines could not be verified after saving (${linesReadBackError.message}). The editor was left open; review and save again.`);
             setMessageTone("bad");

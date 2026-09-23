@@ -85,11 +85,18 @@ test("saveCosting: reads selling_formats back, scoped to this costing, before re
   assert.ok(readBackIndex < successIndex, "the read-back must happen before the success message is shown");
 });
 
-test("saveCosting: packaging-line persistence is also verified, scoped to the submitted format ids", () => {
+test("saveCosting: packaging-line persistence is also verified, scoped to both kept and removed format ids", () => {
   const saveCosting = sliceSaveCosting();
 
-  const lineReadBackIndex = saveCosting.search(/supabase\s*\.from\("selling_format_packaging_lines"\)\s*\.select\("\*"\)\s*\.in\("selling_format_id",\s*submittedFormatIds\)/);
-  assert.notEqual(lineReadBackIndex, -1, "expected a targeted read-back of selling_format_packaging_lines scoped to submittedFormatIds");
+  const lineReadBackIndex = saveCosting.search(/supabase\s*\.from\("selling_format_packaging_lines"\)\s*\.select\("\*"\)\s*\.in\("selling_format_id",\s*relevantFormatIdsForLineReadback\)/);
+  assert.notEqual(lineReadBackIndex, -1, "expected a targeted read-back of selling_format_packaging_lines scoped to relevantFormatIdsForLineReadback");
+
+  // The scope variable itself must include removedFormatIds, not just submittedFormatIds --
+  // otherwise an all-formats-removed save (submittedFormatIds === []) would skip verifying that
+  // the removed formats' packaging lines are actually gone. This is a supplementary wiring check;
+  // the actual behavioral proof that this matters is the pure-function and bounded save-flow
+  // tests below, which call the real verification functions with real inputs.
+  assert.match(saveCosting, /const relevantFormatIdsForLineReadback = \[\.\.\.submittedFormatIds, \.\.\.removedFormatIds\];/);
 
   const successIndex = saveCosting.indexOf('setMessage(costingId ? "Costing updated and verified." : "Costing saved and verified.")');
   assert.ok(lineReadBackIndex < successIndex, "packaging-line read-back must also happen before the success message");
@@ -182,10 +189,45 @@ test("verifySellingFormatsReadback: an active-state mismatch is reported", () =>
   assert.notEqual(verifySellingFormatsReadback(submitted, persisted), null);
 });
 
-test("verifySellingFormatsReadback: an unrelated extra persisted row (another costing) does not cause a false mismatch", () => {
+// --- Completeness (set-equality): a persisted row that isn't in the submitted set is also a
+// mismatch, not just a submitted row missing from the persisted set. This is what actually
+// catches a delete that silently matched zero rows (RLS, a stale id list, etc.) -- without it,
+// saving zero formats over an old format that failed to delete would falsely read back as
+// "verified". The real caller always scopes its read-back query to this costing's id first, so
+// in practice everything in persistedFormats already belongs to the same costing; a row that
+// doesn't (as below) is reported as stale rather than silently tolerated, which is the correct
+// fail-loud behavior if that scoping assumption were ever violated.
+
+test("verifySellingFormatsReadback: exact submitted/persisted sets of more than one format still match", () => {
+  const submitted = [baseSellingFormat({ id: "format-1", name: "Single" }), baseSellingFormat({ id: "format-2", name: "Box of 6", sortOrder: 1 })];
+  const persisted = [baseSellingFormat({ id: "format-1", name: "Single" }), baseSellingFormat({ id: "format-2", name: "Box of 6", sortOrder: 1 })];
+  assert.equal(verifySellingFormatsReadback(submitted, persisted), null);
+});
+
+test("verifySellingFormatsReadback: submitted=[], persisted=[] (nothing ever existed) passes", () => {
+  assert.equal(verifySellingFormatsReadback([], []), null);
+});
+
+test("verifySellingFormatsReadback: submitted=[] (every format removed) but a stale format is still persisted fails", () => {
+  const persisted = [baseSellingFormat({ id: "old-format-left-behind", name: "Stale Format" })];
+  const result = verifySellingFormatsReadback([], persisted);
+  assert.notEqual(result, null);
+  assert.match(result ?? "", /still in the database even though it should have been removed/);
+});
+
+test("verifySellingFormatsReadback: a reduced submitted set still fails if the removed format is still persisted", () => {
+  const submitted = [baseSellingFormat({ id: "format-1", name: "Single" })];
+  const persisted = [baseSellingFormat({ id: "format-1", name: "Single" }), baseSellingFormat({ id: "format-2", name: "Box of 6 (should be gone)" })];
+  const result = verifySellingFormatsReadback(submitted, persisted);
+  assert.notEqual(result, null);
+  assert.match(result ?? "", /still in the database even though it should have been removed/);
+});
+
+test("verifySellingFormatsReadback: an unrelated extra persisted row (another costing) is now reported, not silently tolerated", () => {
   const submitted = [baseSellingFormat({ id: "format-1", costingId: "costing-1" })];
   const persisted = [baseSellingFormat({ id: "format-1", costingId: "costing-1" }), baseSellingFormat({ id: "format-9", costingId: "costing-9", name: "Unrelated" })];
-  assert.equal(verifySellingFormatsReadback(submitted, persisted), null);
+  const result = verifySellingFormatsReadback(submitted, persisted);
+  assert.notEqual(result, null, "the caller always scopes its read-back query to this costing's id first, so an extra row here means that scoping broke -- fail loud, don't hide it");
 });
 
 test("verifySellingFormatPackagingLinesReadback: matches when persisted lines agree with what was submitted", () => {
@@ -211,6 +253,78 @@ test("verifySellingFormatPackagingLinesReadback: a null vs empty-string ingredie
   const submitted = [baseSellingFormatPackagingLine({ ingredientId: "" })];
   const persisted = [baseSellingFormatPackagingLine({ ingredientId: "" })];
   assert.equal(verifySellingFormatPackagingLinesReadback(submitted, persisted), null);
+});
+
+// Completeness (set-equality) for packaging lines -- same four shapes as the formats function
+// above, since a removed format's lines are exactly the other place a silent no-op delete could
+// hide (its own delete, or a cascade that never fired because the parent format's delete didn't
+// actually happen).
+
+test("verifySellingFormatPackagingLinesReadback: exact submitted/persisted sets of more than one line still match", () => {
+  const submitted = [baseSellingFormatPackagingLine({ id: "line-1" }), baseSellingFormatPackagingLine({ id: "line-2", name: "Ribbon", sortOrder: 1 })];
+  const persisted = [baseSellingFormatPackagingLine({ id: "line-1" }), baseSellingFormatPackagingLine({ id: "line-2", name: "Ribbon", sortOrder: 1 })];
+  assert.equal(verifySellingFormatPackagingLinesReadback(submitted, persisted), null);
+});
+
+test("verifySellingFormatPackagingLinesReadback: submitted=[], persisted=[] (nothing ever existed) passes", () => {
+  assert.equal(verifySellingFormatPackagingLinesReadback([], []), null);
+});
+
+test("verifySellingFormatPackagingLinesReadback: submitted=[] (every line removed) but a stale line is still persisted fails", () => {
+  const persisted = [baseSellingFormatPackagingLine({ id: "old-line-left-behind", name: "Stale Wrapper" })];
+  const result = verifySellingFormatPackagingLinesReadback([], persisted);
+  assert.notEqual(result, null);
+  assert.match(result ?? "", /still in the database even though it should have been removed/);
+});
+
+test("verifySellingFormatPackagingLinesReadback: a reduced submitted set still fails if the removed line is still persisted", () => {
+  const submitted = [baseSellingFormatPackagingLine({ id: "line-1" })];
+  const persisted = [baseSellingFormatPackagingLine({ id: "line-1" }), baseSellingFormatPackagingLine({ id: "line-2", name: "Ribbon (should be gone)" })];
+  const result = verifySellingFormatPackagingLinesReadback(submitted, persisted);
+  assert.notEqual(result, null);
+  assert.match(result ?? "", /still in the database even though it should have been removed/);
+});
+
+// --- Bounded save-flow proof: does the actual decision saveCosting makes reach "verified"? ---
+//
+// saveCosting's real wiring (product-lab.tsx) is exactly this shape: call
+// verifySellingFormatsReadback, return a "bad"-toned message and bail if it's non-null; otherwise
+// call verifySellingFormatPackagingLinesReadback and do the same; only if both are null does it
+// reach the "Costing updated and verified."/"Costing saved and verified." message. Rendering the
+// full component and mocking the Supabase client's query builder to prove this end-to-end would
+// need a large mock framework for a two-branch decision that's already fully expressed by the
+// two pure functions above -- so this reproduces that exact decision shape directly against the
+// real exported functions, with the specific inputs the task asked to be proven bounded: an
+// all-formats-removed save whose read-back still returns a stale row.
+function decideSaveVerification(
+  submittedFormats: SellingFormat[],
+  persistedFormats: SellingFormat[],
+  submittedLines: SellingFormatPackagingLine[],
+  persistedLines: SellingFormatPackagingLine[],
+): { verified: true } | { verified: false; reason: string } {
+  const formatsMismatch = verifySellingFormatsReadback(submittedFormats, persistedFormats);
+  if (formatsMismatch) {
+    return { verified: false, reason: formatsMismatch };
+  }
+  const linesMismatch = verifySellingFormatPackagingLinesReadback(submittedLines, persistedLines);
+  if (linesMismatch) {
+    return { verified: false, reason: linesMismatch };
+  }
+  return { verified: true };
+}
+
+test("bounded save-flow: an all-formats-removed save cannot reach verified-success while read-back still returns a stale format", () => {
+  const staleFormat = baseSellingFormat({ id: "old-format-left-behind", name: "Stale Format" });
+  const outcome = decideSaveVerification([], [staleFormat], [], []);
+  assert.equal(outcome.verified, false);
+  if (!outcome.verified) {
+    assert.match(outcome.reason, /still in the database even though it should have been removed/);
+  }
+});
+
+test("bounded save-flow: an all-formats-removed save with a genuinely empty read-back does reach verified-success", () => {
+  const outcome = decideSaveVerification([], [], [], []);
+  assert.equal(outcome.verified, true);
 });
 
 // --- Problem 3: dirty-state protection around Selling Format edits must remain intact ---

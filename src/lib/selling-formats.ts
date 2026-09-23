@@ -383,11 +383,17 @@ function sellingFormatMatchesPersisted(submitted: SellingFormat, persisted: Sell
   );
 }
 
-// Returns null when every submitted format was found, by id, among the persisted rows and every
-// checked field agrees; otherwise a ready-to-display description of the first mismatch found.
-// Only checks that every *submitted* format round-tripped correctly -- persistedFormats may
-// legitimately contain other costings' formats if a caller ever passed an unscoped read, though
-// the caller here always scopes its query to this costing's id first.
+// Returns null only when the submitted and persisted sets are exactly equal -- every submitted
+// format is found, by id, among the persisted rows with every checked field agreeing, AND every
+// persisted row's id is one of the submitted ones. That second half matters as much as the
+// first: a submitted format missing from the read-back is one kind of lie ("saved" when it
+// wasn't), but a persisted row that should have been removed (e.g. its delete silently matched
+// zero rows under RLS, or the id list was stale) and still comes back is the other kind -- and
+// with an empty submittedFormats (every format removed), only this second check can catch it.
+// Otherwise returns a ready-to-display description of the first mismatch found. persistedFormats
+// is expected to already be scoped to this costing's id by the caller's query -- if it isn't,
+// any row belonging to a different costing is indistinguishable from a genuine stale leftover
+// and is reported as one, which is the correct fail-loud behavior for that caller bug.
 export function verifySellingFormatsReadback(submittedFormats: SellingFormat[], persistedFormats: SellingFormat[]): string | null {
   const persistedById = new Map(persistedFormats.map((format) => [format.id, format]));
   for (const submitted of submittedFormats) {
@@ -400,6 +406,14 @@ export function verifySellingFormatsReadback(submittedFormats: SellingFormat[], 
       return `"${label}" did not match when read back from the database.`;
     }
   }
+
+  const submittedIds = new Set(submittedFormats.map((format) => format.id));
+  const staleFormat = persistedFormats.find((format) => !submittedIds.has(format.id));
+  if (staleFormat) {
+    const label = staleFormat.name || "A selling format";
+    return `"${label}" is still in the database even though it should have been removed.`;
+  }
+
   return null;
 }
 
@@ -417,8 +431,12 @@ function sellingFormatPackagingLineMatchesPersisted(submitted: SellingFormatPack
   );
 }
 
-// Same shape as verifySellingFormatsReadback, one level down. persistedLines should already be
-// scoped (by the caller's query) to the selling_format_id set that was just submitted.
+// Same completeness shape as verifySellingFormatsReadback, one level down: null only when the
+// submitted and persisted sets are exactly equal. persistedLines should already be scoped (by
+// the caller's query) to the selling_format_id set this save is responsible for -- both the
+// formats kept and the formats removed, so a removed format's packaging lines that are still
+// in the database (its own delete having silently no-op'd, or the parent format's delete never
+// cascading because it didn't actually happen) are reported rather than skipped.
 export function verifySellingFormatPackagingLinesReadback(
   submittedLines: SellingFormatPackagingLine[],
   persistedLines: SellingFormatPackagingLine[],
@@ -434,6 +452,14 @@ export function verifySellingFormatPackagingLinesReadback(
       return `"${label}" did not match when read back from the database.`;
     }
   }
+
+  const submittedIds = new Set(submittedLines.map((line) => line.id));
+  const staleLine = persistedLines.find((line) => !submittedIds.has(line.id));
+  if (staleLine) {
+    const label = staleLine.name || "A packaging line";
+    return `"${label}" is still in the database even though it should have been removed.`;
+  }
+
   return null;
 }
 
