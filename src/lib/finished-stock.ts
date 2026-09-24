@@ -35,6 +35,16 @@ export function sortProductionHistory(executions: ProductionExecution[]): Produc
   return [...executions].sort((a, b) => b.completedAt.localeCompare(a.completedAt) || b.createdAt.localeCompare(a.createdAt));
 }
 
+// Finished Stock Opening Balance: the one predicate every caller should use to tell a real physical
+// Bake apart from a bootstrap opening-balance lot, rather than re-deriving it from sourceType
+// inline at each call site. An opening-balance lot is a real, FIFO-compatible inventory lot -- it
+// must still be counted everywhere finished-stock balances/FIFO/reservations read
+// production_executions -- but it must never be presented as, or counted as evidence of, an actual
+// production/Bake event.
+export function isRealProduction(execution: ProductionExecution): boolean {
+  return execution.sourceType === "bake";
+}
+
 // Wave 3: exception history (damage/giveaway/correction), newest-first, for the minimal operator
 // audit view -- section 28's "no charts, no warehouse dashboard" scope.
 export function sortFinishedStockExceptionHistory(movements: FinishedStockMovement[]): FinishedStockMovement[] {

@@ -363,14 +363,17 @@ export function mapInventoryTransactionRow(row: InventoryTransactionRow): Invent
 export type ProductionExecutionRow = {
   id: string;
   product_id: string;
-  product_batch_id: string;
-  batch_version_snapshot: string;
+  product_batch_id: string | null;
+  batch_version_snapshot: string | null;
   operation_id: string;
   multiplier: number | string;
   quantity_produced_pieces: number | string;
   expected_pieces: number | string;
   frozen_ingredient_cost_total: number | string;
   frozen_cost_per_piece: number | string;
+  source_type: "bake" | "opening_balance";
+  cost_basis_source: "production" | "historical_estimate";
+  cost_basis_snapshot: Record<string, unknown> | null;
   note: string | null;
   completed_at: string;
   created_at: string;
@@ -380,7 +383,7 @@ export function mapProductionExecutionRow(row: ProductionExecutionRow): Producti
   return {
     id: row.id,
     productId: row.product_id,
-    productBatchId: row.product_batch_id,
+    productBatchId: row.product_batch_id ?? "",
     batchVersionSnapshot: row.batch_version_snapshot ?? "",
     operationId: row.operation_id,
     multiplier: Number(row.multiplier ?? 0),
@@ -388,6 +391,9 @@ export function mapProductionExecutionRow(row: ProductionExecutionRow): Producti
     expectedPieces: Number(row.expected_pieces ?? 0),
     frozenIngredientCostTotal: Number(row.frozen_ingredient_cost_total ?? 0),
     frozenCostPerPiece: Number(row.frozen_cost_per_piece ?? 0),
+    sourceType: row.source_type ?? "bake",
+    costBasisSource: row.cost_basis_source ?? "production",
+    costBasisSnapshot: row.cost_basis_snapshot ?? null,
     note: row.note ?? "",
     completedAt: row.completed_at ?? "",
     createdAt: row.created_at ?? "",

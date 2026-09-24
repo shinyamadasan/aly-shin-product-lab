@@ -32,6 +32,7 @@ import {
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { mapFinishedStockMovementRow, mapProductionExecutionRow } from "@/lib/supabase-mappers";
+import { buildReconciliationBatchPayload, hashReconciliationPayload, type ReconciliationBatchItemInput } from "@/lib/finished-stock-reconciliation";
 import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, FinishedStockExceptionType, Ingredient, IngredientCategory, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
 import { BrandFoundationPage } from "@/components/brand-foundation-page";
@@ -2787,6 +2788,72 @@ export default function ProductLab({
     return true;
   }
 
+  // Finished Stock Opening Balance / Physical Count Reconciliation: applies a previewed batch
+  // (buildReconciliationPreview/buildReconciliationBatchPayload, src/lib/finished-stock-reconciliation.ts)
+  // via apply_finished_stock_reconciliation_batch, atomic and idempotent for the whole batch. The
+  // database independently re-derives each product's action from live locked state and rejects the
+  // whole batch on any staleness mismatch or bootstrap-eligibility violation -- this handler never
+  // trusts its own preview as authoritative.
+  //
+  // Post-apply verification is a real re-read-and-compare, not just a reload: it independently
+  // re-reads finished_stock_movements for exactly the affected products and compares each one's
+  // freshly summed on_hand against the row's own intended target (physicalCount). Only when every
+  // affected product matches exactly is the result reported as verified.
+  async function applyFinishedStockReconciliation(items: ReconciliationBatchItemInput[], operationId: string): Promise<{ ok: boolean; verified: boolean }> {
+    if (!supabase || !session) {
+      setMessage("Finished-stock reconciliation requires a connected database session.");
+      setMessageTone("bad");
+      return { ok: false, verified: false };
+    }
+    if (items.length === 0) {
+      return { ok: false, verified: false };
+    }
+
+    const { p_items } = buildReconciliationBatchPayload(items, operationId);
+    const payloadHash = await hashReconciliationPayload(p_items);
+    const { data, error } = await supabase.rpc("apply_finished_stock_reconciliation_batch", {
+      p_operation_id: operationId,
+      p_payload_hash: payloadHash,
+      p_items,
+    });
+    if (error) {
+      setMessage(`Reconciliation not applied: ${describeIngredientConstraintError(error)}`);
+      setMessageTone("bad");
+      return { ok: false, verified: false };
+    }
+    void data;
+
+    const productIds = items.map((item) => item.row.productId);
+    const { data: freshRows, error: readError } = await supabase
+      .from("finished_stock_movements")
+      .select("*")
+      .in("product_id", productIds);
+
+    let verified = !readError && !!freshRows;
+    if (verified && freshRows) {
+      const freshMovements = freshRows.map(mapFinishedStockMovementRow);
+      for (const item of items) {
+        const onHand = freshMovements
+          .filter((movement) => movement.productId === item.row.productId)
+          .reduce((sum, movement) => sum + movement.onHandDelta, 0);
+        if (onHand !== item.row.physicalCount) {
+          verified = false;
+          break;
+        }
+      }
+    }
+
+    const productName = (id: string) => labState.products.find((product) => product.id === id)?.name ?? id;
+    setMessage(
+      verified
+        ? `Reconciliation applied and verified for ${productIds.map(productName).join(", ")}.`
+        : "Reconciliation applied, but the resulting quantities could not be independently verified. Reload and check the finished-stock balances manually before relying on them.",
+    );
+    setMessageTone(verified ? "good" : "bad");
+    await loadSupabaseData();
+    return { ok: true, verified };
+  }
+
   async function saveEquipment(formData: FormData) {
     const equipmentId = String(formData.get("id") || "");
     const equipment: EquipmentEntry = {
@@ -3481,7 +3548,7 @@ export default function ProductLab({
             />
             </>
           ) : null}
-          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} recordFinishedStockException={recordFinishedStockException} saveIngredientAlias={saveIngredientAlias} /> : null}
+          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} applyFinishedStockReconciliation={applyFinishedStockReconciliation} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} recordFinishedStockException={recordFinishedStockException} saveIngredientAlias={saveIngredientAlias} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">

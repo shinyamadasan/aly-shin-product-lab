@@ -359,6 +359,16 @@ export type InventoryTransaction = {
 // this is the physical-run record. quantity and the frozen costs are historical facts -- a later
 // recipe edit never changes them. quantityProducedPieces is the operator's observed usable-piece
 // count; expectedPieces is round(usablePieces x multiplier) frozen at Bake time as reference only.
+//
+// Finished Stock Opening Balance: sourceType distinguishes a real Bake ("bake") from a bootstrap
+// lot for pre-tracking physical stock ("opening_balance", created via
+// create_finished_stock_opening_balance -- never a fake Bake). An opening-balance row always has
+// productBatchId/batchVersionSnapshot "" (nullable in the database; flattened here to "" following
+// this file's own established convention, matching batchVersionSnapshot's existing `?? ""`
+// mapping) and costBasisSource "historical_estimate" with a non-null costBasisSnapshot. A bake row
+// always has costBasisSource "production" and a null costBasisSnapshot. See
+// src/lib/finished-stock.ts's isRealProduction() for the one predicate every caller should use to
+// tell the two apart, rather than re-deriving it from sourceType inline.
 export type ProductionExecution = {
   id: string;
   productId: string;
@@ -370,6 +380,9 @@ export type ProductionExecution = {
   expectedPieces: number;
   frozenIngredientCostTotal: number;
   frozenCostPerPiece: number;
+  sourceType: "bake" | "opening_balance";
+  costBasisSource: "production" | "historical_estimate";
+  costBasisSnapshot: Record<string, unknown> | null;
   note: string;
   completedAt: string;
   createdAt: string;

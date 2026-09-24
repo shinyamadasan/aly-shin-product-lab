@@ -11,12 +11,15 @@ import { buildBakeBatchChoices, formatBakeBatchOption, isOlderBakeBatch, resolve
 import { formatQuantity } from "@/lib/quantity-display";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
-import { deriveFinishedStockBalances, sortFinishedStockExceptionHistory, sortProductionHistory } from "@/lib/finished-stock";
+import { deriveFinishedStockBalances, isRealProduction, sortFinishedStockExceptionHistory, sortProductionHistory } from "@/lib/finished-stock";
+import { buildOpeningBalanceCostEstimate, buildReconciliationPreview, type ReconciliationBatchItemInput, type ReconciliationPreviewRow } from "@/lib/finished-stock-reconciliation";
+import type { RuleEngineContext } from "@/lib/rule-engine/types";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { FormPanel, Tag } from "@/components/ui";
 
 export function BakePage({
   remotePosting = false,
+  applyFinishedStockReconciliation,
   confirmBake,
   isInventoryTableMissing,
   labState,
@@ -29,6 +32,10 @@ export function BakePage({
   // exception recording has no local-only path at all (there is no local finished stock to act on),
   // so it reuses the same flag to hide the form entirely when there is no connected session.
   remotePosting?: boolean;
+  // Finished Stock Opening Balance / Physical Count Reconciliation. Same remotePosting-gated
+  // null-out-at-render pattern as recordFinishedStockException below (see the FinishedStockPanel
+  // call site) -- there is no local finished stock to reconcile without a connected session.
+  applyFinishedStockReconciliation: (items: ReconciliationBatchItemInput[], operationId: string) => Promise<{ ok: boolean; verified: boolean }>;
   confirmBake: (batchId: string, productId: string, batchLabel: string, multiplier: number, actualPieces: number, deductions: BakeDeduction[], allowNegative: boolean, operationId: string) => Promise<boolean>;
   isInventoryTableMissing: boolean;
   labState: LabState;
@@ -433,7 +440,11 @@ export function BakePage({
         </div>
       </FormPanel>
 
-      <FinishedStockPanel labState={labState} recordFinishedStockException={remotePosting ? recordFinishedStockException : null} />
+      <FinishedStockPanel
+        applyFinishedStockReconciliation={remotePosting ? applyFinishedStockReconciliation : null}
+        labState={labState}
+        recordFinishedStockException={remotePosting ? recordFinishedStockException : null}
+      />
     </section>
   );
 }
@@ -445,9 +456,11 @@ export function BakePage({
 // is null when there is no connected session (matches confirmBake's local-only gating) -- the form
 // hides itself entirely rather than offering an action that cannot work.
 function FinishedStockPanel({
+  applyFinishedStockReconciliation,
   labState,
   recordFinishedStockException,
 }: {
+  applyFinishedStockReconciliation: ((items: ReconciliationBatchItemInput[], operationId: string) => Promise<{ ok: boolean; verified: boolean }>) | null;
   labState: LabState;
   recordFinishedStockException: ((productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>) | null;
 }) {
@@ -493,6 +506,7 @@ function FinishedStockPanel({
           <h3 className="mt-6 text-lg font-semibold">Production history</h3>
           <p className="mt-1 text-xs text-[#6f5a4c]"><span className="font-semibold">Actual</span> is the usable pieces the operator counted for that run; <span className="font-semibold">Expected</span> is what the recipe projected. Per-piece cost divides the raw cost by the actual count.</p>
           <p className="mt-1 text-xs text-[#8a3827]">Raw cost was recorded from the ingredient costs used when this bake was posted; later cost corrections do not rewrite historical production cost. Verify ingredient costs before relying on this for financial decisions -- costs recorded before verification may be unreliable.</p>
+          <p className="mt-1 text-xs text-[#6f5a4c]">Rows marked <span className="font-semibold">Opening balance</span> are not a real Bake -- they are pre-tracking physical stock recorded once, with an estimated (not exact) cost.</p>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -511,7 +525,9 @@ function FinishedStockPanel({
                   <tr key={execution.id} className="border-t border-[#f0e4d8]">
                     <td className="py-2 pr-4 text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</td>
                     <td className="py-2 pr-4 font-semibold">{productName(execution.productId)}</td>
-                    <td className="py-2 pr-4 text-[#6f5a4c]">{execution.batchVersionSnapshot}</td>
+                    <td className="py-2 pr-4 text-[#6f5a4c]">
+                      {isRealProduction(execution) ? execution.batchVersionSnapshot : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
+                    </td>
                     <td className="py-2 pr-4 text-right text-[#6f5a4c]">{execution.expectedPieces}</td>
                     <td className="py-2 pr-4 text-right font-semibold">{execution.quantityProducedPieces}</td>
                     <td className="py-2 pr-4 text-right">PHP {execution.frozenIngredientCostTotal.toFixed(2)}</td>
@@ -530,6 +546,16 @@ function FinishedStockPanel({
           <FinishedStockExceptionForm
             balances={balances}
             recordFinishedStockException={recordFinishedStockException}
+          />
+        </details>
+      ) : null}
+
+      {applyFinishedStockReconciliation ? (
+        <details className="mt-6">
+          <summary className="cursor-pointer text-lg font-semibold">Advanced: Physical count / reconcile</summary>
+          <FinishedStockReconciliationForm
+            applyFinishedStockReconciliation={applyFinishedStockReconciliation}
+            labState={labState}
           />
         </details>
       ) : null}
@@ -683,6 +709,235 @@ function FinishedStockExceptionForm({
       >
         {isSubmitting ? "Recording..." : "Record exception"}
       </button>
+    </div>
+  );
+}
+
+// Finished Stock Opening Balance / Physical Count Reconciliation. Preview is pure/client-only
+// (buildReconciliationPreview, buildOpeningBalanceCostEstimate -- src/lib/finished-stock-reconciliation.ts);
+// no stock write happens until Apply. Apply calls apply_finished_stock_reconciliation_batch, which
+// independently re-derives every product's on_hand/reserved/action from live locked state and
+// rejects the WHOLE batch on any staleness mismatch or bootstrap-eligibility violation -- the
+// classification shown here is advisory, never authoritative. isStale below is a client-side echo
+// of that same guard, for an honest UI state, not a substitute for the server's own check.
+function FinishedStockReconciliationForm({
+  applyFinishedStockReconciliation,
+  labState,
+}: {
+  applyFinishedStockReconciliation: (items: ReconciliationBatchItemInput[], operationId: string) => Promise<{ ok: boolean; verified: boolean }>;
+  labState: LabState;
+}) {
+  const [countTexts, setCountTexts] = useState<Record<string, string>>({});
+  const [effectiveAtText, setEffectiveAtText] = useState(() => new Date().toISOString().slice(0, 10));
+  const [preview, setPreview] = useState<ReconciliationPreviewRow[] | null>(null);
+  const [includedIds, setIncludedIds] = useState<Set<string>>(new Set());
+  const [isApplying, setIsApplying] = useState(false);
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  const isApplyingRef = useRef(false);
+  // getLatestBatch/getLinkedCosting (src/lib/rule-engine/types.ts) never read context.now -- this
+  // form only needs a stable value to satisfy RuleEngineContext's shape, not the actual current
+  // time, so it is captured once (a React-pure initializer) rather than calling Date.now() during
+  // render.
+  const [contextNow] = useState(() => Date.now());
+
+  const ruleContext: RuleEngineContext = {
+    batches: labState.batches,
+    costings: labState.costings,
+    tastings: labState.tastings,
+    supplies: labState.supplies,
+    now: contextNow,
+  };
+
+  function handlePreview() {
+    const counts = labState.products
+      .map((product) => ({ productId: product.id, physicalCount: Number(countTexts[product.id] ?? "") }))
+      .filter((count) => {
+        const text = (countTexts[count.productId] ?? "").trim();
+        return text !== "" && Number.isInteger(count.physicalCount) && count.physicalCount >= 0;
+      });
+    const rows = buildReconciliationPreview(labState.products, labState.finishedStockMovements, labState.productionExecutions, counts);
+    setPreview(rows);
+    setIncludedIds(new Set(rows.filter((row) => row.action === "correction" || row.action === "opening_balance").map((row) => row.productId)));
+  }
+
+  // Per-row cost estimate and eligibility, computed once and shared by the table and by Apply --
+  // never recomputed differently in two places. blocked = would-be opening balance with no costing
+  // on record (no trustworthy cost basis, so it cannot be included, matching this feature's "never
+  // silently assign a guessed cost" rule).
+  const previewRows = (preview ?? []).map((row) => {
+    const product = labState.products.find((entry) => entry.id === row.productId);
+    const costEstimate = row.action === "opening_balance" && product ? buildOpeningBalanceCostEstimate(product, ruleContext) : null;
+    const blocked = row.action === "opening_balance" && !costEstimate;
+    const selectable = (row.action === "correction" || row.action === "opening_balance") && !blocked;
+    return { row, costEstimate, blocked, selectable };
+  });
+
+  // Any underlying balance moving since Preview makes it stale. This mirrors the server's own
+  // staleness guard (expected on_hand/reserved/latest-movement-id) for an honest UI state; the
+  // server re-checks this independently and is the real guard, not this client echo.
+  const isStale = preview !== null && preview.some((row) => {
+    const movements = labState.finishedStockMovements.filter((movement) => movement.productId === row.productId);
+    const onHand = movements.reduce((sum, movement) => sum + movement.onHandDelta, 0);
+    const reserved = movements.reduce((sum, movement) => sum + movement.reservedDelta, 0);
+    const latest = movements.length > 0
+      ? [...movements].sort((a, b) => (a.createdAt !== b.createdAt ? (a.createdAt < b.createdAt ? 1 : -1) : a.id < b.id ? 1 : a.id > b.id ? -1 : 0))[0]
+      : undefined;
+    return onHand !== row.expectedOnHandPieces || reserved !== row.expectedReservedPieces || (latest?.id ?? null) !== row.expectedLatestMovementId;
+  });
+
+  const includedEntries = previewRows.filter((entry) => entry.selectable && includedIds.has(entry.row.productId));
+  const canApply = preview !== null && !isStale && includedEntries.length > 0 && !isApplying;
+
+  async function handleApply() {
+    if (isApplyingRef.current || !canApply) return;
+    isApplyingRef.current = true;
+    setIsApplying(true);
+    const effectiveAt = effectiveAtText ? new Date(`${effectiveAtText}T00:00:00`).toISOString() : "";
+    const items: ReconciliationBatchItemInput[] = includedEntries.map((entry) => ({
+      row: entry.row,
+      costEstimate: entry.costEstimate,
+      effectiveAt,
+      note: "Physical count reconciliation",
+    }));
+    const result = await applyFinishedStockReconciliation(items, operationId);
+    if (result.ok) {
+      setPreview(null);
+      setCountTexts({});
+      setOperationId(crypto.randomUUID());
+    }
+    isApplyingRef.current = false;
+    setIsApplying(false);
+  }
+
+  return (
+    <div className="mt-6 rounded-md border border-[#eaded2] p-4">
+      <h3 className="text-lg font-semibold">Physical count / reconcile</h3>
+      <p className="mt-1 text-xs text-[#6f5a4c]">
+        Physical count is compared against on-hand pieces -- including any reserved for a customer, since those pieces are
+        still physically present -- never just available stock. A shortage removes only currently unreserved pieces; it
+        never touches an active reservation, and fails safely if it would need to. An increase is only ever recorded as an
+        opening balance the very first time a product has no production history at all; any later increase must be
+        investigated, not reconciled here.
+      </p>
+
+      <label className="mt-3 grid max-w-xs gap-1 text-sm font-medium">
+        Count date
+        <input
+          className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+          max={new Date().toISOString().slice(0, 10)}
+          onChange={(event) => setEffectiveAtText(event.target.value)}
+          type="date"
+          value={effectiveAtText}
+        />
+      </label>
+
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+              <th className="pb-2 pr-4">Product</th>
+              <th className="pb-2 pr-4 text-right">Counted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {labState.products.map((product) => (
+              <tr key={product.id} className="border-t border-[#f0e4d8]">
+                <td className="py-2 pr-4 font-semibold">{product.name}</td>
+                <td className="py-2 pr-4 text-right">
+                  <input
+                    className="h-9 w-24 rounded-md border border-[#d8c7b7] bg-white px-2 text-right"
+                    inputMode="numeric"
+                    min="0"
+                    onChange={(event) => {
+                      setCountTexts((prev) => ({ ...prev, [product.id]: event.target.value }));
+                      setPreview(null);
+                    }}
+                    step="1"
+                    type="number"
+                    value={countTexts[product.id] ?? ""}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <button className="mt-4 h-10 rounded-md border border-[#8a3827] px-4 text-sm font-semibold text-[#8a3827]" onClick={handlePreview} type="button">
+        Preview reconciliation
+      </button>
+
+      {preview ? (
+        <div className="mt-4">
+          {isStale ? <p className="text-sm font-semibold text-[#8a3827]">Stock changed since this preview. Re-preview before applying.</p> : null}
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                  <th className="pb-2 pr-4">Include</th>
+                  <th className="pb-2 pr-4">Product</th>
+                  <th className="pb-2 pr-4 text-right">On hand</th>
+                  <th className="pb-2 pr-4 text-right">Reserved</th>
+                  <th className="pb-2 pr-4 text-right">Available</th>
+                  <th className="pb-2 pr-4 text-right">Counted</th>
+                  <th className="pb-2 pr-4 text-right">Difference</th>
+                  <th className="pb-2 pr-4">Action</th>
+                  <th className="pb-2 text-right">Est. unit cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.map(({ row, costEstimate, blocked, selectable }) => (
+                  <tr key={row.productId} className="border-t border-[#f0e4d8]">
+                    <td className="py-2 pr-4">
+                      {row.action === "correction" || row.action === "opening_balance" ? (
+                        <input
+                          checked={selectable && includedIds.has(row.productId)}
+                          disabled={!selectable}
+                          onChange={(event) =>
+                            setIncludedIds((prev) => {
+                              const next = new Set(prev);
+                              if (event.target.checked) next.add(row.productId);
+                              else next.delete(row.productId);
+                              return next;
+                            })
+                          }
+                          type="checkbox"
+                        />
+                      ) : null}
+                    </td>
+                    <td className="py-2 pr-4 font-semibold">{row.productName}</td>
+                    <td className="py-2 pr-4 text-right">{row.onHand}</td>
+                    <td className="py-2 pr-4 text-right text-[#6f5a4c]">{row.reserved}</td>
+                    <td className="py-2 pr-4 text-right">{row.available}</td>
+                    <td className="py-2 pr-4 text-right">{row.physicalCount}</td>
+                    <td className="py-2 pr-4 text-right font-semibold">{row.difference > 0 ? `+${row.difference}` : row.difference}</td>
+                    <td className="py-2 pr-4">
+                      {row.action === "no_change" ? <span className="text-[#6f5a4c]">No change</span> : null}
+                      {row.action === "correction" ? <Tag tone="warm">Correction</Tag> : null}
+                      {row.action === "opening_balance" ? <Tag tone="green">Opening balance</Tag> : null}
+                      {row.action === "investigate_required" ? <Tag tone="danger">Needs investigation</Tag> : null}
+                      {blocked ? <p className="mt-1 text-xs text-[#8a3827]">No costing on record -- cannot estimate a cost basis.</p> : null}
+                      {row.action === "investigate_required" ? (
+                        <p className="mt-1 text-xs text-[#6f5a4c]">This product already has production history; a further increase needs manual review, not automatic reconciliation.</p>
+                      ) : null}
+                    </td>
+                    <td className="py-2 text-right">{costEstimate ? `PHP ${costEstimate.costPerPiece.toFixed(2)}` : "--"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            className="mt-4 h-10 w-fit rounded-md bg-[#8a3827] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={!canApply}
+            onClick={handleApply}
+            type="button"
+          >
+            {isApplying ? "Applying..." : "Apply reconciliation"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
