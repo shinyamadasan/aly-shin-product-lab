@@ -2797,8 +2797,11 @@ export default function ProductLab({
   //
   // Post-apply verification is a real re-read-and-compare, not just a reload: it independently
   // re-reads finished_stock_movements for exactly the affected products and compares each one's
-  // freshly summed on_hand against the row's own intended target (physicalCount). Only when every
-  // affected product matches exactly is the result reported as verified.
+  // freshly summed on_hand against the row's own intended target (physicalCount), AND freshly
+  // summed reserved against its own pre-apply expected value (reconciliation never mutates
+  // reserved_delta, so any drift there means a concurrent process reserved/released stock between
+  // commit and this re-read -- on_hand alone matching its target would otherwise be reported as a
+  // false "verified"). Only when every affected product matches on both is the result verified.
   async function applyFinishedStockReconciliation(items: ReconciliationBatchItemInput[], operationId: string): Promise<{ ok: boolean; verified: boolean }> {
     if (!supabase || !session) {
       setMessage("Finished-stock reconciliation requires a connected database session.");
@@ -2829,14 +2832,19 @@ export default function ProductLab({
       .select("*")
       .in("product_id", productIds);
 
+    // Reconciliation never mutates reserved_delta (only correction/opening_balance on_hand
+    // movements), so a correct apply leaves reserved exactly at its pre-apply (expected) value --
+    // verification checks that too, not just on_hand, so a reservation made by a concurrent process
+    // between commit and this re-read cannot be silently reported as "verified" when only on_hand
+    // happened to still match its target.
     let verified = !readError && !!freshRows;
     if (verified && freshRows) {
       const freshMovements = freshRows.map(mapFinishedStockMovementRow);
       for (const item of items) {
-        const onHand = freshMovements
-          .filter((movement) => movement.productId === item.row.productId)
-          .reduce((sum, movement) => sum + movement.onHandDelta, 0);
-        if (onHand !== item.row.physicalCount) {
+        const productMovements = freshMovements.filter((movement) => movement.productId === item.row.productId);
+        const onHand = productMovements.reduce((sum, movement) => sum + movement.onHandDelta, 0);
+        const reserved = productMovements.reduce((sum, movement) => sum + movement.reservedDelta, 0);
+        if (onHand !== item.row.physicalCount || reserved !== item.row.expectedReservedPieces) {
           verified = false;
           break;
         }
