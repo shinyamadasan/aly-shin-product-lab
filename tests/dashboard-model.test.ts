@@ -20,7 +20,7 @@ import { deriveFinishedStockBalances } from "../src/lib/finished-stock.ts";
 import { toDisplayPrice } from "../src/lib/orders/money.ts";
 import { buildSellingSummary } from "../src/lib/orders/summary.ts";
 import type { Order, OrderLine, OrderStatus } from "../src/lib/orders/types.ts";
-import type { FinishedStockMovement, Ingredient, Product } from "../src/lib/product-lab-types.ts";
+import type { CostingSummary, FinishedStockMovement, Ingredient, IngredientAlias, Product, ProductBatch, SellingFormat } from "../src/lib/product-lab-types.ts";
 
 const MANILA = "Asia/Manila";
 // 2026-08-08 12:00 Manila. Mid-day, so nothing depends on a boundary unless a test says so.
@@ -108,7 +108,63 @@ function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
   };
 }
 
-const EMPTY_LAB = { products: [] as Product[], ingredients: [] as Ingredient[], finishedStockMovements: [] as FinishedStockMovement[] };
+const EMPTY_LAB = {
+  products: [] as Product[],
+  batches: [] as ProductBatch[],
+  costings: [] as CostingSummary[],
+  sellingFormats: [] as SellingFormat[],
+  ingredients: [] as Ingredient[],
+  ingredientAliases: [] as IngredientAlias[],
+  finishedStockMovements: [] as FinishedStockMovement[],
+};
+
+// Operations UI Cleanup V1, Part A: Finished Stock & Demand eligibility is "has an active selling
+// format" (orders/menu.ts's getSellableItems), not Product.status -- see finished-stock-demand.ts's
+// own comment. getLinkedCosting falls back to "any costing recorded for the product" when there is no
+// batch-linked one, so a bare costing + one active format is enough; no ProductBatch is required.
+function sellableSetup(productId: string): { costings: CostingSummary[]; sellingFormats: SellingFormat[] } {
+  const costingId = `costing-${productId}`;
+  return {
+    costings: [{
+      id: costingId, productId, batchId: "", ingredientCost: 0, packagingCost: 0, laborEstimate: 0, waterCost: 0, gasCost: 0,
+      ovenElectricCost: 0, refrigerationCost: 0, coffeeEquipmentCost: 0, wasteAllowance: 0, overheadCost: 0, equipmentCost: 0, suggestedPrice: 0, notes: "",
+    }],
+    sellingFormats: [{ id: `format-${productId}`, costingId, name: "Box of 6", piecesPerUnit: 6, sellingPrice: 480, isActive: true, sortOrder: 0, notes: "" }],
+  };
+}
+
+// Merges sellableSetup() for several product ids into one { costings, sellingFormats } pair, for
+// fixtures with more than one sellable product.
+function sellableSetups(productIds: string[]): { costings: CostingSummary[]; sellingFormats: SellingFormat[] } {
+  const setups = productIds.map(sellableSetup);
+  return { costings: setups.flatMap((setup) => setup.costings), sellingFormats: setups.flatMap((setup) => setup.sellingFormats) };
+}
+
+// Dashboard Inventory Attention V1 (Current Recipes Only): a minimal current (non-voided, newest)
+// batch whose formula uses exactly the given ingredients, one-to-one by exact name and base unit --
+// enough for getCurrentRecipeIngredientIds to resolve each row without needing an alias.
+function currentBatch(productId: string, ingredientsUsed: Ingredient[], overrides: Partial<ProductBatch> = {}): ProductBatch {
+  return {
+    id: crypto.randomUUID(),
+    productId,
+    batchVersion: "V1",
+    status: "completed",
+    dateMade: "2026-08-01",
+    ingredientsNotes: JSON.stringify(ingredientsUsed.map((item) => ({ ingredient: item.name, quantity: 1, unit: item.baseUnit }))),
+    prepTimeMinutes: 0,
+    bakeTimeMinutes: 0,
+    coolingTimeMinutes: 0,
+    usablePieces: 0,
+    imperfectPieces: 0,
+    stressLevel: 0,
+    tasteNotes: "",
+    textureNotes: "",
+    wentWrong: "",
+    improveNext: "",
+    launchDecision: "launch",
+    ...overrides,
+  };
+}
 
 // --- Canonical selling logic ----------------------------------------------------------------
 
@@ -123,19 +179,12 @@ test("selling metrics are buildSellingSummary's own output, not a second calcula
   const model = buildDashboardModel({ labState: EMPTY_LAB, orders: ready(orders, lines), nowMs: NOW });
   const expected = buildSellingSummary({ orders, linesByOrderId: byOrder(lines), nowMs: NOW, timeZone: MANILA });
 
+  // model.summary IS buildSellingSummary's own output -- Orders Workspace V1.1's Sales Analytics
+  // zone (dashboard-page.tsx) and Unpaid callout both read this same object directly, via a
+  // sibling useMemo (see sales-analytics-section.test.ts / dashboard-sales-analytics.test.ts),
+  // rather than the model restating any of it under a different shape.
   assert.deepEqual(model.summary, expected);
   assert.equal(model.selling.status, "ready");
-  if (model.selling.status !== "ready") return;
-  const value = (key: string) => model.selling.status === "ready" ? model.selling.pulse.find((metric) => metric.key === key)?.value : undefined;
-  assert.equal(value("paid-today"), `₱${toDisplayPrice(expected.today.grossRevenue)}`);
-  assert.equal(value("paid-week"), `₱${toDisplayPrice(expected.week.grossRevenue)}`);
-  assert.equal(value("unpaid"), `₱${toDisplayPrice(expected.attention.unpaidValue)}`);
-  assert.equal(value("orders-today"), String(expected.today.ordersPlaced));
-});
-
-test("the pulse is at most four metrics", () => {
-  const model = buildDashboardModel({ labState: EMPTY_LAB, orders: ready([order("a", "new")], [line("a")]), nowMs: NOW });
-  assert.equal(model.selling.status === "ready" ? model.selling.pulse.length : -1, 4);
 });
 
 test("the dashboard modules reuse the canonical owners and restate none of their formulas", () => {
@@ -148,7 +197,7 @@ test("the dashboard modules reuse the canonical owners and restate none of their
   assert.match(modelSource, /buildSellingSummary/);
   assert.match(demandSource, /deriveFinishedStockBalances/);
   assert.match(demandSource, /getPreparationByProduct/);
-  assert.match(exceptionsSource, /getNeedToBuyList/);
+  assert.match(exceptionsSource, /getStockUrgencyStatus/);
   assert.match(exceptionsSource, /getExpiringIngredients/);
   assert.match(exceptionsSource, /getFlaggedIngredients/);
 
@@ -172,7 +221,6 @@ test("zero orders, zero stock, zero ingredients: a calm, complete page rather th
   assert.equal(model.selling.status, "ready");
   if (model.selling.status === "ready") {
     assert.equal(model.selling.hasOrders, false);
-    assert.deepEqual(model.selling.pulse.map((metric) => metric.value), ["₱0.00", "₱0.00", "₱0.00", "0"]);
   }
   assert.deepEqual(model.attention.items, []);
   assert.equal(model.attention.isCaughtUp, true);
@@ -183,8 +231,16 @@ test("zero orders, zero stock, zero ingredients: a calm, complete page rather th
 
 test("everything healthy: nothing is listed and the page says it is caught up", () => {
   const orders = [order("done", "completed", { paymentStatus: "paid", paidAt: TODAY_NOON, paidAmount: 480, completedAt: TODAY_NOON })];
+  const milk = ingredient();
   const model = buildDashboardModel({
-    labState: { products: [BROWNIE], ingredients: [ingredient()], finishedStockMovements: [movement(BROWNIE.id, "production_receipt", 24, 0)] },
+    labState: {
+      products: [BROWNIE],
+      batches: [currentBatch(BROWNIE.id, [milk])],
+      ...sellableSetup(BROWNIE.id),
+      ingredients: [milk],
+      ingredientAliases: [],
+      finishedStockMovements: [movement(BROWNIE.id, "production_receipt", 24, 0)],
+    },
     orders: ready(orders, [line("done")]),
     nowMs: NOW,
   });
@@ -244,7 +300,7 @@ test("CHAOS: replaying a full Wave 2 ledger never counts reserved, fulfilled or 
   const orders = [order("A", "confirmed"), order("B", "ready"), order("C", "completed"), order("D", "cancelled"), order("E", "new")];
   const lines = orders.map((entry) => line(entry.id));
 
-  const { rows } = buildFinishedStockDemand({ products: [BROWNIE], movements, orders, linesByOrderId: byOrder(lines) });
+  const { rows } = buildFinishedStockDemand({ products: [BROWNIE], batches: [], ...sellableSetup(BROWNIE.id), movements, orders, linesByOrderId: byOrder(lines) });
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].availablePieces, 2);
@@ -257,7 +313,7 @@ test("CHAOS: replaying a full Wave 2 ledger never counts reserved, fulfilled or 
 
 test("shortage is max(0, new-order demand - available): enough stock reports zero, never negative", () => {
   const movements = [movement(BROWNIE.id, "production_receipt", 30, 0)];
-  const { rows } = buildFinishedStockDemand({ products: [BROWNIE], movements, orders: [order("E", "new")], linesByOrderId: byOrder([line("E", { quantity: 2 })]) });
+  const { rows } = buildFinishedStockDemand({ products: [BROWNIE], batches: [], ...sellableSetup(BROWNIE.id), movements, orders: [order("E", "new")], linesByOrderId: byOrder([line("E", { quantity: 2 })]) });
   assert.equal(rows[0].unreservedDemandPieces, 12);
   assert.equal(rows[0].shortagePieces, 0);
 });
@@ -266,7 +322,7 @@ test("demand is per product, summed across every new order", () => {
   const movements = [movement(BROWNIE.id, "production_receipt", 10, 0), movement(BLONDIE.id, "production_receipt", 3, 0)];
   const orders = [order("1", "new"), order("2", "new")];
   const lines = [line("1"), line("2", { productId: BLONDIE.id, quantity: 2 })];
-  const { rows } = buildFinishedStockDemand({ products: [BROWNIE, BLONDIE], movements, orders, linesByOrderId: byOrder(lines) });
+  const { rows } = buildFinishedStockDemand({ products: [BROWNIE, BLONDIE], batches: [], ...sellableSetups([BROWNIE.id, BLONDIE.id]), movements, orders, linesByOrderId: byOrder(lines) });
 
   const brownie = rows.find((row) => row.productId === BROWNIE.id);
   const blondie = rows.find((row) => row.productId === BLONDIE.id);
@@ -284,33 +340,39 @@ test("manual lines are not stock-reservable, and an unknown pack size is reporte
     line("E", { id: "manual", productId: "", sellingFormatId: "", itemName: "Custom gift pack", piecesPerUnitSnapshot: null, quantity: 3 }),
     line("E", { id: "unknown-pack", piecesPerUnitSnapshot: null, quantity: 2 }),
   ];
-  const { rows, uncheckedLines } = buildFinishedStockDemand({ products: [BROWNIE], movements, orders: [order("E", "new")], linesByOrderId: byOrder(lines) });
+  const { rows, uncheckedLines } = buildFinishedStockDemand({ products: [BROWNIE], batches: [], ...sellableSetup(BROWNIE.id), movements, orders: [order("E", "new")], linesByOrderId: byOrder(lines) });
 
   assert.equal(rows[0].unreservedDemandPieces, 0, "neither line contributes invented pieces");
   assert.equal(uncheckedLines, 1, "only the product line with no pack size is 'unchecked'; the manual one was never stock-tracked");
 });
 
-test("a product with no stock and no demand is not listed; one with only demand is", () => {
+test("a product with no stock and no demand still gets an explicit row; one with only demand is short (Part A completeness)", () => {
   const { rows } = buildFinishedStockDemand({
     products: [BROWNIE, BLONDIE],
+    batches: [],
+    ...sellableSetups([BROWNIE.id, BLONDIE.id]),
     movements: [],
     orders: [order("E", "new")],
     linesByOrderId: byOrder([line("E", { productId: BLONDIE.id })]),
   });
-  assert.deepEqual(rows.map((row) => row.productId), [BLONDIE.id]);
+  // Most-short-first: BLONDIE (shortage 6) sorts ahead of BROWNIE (all zero), but BROWNIE must still
+  // appear -- absence must never be mistaken for zero.
+  assert.deepEqual(rows.map((row) => row.productId), [BLONDIE.id, BROWNIE.id]);
   assert.equal(rows[0].availablePieces, 0);
   assert.equal(rows[0].shortagePieces, 6);
+  assert.deepEqual([rows[1].onHandPieces, rows[1].reservedPieces, rows[1].availablePieces, rows[1].unreservedDemandPieces, rows[1].shortagePieces], [0, 0, 0, 0, 0]);
 });
 
-test("no finished stock at all is an empty list, not an error", () => {
-  const model = buildDashboardModel({ labState: { ...EMPTY_LAB, products: [BROWNIE, BLONDIE] }, orders: ready([]), nowMs: NOW });
-  assert.deepEqual(model.stock.rows, []);
+test("no finished stock movements at all still renders one explicit zero row per current product, not an empty list (Part A completeness)", () => {
+  const model = buildDashboardModel({ labState: { ...EMPTY_LAB, products: [BROWNIE, BLONDIE], ...sellableSetups([BROWNIE.id, BLONDIE.id]) }, orders: ready([]), nowMs: NOW });
+  assert.equal(model.stock.rows.length, 2);
   assert.equal(model.stock.hiddenCount, 0);
+  assert.equal(model.stock.rows.every((row) => row.onHandPieces === 0 && row.reservedPieces === 0 && row.unreservedDemandPieces === 0 && row.shortagePieces === 0), true);
 });
 
 test("only one active product still renders one clean row", () => {
   const model = buildDashboardModel({
-    labState: { ...EMPTY_LAB, products: [BROWNIE], finishedStockMovements: [movement(BROWNIE.id, "production_receipt", 12, 0)] },
+    labState: { ...EMPTY_LAB, products: [BROWNIE], ...sellableSetup(BROWNIE.id), finishedStockMovements: [movement(BROWNIE.id, "production_receipt", 12, 0)] },
     orders: ready([order("E", "new")], [line("E")]),
     nowMs: NOW,
   });
@@ -320,7 +382,7 @@ test("only one active product still renders one clean row", () => {
 
 test("a stock shortage becomes one attention item pointing at Bake", () => {
   const model = buildDashboardModel({
-    labState: { ...EMPTY_LAB, products: [BROWNIE, BLONDIE], finishedStockMovements: [movement(BROWNIE.id, "production_receipt", 1, 0)] },
+    labState: { ...EMPTY_LAB, products: [BROWNIE, BLONDIE], ...sellableSetups([BROWNIE.id, BLONDIE.id]), finishedStockMovements: [movement(BROWNIE.id, "production_receipt", 1, 0)] },
     orders: ready([order("1", "new"), order("2", "new")], [line("1"), line("2", { productId: BLONDIE.id })]),
     nowMs: NOW,
   });
@@ -329,13 +391,35 @@ test("a stock shortage becomes one attention item pointing at Bake", () => {
   assert.equal(shortage?.href, "/bake");
 });
 
+// Orders Workspace V1's shared sliceFinishedStockDemandRows caps model.stock.rows at
+// STOCK_ROW_LIMIT, but shortageProducts (and therefore this attention item) must keep reading the
+// UNSLICED demand.rows -- a shortage sitting past the row limit must still surface. This is the
+// "slice after computing shortage, not before" ordering the shared extraction depends on.
+test("a shortage beyond STOCK_ROW_LIMIT still counts toward the stock-shortage attention item", () => {
+  const products = Array.from({ length: STOCK_ROW_LIMIT + 1 }, (_, index) => ({ id: `short-${index}`, name: `Short Product ${index}` }) as Product);
+  const movements = products.map((product) => movement(product.id, "production_receipt", 1, 0));
+  const orders = products.map((_, index) => order(`o${index}`, "new"));
+  const lines = products.map((product, index) => line(`o${index}`, { productId: product.id, quantity: 3 }));
+
+  const model = buildDashboardModel({
+    labState: { ...EMPTY_LAB, products, ...sellableSetups(products.map((product) => product.id)), finishedStockMovements: movements },
+    orders: ready(orders, lines),
+    nowMs: NOW,
+  });
+
+  assert.equal(model.stock.rows.length, STOCK_ROW_LIMIT, "the glance view still caps at the row limit");
+  const shortage = model.attention.items.find((item) => item.key === "stock-shortage");
+  assert.equal(shortage?.count, STOCK_ROW_LIMIT + 1, "every shortage counts, including the one past the row limit");
+});
+
 // --- Failure containment ---------------------------------------------------------------------
 
 test("unavailable Orders data: selling reports it, everything else still builds, and it is never 'caught up'", () => {
-  const ingredients = [ingredient({ name: "Butter", currentQuantity: 0 })];
+  const butter = ingredient({ name: "Butter", currentQuantity: 0 });
+  const ingredients = [butter];
   const movements = [movement(BROWNIE.id, "production_receipt", 12, 0)];
   const model = buildDashboardModel({
-    labState: { products: [BROWNIE], ingredients, finishedStockMovements: movements },
+    labState: { products: [BROWNIE], batches: [currentBatch(BROWNIE.id, [butter])], ...sellableSetup(BROWNIE.id), ingredients, ingredientAliases: [], finishedStockMovements: movements },
     orders: { status: "unavailable", reason: "failed", message: "network down" },
     nowMs: NOW,
   });
@@ -383,8 +467,14 @@ test("28+ orders, a dozen products and thirty low ingredients stay compact", () 
   const orders = Array.from({ length: 40 }, (_, index) => order(`o${index}`, statuses[index % statuses.length]));
   const lines = orders.map((entry, index) => line(entry.id, { productId: products[index % products.length].id }));
   const ingredients = Array.from({ length: 30 }, (_, index) => ingredient({ name: `Ingredient ${String(index).padStart(2, "0")}`, currentQuantity: 0 }));
+  // One current batch's formula uses all 30 -- Current Recipes Only must not itself narrow this list.
+  const batches = [currentBatch(products[0].id, ingredients)];
 
-  const model = buildDashboardModel({ labState: { products, ingredients, finishedStockMovements: movements }, orders: ready(orders, lines), nowMs: NOW });
+  const model = buildDashboardModel({
+    labState: { products, batches, ...sellableSetups(products.map((product) => product.id)), ingredients, ingredientAliases: [], finishedStockMovements: movements },
+    orders: ready(orders, lines),
+    nowMs: NOW,
+  });
 
   // At most one attention row per kind, however many orders sit behind it.
   assert.equal(model.attention.items.length <= 7, true);
@@ -400,16 +490,16 @@ test("28+ orders, a dozen products and thirty low ingredients stay compact", () 
 // --- Inventory exceptions --------------------------------------------------------------------
 
 test("only exceptions appear; an ingredient with two problems is one row with two reasons", () => {
-  const rows = buildInventoryExceptions(
-    [
-      ingredient({ id: "healthy", name: "Flour" }),
-      ingredient({ id: "low-and-expiring", name: "Cream", currentQuantity: 100, nearestExpirationDate: "2026-08-09" }),
-      ingredient({ id: "out", name: "Butter", currentQuantity: 0 }),
-      ingredient({ id: "archived", name: "Old Sugar", currentQuantity: 0, isActive: false }),
-      ingredient({ id: "flagged", name: "Mystery", baseUnitMigrationFlaggedReason: "unrecognised unit" }),
-    ],
-    "2026-08-08",
-  );
+  const all = [
+    ingredient({ id: "healthy", name: "Flour" }),
+    ingredient({ id: "low-and-expiring", name: "Cream", currentQuantity: 100, nearestExpirationDate: "2026-08-09" }),
+    ingredient({ id: "out", name: "Butter", currentQuantity: 0 }),
+    ingredient({ id: "archived", name: "Old Sugar", currentQuantity: 0, isActive: false }),
+    ingredient({ id: "flagged", name: "Mystery", baseUnitMigrationFlaggedReason: "unrecognised unit" }),
+  ];
+  // This test is about reason-merging, not recipe filtering -- every ingredient is "current" so the
+  // recipe gate itself contributes nothing here (see the "Current Recipes Only" section below).
+  const rows = buildInventoryExceptions(all, "2026-08-08", new Set(all.map((item) => item.id)));
 
   assert.deepEqual(rows.map((row) => row.ingredientId), ["out", "low-and-expiring", "flagged"]);
   assert.deepEqual(rows[1].reasons.map((reason) => reason.kind), ["stock", "expiry"]);
@@ -419,14 +509,128 @@ test("expiry is judged against the Manila business day, not UTC", () => {
   // 01:00 Manila on 8 Aug is still 7 Aug in UTC. A UTC "today" would call an 8 Aug expiry
   // "expires soon" instead of "expires today" for the first eight hours of every working day.
   const earlyManila = Date.parse("2026-08-07T17:00:00.000Z");
+  const cream = ingredient({ name: "Cream", nearestExpirationDate: "2026-08-08" });
   const model = buildDashboardModel({
-    labState: { ...EMPTY_LAB, ingredients: [ingredient({ name: "Cream", nearestExpirationDate: "2026-08-08" })] },
+    labState: { ...EMPTY_LAB, products: [BROWNIE], batches: [currentBatch(BROWNIE.id, [cream])], ingredients: [cream] },
     orders: ready([]),
     nowMs: earlyManila,
   });
   assert.equal(model.businessDay, "2026-08-08");
   const reason = model.inventory.rows[0].reasons[0];
   assert.equal(reason.kind === "expiry" ? reason.status : null, "expires-today");
+});
+
+// --- Current Recipes Only (Dashboard Inventory Attention V1) --------------------------------
+
+test("Current Recipes Only: an ingredient retired from the current recipe never appears, even at zero stock", () => {
+  // The historical formula used Coffee; the current batch replaced it with Chocolate Coins.
+  const coffee = ingredient({ name: "100% Colombian Regular Instant Coffee", currentQuantity: 0, lowStockThreshold: 100 });
+  const chocolateCoins = ingredient({ name: "Chocolate Coins", currentQuantity: 1786, lowStockThreshold: 220 });
+  const model = buildDashboardModel({
+    labState: {
+      products: [BROWNIE],
+      batches: [currentBatch(BROWNIE.id, [chocolateCoins])],
+      costings: [],
+      sellingFormats: [],
+      ingredients: [coffee, chocolateCoins],
+      ingredientAliases: [],
+      finishedStockMovements: [],
+    },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+  assert.deepEqual(model.inventory.rows, []);
+});
+
+test("Current Recipes Only: a future-use ingredient not yet in any current recipe creates no alert, however low its stock", () => {
+  const whiteChocolateCompound = ingredient({ name: "White Chocolate Compound", currentQuantity: 0, lowStockThreshold: 50 });
+  const model = buildDashboardModel({
+    labState: { ...EMPTY_LAB, products: [BROWNIE], batches: [], ingredients: [whiteChocolateCompound] },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+  assert.deepEqual(model.inventory.rows, []);
+});
+
+test("Current Recipes Only: a current-recipe ingredient at Reorder Soon is included and labeled", () => {
+  const cocoa = ingredient({ name: "Cocoa Powder", currentQuantity: 220, lowStockThreshold: 220 });
+  const model = buildDashboardModel({
+    labState: { products: [BROWNIE], batches: [currentBatch(BROWNIE.id, [cocoa])], costings: [], sellingFormats: [], ingredients: [cocoa], ingredientAliases: [], finishedStockMovements: [] },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+  assert.deepEqual(model.inventory.rows.map((row) => row.name), ["Cocoa Powder"]);
+  assert.deepEqual(model.inventory.rows[0].reasons, [{ kind: "stock", status: "reorder_soon" }]);
+});
+
+test("Current Recipes Only: a current-recipe ingredient at Critical is included and labeled", () => {
+  const cocoa = ingredient({ name: "Cocoa Powder", currentQuantity: 110, lowStockThreshold: 220 });
+  const model = buildDashboardModel({
+    labState: { products: [BROWNIE], batches: [currentBatch(BROWNIE.id, [cocoa])], costings: [], sellingFormats: [], ingredients: [cocoa], ingredientAliases: [], finishedStockMovements: [] },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+  assert.deepEqual(model.inventory.rows.map((row) => row.name), ["Cocoa Powder"]);
+  assert.deepEqual(model.inventory.rows[0].reasons, [{ kind: "stock", status: "critical" }]);
+});
+
+test("Current Recipes Only: a current-recipe ingredient at zero stock is included, labeled Out of Stock", () => {
+  const cocoa = ingredient({ name: "Cocoa Powder", currentQuantity: 0, lowStockThreshold: 220 });
+  const model = buildDashboardModel({
+    labState: { products: [BROWNIE], batches: [currentBatch(BROWNIE.id, [cocoa])], costings: [], sellingFormats: [], ingredients: [cocoa], ingredientAliases: [], finishedStockMovements: [] },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+  assert.deepEqual(model.inventory.rows.map((row) => row.name), ["Cocoa Powder"]);
+  assert.deepEqual(model.inventory.rows[0].reasons, [{ kind: "stock", status: "out_of_stock" }]);
+});
+
+test("Current Recipes Only: a Good current-recipe ingredient is excluded", () => {
+  const cocoa = ingredient({ name: "Cocoa Powder", currentQuantity: 500, lowStockThreshold: 220 });
+  const model = buildDashboardModel({
+    labState: { products: [BROWNIE], batches: [currentBatch(BROWNIE.id, [cocoa])], costings: [], sellingFormats: [], ingredients: [cocoa], ingredientAliases: [], finishedStockMovements: [] },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+  assert.deepEqual(model.inventory.rows, []);
+});
+
+test("Current Recipes Only: a current-recipe ingredient with no threshold configured is excluded -- never shown as Good or Out of Stock", () => {
+  const cocoa = ingredient({ name: "Cocoa Powder", currentQuantity: 0, lowStockThreshold: 0 });
+  const model = buildDashboardModel({
+    labState: { products: [BROWNIE], batches: [currentBatch(BROWNIE.id, [cocoa])], costings: [], sellingFormats: [], ingredients: [cocoa], ingredientAliases: [], finishedStockMovements: [] },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+  assert.deepEqual(model.inventory.rows, []);
+});
+
+test("Current Recipes Only: the Needs Attention inventory count exactly matches the qualifying (current-recipe, alerting) ingredients", () => {
+  const critical = ingredient({ name: "Cocoa Powder", currentQuantity: 110, lowStockThreshold: 220 });
+  const reorderSoon = ingredient({ name: "Butter", currentQuantity: 220, lowStockThreshold: 220 });
+  const outOfStock = ingredient({ name: "Vanilla", currentQuantity: 0, lowStockThreshold: 50 });
+  const good = ingredient({ name: "Sugar", currentQuantity: 500, lowStockThreshold: 220 });
+  const notConfigured = ingredient({ name: "Salt", currentQuantity: 0, lowStockThreshold: 0 });
+  const retired = ingredient({ name: "100% Colombian Regular Instant Coffee", currentQuantity: 0, lowStockThreshold: 100 });
+
+  const model = buildDashboardModel({
+    labState: {
+      products: [BROWNIE],
+      // The current recipe uses every ingredient except the retired one.
+      batches: [currentBatch(BROWNIE.id, [critical, reorderSoon, outOfStock, good, notConfigured])],
+      costings: [],
+      sellingFormats: [],
+      ingredients: [critical, reorderSoon, outOfStock, good, notConfigured, retired],
+      ingredientAliases: [],
+      finishedStockMovements: [],
+    },
+    orders: ready([]),
+    nowMs: NOW,
+  });
+
+  assert.deepEqual(model.inventory.rows.map((row) => row.name).sort(), ["Butter", "Cocoa Powder", "Vanilla"]);
+  assert.equal(model.inventory.totalCount, 3);
+  assert.equal(model.attention.items.find((item) => item.key === "inventory")?.count, 3);
 });
 
 // --- Profit ----------------------------------------------------------------------------------

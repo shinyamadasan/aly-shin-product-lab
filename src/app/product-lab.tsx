@@ -52,7 +52,6 @@ import {
   setOpeningCostBasisArgs, updatePostedPurchaseMetadataArgs,
 } from "@/lib/raw-inventory-authority";
 import { inventoryTabs, type InventoryFocus, type InventoryTab } from "@/lib/inventory-tabs";
-import type { OrdersTab } from "@/lib/orders-tabs";
 import { PurchaseImportWizard, UNSAVED_PURCHASE_IMPORT_MESSAGE } from "@/components/purchase-import-wizard";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { BakePage } from "@/components/bake-page";
@@ -187,17 +186,17 @@ export default function ProductLab({
   view,
   initialInventoryFocus,
   initialInventoryTab,
-  initialOrdersTab,
   initialOpportunityStatusFilter = "new",
   initialCreativeJobId = null,
+  initialIsCreatingOrder = false,
 }: {
   // Required on purpose: a route that forgets it must fail typecheck, not silently render another page.
   view: LabView;
   initialInventoryFocus?: InventoryFocus;
   initialInventoryTab?: InventoryTab;
-  initialOrdersTab?: OrdersTab;
   initialOpportunityStatusFilter?: OpportunityStatusFilter;
   initialCreativeJobId?: string | null;
+  initialIsCreatingOrder?: boolean;
 }) {
   const router = useRouter();
   const [labState, setLabState] = useState<LabState>(() => {
@@ -3513,7 +3512,7 @@ export default function ProductLab({
             </section>
           ) : null}
 
-          {view === "orders" ? <OrdersPage initialOrdersTab={initialOrdersTab} labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_ORDER_MESSAGE } : null)} onStockChanged={loadSupabaseData} /> : null}
+          {view === "orders" ? <OrdersPage initialIsCreating={initialIsCreatingOrder} labState={labState} onDirtyChange={(isDirty) => setActiveUnsavedForm(isDirty ? { message: UNSAVED_ORDER_MESSAGE } : null)} onStockChanged={loadSupabaseData} /> : null}
 
           {view === "equipment" ? <EquipmentPage cancelEdit={() => setEditingEquipment(null)} deleteEquipment={deleteEquipment} editEquipment={setEditingEquipment} equipment={editingEquipment} isEquipmentTableMissing={isEquipmentTableMissing} labState={labState} saveEquipment={saveEquipment} /> : null}
           {view === "inventory" ? (

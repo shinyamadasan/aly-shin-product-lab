@@ -59,6 +59,10 @@ function isOfferableFormat(format: SellingFormat): boolean {
 
 // Why a product contributes no catalog items. Diagnostic only -- it never changes what is offered.
 //
+//   paused                      the product is paused -- this app's one explicit retirement signal
+//                                (Product has no isActive/archivedAt). Checked before costing/format
+//                                so a paused product with a stale active selling format still reads
+//                                as retired, not as "sellable but unexplained."
 //   no-costing                 no costing exists for the product, so no format can exist either.
 //   no-selling-format          the current costing has no selling formats at all.
 //   formats-on-older-costing   the current costing has none, but another costing of the SAME product
@@ -66,7 +70,7 @@ function isOfferableFormat(format: SellingFormat): boolean {
 //                              the operator is told which costing to add formats to.
 //   selling-format-unusable    formats exist on the current costing but every one is inactive,
 //                              unnamed, or has no pack size.
-export type UnorderableReason = "no-costing" | "no-selling-format" | "formats-on-older-costing" | "selling-format-unusable";
+export type UnorderableReason = "paused" | "no-costing" | "no-selling-format" | "formats-on-older-costing" | "selling-format-unusable";
 
 export type UnorderableProduct = {
   productId: string;
@@ -77,9 +81,14 @@ export type UnorderableProduct = {
 type ProductMenuResolution = { items: SellableItem[]; reason: UnorderableReason | null };
 
 // The single place that decides, for one product, what is offerable and -- when nothing is -- why.
-// getSellableItems and getUnorderableProducts both read this, so the explanation shown to the
-// operator can never disagree with the menu they are actually looking at.
+// getSellableItems and getUnorderableProducts both read this (and so does
+// dashboard/finished-stock-demand.ts, via getSellableItems), so none of those consumers can ever
+// disagree about which products are currently sellable.
 function resolveProductMenu(product: Product, context: RuleEngineContext, sellingFormats: SellingFormat[]): ProductMenuResolution {
+  if (product.status === "paused") {
+    return { items: [], reason: "paused" };
+  }
+
   const latestBatch = getLatestBatch(context, product);
   const costing = getLinkedCosting(context, product, latestBatch);
 
@@ -147,6 +156,8 @@ export function getUnorderableProducts(products: Product[], batches: ProductBatc
 // Operator-facing wording for each reason. Kept beside the reasons so the two cannot drift.
 export function describeUnorderableReason(reason: UnorderableReason): string {
   switch (reason) {
+    case "paused":
+      return "paused";
     case "no-costing":
       return "no costing yet";
     case "no-selling-format":

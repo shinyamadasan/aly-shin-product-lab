@@ -18,11 +18,14 @@
 
 import { AlertTriangle, ArrowRight, CheckCircle2, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { MessageBox } from "@/components/ui";
-import { buildDashboardModel, type AttentionItem, type DashboardModel, type OrdersSnapshot, type PulseMetric } from "@/lib/dashboard/model";
+import { FinishedStockDemandSection } from "@/components/finished-stock-demand-section";
+import { collapsedBusinessPerformanceSummary, SalesAnalyticsSection } from "@/components/sales-analytics-section";
+import { MessageBox, SectionCard, SectionHeading, ViewAllLink } from "@/components/ui";
+import { BUSINESS_TIMEZONE } from "@/lib/business-day";
+import { buildDashboardModel, type AttentionItem, type DashboardModel, type OrdersSnapshot } from "@/lib/dashboard/model";
 import type { InventoryExceptionReason, InventoryExceptionRow } from "@/lib/dashboard/inventory-exceptions";
-import type { FinishedStockDemandRow } from "@/lib/dashboard/finished-stock-demand";
 import type { LabState } from "@/lib/lab-state";
+import { buildSalesPeriodOverview, DEFAULT_SALES_PERIOD, resolveSalesPeriodRange, type SalesPeriodOverview, type SalesPeriodSelection } from "@/lib/orders/summary";
 import { listOrderLines, listOrders, type OrdersClient } from "@/lib/orders-repository";
 import { supabase } from "@/lib/supabase";
 
@@ -33,46 +36,7 @@ function formatBusinessDay(day: string): string {
   return new Date(Date.UTC(year, month - 1, date)).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
 }
 
-function plural(count: number, one: string, many: string): string {
-  return count === 1 ? one : many;
-}
-
-function SectionCard({ children, className = "", label }: { children: React.ReactNode; className?: string; label: string }) {
-  return (
-    <section aria-label={label} className={`rounded-lg border border-[#e1d4c4] bg-white p-5 ${className}`}>
-      {children}
-    </section>
-  );
-}
-
-function SectionHeading({ children, hint }: { children: React.ReactNode; hint?: string }) {
-  return (
-    <div className="mb-3">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">{children}</h3>
-      {hint ? <p className="mt-1 text-sm text-[#6f5a4c]">{hint}</p> : null}
-    </div>
-  );
-}
-
-function ViewAllLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <a className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-[#8f5632] hover:underline" href={href}>
-      {children} <ArrowRight size={14} />
-    </a>
-  );
-}
-
-// --- Zone 1: business pulse ------------------------------------------------------------------
-
-function PulseCard({ featured, metric }: { featured: boolean; metric: PulseMetric }) {
-  return (
-    <div className={`rounded-lg border p-4 ${featured ? "border-[#231813] bg-[#231813] text-[#fff8ef]" : "border-[#e1d4c4] bg-white"}`}>
-      <p className={`text-sm font-medium ${featured ? "text-[#ddb778]" : "text-[#6f5a4c]"}`}>{metric.label}</p>
-      <p className="mt-2 text-2xl font-semibold tabular-nums sm:text-3xl">{metric.value}</p>
-      <p className={`mt-1 text-xs ${featured ? "text-[#d8c6b8]" : "text-[#8a7c6d]"}`}>{metric.detail}</p>
-    </div>
-  );
-}
+// --- Zone 1: sales analytics ------------------------------------------------------------------
 
 function SellingUnavailable({ onRetry, selling }: { onRetry: () => void; selling: Extract<DashboardModel["selling"], { status: "unavailable" }> }) {
   const headline =
@@ -98,14 +62,28 @@ function SellingUnavailable({ onRetry, selling }: { onRetry: () => void; selling
   );
 }
 
-function PulseZone({ model, onRetry }: { model: DashboardModel; onRetry: () => void }) {
-  const { selling } = model;
+function SalesZone({
+  model,
+  onPeriodChange,
+  onRetry,
+  overview,
+  period,
+}: {
+  model: DashboardModel;
+  onPeriodChange: (next: SalesPeriodSelection) => void;
+  onRetry: () => void;
+  overview: SalesPeriodOverview | null;
+  period: SalesPeriodSelection;
+}) {
+  const { selling, summary } = model;
 
   if (selling.status === "unavailable") {
     return <SellingUnavailable onRetry={onRetry} selling={selling} />;
   }
 
-  if (selling.status === "loading") {
+  // overview is built alongside `summary` from the same loaded orders (see DashboardPage), so
+  // `!overview` here means the same "not ready yet" state as `selling.status === "loading"`.
+  if (selling.status === "loading" || !summary || !overview) {
     return (
       <div aria-busy="true" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[0, 1, 2, 3].map((slot) => (
@@ -117,11 +95,13 @@ function PulseZone({ model, onRetry }: { model: DashboardModel; onRetry: () => v
 
   return (
     <div>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {selling.pulse.map((metric, index) => (
-          <PulseCard featured={index === 0} key={metric.key} metric={metric} />
-        ))}
-      </div>
+      <SalesAnalyticsSection
+        onPeriodChange={onPeriodChange}
+        overview={overview}
+        period={period}
+        unpaidCount={summary.attention.unpaidCount}
+        unpaidValue={summary.attention.unpaidValue}
+      />
       {!selling.hasOrders ? (
         <p className="mt-3 text-sm text-[#6f5a4c]">
           No orders yet. Once you add one it will show up here. <a className="font-semibold text-[#8f5632] hover:underline" href="/orders">Go to Orders</a>
@@ -169,80 +149,17 @@ function AttentionZone({ model }: { model: DashboardModel }) {
 }
 
 // --- Zone 3: finished stock & demand ---------------------------------------------------------
-
-function pieces(value: number | null): string {
-  return value === null ? "—" : String(value);
-}
-
-function StockRow({ row }: { row: FinishedStockDemandRow }) {
-  const isShort = (row.shortagePieces ?? 0) > 0;
-  const cell = "flex items-baseline justify-between gap-1 sm:block sm:text-right";
-  const cellLabel = "text-[11px] uppercase tracking-wide text-[#8a7c6d] sm:hidden";
-  return (
-    <li className="py-3 sm:grid sm:grid-cols-[minmax(0,1.6fr)_repeat(4,minmax(0,1fr))] sm:items-center sm:gap-3">
-      <p className="font-medium text-[#231813]">{row.productName}</p>
-      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm tabular-nums sm:contents">
-        <div className={cell}>
-          <dt className={cellLabel}>Available</dt>
-          <dd className="font-semibold">{row.availablePieces}</dd>
-        </div>
-        <div className={cell}>
-          <dt className={cellLabel}>Reserved</dt>
-          <dd className="text-[#6f5a4c]">{row.reservedPieces}</dd>
-        </div>
-        <div className={cell}>
-          <dt className={cellLabel}>New orders</dt>
-          <dd>{pieces(row.unreservedDemandPieces)}</dd>
-        </div>
-        <div className={cell}>
-          <dt className={cellLabel}>Short</dt>
-          <dd className={isShort ? "font-semibold text-[#b3441f]" : "text-[#8a7c6d]"}>{isShort ? row.shortagePieces : row.shortagePieces === null ? "—" : "0"}</dd>
-        </div>
-      </dl>
-    </li>
-  );
-}
-
-function StockZone({ model }: { model: DashboardModel }) {
-  const { stock } = model;
-  const columnLabel = "text-right text-[11px] font-semibold uppercase tracking-wide text-[#8a7c6d]";
-
-  return (
-    <SectionCard label="Finished stock and demand">
-      <SectionHeading hint="Pieces ready now, against orders that are new and not yet reserved.">Finished stock &amp; demand</SectionHeading>
-      {stock.rows.length === 0 ? (
-        <p className="text-sm text-[#6f5a4c]">
-          No finished stock and nothing waiting on it. Stock shows up here after a bake. <a className="font-semibold text-[#8f5632] hover:underline" href="/bake">Go to Bake</a>
-        </p>
-      ) : (
-        <>
-          <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.6fr)_repeat(4,minmax(0,1fr))] gap-3 border-b border-[#eaded2] pb-2 sm:grid">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-[#8a7c6d]">Product</span>
-            <span className={columnLabel}>Available</span>
-            <span className={columnLabel}>Reserved</span>
-            <span className={columnLabel}>New orders</span>
-            <span className={columnLabel}>Short</span>
-          </div>
-          <ul className="divide-y divide-[#f0e6da]">{stock.rows.map((row) => <StockRow key={row.productId} row={row} />)}</ul>
-          {!stock.hasDemand ? <p className="mt-2 text-sm text-[#7a5b33]">New-order demand isn&apos;t available right now, so shortages can&apos;t be shown.</p> : null}
-          {stock.uncheckedLines ? (
-            <p className="mt-2 text-xs text-[#8a6d4f]">
-              {stock.uncheckedLines} new-order {plural(stock.uncheckedLines, "line has", "lines have")} no recorded pack size, so {plural(stock.uncheckedLines, "it isn't", "they aren't")} counted above.
-            </p>
-          ) : null}
-        </>
-      )}
-      {stock.hiddenCount > 0 ? <p className="mt-2 text-sm text-[#6f5a4c]">+{stock.hiddenCount} more {plural(stock.hiddenCount, "product", "products")}</p> : null}
-      <ViewAllLink href="/bake">Open Bake</ViewAllLink>
-    </SectionCard>
-  );
-}
+// Rendered by the shared FinishedStockDemandSection (src/components/finished-stock-demand-section.tsx),
+// also used by the Orders workspace -- see that file's header for why this stays one implementation.
 
 // --- Zone 4: inventory attention -------------------------------------------------------------
 
 function reasonLabel(reason: InventoryExceptionReason): { text: string; tone: "danger" | "warn" } {
   if (reason.kind === "stock") {
-    return reason.status === "out" ? { text: "Out of stock", tone: "danger" } : { text: "Low", tone: "warn" };
+    // Inventory Stock Status V1's 3 alerting urgency levels (Good/Not configured never reach here).
+    if (reason.status === "out_of_stock") return { text: "Out of Stock", tone: "danger" };
+    if (reason.status === "critical") return { text: "Critical", tone: "danger" };
+    return { text: "Reorder Soon", tone: "warn" };
   }
   if (reason.kind === "expiry") {
     if (reason.status === "expired") return { text: "Expired", tone: "danger" };
@@ -301,6 +218,21 @@ export function DashboardPage({ labState, message, messageTone }: { labState: La
   // keeps describing the moment it was last loaded until Refresh. Inventory dates need a "today"
   // even before orders arrive, hence the mount-time value.
   const [mountedAtMs, setMountedAtMs] = useState(() => Date.now());
+  // Orders Workspace V1.1: the Sales Analytics reporting period. Plain page state, not part of
+  // buildDashboardModel -- the same split V1 already used for Orders, so the model stays exactly
+  // what dashboard-model.test.ts already exercises (no new required params).
+  const [period, setPeriod] = useState<SalesPeriodSelection>(DEFAULT_SALES_PERIOD);
+  // Mobile Operational Compression V1: same matchMedia("(max-width: 1023px)")/lg-breakpoint pattern
+  // already proven in orders-page.tsx, reactive to resize/rotation, not a one-shot check.
+  const [isMobileWidth, setIsMobileWidth] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 1023px)");
+    const update = () => setIsMobileWidth(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -349,24 +281,53 @@ export function DashboardPage({ labState, message, messageTone }: { labState: La
   const nowMs = orders.status === "ready" ? orders.loadedAtMs : mountedAtMs;
   const model = useMemo(() => buildDashboardModel({ labState, orders, nowMs }), [labState, orders, nowMs]);
 
+  // A second, independent readout over the same loaded orders `model.summary` already comes from --
+  // reuses buildSalesPeriodOverview/resolveSalesPeriodRange (orders/summary.ts) exactly as Orders
+  // Workspace V1's own orders-page.tsx already does, nothing here recomputes a formula.
+  const overview = useMemo(
+    () =>
+      orders.status === "ready"
+        ? buildSalesPeriodOverview({ orders: orders.orders, linesByOrderId: orders.linesByOrderId, range: resolveSalesPeriodRange(period, nowMs, BUSINESS_TIMEZONE) })
+        : null,
+    [orders, period, nowMs],
+  );
+
   return (
-    <DashboardView hasIngredients={labState.ingredients.length > 0} message={message} messageTone={messageTone} model={model} onRefresh={refresh} />
+    <DashboardView
+      hasIngredients={labState.ingredients.length > 0}
+      isMobileWidth={isMobileWidth}
+      message={message}
+      messageTone={messageTone}
+      model={model}
+      onPeriodChange={setPeriod}
+      onRefresh={refresh}
+      overview={overview}
+      period={period}
+    />
   );
 }
 
 // Presentational: renders a finished model and nothing else.
 export function DashboardView({
   hasIngredients,
+  isMobileWidth,
   message,
   messageTone,
   model,
+  onPeriodChange,
   onRefresh,
+  overview,
+  period,
 }: {
   hasIngredients: boolean;
+  isMobileWidth: boolean;
   message: string;
   messageTone: "good" | "bad" | "info";
   model: DashboardModel;
+  onPeriodChange: (next: SalesPeriodSelection) => void;
   onRefresh: () => void;
+  overview: SalesPeriodOverview | null;
+  period: SalesPeriodSelection;
 }) {
   return (
     <div className="space-y-4">
@@ -377,23 +338,168 @@ export function DashboardView({
         </button>
       </div>
       {message ? <MessageBox message={message} tone={messageTone} /> : null}
-      {/* DOM order is the mobile order (attention, pulse, stock, inventory). From xl the same four
-          zones are re-seated: pulse across the top, then attention over stock on the left with
-          inventory down the right. */}
-      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] xl:items-start">
-        <div className="xl:order-2">
-          <AttentionZone model={model} />
+      {isMobileWidth ? (
+        <MobileDashboard model={model} onPeriodChange={onPeriodChange} onRefresh={onRefresh} overview={overview} period={period} />
+      ) : (
+        // DOM order is the mobile order (attention, sales, stock, inventory). From xl the same four
+        // zones are re-seated: sales across the top, then attention over stock on the left with
+        // inventory down the right. Unchanged by Mobile Operational Compression V1 -- isMobileWidth
+        // uses a different (lg) breakpoint than this grid's own xl reflow, so >=lg (including the
+        // 1024-1279px tablet range) renders exactly this branch, exactly as before.
+        <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] xl:items-start">
+          <div className="xl:order-2">
+            <AttentionZone model={model} />
+          </div>
+          <div className="xl:order-1 xl:col-span-2">
+            <SalesZone model={model} onPeriodChange={onPeriodChange} onRetry={onRefresh} overview={overview} period={period} />
+          </div>
+          <div className="xl:order-4">
+            <FinishedStockDemandSection section={model.stock} />
+          </div>
+          <div className="xl:order-3 xl:row-span-2">
+            <InventoryZone hasIngredients={hasIngredients} model={model} />
+          </div>
         </div>
-        <div className="xl:order-1 xl:col-span-2">
-          <PulseZone model={model} onRetry={onRefresh} />
-        </div>
-        <div className="xl:order-4">
-          <StockZone model={model} />
-        </div>
-        <div className="xl:order-3 xl:row-span-2">
-          <InventoryZone hasIngredients={hasIngredients} model={model} />
-        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Mobile Operational Compression V1 -------------------------------------------------------
+//
+// Action first, analytics on demand. Reorders/recomposes the SAME zones above -- nothing here
+// recomputes a number: MobileAttentionZone reuses the existing AttentionRow/InventoryRow and the
+// existing model.attention/model.inventory data; MobileBusinessPerformance reuses the existing
+// SalesAnalyticsSection and SellingUnavailable. Desktop (the branch above) is untouched.
+
+// Part B1/B2: one combined "Needs attention" list. Renders model.attention.items in their EXISTING
+// order (buildAttentionItems' own push order -- never re-derived here); at the "inventory" item's
+// own position, its aggregate count line is replaced by the actual model.inventory.rows (reusing
+// InventoryRow verbatim), so the operator sees WHAT needs attention, not just how many. Every other
+// item (overdue/new/scheduling/ready/unpaid/stock-shortage) renders via the existing AttentionRow,
+// unchanged -- so no non-inventory item is ever lost, and Unpaid keeps appearing here exactly when
+// buildAttentionItems already includes it (unpaidCount > 0), with no new logic of its own (Part B3).
+//
+// Known limitation (Part B2): AttentionItem.urgent is a per-category boolean (true only for
+// overdue/stock-shortage) and InventoryExceptionRow.reasons carries per-ingredient status strings
+// (out_of_stock/critical/reorder_soon/expired/expires-today/...) -- the two are not on one comparable
+// severity scale, and no existing field ranks "3 overdue handovers" against "Salted butter: Expired"
+// on a single axis. Rather than inventing a synthetic cross-model priority, each model's own
+// canonical order is preserved as-is; the inventory rows are simply expanded in place at the position
+// the aggregate item already occupied.
+function MobileAttentionZone({ model }: { model: DashboardModel }) {
+  const { attention, inventory, selling } = model;
+
+  return (
+    <SectionCard label="Needs attention">
+      <SectionHeading>Needs attention</SectionHeading>
+      {attention.isCaughtUp ? (
+        <p className="flex items-center gap-2 text-sm text-[#2e6b44]">
+          <CheckCircle2 size={18} /> You&apos;re caught up.
+        </p>
+      ) : null}
+      {attention.items.length > 0 ? (
+        <ul className="divide-y divide-[#f0e6da]">
+          {attention.items.map((item) =>
+            item.key === "inventory"
+              ? inventory.rows.map((row) => <InventoryRow key={row.ingredientId} row={row} />)
+              : <AttentionRow item={item} key={item.key} />,
+          )}
+        </ul>
+      ) : null}
+      {inventory.hiddenCount > 0 ? <p className="mt-2 text-sm text-[#6f5a4c]">+{inventory.hiddenCount} more</p> : null}
+      {selling.status === "loading" ? <p className="mt-2 text-sm text-[#8a7c6d]">Checking orders…</p> : null}
+      {selling.status === "unavailable" ? (
+        <p className="mt-2 text-sm text-[#7a5b33]">Order status can&apos;t be checked right now, so this list may be incomplete.</p>
+      ) : null}
+    </SectionCard>
+  );
+}
+
+// Part E: the existing SalesAnalyticsSection, reused unchanged, inside a native <details> collapsed
+// by default (same idiom app-shell.tsx's "More" disclosure already uses -- no new accordion
+// primitive). showUnpaid=false because Unpaid already surfaces through MobileAttentionZone above
+// (Part B3) when it is actually owed; compactRangeCaptions drops the date range repeated three times
+// under Most ordered/Sources/Payments received, since it is already visible once at the top (Part E1).
+function MobileBusinessPerformance({
+  model,
+  onPeriodChange,
+  onRetry,
+  overview,
+  period,
+}: {
+  model: DashboardModel;
+  onPeriodChange: (next: SalesPeriodSelection) => void;
+  onRetry: () => void;
+  overview: SalesPeriodOverview | null;
+  period: SalesPeriodSelection;
+}) {
+  const { selling, summary } = model;
+
+  if (selling.status === "unavailable") {
+    return <SellingUnavailable onRetry={onRetry} selling={selling} />;
+  }
+
+  if (selling.status === "loading" || !summary || !overview) {
+    return <div aria-busy="true" className="h-14 animate-pulse rounded-lg border border-[#e1d4c4] bg-[#fffaf3]" />;
+  }
+
+  return (
+    <details className="rounded-lg border border-[#e1d4c4] bg-white">
+      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 p-4">
+        <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Business performance</span>
+        <span className="text-sm text-[#6f5a4c]">{collapsedBusinessPerformanceSummary(period, overview)}</span>
+      </summary>
+      <div className="border-t border-[#e1d4c4] p-4 pt-3">
+        <SalesAnalyticsSection
+          compactRangeCaptions
+          onPeriodChange={onPeriodChange}
+          overview={overview}
+          period={period}
+          showUnpaid={false}
+          unpaidCount={summary.attention.unpaidCount}
+          unpaidValue={summary.attention.unpaidValue}
+        />
+        {!selling.hasOrders ? (
+          <p className="mt-3 text-sm text-[#6f5a4c]">
+            No orders yet. Once you add one it will show up here. <a className="font-semibold text-[#8f5632] hover:underline" href="/orders">Go to Orders</a>
+          </p>
+        ) : null}
       </div>
+    </details>
+  );
+}
+
+// Part B/C/D target order: Needs attention -> Stock & Demand -> Quick actions -> Business
+// performance (collapsed). Inventory Attention is not rendered separately here -- its content
+// already lives inside MobileAttentionZone above (Part B1), so it is never duplicated further down.
+function MobileDashboard({
+  model,
+  onPeriodChange,
+  onRefresh,
+  overview,
+  period,
+}: {
+  model: DashboardModel;
+  onPeriodChange: (next: SalesPeriodSelection) => void;
+  onRefresh: () => void;
+  overview: SalesPeriodOverview | null;
+  period: SalesPeriodSelection;
+}) {
+  return (
+    <div className="space-y-4">
+      <MobileAttentionZone model={model} />
+      <FinishedStockDemandSection section={model.stock} />
+      {/* Part D: the two most useful operational actions right after Stock & Demand. Open Bake
+          already exists as FinishedStockDemandSection's own trailing link just above -- it is not
+          duplicated here. New order deep-opens the existing NewOrderForm on /orders via the same
+          server-resolved query-param pattern Today's own ?job=<id> resume already uses (see
+          src/app/orders/page.tsx) -- not fragile cross-page state, and not a label promising more
+          than it does. Not sticky/fixed -- normal document flow. */}
+      <a className="flex h-12 items-center justify-center rounded-md bg-[#8f5632] text-base font-semibold text-white hover:bg-[#774427]" href="/orders?new=1">
+        + New order
+      </a>
+      <MobileBusinessPerformance model={model} onPeriodChange={onPeriodChange} onRetry={onRefresh} overview={overview} period={period} />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-// Orders: the first usable Selling workflow.
+// Orders Workspace V1.1: the operationally-focused Orders surface.
 //
 // Scope is S2 + S3 + S4 + S5 + S6, which is the whole approved MVP: create an order, move it
 // through its lifecycle, record payment against it, correct the agreed handover facts, and correct
@@ -8,20 +8,25 @@
 // unchanged, and everything downstream of it (see updatePaymentStatus's caller-supplied lines)
 // depends on it staying that way.
 //
-// S7 added a second view on this same surface: `?tab=summary` renders the Selling readout from the
-// state already loaded below. It is presentation only -- every metric is decided by
-// src/lib/orders/summary.ts, and nothing here recomputes one. No public ordering surface lives here.
+// V1.1 moved sales analytics (the selectable reporting period, Most Ordered, Sources) to Dashboard
+// -- Orders answers "what do I need to do right now", not "how is the business doing". What remains
+// here: Order operations (Needs attention, To prepare today -- presentation only, every rule decided
+// by src/lib/orders/summary.ts), Finished Stock & Demand (shared with Dashboard), and the order
+// list itself, now split into Active Orders (everything still open for handover, reusing
+// transitions.ts's own lifecycle classification -- never a second one) and Recent Orders (terminal
+// history, 5 at a time). No public ordering surface lives here.
 //
 // Data access goes through src/lib/orders-repository.ts. Orders never enter LabState. The catalog
 // (products, batches, costings, selling formats) is read from LabState because it is already
 // loaded there; nothing about orders is written back into it.
 
-import { ClipboardList, PackagePlus, RefreshCw } from "lucide-react";
+import { ArrowLeft, ClipboardList, PackagePlus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FinishedStockDemandSection } from "@/components/finished-stock-demand-section";
 import { OrdersSummary } from "@/components/orders-summary";
 import { Button, MessageBox, Panel, SecondaryButton, Tag } from "@/components/ui";
+import { sliceFinishedStockDemandRows, buildFinishedStockDemand } from "@/lib/dashboard/finished-stock-demand";
 import { buildSellingSummary } from "@/lib/orders/summary";
-import { ordersTabs, type OrdersTab } from "@/lib/orders-tabs";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { toDisplayPrice } from "@/lib/orders/money";
 import { filterOrdersByFulfillment, FULFILLMENT_FILTERS, FULFILLMENT_SORTS, getActiveDeliveryAddress, sortOrdersByFulfillment, type FulfillmentFilter, type FulfillmentSort } from "@/lib/orders/fulfillment";
@@ -30,7 +35,7 @@ import { filterOrdersBySearch, formatOrderItemSummary, getOrderCardSource, getOr
 import { appearsSafeToDelete, buildDeleteConfirmation } from "@/lib/orders/delete-eligibility";
 import { describeDraftStockRow, describeOrderStockRow, getStockReadiness, type StockReadiness } from "@/lib/orders/stock-readiness";
 import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
-import { getAllowedOrderTransitions, isValidOrderTransition, orderStatusChangeMovesStock } from "@/lib/orders/transitions";
+import { CLOSED_ORDER_STATUSES, getAllowedOrderTransitions, isOpenForHandover, isValidOrderTransition, orderStatusChangeMovesStock } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
 import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type FulfillmentMethod, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
 import { listCustomers, listOrderLines, listOrderRawCogs, listOrders, safeDeleteOrder, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
@@ -90,8 +95,13 @@ function sourceLabel(source: OrderSource): string {
   return source === "unknown" ? "Unknown source" : source.replace(/_/g, " ");
 }
 
-export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChange, onStockChanged }: {
-  initialOrdersTab?: OrdersTab;
+export function OrdersPage({ initialIsCreating = false, labState, onDirtyChange, onStockChanged }: {
+  // Mirrors Today's ?job=<id> resume pattern (create-now.ts's resolveCreateNowJobId, read
+  // server-side in src/app/orders/page.tsx): a plain URL query param resolved into a typed initial
+  // value, not client-side cross-page state. Lets a "New order" link elsewhere (Dashboard's quick
+  // action) open this form directly via /orders?new=1, reusing this exact existing form/business
+  // logic rather than inventing a second create-order surface.
+  initialIsCreating?: boolean;
   labState: LabState;
   onDirtyChange: (isDirty: boolean) => void;
   // Reloads the parent's authoritative LabState (finished-stock movements included) after an order
@@ -111,7 +121,20 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
   const [loadFailure, setLoadFailure] = useState<{ reason: "missing-table" | "failed"; message: string } | null>(null);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"good" | "bad" | "info">("info");
-  const [isCreating, setIsCreating] = useState(false);
+  const [isCreating, setIsCreating] = useState(initialIsCreating);
+
+  // Orders Workspace V1.1. How many Recent (terminal) orders are revealed, 5 at a time -- plain,
+  // page-local, never gates or re-triggers the loader above. Whether the viewport is narrow enough
+  // that order detail should be a full-screen overlay rather than a side panel -- see the dialog
+  // effect below.
+  const [recentRevealCount, setRecentRevealCount] = useState(5);
+  const [isNarrowViewport, setIsNarrowViewport] = useState(false);
+  // Mobile Orders primary action: below lg (the app shell's own mobile/desktop split, distinct from
+  // the xl-based isNarrowViewport above), the primary New order action moves near the top of the
+  // page instead of staying in the Orders list header. Its own breakpoint since it answers a
+  // different question ("is this a mobile layout") than isNarrowViewport ("should order detail be an
+  // overlay").
+  const [isMobileWidth, setIsMobileWidth] = useState(false);
 
   // S5 list controls. Client-side over the orders already loaded -- no extra round trip, and the
   // defaults ("all", newest first) leave the list exactly as S2 shipped it.
@@ -140,19 +163,66 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
   const orderIdRef = useRef<string>(crypto.randomUUID());
   const pendingCustomerIdRef = useRef<string>(crypto.randomUUID());
   const guardRef = useRef(createMutationGuard<string>());
-  const detailRef = useRef<HTMLDivElement | null>(null);
+  const detailDialogRef = useRef<HTMLDialogElement | null>(null);
 
   const client = supabase as unknown as OrdersClient | null;
 
-  // Below xl the detail stacks under the list, so a click on a card near the top would otherwise
-  // change something the operator cannot see. Bring it into view; on wide screens it is already
-  // beside the list. Scrolling only -- nothing is written or mutated.
+  // Below xl (the same breakpoint the desktop side panel already used), order detail becomes a
+  // full-screen overlay instead of an in-flow panel -- see the dialog effect below. Reactive to
+  // resize/rotation, not a one-shot check.
   useEffect(() => {
-    if (!selectedOrderId || window.matchMedia("(min-width: 1280px)").matches) {
+    const query = window.matchMedia("(max-width: 1279px)");
+    const update = () => setIsNarrowViewport(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  // Below lg (1024px, matching app-shell.tsx's own mobile/desktop split), the primary New order
+  // action relocates -- see its render site below. Reactive to resize/rotation, not a one-shot check.
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 1023px)");
+    const update = () => setIsMobileWidth(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  // ?new=1 is an INITIAL instruction only (mirrors create-now.tsx's own setActiveJob: a plain
+  // url.searchParams mutation plus window.history.replaceState, never a full navigation). Once it
+  // has done its one job -- seeding isCreating's initial value above -- it is stripped from the URL
+  // immediately, so a later browser Refresh (whether the operator cancels or completes the form)
+  // reads a clean /orders and never reopens New Order solely because a stale param survived. Any
+  // other query parameter already on the URL is left untouched.
+  useEffect(() => {
+    if (!initialIsCreating) {
       return;
     }
-    detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [selectedOrderId]);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("new");
+    window.history.replaceState(null, "", url);
+  }, [initialIsCreating]);
+
+  // Opens/closes the mobile detail dialog imperatively -- <dialog> has no declarative "open" prop
+  // this codebase can rely on across browsers, so a ref + showModal()/close() is the standard way to
+  // drive it. Only ever called while narrow; the desktop side panel (a plain div, not this dialog)
+  // is untouched by this effect entirely. Unmounting the dialog (selectedOrderId or isNarrowViewport
+  // becoming false) runs this cleanup, so body scroll is never left locked.
+  useEffect(() => {
+    if (!isNarrowViewport || !selectedOrderId) {
+      return;
+    }
+    const dialog = detailDialogRef.current;
+    if (!dialog) {
+      return;
+    }
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+    return () => {
+      dialog.close();
+      document.body.style.overflow = "";
+    };
+  }, [selectedOrderId, isNarrowViewport]);
 
   const sellableGroups: SellableProductGroup[] = useMemo(
     () => getSellableItems(labState.products, labState.batches, labState.costings, labState.sellingFormats),
@@ -394,6 +464,22 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
     [orders, fulfillmentFilter, fulfillmentSort, loadedAtMs, searchQuery, linesByOrderId, customers],
   );
 
+  // Orders Workspace V1.1: Active vs Recent, both derived from the SAME already-filtered/sorted
+  // visibleOrders above -- no second filtering pipeline, and no new sort. Active/Recent reuse
+  // transitions.ts's own isOpenForHandover/CLOSED_ORDER_STATUSES (moved there from summary.ts,
+  // unchanged) rather than a new lifecycle meaning invented for this page: those two sets already
+  // partition every OrderStatus with no gap or overlap (ORDER_STATUS_COVERAGE's own test proves
+  // it), so an order can never appear in both, or in neither.
+  //
+  // A non-default search or fulfilment filter switches to ONE unified list (isFiltering) instead of
+  // the Active/Recent split -- the 5-item Recent cap is presentation only and must never make a
+  // real search/filter match harder to find.
+  const isFiltering = searchQuery.trim() !== "" || fulfillmentFilter !== "all";
+  const activeOrders = useMemo(() => visibleOrders.filter(isOpenForHandover), [visibleOrders]);
+  const recentOrders = useMemo(() => visibleOrders.filter((order) => CLOSED_ORDER_STATUSES.includes(order.status)), [visibleOrders]);
+  const visibleRecentOrders = recentOrders.slice(0, recentRevealCount);
+  const hasMoreRecent = recentRevealCount < recentOrders.length;
+
   // S7: the readout, over the SAME loaded state the list above renders. No second query, no second
   // loader, no second cache -- reloading refreshes both, because both read `orders`/`linesByOrderId`
   // and both are stamped by the same `loadedAtMs`.
@@ -407,6 +493,26 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
     () => (loadedAtMs === 0 ? null : buildSellingSummary({ orders, linesByOrderId, nowMs: loadedAtMs, timeZone: BUSINESS_TIMEZONE })),
     [orders, linesByOrderId, loadedAtMs],
   );
+
+  // Finished Stock & Demand, shared with Dashboard (see finished-stock-demand-section.tsx's
+  // header) -- built directly from state this page already has loaded, not a second fetch. A
+  // failed orders read is treated exactly as Dashboard treats its own: demand and shortage become
+  // unknown (null), stock itself still shows. Unlike Dashboard's 5-row glance, Orders shows the
+  // full list -- it is the dedicated workspace, not a glance.
+  const stockDemand = useMemo(
+    () =>
+      buildFinishedStockDemand({
+        products: labState.products,
+        batches: labState.batches,
+        costings: labState.costings,
+        sellingFormats: labState.sellingFormats,
+        movements: labState.finishedStockMovements,
+        orders: loadFailure ? null : orders,
+        linesByOrderId,
+      }),
+    [labState.products, labState.batches, labState.costings, labState.sellingFormats, labState.finishedStockMovements, orders, linesByOrderId, loadFailure],
+  );
+  const stockSection = sliceFinishedStockDemandRows(stockDemand, null, !loadFailure);
 
   function resetForm() {
     orderIdRef.current = crypto.randomUUID();
@@ -516,59 +622,6 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
     );
   }
 
-  // Real links, not local tab state. Reload keeps the tab, /orders?tab=summary is shareable, and
-  // back/forward behave -- none of which hidden useState gives, and all of which an operator will
-  // assume.
-  //
-  // NO onClick GUARD HERE, deliberately. Because these are real document navigations, the
-  // beforeunload handler that useUnsavedChangesGuard already installs (above, from `isDirty`) fires
-  // on a tab click by itself. Adding a window.confirm as well would stack two independent guards on
-  // one navigation and prompt the operator twice for the same decision -- the second prompt arriving
-  // after they had already answered. One guard, owned by the hook that owns unload protection.
-  const tabBar = (
-    <div className="inline-flex w-fit flex-wrap rounded-md border border-[#d8c7b7] bg-white p-1">
-      {ordersTabs.map((item) => (
-        <a
-          className={`rounded px-4 py-1.5 text-sm font-semibold ${initialOrdersTab === item.key ? "bg-[#231813] text-white" : "text-[#5f4a3d]"}`}
-          href={item.href}
-          key={item.key}
-        >
-          {item.label}
-        </a>
-      ))}
-    </div>
-  );
-
-  if (initialOrdersTab === "summary") {
-    return (
-      <section className="grid gap-5" id="orders">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-lg font-semibold">Selling summary</h3>
-            <p className="text-sm text-[#6f5a4c]">What is happening with orders right now.</p>
-          </div>
-          <SecondaryButton onClick={reload}>
-            <span className="inline-flex items-center gap-2"><RefreshCw size={14} /> Refresh</span>
-          </SecondaryButton>
-        </div>
-
-        {tabBar}
-
-        {/* Three genuinely different conditions, told apart rather than collapsed. A summary of
-            zeroes is a claim that the business is quiet; it must never be shown when the truth is
-            "still loading" or "the read failed", because those look identical on screen and only
-            one of them is safe to act on. `summary` is null until a load has actually succeeded. */}
-        {loadFailure ? (
-          <MessageBox message={`${loadFailure.message} The summary is hidden rather than shown as zeroes, because these orders could not be read.`} tone="bad" />
-        ) : isLoading || !summary ? (
-          <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">Loading…</p>
-        ) : (
-          <OrdersSummary summary={summary} />
-        )}
-      </section>
-    );
-  }
-
   const selectedOrder = orders.find((order) => order.id === selectedOrderId) ?? null;
   const selectedLines = selectedOrder ? linesByOrderId.get(selectedOrder.id) ?? [] : [];
   // Only a NEW order has stock still to be reserved. Confirmed/ready orders already hold their
@@ -581,23 +634,190 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
     void runOrderAction(id, () => updatePaymentStatus(client, { orderId: id, action, now: new Date().toISOString() }));
   }
 
+  function renderOrderCards(list: Order[]) {
+    return (
+      <div className="space-y-2">
+        {list.map((order) => (
+          <OrderCard
+            customerName={customers.find((entry) => entry.id === order.customerId)?.name ?? "Unknown customer"}
+            isSelected={order.id === selectedOrderId}
+            key={order.id}
+            lines={linesByOrderId.get(order.id) ?? []}
+            onSelect={() => setSelectedOrderId(order.id)}
+            order={order}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  const detailPanel = (
+    <OrderDetailPanel
+      actionBusy={actionBusy}
+      customer={customers.find((entry) => entry.id === selectedOrder?.customerId) ?? null}
+      lines={selectedLines}
+      onCancel={(reason) => {
+        if (!client || !selectedOrder) return;
+        const id = selectedOrder.id;
+        void runOrderAction(id, async () => {
+          const operationId = getTransitionOperationId(id, "cancelled");
+          const result = await updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString(), operationId });
+          if (result.ok) rotateTransitionOperationId(id, "cancelled");
+          return result;
+        }, { movesStock: orderStatusChangeMovesStock(selectedOrder.status, "cancelled") });
+      }}
+      onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
+      stockReadiness={selectedStockReadiness}
+      onDelete={() => {
+        if (selectedOrder) void runDeleteOrder(selectedOrder.id, selectedOrder.updatedAt);
+      }}
+      onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
+      onEditAttribution={(attribution) => {
+        if (!client || !selectedOrder) return;
+        const id = selectedOrder.id;
+        void runOrderAction(id, () => updateOrderAttribution(client, { orderId: id, ...attribution, now: new Date().toISOString() }));
+      }}
+      onEditFulfillment={(fulfillment) => {
+        if (!client || !selectedOrder) return;
+        const id = selectedOrder.id;
+        void runOrderAction(id, () => updateOrderFulfillment(client, { orderId: id, ...fulfillment, now: new Date().toISOString() }));
+      }}
+      onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
+      onRefund={() => runPaymentAction({ kind: "refund" })}
+      rawCogs={selectedOrder ? rawCogsByOrderId.get(selectedOrder.id) ?? null : null}
+      onStatusChange={(to) => {
+        if (!client || !selectedOrder) return;
+        const id = selectedOrder.id;
+        void runOrderAction(id, async () => {
+          const operationId = getTransitionOperationId(id, to);
+          const result = await updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString(), operationId });
+          if (result.ok) rotateTransitionOperationId(id, to);
+          return result;
+        }, { movesStock: orderStatusChangeMovesStock(selectedOrder.status, to) });
+      }}
+      order={selectedOrder}
+    />
+  );
+
+  // Instantiated exactly once, same discipline as detailPanel above: whichever wrapper below is
+  // active (the mobile CTA block or the Orders list header) references this one instance, never a
+  // second copy of the form's own JSX/business logic.
+  const newOrderForm = isCreating ? (
+    <NewOrderForm
+      customers={customers}
+      customerId={customerId}
+      draftLines={draftLines}
+      fulfillmentAddress={fulfillmentAddress}
+      fulfillmentAt={fulfillmentAt}
+      fulfillmentMethod={fulfillmentMethod}
+      newCustomerName={newCustomerName}
+      notes={notes}
+      onSave={() => void handleSave()}
+      possibleDuplicateCustomer={possibleDuplicateCustomer}
+      previewTotal={previewTotal}
+      stockReadiness={draftStockReadiness}
+      sellableGroups={sellableGroups}
+      unorderableProducts={unorderableProducts}
+      setCustomerId={setCustomerId}
+      setDraftLines={setDraftLines}
+      setFulfillmentAddress={setFulfillmentAddress}
+      setFulfillmentAt={setFulfillmentAt}
+      setFulfillmentMethod={setFulfillmentMethod}
+      setNewCustomerName={setNewCustomerName}
+      setNotes={setNotes}
+      setSource={setSource}
+      source={source}
+    />
+  ) : null;
+
   return (
-    <section className={getOrdersLayoutClass(selectedOrder !== null)} id="orders">
+    <div className="space-y-8" id="orders">
+      {/* A. Order operations -- period-independent (Needs attention, To prepare today). Sales
+          analytics moved to Dashboard in V1.1; see orders-summary.tsx's own header. Below lg, this
+          whole header row (title/subtitle AND Refresh) is hidden entirely: the page itself is already
+          "Orders" (the active item in the primary nav says so), and Refresh is consolidated into the
+          single mobile Refresh below (Mobile Operational Compression V1, Part A2) rather than existing
+          here too. Unchanged at >=lg. */}
+      <section className="grid gap-5">
+        <div className="hidden flex-wrap items-center justify-between gap-3 lg:flex">
+          <div>
+            <h3 className="text-lg font-semibold">Order operations</h3>
+            <p className="text-sm text-[#6f5a4c]">What needs doing right now.</p>
+          </div>
+          <SecondaryButton onClick={reload}>
+            <span className="inline-flex items-center gap-2"><RefreshCw size={14} /> Refresh</span>
+          </SecondaryButton>
+        </div>
+
+        {/* Three genuinely different conditions, told apart rather than collapsed. A summary of
+            zeroes is a claim that the business is quiet; it must never be shown when the truth is
+            "still loading" or "the read failed", because those look identical on screen and only
+            one of them is safe to act on. `summary` is null until a load has actually succeeded.
+            Below lg, OrdersSummary itself compacts each fully-empty card to one line (Part A1) --
+            action-required content still renders the existing full card either way. */}
+        {loadFailure ? (
+          <MessageBox message={`${loadFailure.message} The summary is hidden rather than shown as zeroes, because these orders could not be read.`} tone="bad" />
+        ) : isLoading || !summary ? (
+          <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">Loading…</p>
+        ) : (
+          <OrdersSummary compact={isMobileWidth} summary={summary} />
+        )}
+      </section>
+
+      {/* B. Finished stock & demand -- shared with Dashboard, see finished-stock-demand-section.tsx. */}
+      <FinishedStockDemandSection section={stockSection} />
+
+      {/* Mobile Orders primary action: below lg, New order moves here -- immediately after Stock &
+          Demand, before Active/Recent Orders -- so it needs no scrolling to reach. The Orders list
+          header below never renders its own New order button while this is showing (isMobileWidth),
+          so there is exactly one trigger on screen at a time; newOrderForm is the same single
+          instance either way. Not sticky/fixed -- normal document flow. */}
+      {isMobileWidth ? (
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <button
+              className="h-12 flex-1 rounded-md bg-[#8f5632] text-base font-semibold text-white hover:bg-[#774427]"
+              onClick={() => { setIsCreating((value) => !value); setMessage(""); }}
+              type="button"
+            >
+              {isCreating ? "Cancel new order" : "New order"}
+            </button>
+            {/* The one Orders Refresh on mobile (Part A2) -- the Order operations row above and the
+                Orders list header below both hide their own Refresh while this is showing. */}
+            <SecondaryButton onClick={reload}>
+              <span className="inline-flex items-center gap-2"><RefreshCw size={14} /> Refresh</span>
+            </SecondaryButton>
+          </div>
+          {newOrderForm}
+        </div>
+      ) : null}
+
+      {/* C. Active Orders / D. Recent Orders -- New order stays reachable in this header regardless
+          of either section's state or the search/filter/reveal state below it (desktop/>=lg; below
+          lg the primary action lives in the mobile block above instead). */}
+      <section className={getOrdersLayoutClass(selectedOrder !== null)}>
       <div className="min-w-0 space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold">Orders</h3>
-            <p className="text-sm text-[#6f5a4c]">{isLoading ? "Loading…" : visibleOrders.length === orders.length ? `${orders.length} order${orders.length === 1 ? "" : "s"} recorded` : `${visibleOrders.length} of ${orders.length} orders shown`}</p>
+            <p className="text-sm text-[#6f5a4c]">{isLoading ? "Loading…" : `${orders.length} order${orders.length === 1 ? "" : "s"} recorded`}</p>
           </div>
-          <div className="flex gap-2">
-            <SecondaryButton onClick={reload}>
-              <span className="inline-flex items-center gap-2"><RefreshCw size={14} /> Refresh</span>
-            </SecondaryButton>
-            <SecondaryButton onClick={() => { setIsCreating((value) => !value); setMessage(""); }}>{isCreating ? "Cancel new order" : "New order"}</SecondaryButton>
+          <div className="flex flex-wrap gap-2">
+            {isMobileWidth ? null : (
+              <SecondaryButton onClick={reload}>
+                <span className="inline-flex items-center gap-2"><RefreshCw size={14} /> Refresh</span>
+              </SecondaryButton>
+            )}
+            {isMobileWidth ? null : (
+              <SecondaryButton onClick={() => { setIsCreating((value) => !value); setMessage(""); }}>{isCreating ? "Cancel new order" : "New order"}</SecondaryButton>
+            )}
           </div>
         </div>
 
-        {tabBar}
+        {message ? <MessageBox message={message} tone={messageTone} /> : null}
+        {loadFailure && loadFailure.reason === "failed" ? <MessageBox message={loadFailure.message} tone="bad" /> : null}
+
+        {isMobileWidth ? null : newOrderForm}
 
         <div className="flex flex-wrap items-end gap-2">
           <label className="grid min-w-[12rem] flex-1 gap-1 text-xs font-medium sm:max-w-xs">
@@ -618,125 +838,128 @@ export function OrdersPage({ initialOrdersTab = "orders", labState, onDirtyChang
           </label>
         </div>
 
-        {message ? <MessageBox message={message} tone={messageTone} /> : null}
-        {loadFailure && loadFailure.reason === "failed" ? <MessageBox message={loadFailure.message} tone="bad" /> : null}
+        {isLoading ? (
+          <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">Loading…</p>
+        ) : orders.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders recorded yet. Use “New order” to add the first one.</p>
+        ) : isFiltering ? (
+          // A non-default search or filter narrows to ONE unified list -- the 5-item Recent cap is
+          // presentation only and must never make a real match harder to find.
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold text-[#231813]">Results ({visibleOrders.length})</h4>
+            {visibleOrders.length === 0 ? (
+              searchQuery.trim() !== "" ? (
+                <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match this search.{fulfillmentFilter !== "all" ? ` The “${FILTER_LABELS[fulfillmentFilter]}” filter is also on.` : ""}</p>
+              ) : (
+                <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match “{FILTER_LABELS[fulfillmentFilter]}”. The other {orders.length} {orders.length === 1 ? "order is" : "orders are"} still here — switch back to “All orders”.</p>
+              )
+            ) : (
+              renderOrderCards(visibleOrders)
+            )}
+          </div>
+        ) : (
+          <>
+            {/* C. Active Orders -- every order still open for handover, regardless of age. Never
+                capped: an old unfulfilled order must not hide behind newer completed ones. */}
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold text-[#231813]">Active Orders ({activeOrders.length})</h4>
+              {activeOrders.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">Nothing needs handling right now.</p>
+              ) : (
+                renderOrderCards(activeOrders)
+              )}
+            </div>
 
-        {isCreating ? (
-          <NewOrderForm
-            customers={customers}
-            customerId={customerId}
-            draftLines={draftLines}
-            fulfillmentAddress={fulfillmentAddress}
-            fulfillmentAt={fulfillmentAt}
-            fulfillmentMethod={fulfillmentMethod}
-            newCustomerName={newCustomerName}
-            notes={notes}
-            onSave={() => void handleSave()}
-            possibleDuplicateCustomer={possibleDuplicateCustomer}
-            previewTotal={previewTotal}
-            stockReadiness={draftStockReadiness}
-            sellableGroups={sellableGroups}
-            unorderableProducts={unorderableProducts}
-            setCustomerId={setCustomerId}
-            setDraftLines={setDraftLines}
-            setFulfillmentAddress={setFulfillmentAddress}
-            setFulfillmentAt={setFulfillmentAt}
-            setFulfillmentMethod={setFulfillmentMethod}
-            setNewCustomerName={setNewCustomerName}
-            setNotes={setNotes}
-            setSource={setSource}
-            source={source}
-          />
-        ) : null}
+            {/* D. Recent Orders -- terminal history (completed/cancelled), 5 at a time. Active and
+                Recent can never overlap: isOpenForHandover/CLOSED_ORDER_STATUSES partition every
+                OrderStatus with no gap. */}
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold text-[#231813]">Recent Orders ({recentOrders.length})</h4>
+              {recentOrders.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No order history yet.</p>
+              ) : (
+                <>
+                  {renderOrderCards(visibleRecentOrders)}
+                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                    {hasMoreRecent ? <SecondaryButton onClick={() => setRecentRevealCount((count) => count + 5)}>Show 5 more</SecondaryButton> : null}
+                    {recentRevealCount > 5 ? (
+                      <button className="text-sm font-semibold text-[#8f5632] hover:underline" onClick={() => setRecentRevealCount(5)} type="button">Show less</button>
+                    ) : null}
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </div>
 
-        <div className="space-y-2">
-          {!isLoading && orders.length === 0 ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders recorded yet. Use “New order” to add the first one.</p> : null}
-          {!isLoading && orders.length > 0 && visibleOrders.length === 0 && searchQuery.trim() !== "" ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match this search.{fulfillmentFilter !== "all" ? ` The “${FILTER_LABELS[fulfillmentFilter]}” filter is also on.` : ""}</p> : null}
-          {!isLoading && orders.length > 0 && visibleOrders.length === 0 && searchQuery.trim() === "" ? <p className="rounded-lg border border-dashed border-[#d8c7b7] p-6 text-sm text-[#6f5a4c]">No orders match “{FILTER_LABELS[fulfillmentFilter]}”. The other {orders.length} {orders.length === 1 ? "order is" : "orders are"} still here — switch back to “All orders”.</p> : null}
-          {visibleOrders.map((order) => {
-            const lines = linesByOrderId.get(order.id) ?? [];
-            const total = getOrderTotals(lines).total;
-            const customer = customers.find((entry) => entry.id === order.customerId);
-            const times = getOrderCardTimes(order);
-            const cardSource = getOrderCardSource(order);
-            return (
-              <button
-                className={`w-full rounded-lg border p-4 text-left text-sm ${order.id === selectedOrderId ? "border-[#8f5632] bg-[#fffaf3]" : "border-[#e1d4c4] bg-white hover:bg-[#fffaf3]"}`}
-                key={order.id}
-                onClick={() => setSelectedOrderId(order.id)}
-                type="button"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span className="min-w-0 break-words font-semibold">{customer?.name ?? "Unknown customer"}</span>
-                  <span className="shrink-0 font-semibold">{formatPeso(total)}</span>
-                </div>
-                <p className="mt-1 break-words text-sm text-[#5f4a3d]">{formatOrderItemSummary(lines)}</p>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#6f5a4c]">
-                  <Tag tone="warm">{order.status}</Tag>
-                  <Tag tone={getPaymentTone(order.paymentStatus)}>{order.paymentStatus}</Tag>
-                  <span>Placed {formatWhen(times.placed)}</span>
-                </div>
-                <p className="mt-1 text-xs text-[#6f5a4c]">
-                  {order.fulfillmentMethod === "delivery" ? "Delivery" : "Pickup"}
-                  {times.handover ? ` · Handover ${formatWhen(times.handover)}` : ""}
-                  {cardSource ? ` · ${cardSource}` : ""}
-                </p>
+      {/* Desktop (>=xl): unchanged in-flow side panel, byte-identical to before -- no <dialog>
+          involved, zero risk of native dialog styling reaching this branch. */}
+      {selectedOrder && !isNarrowViewport ? <div className="min-w-0">{detailPanel}</div> : null}
+
+      {/* Mobile (<xl): a native <dialog>, mounted (and showModal()'d by the effect above) only
+          while narrow AND an order is selected -- unmounting on either condition changing (e.g. a
+          resize past the breakpoint) hands off to the desktop branch above declaratively, with no
+          imperative mode-switching needed. showModal() gives a real focus trap, Escape-to-cancel,
+          and focus restoration on close, all native -- none of it hand-rolled. The inner flex
+          column keeps the back button always reachable while only the content pane scrolls, and
+          document.body is scroll-locked by the effect above so the page behind can't compete. */}
+      {selectedOrder && isNarrowViewport ? (
+        <dialog
+          aria-label={`Order detail: ${customers.find((entry) => entry.id === selectedOrder.customerId)?.name ?? "order"}`}
+          className="fixed inset-0 z-40 m-0 h-full max-h-none w-full max-w-none border-0 bg-white p-0"
+          onCancel={() => setSelectedOrderId(null)}
+          ref={detailDialogRef}
+        >
+          <div className="flex h-full flex-col">
+            <div className="flex shrink-0 items-center gap-2 border-b border-[#e1d4c4] bg-white p-3">
+              <button className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#5f4a3d]" onClick={() => setSelectedOrderId(null)} type="button">
+                <ArrowLeft size={18} /> Orders
               </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {selectedOrder ? (
-      <div className="min-w-0" ref={detailRef}>
-        <OrderDetailPanel
-          actionBusy={actionBusy}
-          customer={customers.find((entry) => entry.id === selectedOrder?.customerId) ?? null}
-          lines={selectedLines}
-          onCancel={(reason) => {
-            if (!client || !selectedOrder) return;
-            const id = selectedOrder.id;
-            void runOrderAction(id, async () => {
-              const operationId = getTransitionOperationId(id, "cancelled");
-              const result = await updateOrderStatus(client, { orderId: id, to: "cancelled", cancelReason: reason, now: new Date().toISOString(), operationId });
-              if (result.ok) rotateTransitionOperationId(id, "cancelled");
-              return result;
-            }, { movesStock: orderStatusChangeMovesStock(selectedOrder.status, "cancelled") });
-          }}
-          onClearPaymentRecord={() => runPaymentAction({ kind: "clear-record" })}
-          stockReadiness={selectedStockReadiness}
-          onDelete={() => {
-            if (selectedOrder) void runDeleteOrder(selectedOrder.id, selectedOrder.updatedAt);
-          }}
-          onCorrectPaymentRecord={(correction) => runPaymentAction({ kind: "correct-record", ...correction })}
-          onEditAttribution={(attribution) => {
-            if (!client || !selectedOrder) return;
-            const id = selectedOrder.id;
-            void runOrderAction(id, () => updateOrderAttribution(client, { orderId: id, ...attribution, now: new Date().toISOString() }));
-          }}
-          onEditFulfillment={(fulfillment) => {
-            if (!client || !selectedOrder) return;
-            const id = selectedOrder.id;
-            void runOrderAction(id, () => updateOrderFulfillment(client, { orderId: id, ...fulfillment, now: new Date().toISOString() }));
-          }}
-          onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
-          onRefund={() => runPaymentAction({ kind: "refund" })}
-          rawCogs={selectedOrder ? rawCogsByOrderId.get(selectedOrder.id) ?? null : null}
-          onStatusChange={(to) => {
-            if (!client || !selectedOrder) return;
-            const id = selectedOrder.id;
-            void runOrderAction(id, async () => {
-              const operationId = getTransitionOperationId(id, to);
-              const result = await updateOrderStatus(client, { orderId: id, to, now: new Date().toISOString(), operationId });
-              if (result.ok) rotateTransitionOperationId(id, to);
-              return result;
-            }, { movesStock: orderStatusChangeMovesStock(selectedOrder.status, to) });
-          }}
-          order={selectedOrder}
-        />
-      </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">{detailPanel}</div>
+          </div>
+        </dialog>
       ) : null}
-    </section>
+      </section>
+    </div>
+  );
+}
+
+// One order card -- shared by the unified Results list and both Active/Recent lists, so the row
+// markup exists in exactly one place regardless of which section is rendering it.
+function OrderCard({ customerName, isSelected, lines, onSelect, order }: {
+  customerName: string;
+  isSelected: boolean;
+  lines: OrderLine[];
+  onSelect: () => void;
+  order: Order;
+}) {
+  const total = getOrderTotals(lines).total;
+  const times = getOrderCardTimes(order);
+  const cardSource = getOrderCardSource(order);
+  return (
+    <button
+      className={`w-full rounded-lg border p-4 text-left text-sm ${isSelected ? "border-[#8f5632] bg-[#fffaf3]" : "border-[#e1d4c4] bg-white hover:bg-[#fffaf3]"}`}
+      onClick={onSelect}
+      type="button"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="min-w-0 break-words font-semibold">{customerName}</span>
+        <span className="shrink-0 font-semibold">{formatPeso(total)}</span>
+      </div>
+      <p className="mt-1 break-words text-sm text-[#5f4a3d]">{formatOrderItemSummary(lines)}</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#6f5a4c]">
+        <Tag tone="warm">{order.status}</Tag>
+        <Tag tone={getPaymentTone(order.paymentStatus)}>{order.paymentStatus}</Tag>
+        <span>Placed {formatWhen(times.placed)}</span>
+      </div>
+      <p className="mt-1 text-xs text-[#6f5a4c]">
+        {order.fulfillmentMethod === "delivery" ? "Delivery" : "Pickup"}
+        {times.handover ? ` · Handover ${formatWhen(times.handover)}` : ""}
+        {cardSource ? ` · ${cardSource}` : ""}
+      </p>
+    </button>
   );
 }
 

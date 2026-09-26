@@ -6,7 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { grossRevenue, netRevenue, refunds, singleDayRange, unpaidOrderValue, type BusinessDayRange } from "../src/lib/orders/revenue.ts";
+import { grossRevenue, netRevenue, paidOrderCount, refunds, singleDayRange, unpaidOrderValue, type BusinessDayRange } from "../src/lib/orders/revenue.ts";
 import { getOrderTotals } from "../src/lib/orders/totals.ts";
 import { applyOrderTransition, applyRefund } from "../src/lib/orders/transitions.ts";
 import type { Order, OrderLine } from "../src/lib/orders/types.ts";
@@ -232,6 +232,30 @@ test("gross, refunds and net aggregate correctly across a mixed set of orders", 
   assert.equal(grossRevenue(orders, SEPTEMBER), 0);
   assert.equal(refunds(orders, SEPTEMBER), 60);
   assert.equal(netRevenue(orders, SEPTEMBER), -60);
+});
+
+// --- Orders Workspace V1: the average-paid-order-value denominator ------------------------------
+
+test("paidOrderCount counts exactly the orders grossRevenue would sum for the same range", () => {
+  const orders = [
+    orderWith({ id: "a", paymentStatus: "paid", paidAt: "2026-08-05T04:00:00.000Z", paidAmount: 480 }),
+    orderWith({ id: "b", paymentStatus: "paid", paidAt: "2026-08-06T04:00:00.000Z", paidAmount: 240 }),
+    orderWith({ id: "c" }), // never paid
+    orderWith({ id: "d", paymentStatus: "paid", paidAt: "2026-09-01T04:00:00.000Z", paidAmount: 100 }), // outside AUGUST
+  ];
+
+  assert.equal(paidOrderCount(orders, AUGUST), 2);
+  assert.equal(grossRevenue(orders, AUGUST), 480 + 240);
+});
+
+test("paidOrderCount includes a cancelled-but-paid order, matching grossRevenue's no-lifecycle-filter rule", () => {
+  const cancelledPaid = orderWith({ id: "f", status: "cancelled", paymentStatus: "paid", paidAt: "2026-08-10T04:00:00.000Z", paidAmount: 30 });
+  assert.equal(paidOrderCount([cancelledPaid], AUGUST), 1);
+});
+
+test("paidOrderCount is 0 for an order with no paid_at, and for an unparseable one", () => {
+  assert.equal(paidOrderCount([orderWith()], AUGUST), 0);
+  assert.equal(paidOrderCount([orderWith({ paymentStatus: "paid", paidAt: "not-a-date", paidAmount: 480 })], AUGUST), 0);
 });
 
 test("revenue functions never mutate their inputs", () => {

@@ -24,7 +24,7 @@
 
 import { resolveBusinessDay } from "../business-day.ts";
 import { getOrderTotals } from "./totals.ts";
-import type { Order, OrderLine } from "./types.ts";
+import { PAYMENT_METHODS, type Order, type OrderLine, type PaymentMethod } from "./types.ts";
 
 // Inclusive on both ends, expressed as YYYY-MM-DD business days rather than instants. Comparing
 // business-day strings is what keeps "did we receive it today?" answerable in Manila terms without
@@ -90,4 +90,55 @@ export function unpaidOrderValue(orders: Order[], linesByOrderId: Map<string, Or
 // are the same string.
 export function singleDayRange(businessDay: string, timezone: string): BusinessDayRange {
   return { fromDay: businessDay, toDay: businessDay, timezone };
+}
+
+// The denominator for an average paid order value: how many orders actually contributed to
+// grossRevenue in this range. Reuses the exact same paidAt+range predicate grossRevenue sums over,
+// so the two figures can never disagree about which orders counted.
+export function paidOrderCount(orders: Order[], range: BusinessDayRange): number {
+  return orders.filter((order) => isWithinRange(order.paidAt, range)).length;
+}
+
+export type PaymentMethodTotal = { method: PaymentMethod | "unknown"; amount: number };
+
+// Receipts by method, not a wallet/account balance -- this reports how much came in and through which
+// recorded method, nothing about where it currently sits. Reuses the EXACT same range/inclusion rule
+// grossRevenue itself uses (isWithinRange(order.paidAt, range), over the full order list, no lifecycle
+// filter), so summing every entry's amount always reconciles to grossRevenue(orders, range) for the
+// same orders/range -- a cancelled-but-paid order counts here exactly as it counts there.
+//
+// "unknown" is an order whose paymentMethod was never recorded (or was cleared by a payment
+// correction, which also clears paidAt/paidAmount -- see transitions.ts's applyPaymentCorrection --
+// so a corrected order simply drops out of both this and grossRevenue together, never disagreeing).
+// It is the same kind of honest absence sourceLabel already calls "Unknown source" for OrderSource.
+//
+// Methods are the app's real, canonical PAYMENT_METHODS -- never a destination-account guess. A
+// generic "bank_transfer" is reported as-is; this file has no way to know which bank or e-wallet a
+// transfer landed in, and does not invent one.
+export function getPaymentMethodBreakdown(orders: Order[], range: BusinessDayRange): PaymentMethodTotal[] {
+  const totals = new Map<PaymentMethod | "unknown", number>();
+  for (const order of orders) {
+    if (!isWithinRange(order.paidAt, range)) continue;
+    const key = order.paymentMethod ?? "unknown";
+    totals.set(key, (totals.get(key) ?? 0) + (order.paidAmount ?? 0));
+  }
+
+  return [...PAYMENT_METHODS, "unknown" as const]
+    .map((method) => ({ method, amount: totals.get(method) ?? 0 }))
+    // Same "no meaningless zero rows" convention getOrderCountsBySource already applies.
+    .filter((entry) => entry.amount > 0)
+    .sort((a, b) => {
+      if (a.method === "unknown") return 1;
+      if (b.method === "unknown") return -1;
+      return b.amount - a.amount;
+    });
+}
+
+// Whether a disclaimer is warranted: a refunded order's paidAt survives the refund (see this file's
+// header -- refundedAt is a separate fact, gross is immutable), so it still counts in both
+// grossRevenue and getPaymentMethodBreakdown exactly as before the refund. That is correct (this
+// reports gross receipts, not a net balance) but can look surprising next to a remembered refund, so
+// callers use this to show a compact "refunds are tracked separately" note -- it changes no number.
+export function hasRefundedPaidOrderInRange(orders: Order[], range: BusinessDayRange): boolean {
+  return orders.some((order) => order.paymentStatus === "refunded" && isWithinRange(order.paidAt, range));
 }

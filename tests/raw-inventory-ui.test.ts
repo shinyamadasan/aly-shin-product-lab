@@ -375,8 +375,18 @@ test("Inventory Stock table: Target, Value, and per-row cost-certification state
   assert.doesNotMatch(stockPage.text, />Target</);
   assert.doesNotMatch(stockPage.text, />Value</);
   assert.doesNotMatch(stockPage.text, /costReconciledAt/);
-  // A healthy row renders no status tag at all -- only Out/Low/expiration/reconciliation states do.
-  assert.match(stockPage.text, /status !== "good" \? <Tag/);
+});
+
+// Inventory Stock Status V1: the 4-level urgency badge (Good/Reorder Soon/Critical/Out of Stock)
+// is always visible, including the healthy case -- a deliberate change from the older StockStatus
+// tag convention, which hid "good" to keep normal rows boring.
+test("Inventory Stock table: stock urgency is always shown, including 'Good', and production coverage renders alongside it", () => {
+  assert.match(stockPage.text, /getStockUrgencyStatus\(item\)/);
+  assert.match(stockPage.text, /formatProductionCoverage\(getProductionCyclesRemaining\(item\)\)/);
+  // No "hide when good" branch remains for the urgency tag -- only "not_configured" gets a
+  // different (non-Tag) treatment, everything else always renders a Tag.
+  assert.doesNotMatch(stockPage.text, /urgencyStatus !== "good"/);
+  assert.match(stockPage.text, /<Tag tone=\{stockUrgencyTone\[urgencyStatus\]\}>\{stockUrgencyLabel\[urgencyStatus\]\}<\/Tag>/);
 });
 
 test("Inventory Stock table: Need to Buy survives as the 'Low / Out' filter, reachable from Stock", () => {

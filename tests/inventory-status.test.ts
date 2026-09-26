@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getExpirationStatus, getExpiringIngredients, getFlaggedIngredients, getInventorySummaryCounts, getNeedToBuyList, getStockStatus, getSuggestedBuyQuantity, matchesStockFilter, matchesStockSearch } from "../src/lib/inventory-status.ts";
+import {
+  formatProductionCoverage, getExpirationStatus, getExpiringIngredients, getFlaggedIngredients, getInventorySummaryCounts, getNeedToBuyList, getOneCycleRequirement,
+  getProductionCyclesRemaining, getStockStatus, getStockUrgencyStatus, getSuggestedBuyQuantity, matchesStockFilter, matchesStockSearch,
+} from "../src/lib/inventory-status.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
 function ingredient(overrides: Partial<Ingredient> = {}): Ingredient {
@@ -217,4 +220,66 @@ test("matchesStockSearch treats an empty or whitespace-only query as matching ev
   const item = ingredient({ name: "All Purpose Flour" });
   assert.equal(matchesStockSearch(item, ""), true);
   assert.equal(matchesStockSearch(item, "   "), true);
+});
+
+// Inventory Stock Status V1: low_stock_threshold is configured as 2x one production cycle's
+// requirement, so oneCycleRequirement = threshold / 2. All boundary cases below use the worked
+// example from the spec: threshold 220 -> reorder at 220, critical at 110.
+
+test("getOneCycleRequirement halves the threshold", () => {
+  assert.equal(getOneCycleRequirement(220), 110);
+});
+
+test("getOneCycleRequirement is 0 when the threshold is 0 or negative", () => {
+  assert.equal(getOneCycleRequirement(0), 0);
+  assert.equal(getOneCycleRequirement(-5), 0);
+});
+
+test("getStockUrgencyStatus boundary conditions for threshold 220", () => {
+  const at = (currentQuantity: number) => getStockUrgencyStatus(ingredient({ currentQuantity, lowStockThreshold: 220 }));
+  assert.equal(at(221), "good");
+  assert.equal(at(220), "reorder_soon");
+  assert.equal(at(111), "reorder_soon");
+  assert.equal(at(110), "critical");
+  assert.equal(at(1), "critical");
+  assert.equal(at(0), "out_of_stock");
+});
+
+test("getStockUrgencyStatus is 'out_of_stock' for negative quantity, same as zero", () => {
+  assert.equal(getStockUrgencyStatus(ingredient({ currentQuantity: -5, lowStockThreshold: 220 })), "out_of_stock");
+});
+
+test("getStockUrgencyStatus is 'not_configured' when the threshold is 0, regardless of quantity -- never falsely 'good' or 'out_of_stock'", () => {
+  assert.equal(getStockUrgencyStatus(ingredient({ currentQuantity: 0, lowStockThreshold: 0 })), "not_configured");
+  assert.equal(getStockUrgencyStatus(ingredient({ currentQuantity: 500, lowStockThreshold: 0 })), "not_configured");
+});
+
+test("getStockUrgencyStatus handles decimal quantities and thresholds", () => {
+  assert.equal(getStockUrgencyStatus(ingredient({ currentQuantity: 2.5, lowStockThreshold: 5 })), "critical");
+  assert.equal(getStockUrgencyStatus(ingredient({ currentQuantity: 2.51, lowStockThreshold: 5 })), "reorder_soon");
+  assert.equal(getStockUrgencyStatus(ingredient({ currentQuantity: 5.01, lowStockThreshold: 5 })), "good");
+});
+
+test("getProductionCyclesRemaining is current quantity divided by one cycle's requirement", () => {
+  assert.equal(getProductionCyclesRemaining(ingredient({ currentQuantity: 1786, lowStockThreshold: 220 })), 1786 / 110);
+  assert.equal(getProductionCyclesRemaining(ingredient({ currentQuantity: 198, lowStockThreshold: 220 })), 1.8);
+});
+
+test("getProductionCyclesRemaining is null when no threshold is configured -- never 0 or Infinity", () => {
+  assert.equal(getProductionCyclesRemaining(ingredient({ currentQuantity: 500, lowStockThreshold: 0 })), null);
+});
+
+test("formatProductionCoverage renders a rounded '~N.N cycles' string", () => {
+  assert.equal(formatProductionCoverage(1786 / 110), "~16.2 cycles");
+  assert.equal(formatProductionCoverage(1.8), "~1.8 cycles");
+});
+
+test("formatProductionCoverage renders '<1 cycle' below one full cycle, not a rounded fraction", () => {
+  assert.equal(formatProductionCoverage(0.95), "<1 cycle");
+  assert.equal(formatProductionCoverage(0), "<1 cycle");
+  assert.equal(formatProductionCoverage(-2), "<1 cycle");
+});
+
+test("formatProductionCoverage is '' (omit) when not configured", () => {
+  assert.equal(formatProductionCoverage(null), "");
 });

@@ -82,6 +82,57 @@ export function getFlaggedIngredients(ingredients: Ingredient[]) {
   return ingredients.filter((ingredient) => Boolean(ingredient.baseUnitMigrationFlaggedReason));
 }
 
+// low_stock_threshold is configured (by convention, not a stored fact) as 2x the amount one
+// production cycle requires -- halving it recovers that cycle requirement without a new stored
+// column. 0 when no threshold is set, so callers never divide by zero.
+export function getOneCycleRequirement(lowStockThreshold: number): number {
+  return lowStockThreshold > 0 ? lowStockThreshold / 2 : 0;
+}
+
+// A finer-grained read of urgency than StockStatus's plain out/low/good, scoped to the Inventory
+// Stock list: "low" collapses two very different situations (just under threshold vs. nearly
+// empty) into one label. Deliberately not a replacement for StockStatus -- getStockStatus still
+// drives Need to Buy, the Dashboard summary cards, and the AI advisor's business-context adapter,
+// none of which this slice touches. "not_configured" is its own state, not folded into "good",
+// so a threshold of 0 never falsely reads as healthy stock.
+export type StockUrgencyStatus = "not_configured" | "out_of_stock" | "critical" | "reorder_soon" | "good";
+
+export function getStockUrgencyStatus(ingredient: Pick<Ingredient, "currentQuantity" | "lowStockThreshold">): StockUrgencyStatus {
+  const { currentQuantity, lowStockThreshold } = ingredient;
+  if (lowStockThreshold <= 0) {
+    return "not_configured";
+  }
+  if (currentQuantity <= 0) {
+    return "out_of_stock";
+  }
+  if (currentQuantity <= getOneCycleRequirement(lowStockThreshold)) {
+    return "critical";
+  }
+  if (currentQuantity <= lowStockThreshold) {
+    return "reorder_soon";
+  }
+  return "good";
+}
+
+// null when no threshold is configured -- there is no "1 cycle" amount to measure against, so
+// there is nothing honest to display (not 0, not Infinity).
+export function getProductionCyclesRemaining(ingredient: Pick<Ingredient, "currentQuantity" | "lowStockThreshold">): number | null {
+  const oneCycle = getOneCycleRequirement(ingredient.lowStockThreshold);
+  return oneCycle > 0 ? ingredient.currentQuantity / oneCycle : null;
+}
+
+// Display only -- never changes the stored quantity or its canonical unit. "<1 cycle" reads more
+// honestly than a rounded "~0.9 cycles" when there truly isn't a full cycle's worth on hand.
+export function formatProductionCoverage(cyclesRemaining: number | null): string {
+  if (cyclesRemaining === null) {
+    return "";
+  }
+  if (cyclesRemaining < 1) {
+    return "<1 cycle";
+  }
+  return `~${cyclesRemaining.toFixed(1)} cycles`;
+}
+
 // The daily Stock view's own exception filter -- "All" shows everything, "Low & Out" and
 // "Expiring" narrow to exactly what used to be separate primary workflows (Need to Buy, and the
 // expiration badges) before they folded into Stock as filters. Kept a pure predicate (rather than

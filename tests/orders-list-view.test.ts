@@ -132,11 +132,13 @@ test("a known source shows its label only, never the reference", () => {
 test("the card never renders sourceRef, while the detail panel keeps the full attribution", () => {
   const source = readFileSync(new URL("../src/components/orders-page.tsx", import.meta.url), "utf8");
   const detailAt = source.indexOf("function OrderDetailPanel(");
-  const cardStart = source.indexOf("{visibleOrders.map((order) => {");
-  const card = source.slice(cardStart, source.indexOf("</button>", cardStart));
+  // OrderCard (Orders Workspace V1.1) is the one card implementation shared by the unified Results
+  // list and both Active/Recent lists -- there is no separate inline .map() card markup any more.
+  const cardStart = source.indexOf("function OrderCard(");
+  const card = source.slice(cardStart, source.indexOf("function NewOrderForm(", cardStart));
   const detail = source.slice(detailAt);
 
-  assert.equal(cardStart > -1 && card.length > 0, true, "precondition: card block located");
+  assert.equal(cardStart > -1 && card.length > 0, true, "precondition: OrderCard located");
   assert.equal(card.includes("sourceRef"), false, "the compact card must not touch sourceRef");
   assert.match(detail, /sourceLabel\(order\.source\)\}\{order\.sourceRef \? ` · \$\{order\.sourceRef\}` : ""\}/);
 });
@@ -170,11 +172,17 @@ test("with nothing selected the list has no second column; with a selection it d
 test("the page renders OrderDetailPanel only when an order is selected, and no permanent 420px column", () => {
   const source = readFileSync(new URL("../src/components/orders-page.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /\{selectedOrder \? \(\s*<div className="min-w-0" ref=\{detailRef\}>\s*<OrderDetailPanel/);
+  // Orders Workspace V1.1: OrderDetailPanel is instantiated exactly ONCE (`detailPanel`), then
+  // referenced from whichever wrapper is active -- the desktop in-flow div (>=xl, unchanged
+  // behavior) or the mobile <dialog> overlay (<xl) -- never a second copy of the panel's own JSX.
+  assert.equal((source.match(/<OrderDetailPanel\b/g) ?? []).length, 1, "OrderDetailPanel must be instantiated exactly once");
+  assert.match(source, /const detailPanel = \(\s*<OrderDetailPanel/);
+  assert.match(source, /\{selectedOrder && !isNarrowViewport \? <div className="min-w-0">\{detailPanel\}<\/div> : null\}/);
+  assert.match(source, /\{selectedOrder && isNarrowViewport \? \(/);
   assert.equal(source.includes("xl:grid-cols-[1fr_420px]"), false);
   assert.match(source, /getOrdersLayoutClass\(selectedOrder !== null\)/);
-  // Click-to-select is unchanged and nothing auto-selects.
-  assert.match(source, /onClick=\{\(\) => setSelectedOrderId\(order\.id\)\}/);
+  // Click-to-select is unchanged and nothing auto-selects (now inside OrderCard/renderOrderCards).
+  assert.match(source, /onSelect=\{\(\) => setSelectedOrderId\(order\.id\)\}/);
   assert.match(source, /useState<string \| null>\(null\)/);
 });
 

@@ -29,32 +29,21 @@ import { resolveBusinessDay } from "../business-day.ts";
 import { getOrderCountsBySource, type SourceCount } from "./attribution.ts";
 import { filterOrdersByFulfillment, isScheduled } from "./fulfillment.ts";
 import { getPreparationByProduct, getPreparationTotals, type PreparationTotals } from "./pieces.ts";
-import { grossRevenue, netRevenue, refunds, singleDayRange, unpaidOrderValue, type BusinessDayRange } from "./revenue.ts";
-import type { Order, OrderLine, OrderStatus } from "./types.ts";
+import {
+  getPaymentMethodBreakdown, grossRevenue, hasRefundedPaidOrderInRange, netRevenue, paidOrderCount, refunds, singleDayRange, unpaidOrderValue,
+  type BusinessDayRange, type PaymentMethodTotal,
+} from "./revenue.ts";
+import { CLOSED_ORDER_STATUSES, isOpenForHandover, OPEN_FOR_HANDOVER } from "./transitions.ts";
+import type { Order, OrderLine } from "./types.ts";
 
 // --- Lifecycle sets ---------------------------------------------------------------------------
-
-// Orders that still require a handover, stated by MEANING rather than derived from whether the
-// state machine offers a transition.
 //
-// `getAllowedOrderTransitions(status).length > 0` selects exactly the same three statuses today,
-// and using it would have been shorter. It is deliberately not used: "can still move" and "still
-// needs handing to a customer" are different questions that happen to agree right now. If a
-// correction transition out of `completed` were ever added -- reopening a mis-clicked completion,
-// say -- that expression would silently start counting completed orders as outstanding handovers,
-// and the readout would overstate the day's remaining work with no code here having changed.
-//
-// ORDER_STATUS_COVERAGE below pins this against ORDER_STATUSES so a newly added status cannot
-// quietly default into either group.
-const OPEN_FOR_HANDOVER: readonly OrderStatus[] = ["new", "confirmed", "ready"];
-const CLOSED: readonly OrderStatus[] = ["completed", "cancelled"];
+// OPEN_FOR_HANDOVER/CLOSED_ORDER_STATUSES/isOpenForHandover live in transitions.ts (the lifecycle
+// module) and are reused here, not redefined -- see that file for why "can still move" and "still
+// needs handing to a customer" are deliberately kept as distinct questions.
 
 // Exported for the test that proves the two sets together cover every OrderStatus exactly once.
-export const ORDER_STATUS_COVERAGE = { openForHandover: OPEN_FOR_HANDOVER, closed: CLOSED } as const;
-
-function isOpenForHandover(order: Pick<Order, "status">): boolean {
-  return OPEN_FOR_HANDOVER.includes(order.status);
-}
+export const ORDER_STATUS_COVERAGE = { openForHandover: OPEN_FOR_HANDOVER, closed: CLOSED_ORDER_STATUSES } as const;
 
 // --- Windows ----------------------------------------------------------------------------------
 
@@ -70,12 +59,20 @@ export function resolveTodayRange(nowMs: number, timeZone: string): BusinessDayR
 // Manila observes no DST (proven in tests/business-day.test.ts across both solstices), so stepping
 // back a fixed number of milliseconds cannot land on a doubled or skipped hour and mis-date the
 // far end of the window. In a DST zone this would need calendar arithmetic instead.
-export function resolveRollingWeekRange(nowMs: number, timeZone: string): BusinessDayRange {
+//
+// windowDays INCLUSIVE of today, so the offset is windowDays - 1, not windowDays -- shared by every
+// rolling window this file resolves (the fixed 7-day one below, and Orders Workspace's selectable
+// 7/30-day options), so a fix to the arithmetic only ever has one place to land.
+function resolveRollingWindowRange(windowDays: number, nowMs: number, timeZone: string): BusinessDayRange {
   return {
-    fromDay: resolveBusinessDay(nowMs - (ROLLING_WINDOW_DAYS - 1) * DAY_MS, timeZone),
+    fromDay: resolveBusinessDay(nowMs - (windowDays - 1) * DAY_MS, timeZone),
     toDay: resolveBusinessDay(nowMs, timeZone),
     timezone: timeZone,
   };
+}
+
+export function resolveRollingWeekRange(nowMs: number, timeZone: string): BusinessDayRange {
+  return resolveRollingWindowRange(ROLLING_WINDOW_DAYS, nowMs, timeZone);
 }
 
 // Business-day membership for a timestamp column, matching revenue.ts's own range semantics: an
@@ -391,5 +388,125 @@ export function buildSellingSummary({ orders, linesByOrderId, nowMs, timeZone }:
     },
     mostOrdered,
     sources: getOrderCountsBySource(weekOrders),
+  };
+}
+
+// --- Orders Workspace V1: the selectable reporting period --------------------------------------
+//
+// A second, independent readout over the same loaded state buildSellingSummary already builds
+// from -- attention and toPrepareToday stay period-INDEPENDENT (they answer "what needs doing
+// right now", not "how did a chosen window perform") and are untouched by anything below. This
+// section exists because the operator can choose which window "how did we do" means, unlike
+// today/week above which are always both computed.
+//
+// ALL_TIME_FLOOR_DAY is a SENTINEL, not a business fact -- no real order can predate it. It exists
+// only so "all time" can be expressed as an ordinary BusinessDayRange (a plain lexical string
+// comparison) rather than widening BusinessDayRange itself to carry a nullable bound, which would
+// ripple into revenue.ts and Dashboard for a concept only this file's callers need.
+const ALL_TIME_FLOOR_DAY = "2000-01-01";
+
+export type SalesPeriodKey = "today" | "last7" | "last30" | "thisMonth" | "allTime" | "custom";
+
+export type SalesPeriodSelection =
+  | { kind: Exclude<SalesPeriodKey, "custom"> }
+  | { kind: "custom"; startDay: string; endDay: string };
+
+export const DEFAULT_SALES_PERIOD: SalesPeriodSelection = { kind: "last7" };
+
+function isValidBusinessDayString(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00.000Z`));
+}
+
+// Inclusive, start <= end, both well-formed -- the same shape a caller building a custom range by
+// hand must satisfy. Exposed so a presentational layer can validate an in-progress selection BEFORE
+// ever constructing a SalesPeriodSelection, rather than discovering it is invalid only after
+// resolveSalesPeriodRange has already silently fallen back (see that function's own comment).
+export function isValidCustomSalesPeriod(startDay: string, endDay: string): boolean {
+  return isValidBusinessDayString(startDay) && isValidBusinessDayString(endDay) && startDay <= endDay;
+}
+
+// Never throws and never returns a malformed range, regardless of input -- a picker mid-edit, a
+// stale selection, or a caller that skipped isValidCustomSalesPeriod all resolve to *something*
+// coherent. A malformed "custom" selection falls back to the same default the picker itself
+// defaults to (last7) -- this is a DEFENSIVE backstop only; the intended path is that a
+// presentational layer calls isValidCustomSalesPeriod before ever constructing a "custom" selection,
+// so this fallback should never actually be reached through normal use.
+export function resolveSalesPeriodRange(selection: SalesPeriodSelection, nowMs: number, timeZone: string): BusinessDayRange {
+  const today = resolveBusinessDay(nowMs, timeZone);
+
+  switch (selection.kind) {
+    case "today":
+      return resolveTodayRange(nowMs, timeZone);
+    case "last7":
+      return resolveRollingWindowRange(7, nowMs, timeZone);
+    case "last30":
+      return resolveRollingWindowRange(30, nowMs, timeZone);
+    case "thisMonth":
+      // The 1st of the current Manila month through today -- a plain string slice of the already
+      // timezone-correct `today`, so no second timezone resolution is needed.
+      return { fromDay: `${today.slice(0, 7)}-01`, toDay: today, timezone: timeZone };
+    case "allTime":
+      return { fromDay: ALL_TIME_FLOOR_DAY, toDay: today, timezone: timeZone };
+    case "custom":
+      if (!isValidCustomSalesPeriod(selection.startDay, selection.endDay)) {
+        return resolveRollingWindowRange(7, nowMs, timeZone);
+      }
+      return { fromDay: selection.startDay, toDay: selection.endDay, timezone: timeZone };
+  }
+}
+
+export type SalesPeriodOverview = {
+  range: BusinessDayRange;
+  ordersPlaced: number;
+  sellingUnits: number;
+  paidRevenue: number;
+  averagePaidOrderValue: number;
+  mostOrdered: MostOrderedItem[];
+  sources: SourceCount[];
+  paymentMethodBreakdown: PaymentMethodTotal[];
+  // Whether a refunded-but-paid order falls in this range -- see revenue.ts's
+  // hasRefundedPaidOrderInRange for why this changes no number, only whether a UI disclaimer shows.
+  hasRefundedPaidOrders: boolean;
+};
+
+export type SalesPeriodOverviewInput = {
+  orders: Order[];
+  linesByOrderId: Map<string, OrderLine[]>;
+  range: BusinessDayRange;
+};
+
+// The Orders Workspace "sales overview" for an arbitrary, caller-chosen range -- reuses the exact
+// same primitives buildSellingSummary's today/week readouts already use, so nothing here can
+// silently disagree with them about what "paid revenue" or "most ordered" means.
+export function buildSalesPeriodOverview({ orders, linesByOrderId, range }: SalesPeriodOverviewInput): SalesPeriodOverview {
+  const ordersInRange = orders.filter((order) => fallsWithin(order.placedAt, range));
+
+  // Cancelled orders EXCLUDED -- deliberately different from SellingSummaryPeriod.ordersPlaced
+  // (today.ordersPlaced/week.ordersPlaced), which counts cancelled too because it measures intake.
+  // This is a separate, explicitly-scoped metric ("how much did we actually sell"), not a
+  // redefinition of the existing one -- the two are allowed to disagree by exactly the cancelled
+  // count for the same window, and both are correct answers to different questions.
+  const nonCancelledInRange = ordersInRange.filter((order) => order.status !== "cancelled");
+
+  const payingOrderCount = paidOrderCount(orders, range);
+  const paidRevenue = grossRevenue(orders, range);
+
+  return {
+    range,
+    ordersPlaced: nonCancelledInRange.length,
+    sellingUnits: getPreparationTotals(collectLines(nonCancelledInRange, linesByOrderId)).units,
+    paidRevenue,
+    // Never NaN or Infinity: an empty denominator is a real "nothing paid in this range" state, not
+    // an error, and reports as a plain 0 rather than an undefined-looking value.
+    averagePaidOrderValue: payingOrderCount === 0 ? 0 : paidRevenue / payingOrderCount,
+    mostOrdered: buildMostOrdered(collectLines(nonCancelledInRange, linesByOrderId)),
+    // Cancelled orders INCLUDED here -- same opposite-of-mostOrdered rule buildSellingSummary's own
+    // week.sources already applies: a cancelled order did not sell anything, but it still came from
+    // a channel.
+    sources: getOrderCountsBySource(ordersInRange),
+    // Same `orders` array (not ordersInRange/nonCancelledInRange) paidRevenue itself reduces over, so
+    // the breakdown always reconciles to paidRevenue for the same range.
+    paymentMethodBreakdown: getPaymentMethodBreakdown(orders, range),
+    hasRefundedPaidOrders: hasRefundedPaidOrderInRange(orders, range),
   };
 }

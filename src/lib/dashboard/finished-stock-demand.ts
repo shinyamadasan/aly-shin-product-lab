@@ -34,9 +34,10 @@
 // Pure. No React, no clock, no Supabase.
 
 import { deriveFinishedStockBalances } from "../finished-stock.ts";
+import { getSellableItems } from "../orders/menu.ts";
 import { getPreparationByProduct } from "../orders/pieces.ts";
 import type { Order, OrderLine } from "../orders/types.ts";
-import type { FinishedStockMovement, Product } from "../product-lab-types.ts";
+import type { CostingSummary, FinishedStockMovement, Product, ProductBatch, SellingFormat } from "../product-lab-types.ts";
 
 export type FinishedStockDemandRow = {
   productId: string;
@@ -58,15 +59,28 @@ export type FinishedStockDemand = {
 };
 
 export type FinishedStockDemandInput = {
-  products: Pick<Product, "id" | "name">[];
+  products: Product[];
+  batches: ProductBatch[];
+  costings: CostingSummary[];
+  sellingFormats: SellingFormat[];
   movements: FinishedStockMovement[];
   // null = orders could not be loaded. Stock still renders; demand and shortage become null.
   orders: Order[] | null;
   linesByOrderId: Map<string, OrderLine[]>;
 };
 
-export function buildFinishedStockDemand({ products, movements, orders, linesByOrderId }: FinishedStockDemandInput): FinishedStockDemand {
-  const balances = deriveFinishedStockBalances(products, movements);
+// Product eligibility reuses orders/menu.ts's getSellableItems -- the SAME function the New Order
+// form already calls to decide what an operator can actually order right now (Product -> latest
+// ProductBatch -> its CostingSummary -> that costing's active SellingFormats, and Product.status !==
+// "paused" checked ahead of that chain -- see resolveProductMenu's own comment in menu.ts). This is
+// deliberately not re-derived here: a product can be "costed" but have no active selling format yet,
+// or paused with a stale active format left behind, and either mistake would wrongly call it current.
+// Reusing the exact function New Order calls means Finished Stock & Demand's row set and "what can be
+// sold today" can never drift apart, and a future change to sellability only has one place to edit.
+export function buildFinishedStockDemand({ products, batches, costings, sellingFormats, movements, orders, linesByOrderId }: FinishedStockDemandInput): FinishedStockDemand {
+  const sellableProductIds = new Set(getSellableItems(products, batches, costings, sellingFormats).map((group) => group.productId));
+  const eligibleProducts = products.filter((product) => sellableProductIds.has(product.id));
+  const balances = deriveFinishedStockBalances(eligibleProducts, movements);
 
   const demandByProduct = new Map<string, number>();
   let uncheckedLines: number | null = null;
@@ -93,8 +107,9 @@ export function buildFinishedStockDemand({ products, movements, orders, linesByO
         shortagePieces: demand === null ? null : Math.max(0, demand - balance.availablePieces),
       };
     })
-    // A product with no stock, nothing reserved and no waiting demand has nothing to say.
-    .filter((row) => row.onHandPieces !== 0 || row.reservedPieces !== 0 || (row.unreservedDemandPieces ?? 0) > 0)
+    // Every current/sellable product gets a row, even an all-zero one -- absence must never be
+    // mistaken for zero (a real product silently vanishing from this list when its stock happened to
+    // hit zero was the defect this fixes; see selectableCreateNowProducts above for what "current" means).
     .sort(
       (a, b) =>
         (b.shortagePieces ?? 0) - (a.shortagePieces ?? 0) ||
@@ -104,4 +119,29 @@ export function buildFinishedStockDemand({ products, movements, orders, linesByO
     );
 
   return { rows, uncheckedLines };
+}
+
+// The shape a rendered section actually needs -- rows already capped to what a glance view shows,
+// plus how many were hidden. Deliberately separate from FinishedStockDemand itself: a caller that
+// needs to count shortages (Dashboard's attention item) must do so over the UNSLICED rows, since
+// truncating first would silently hide a shortage sitting past the row limit. This is a pure
+// presentation slice, computed after every real number above it is already final.
+export type FinishedStockDemandSectionData = {
+  rows: FinishedStockDemandRow[];
+  hiddenCount: number;
+  uncheckedLines: number | null;
+  hasDemand: boolean;
+};
+
+// rowLimit: null means no cap -- every row shows, hiddenCount is always 0. Shared by Dashboard
+// (a 5-row glance) and the Orders workspace (the full list), so a row-limit change or a display-
+// shape change only ever has one function to edit.
+export function sliceFinishedStockDemandRows(demand: FinishedStockDemand, rowLimit: number | null, hasDemand: boolean): FinishedStockDemandSectionData {
+  const rows = rowLimit === null ? demand.rows : demand.rows.slice(0, rowLimit);
+  return {
+    rows,
+    hiddenCount: demand.rows.length - rows.length,
+    uncheckedLines: demand.uncheckedLines,
+    hasDemand,
+  };
 }

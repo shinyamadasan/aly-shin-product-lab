@@ -33,6 +33,26 @@ export function isValidOrderTransition(from: OrderStatus, to: OrderStatus): bool
   return ALLOWED_ORDER_TRANSITIONS[from].includes(to);
 }
 
+// Orders that still require a handover, stated by MEANING rather than derived from whether the
+// state machine offers a transition (moved here from summary.ts, unchanged -- this is the lifecycle
+// module, and both summary.ts and the Orders workspace's Active/Recent split ask exactly this
+// question).
+//
+// `getAllowedOrderTransitions(status).length > 0` selects exactly the same three statuses today,
+// and using it would have been shorter. It is deliberately not used: "can still move" and "still
+// needs handing to a customer" are different questions that happen to agree right now. If a
+// correction transition out of `completed` were ever added -- reopening a mis-clicked completion,
+// say -- that expression would silently start counting completed orders as outstanding handovers.
+//
+// ORDER_STATUS_COVERAGE (summary.ts) pins these two sets against every OrderStatus so a newly added
+// status cannot quietly default into either group.
+export const OPEN_FOR_HANDOVER: readonly OrderStatus[] = ["new", "confirmed", "ready"];
+export const CLOSED_ORDER_STATUSES: readonly OrderStatus[] = ["completed", "cancelled"];
+
+export function isOpenForHandover(order: Pick<Order, "status">): boolean {
+  return OPEN_FOR_HANDOVER.includes(order.status);
+}
+
 export function getAllowedOrderTransitions(from: OrderStatus): readonly OrderStatus[] {
   return ALLOWED_ORDER_TRANSITIONS[from];
 }

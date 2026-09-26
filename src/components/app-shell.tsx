@@ -58,9 +58,17 @@ export function AppShell({
   }
 
   const itemsByGroup = navGroups.map((group) => ({ ...group, items: navItems.filter((item) => item.group === group.id) }));
-  const primaryGroups = itemsByGroup.filter((group) => group.id !== "more");
-  const moreGroup = itemsByGroup.find((group) => group.id === "more");
-  const isMoreActive = Boolean(moreGroup?.items.some((item) => item.view === view));
+
+  // Mobile App Shell V1: the primary mobile row is a fixed, stable four -- Dashboard/Orders/
+  // Inventory/Bake -- not every "operations" + "marketing" item as a horizontally-scrolling strip.
+  // Everything else (Products included) moves into the same "More" disclosure, grouped exactly as
+  // the desktop sidebar already groups it, so there is still only one navigation source of truth.
+  const MOBILE_PRIMARY_VIEWS: readonly LabView[] = ["dashboard", "orders", "inventory", "bake"];
+  const mobilePrimaryItems = MOBILE_PRIMARY_VIEWS.map((primaryView) => navItems.find((item) => item.view === primaryView)).filter((item): item is (typeof navItems)[number] => item != null);
+  const mobileMoreGroups = itemsByGroup
+    .map((group) => ({ ...group, items: group.items.filter((item) => !MOBILE_PRIMARY_VIEWS.includes(item.view)) }))
+    .filter((group) => group.items.length > 0);
+  const isMoreActive = !MOBILE_PRIMARY_VIEWS.includes(view);
 
   return (
     <main className="min-h-screen bg-[#f7f2ea] text-[#211713]">
@@ -106,52 +114,58 @@ export function AppShell({
       <section className="lg:pl-72">
         <AppHeader view={view} />
         <nav aria-label="Main" className="border-b border-[#e1d4c4] bg-white px-4 py-3 lg:hidden">
-          <div className="flex gap-2 overflow-x-auto">
-            {primaryGroups.map((group) => (
-              <div className="flex shrink-0 items-center gap-2" key={group.id}>
-                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">{group.label}</span>
-                {group.items.map((item) => (
-                  <a
-                    aria-current={item.view === view ? "page" : undefined}
-                    className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${
-                      item.view === view ? "bg-[#231813] text-white" : "bg-[#fffaf3] text-[#5f4a3d]"
-                    }`}
-                    href={item.href}
-                    key={item.href}
-                    onClick={handleNavClick}
-                  >
-                    {item.label}
-                  </a>
-                ))}
-              </div>
+          {/* A stable four-item grid, never a horizontally-scrolling strip: Dashboard/Orders/
+              Inventory/Bake are the highest-frequency destinations and stay immediately reachable
+              without a scroll gesture. */}
+          <div className="grid grid-cols-4 gap-2">
+            {mobilePrimaryItems.map((item) => (
+              <a
+                aria-current={item.view === view ? "page" : undefined}
+                className={`rounded-md px-1 py-2 text-center text-[11px] font-medium leading-tight ${
+                  item.view === view ? "bg-[#231813] text-white" : "bg-[#fffaf3] text-[#5f4a3d]"
+                }`}
+                href={item.href}
+                key={item.href}
+                onClick={handleNavClick}
+              >
+                {item.label}
+              </a>
             ))}
           </div>
-          {moreGroup ? (
-            // A native disclosure, not a drawer: nothing to build or keep in sync, and every page in
-            // it stays one tap away. Open by default when the current page lives here, so the active
-            // item is never hidden from the person standing on it.
-            <details className="mt-2" open={isMoreActive}>
-              <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">{moreGroup.label}</summary>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {moreGroup.items.map((item) => (
-                  <a
-                    aria-current={item.view === view ? "page" : undefined}
-                    className={`rounded-md px-3 py-2 text-sm font-medium ${
-                      item.view === view ? "bg-[#231813] text-white" : "bg-[#fffaf3] text-[#5f4a3d]"
-                    }`}
-                    href={item.href}
-                    key={item.href}
-                    onClick={handleNavClick}
-                  >
-                    {item.label}
-                  </a>
-                ))}
-                {onSignOut ? (
-                  <button className="rounded-md px-3 py-2 text-sm font-medium text-[#8f5632] underline" onClick={onSignOut} type="button">Sign out</button>
-                ) : null}
-              </div>
-            </details>
-          ) : null}
+          {/* A native disclosure, not a drawer: nothing to build or keep in sync, and every page in
+              it stays one tap away. Open by default when the current page lives here, so the active
+              item is never hidden from the person standing on it. Holds every destination not in the
+              primary four above (Products included), grouped exactly as the desktop sidebar groups
+              them, plus Stage/Model/Focus (kept off the mobile page-header itself; see AppHeader). */}
+          <details className="mt-2" open={isMoreActive}>
+            <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">More</summary>
+            <div className="mt-2 space-y-3">
+              <WorkspaceBadges />
+              {mobileMoreGroups.map((group) => (
+                <div key={group.id}>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#9a5b2f]">{group.label}</p>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {group.items.map((item) => (
+                      <a
+                        aria-current={item.view === view ? "page" : undefined}
+                        className={`rounded-md px-3 py-2 text-sm font-medium ${
+                          item.view === view ? "bg-[#231813] text-white" : "bg-[#fffaf3] text-[#5f4a3d]"
+                        }`}
+                        href={item.href}
+                        key={item.href}
+                        onClick={handleNavClick}
+                      >
+                        {item.label}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {onSignOut ? (
+                <button className="rounded-md px-3 py-2 text-sm font-medium text-[#8f5632] underline" onClick={onSignOut} type="button">Sign out</button>
+              ) : null}
+            </div>
+          </details>
         </nav>
         <div className="space-y-6 px-4 py-5 sm:px-6 xl:px-8">{children}</div>
       </section>
@@ -159,19 +173,37 @@ export function AppShell({
   );
 }
 
+// Mobile App Shell V1: Stage/Model/Focus values are unchanged, only their presentation moves. On
+// mobile they no longer occupy the first viewport as permanent header cards -- they live in the
+// mobile nav's existing "More" disclosure instead (rendered once there, once in the desktop header
+// below, never duplicated as separate copy).
+function WorkspaceBadges() {
+  return (
+    <div className="grid gap-2 sm:grid-cols-3">
+      <HeaderBadge label="Stage" value="Selling" />
+      <HeaderBadge label="Model" value="Home-based preorder" />
+      <HeaderBadge label="Focus" value="Bakery operations" />
+    </div>
+  );
+}
+
 function AppHeader({ view }: { view: LabView }) {
   return (
-    <header className="border-b border-[#e1d4c4] bg-[#fffaf3] px-4 py-4 sm:px-6 xl:px-8">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+    <header>
+      {/* Mobile Shell V1.1: nothing renders visually here below lg -- the active item in the primary
+          nav right below (Dashboard/Orders/Inventory/Bake, or the open item inside More) already
+          identifies the current page, so a brand label plus the page title would only repeat that.
+          This sr-only heading is the same page title the desktop header shows, kept in the document
+          as an accessible heading rather than as visible chrome competing with the nav for the first
+          viewport. */}
+      <h2 className="sr-only lg:hidden">{titles[view]}</h2>
+      {/* Desktop/tablet-wide (>=lg, this shell's own existing breakpoint): unchanged from before. */}
+      <div className="hidden border-b border-[#e1d4c4] bg-[#fffaf3] px-4 py-3 sm:px-6 lg:flex lg:flex-col lg:gap-4 lg:py-4 xl:flex-row xl:items-center xl:justify-between xl:px-8">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#9a5b2f]">Private workspace</p>
           <h2 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">{titles[view]}</h2>
         </div>
-        <div className="grid gap-2 sm:grid-cols-3">
-          <HeaderBadge label="Stage" value="Selling" />
-          <HeaderBadge label="Model" value="Home-based preorder" />
-          <HeaderBadge label="Focus" value="Bakery operations" />
-        </div>
+        <WorkspaceBadges />
       </div>
     </header>
   );

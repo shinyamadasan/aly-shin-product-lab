@@ -115,6 +115,19 @@ test("a product with no costing contributes no catalog items", () => {
   assert.deepEqual(groups, []);
 });
 
+test("a paused product with a stale active selling format contributes no catalog items, and is named 'paused' not 'no-selling-format'", () => {
+  // Product.status is checked ahead of the costing/format chain in resolveProductMenu: pausing is
+  // this app's one explicit retirement signal, so a paused product whose formats were never
+  // deactivated must not read as sellable, and the operator sees the real reason, not a misleading one.
+  const pausedBrownies: Product = { ...BROWNIES, status: "paused" };
+  const groups = getSellableItems([pausedBrownies], [BATCH_V2], [COSTING_V2], [format("fmt", "costing-v2", "Box of 6")]);
+  assert.deepEqual(groups, []);
+
+  const unorderable = getUnorderableProducts([pausedBrownies], [BATCH_V2], [COSTING_V2], [format("fmt", "costing-v2", "Box of 6")]);
+  assert.deepEqual(unorderable, [{ productId: "brownies", productName: "Brownies", reason: "paused" }]);
+  assert.equal(describeUnorderableReason("paused"), "paused");
+});
+
 test("a product with no batches falls back to any costing recorded for the product", () => {
   // getLinkedCosting's documented legacy fallback, reused rather than reimplemented.
   const legacyCosting = { ...costing("costing-legacy", "brownies", ""), batchId: "" };

@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { ClipboardCheck, ShoppingCart } from "lucide-react";
 import { getToday, type LabState } from "@/lib/lab-state";
-import { getExpirationStatus, getStockStatus, matchesStockFilter, matchesStockSearch, type StockViewFilter } from "@/lib/inventory-status";
+import {
+  formatProductionCoverage, getExpirationStatus, getProductionCyclesRemaining, getStockUrgencyStatus, matchesStockFilter, matchesStockSearch, type StockViewFilter,
+} from "@/lib/inventory-status";
 import { findLatestBrandForItem } from "@/lib/purchase-history";
 import { formatQuantity } from "@/lib/quantity-display";
-import { expirationStatusLabel, expirationStatusTone, stockStatusLabel, stockStatusTone } from "@/components/inventory-page";
+import { expirationStatusLabel, expirationStatusTone, stockUrgencyLabel, stockUrgencyTone } from "@/components/inventory-page";
 import { Tag } from "@/components/ui";
 
 const stockViewFilters: Array<{ key: StockViewFilter; label: string }> = [
@@ -95,17 +97,20 @@ export function InventoryStockPage({
             </div>
             <div className="divide-y divide-[#f0e4d8]">
               {ingredients.map((item) => {
-                const status = getStockStatus(item);
+                const urgencyStatus = getStockUrgencyStatus(item);
+                const productionCoverage = formatProductionCoverage(getProductionCyclesRemaining(item));
                 const expirationStatus = getExpirationStatus(item.nearestExpirationDate, today);
                 const isFlagged = Boolean(item.baseUnitMigrationFlaggedReason);
                 // Contextual only -- the most recent purchase that recorded a brand, not a claim
                 // about which brand every unit currently on hand actually is (see
                 // findLatestBrandForItem's own comment). Empty when nothing on file has a brand.
                 const latestBrand = findLatestBrandForItem(item, labState.supplies);
-                // Normal items look boring on purpose: no tag at all when nothing needs attention.
-                // A flagged (manual-reconciliation) ingredient always gets a tag, even if its stock
-                // and expiration are otherwise fine -- the flag is a data-integrity issue, not a
-                // stock-level one.
+                // Stock urgency is always shown, including "Good" -- Inventory Stock Status V1
+                // deliberately makes the healthy case visible rather than boring, so urgency reads
+                // as a scan-every-row status rather than an exception list. Expiration and
+                // reconciliation stay exception-only tags: a flagged (manual-reconciliation)
+                // ingredient always gets a tag even if its stock and expiration are otherwise
+                // fine -- the flag is a data-integrity issue, not a stock-level one.
                 // Single stacked column below sm (no fixed track widths, no horizontal scroll --
                 // a phone-width viewport never needs to scroll to read a row); the 3-column
                 // Item/On hand/Status grid only kicks in at sm and up, matching the header above.
@@ -117,7 +122,12 @@ export function InventoryStockPage({
                     </h4>
                     <p>{formatQuantity(item.currentQuantity, item.baseUnit)}</p>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      {status !== "good" ? <Tag tone={stockStatusTone[status]}>{stockStatusLabel[status]}</Tag> : null}
+                      {urgencyStatus === "not_configured" ? (
+                        <span className="text-xs text-[#6f5a4c]">{stockUrgencyLabel.not_configured}</span>
+                      ) : (
+                        <Tag tone={stockUrgencyTone[urgencyStatus]}>{stockUrgencyLabel[urgencyStatus]}</Tag>
+                      )}
+                      {productionCoverage ? <span className="text-xs text-[#6f5a4c]">{productionCoverage}</span> : null}
                       {expirationStatus !== "none" && expirationStatus !== "good" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}
                       {isFlagged ? <Tag tone="danger">Needs reconciliation</Tag> : null}
                     </div>

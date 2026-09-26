@@ -10,7 +10,7 @@ import {
   ATTEMPT_MESSAGES, calculateManualCostBasis, CHECKING_RESULT_MESSAGE, formatPurchaseCompact, formatPurchaseFacts, manualCostUnitOptions,
   openingCostSavedMessage, resolveLatestPurchaseCost, type OpeningCostAttempt, type OpeningCostAttemptTracker, type OpeningCostResult, type SetOpeningCostBasis,
 } from "@/lib/opening-cost";
-import { getFlaggedIngredients, matchesStockSearch } from "@/lib/inventory-status";
+import { getFlaggedIngredients, getOneCycleRequirement, matchesStockSearch } from "@/lib/inventory-status";
 import { buildInventoryItemViews, type InventoryItemView } from "@/lib/inventory-items";
 import { createMutationGuard } from "@/lib/mutation-guard";
 import { Button, FormPanel, Input, Select, SecondaryButton, Tag, Textarea } from "@/components/ui";
@@ -44,8 +44,12 @@ export const stockAdjustmentReasonLabel: Record<StockAdjustmentReason, string> =
   other: "Other",
 };
 
-export const stockStatusTone = { out: "danger", low: "warm", good: "green" } as const;
-export const stockStatusLabel = { out: "Out", low: "Low", good: "Good" } as const;
+// The Inventory Stock list's 4-level urgency badge (Inventory Stock Status V1) -- always visible,
+// including "Good". Kept separate from StockStatus/getStockStatus (src/lib/inventory-status.ts),
+// which still backs Need to Buy, the Dashboard summary cards, and the AI advisor's business-context
+// adapter, none of which this slice touches.
+export const stockUrgencyLabel = { not_configured: "Not configured", out_of_stock: "Out of Stock", critical: "Critical", reorder_soon: "Reorder Soon", good: "Good" } as const;
+export const stockUrgencyTone = { out_of_stock: "danger", critical: "danger", reorder_soon: "warm", good: "green" } as const;
 
 // A separate tone/label map from stock status, rendered as its own badge -- never merged into
 // one pill. "none" (no expiration date set) renders nothing.
@@ -475,7 +479,14 @@ function IngredientRow({
             <div>
               <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Current stock</dt>
               <dd className="mt-1 font-semibold">{formatQuantity(item.currentQuantity, item.baseUnit)}</dd>
-              <dd className="text-[#6f5a4c]">Low at {formatQuantity(item.lowStockThreshold, item.baseUnit)}</dd>
+              {item.lowStockThreshold > 0 ? (
+                <>
+                  <dd className="text-[#6f5a4c]">Reorder at {formatQuantity(item.lowStockThreshold, item.baseUnit)}</dd>
+                  <dd className="text-[#6f5a4c]">Critical at {formatQuantity(getOneCycleRequirement(item.lowStockThreshold), item.baseUnit)}</dd>
+                </>
+              ) : (
+                <dd className="text-[#6f5a4c]">Reorder threshold not configured</dd>
+              )}
             </div>
             <div>
               <dt className="text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Target</dt>

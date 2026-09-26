@@ -7,7 +7,9 @@
 //                        revenue.ts, preparation to pieces.ts and the business day to business-day.ts
 //   finished stock    -> buildFinishedStockDemand (finished-stock-demand.ts; see its header for why
 //                        reserved orders cannot be double-counted)
-//   inventory         -> buildInventoryExceptions (inventory-exceptions.ts) over inventory-status.ts
+//   inventory         -> buildInventoryExceptions (inventory-exceptions.ts) over inventory-status.ts,
+//                        scoped to current-recipe ingredients only (current-recipe-ingredients.ts,
+//                        reusing Bake's own "current batch" definition -- see its header)
 //
 // This file only ARRANGES those answers into the four zones the page renders, and decides what to
 // show and what to keep quiet. Anything it would otherwise compute, it must not compute.
@@ -30,7 +32,8 @@ import type { LabState } from "../lab-state.ts";
 import { toDisplayPrice } from "../orders/money.ts";
 import { buildSellingSummary, type SellingSummary } from "../orders/summary.ts";
 import type { Order, OrderLine } from "../orders/types.ts";
-import { buildFinishedStockDemand, type FinishedStockDemandRow } from "./finished-stock-demand.ts";
+import { getCurrentRecipeIngredientIds } from "./current-recipe-ingredients.ts";
+import { buildFinishedStockDemand, sliceFinishedStockDemandRows, type FinishedStockDemandSectionData } from "./finished-stock-demand.ts";
 import { buildInventoryExceptions, type InventoryExceptionRow } from "./inventory-exceptions.ts";
 
 // "Important first few": enough to be useful, few enough to stay a glance. The rest is one click away.
@@ -41,13 +44,6 @@ export type OrdersSnapshot =
   | { status: "loading" }
   | { status: "unavailable"; reason: "missing-table" | "failed" | "not-configured"; message: string }
   | { status: "ready"; orders: Order[]; linesByOrderId: Map<string, OrderLine[]>; loadedAtMs: number };
-
-export type PulseMetric = {
-  key: "paid-today" | "paid-week" | "unpaid" | "orders-today";
-  label: string;
-  value: string;
-  detail: string;
-};
 
 export type AttentionItem = {
   key: "overdue" | "new" | "scheduling" | "ready" | "unpaid" | "stock-shortage" | "inventory";
@@ -62,7 +58,7 @@ export type AttentionItem = {
 export type DashboardSelling =
   | { status: "loading" }
   | { status: "unavailable"; reason: "missing-table" | "failed" | "not-configured"; message: string }
-  | { status: "ready"; hasOrders: boolean; pulse: PulseMetric[] };
+  | { status: "ready"; hasOrders: boolean };
 
 export type DashboardModel = {
   businessDay: string;
@@ -74,13 +70,8 @@ export type DashboardModel = {
     // True ONLY when orders loaded and nothing needs attention. Never true while loading or failed.
     isCaughtUp: boolean;
   };
-  stock: {
-    rows: FinishedStockDemandRow[];
-    hiddenCount: number;
-    uncheckedLines: number | null;
-    // False when order data is unavailable: stock is shown, demand and shortage are not.
-    hasDemand: boolean;
-  };
+  // hasDemand is false when order data is unavailable: stock is shown, demand and shortage are not.
+  stock: FinishedStockDemandSectionData;
   inventory: {
     rows: InventoryExceptionRow[];
     hiddenCount: number;
@@ -89,7 +80,7 @@ export type DashboardModel = {
 };
 
 export type DashboardInput = {
-  labState: Pick<LabState, "products" | "ingredients" | "finishedStockMovements">;
+  labState: Pick<LabState, "products" | "batches" | "costings" | "sellingFormats" | "ingredients" | "ingredientAliases" | "finishedStockMovements">;
   orders: OrdersSnapshot;
   nowMs: number;
 };
@@ -100,26 +91,6 @@ function peso(value: number): string {
 
 function plural(count: number, one: string, many: string): string {
   return count === 1 ? one : many;
-}
-
-function buildPulse(summary: SellingSummary): PulseMetric[] {
-  const { attention, today, week } = summary;
-
-  function receivedDetail(refunds: number, net: number): string {
-    return refunds > 0 ? `${peso(refunds)} refunded · net ${peso(net)}` : "money received";
-  }
-
-  return [
-    { key: "paid-today", label: "Paid today", value: peso(today.grossRevenue), detail: receivedDetail(today.refunds, today.netRevenue) },
-    { key: "paid-week", label: "Paid last 7 days", value: peso(week.grossRevenue), detail: receivedDetail(week.refunds, week.netRevenue) },
-    { key: "unpaid", label: "Unpaid", value: peso(attention.unpaidValue), detail: `${attention.unpaidCount} ${plural(attention.unpaidCount, "order", "orders")} owing` },
-    {
-      key: "orders-today",
-      label: "Orders today",
-      value: String(today.ordersPlaced),
-      detail: today.remainingHandovers > 0 ? `${today.remainingHandovers} to hand over today` : "placed today",
-    },
-  ];
 }
 
 // Most urgent first, and only what is non-zero -- a column of zeroes is noise.
@@ -155,17 +126,21 @@ export function buildDashboardModel({ labState, orders, nowMs }: DashboardInput)
 
   const demand = buildFinishedStockDemand({
     products: labState.products,
+    batches: labState.batches,
+    costings: labState.costings,
+    sellingFormats: labState.sellingFormats,
     movements: labState.finishedStockMovements,
     orders: orders.status === "ready" ? orders.orders : null,
     linesByOrderId: orders.status === "ready" ? orders.linesByOrderId : new Map(),
   });
   const shortageProducts = demand.rows.filter((row) => (row.shortagePieces ?? 0) > 0).length;
 
-  const inventoryRows = buildInventoryExceptions(labState.ingredients, businessDay);
+  const currentRecipeIngredientIds = getCurrentRecipeIngredientIds(labState.products, labState.batches, labState.ingredients, labState.ingredientAliases);
+  const inventoryRows = buildInventoryExceptions(labState.ingredients, businessDay, currentRecipeIngredientIds);
 
   const selling: DashboardSelling =
     orders.status === "ready" && summary
-      ? { status: "ready", hasOrders: orders.orders.length > 0, pulse: buildPulse(summary) }
+      ? { status: "ready", hasOrders: orders.orders.length > 0 }
       : orders.status === "unavailable"
         ? { status: "unavailable", reason: orders.reason, message: orders.message }
         : { status: "loading" };
@@ -177,12 +152,7 @@ export function buildDashboardModel({ labState, orders, nowMs }: DashboardInput)
     selling,
     summary,
     attention: { items: attentionItems, isCaughtUp: orders.status === "ready" && attentionItems.length === 0 },
-    stock: {
-      rows: demand.rows.slice(0, STOCK_ROW_LIMIT),
-      hiddenCount: Math.max(0, demand.rows.length - STOCK_ROW_LIMIT),
-      uncheckedLines: demand.uncheckedLines,
-      hasDemand: orders.status === "ready",
-    },
+    stock: sliceFinishedStockDemandRows(demand, STOCK_ROW_LIMIT, orders.status === "ready"),
     inventory: {
       rows: inventoryRows.slice(0, INVENTORY_ROW_LIMIT),
       hiddenCount: Math.max(0, inventoryRows.length - INVENTORY_ROW_LIMIT),

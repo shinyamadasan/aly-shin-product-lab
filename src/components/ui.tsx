@@ -1,3 +1,4 @@
+import { ArrowRight } from "lucide-react";
 import { useState } from "react";
 import type React from "react";
 
@@ -140,4 +141,31 @@ export function MessageBox({
   };
 
   return <p className={`mt-4 rounded-md p-3 text-sm ${styles[tone]}`}>{message}</p>;
+}
+
+// Shared section chrome -- originated on the Dashboard, now also used by the Orders workspace's
+// Finished Stock & Demand section, so both pages read from one visual definition.
+export function SectionCard({ children, className = "", label }: { children: React.ReactNode; className?: string; label: string }) {
+  return (
+    <section aria-label={label} className={`rounded-lg border border-[#e1d4c4] bg-white p-5 ${className}`}>
+      {children}
+    </section>
+  );
+}
+
+export function SectionHeading({ children, hint }: { children: React.ReactNode; hint?: string }) {
+  return (
+    <div className="mb-3">
+      <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">{children}</h3>
+      {hint ? <p className="mt-1 text-sm text-[#6f5a4c]">{hint}</p> : null}
+    </div>
+  );
+}
+
+export function ViewAllLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-[#8f5632] hover:underline" href={href}>
+      {children} <ArrowRight size={14} />
+    </a>
+  );
 }

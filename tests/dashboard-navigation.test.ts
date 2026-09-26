@@ -52,6 +52,64 @@ test("'/today' reaches Today and accepts the same ?job=<id> resume parameter the
   assert.equal(resolveCreateNowJobId("not-a-job"), null);
 });
 
+// Mobile Operational Compression V1, Part D: Dashboard's mobile quick action opens the real New
+// Order form directly via a plain, server-resolved query param -- the same existing-architecture
+// pattern as Today's own ?job=<id> resume above, not client-side cross-page state.
+test("'/orders?new=1' opens the New Order form directly, via the same server-resolved query-param pattern as Today's ?job=", () => {
+  const ordersRoute = read("../src/app/orders/page.tsx");
+  assert.match(ordersRoute, /const \{ new: openNewOrder \} = await searchParams;/);
+  assert.match(ordersRoute, /<ProductLab initialIsCreatingOrder=\{openNewOrder === "1"\} view="orders" \/>/);
+
+  const productLab = read("../src/app/product-lab.tsx");
+  assert.match(productLab, /initialIsCreatingOrder = false,/);
+  assert.match(productLab, /<OrdersPage initialIsCreating=\{initialIsCreatingOrder\} labState=\{labState\}/);
+
+  const ordersPage = read("../src/components/orders-page.tsx");
+  assert.match(ordersPage, /export function OrdersPage\(\{ initialIsCreating = false, labState, onDirtyChange, onStockChanged \}/);
+  assert.match(ordersPage, /const \[isCreating, setIsCreating\] = useState\(initialIsCreating\);/);
+});
+
+// ?new=1 is consumed once, then the URL is normalized -- so it never lingers to reopen New Order on
+// a later refresh, however the operator leaves the form (cancel or successful save).
+test("after ?new=1 opens New Order, the URL is normalized (the param is stripped without a full navigation)", () => {
+  const ordersPage = read("../src/components/orders-page.tsx");
+  const effectAt = ordersPage.indexOf("if (!initialIsCreating) {");
+  const effectEnd = ordersPage.indexOf("}, [initialIsCreating]);", effectAt);
+  assert.ok(effectAt > -1 && effectEnd > -1, "precondition: the URL-normalization effect exists");
+  const effect = ordersPage.slice(effectAt, effectEnd);
+
+  // Same window.history.replaceState mechanism create-now.tsx's own setActiveJob already uses to
+  // mutate the URL without triggering a full navigation/reload -- not a second pattern.
+  assert.match(effect, /const url = new URL\(window\.location\.href\);/);
+  assert.match(effect, /url\.searchParams\.delete\("new"\);/);
+  assert.match(effect, /window\.history\.replaceState\(null, "", url\);/);
+});
+
+test("the URL-normalization effect fires once at mount from the initial prop alone -- not tied to cancelling or saving the form", () => {
+  const ordersPage = read("../src/components/orders-page.tsx");
+  // Its dependency array is [initialIsCreating] (a prop fixed for the component's lifetime), never
+  // isCreating (the live toggle) or a save/cancel callback -- so stripping the param happens
+  // unconditionally at mount, before the operator can cancel or complete the form. That ordering is
+  // exactly what makes "browser Refresh after cancel reopens New Order" structurally impossible: by
+  // the time cancel/save could run, the stale param is already gone.
+  assert.match(ordersPage, /\}, \[initialIsCreating\]\);/);
+  const effectAt = ordersPage.indexOf("if (!initialIsCreating) {");
+  const nextEffectDepsAt = ordersPage.indexOf("}, [initialIsCreating]);", effectAt);
+  const effectBody = ordersPage.slice(effectAt, nextEffectDepsAt);
+  assert.equal(effectBody.includes("isCreating"), false, "must not reference the live isCreating toggle, only the fixed initial prop");
+});
+
+test("only the 'new' param is removed -- any other query parameter already on the URL is left untouched", () => {
+  const ordersPage = read("../src/components/orders-page.tsx");
+  const effectAt = ordersPage.indexOf("if (!initialIsCreating) {");
+  const effectEnd = ordersPage.indexOf("}, [initialIsCreating]);", effectAt);
+  const effect = ordersPage.slice(effectAt, effectEnd);
+  // Built from the full current URL (window.location.href), then ONE key deleted -- never a URL
+  // reconstructed from scratch, which is what would risk silently dropping unrelated params.
+  assert.match(effect, /new URL\(window\.location\.href\)/);
+  assert.equal((effect.match(/searchParams\.(delete|set)\(/g) ?? []).length, 1, "exactly one searchParams mutation -- only 'new' is touched");
+});
+
 test("/dashboard no longer has a page of its own and redirects home", () => {
   assert.throws(() => read("../src/app/dashboard/page.tsx"), /ENOENT/);
   assert.deepEqual(dashboardHomeRedirects.find((entry) => entry.source === "/dashboard"), { source: "/dashboard", destination: "/", permanent: false });
@@ -197,7 +255,84 @@ test("mobile keeps a compact two-tier structure with a native disclosure for Mor
   const shell = read("../src/components/app-shell.tsx");
   assert.match(shell, /<details/);
   assert.match(shell, /open=\{isMoreActive\}/);
-  assert.match(shell, /overflow-x-auto/);
+});
+
+// Mobile App Shell V1: the primary mobile row is a fixed four (Dashboard/Orders/Inventory/Bake),
+// rendered as a stable grid, never a horizontally-scrolling strip -- and Products moves into the same
+// existing "More" disclosure the secondary pages already use, rather than a second registry.
+test("mobile primary navigation is a stable four-item grid with no horizontal scroll, and Products lives in More", () => {
+  const shell = read("../src/components/app-shell.tsx");
+  assert.equal(shell.includes("overflow-x-auto"), false, "the old horizontally-scrolling mobile strip must be gone");
+  assert.match(shell, /MOBILE_PRIMARY_VIEWS: readonly LabView\[\] = \["dashboard", "orders", "inventory", "bake"\]/);
+  assert.match(shell, /grid grid-cols-4 gap-2/);
+  // Products is filtered out of the primary row (not in MOBILE_PRIMARY_VIEWS) and so falls into the
+  // same mobileMoreGroups computation that feeds the More disclosure.
+  assert.match(shell, /mobileMoreGroups/);
+});
+
+test("Stage/Model/Focus badges are reachable from the mobile More disclosure, and rendered unchanged on desktop", () => {
+  const shell = read("../src/components/app-shell.tsx");
+  const detailsAt = shell.indexOf("<details");
+  const detailsEnd = shell.indexOf("</details>", detailsAt);
+  const detailsBlock = shell.slice(detailsAt, detailsEnd);
+  assert.match(detailsBlock, /<WorkspaceBadges \/>/, "the mobile More disclosure must contain the workspace badges");
+
+  const desktopHeaderAt = shell.indexOf('<div className="hidden border-b');
+  assert.ok(desktopHeaderAt > -1, "precondition: the unchanged desktop header block exists");
+  assert.match(shell.slice(desktopHeaderAt, desktopHeaderAt + 600), /<WorkspaceBadges \/>/, "desktop still renders the badges directly, unchanged");
+});
+
+// Mobile Shell V1.1: the compact "Product Lab / <title>" block from V1 is gone entirely below lg --
+// the active primary-nav item already identifies the page, so nothing about identity or the page
+// title renders visually there any more; only an accessible heading remains.
+function extractAppHeaderSource(shell: string): string {
+  const start = shell.indexOf("function AppHeader(");
+  const end = shell.indexOf("\nfunction ", start + 1);
+  const source = end === -1 ? shell.slice(start) : shell.slice(start, end);
+  assert.ok(source.length > 0, "precondition: AppHeader function body located");
+  return source;
+}
+
+test("no visible 'Product Lab' label renders in the mobile header -- AppHeader no longer contains that text at all", () => {
+  const header = extractAppHeaderSource(read("../src/components/app-shell.tsx"));
+  assert.equal(header.includes("Product Lab"), false, "AppHeader must not render a 'Product Lab' label; that identity lives only in the desktop sidebar (hidden below lg) now");
+});
+
+test("no visible mobile page-title header renders below lg -- the only page-title heading below lg is sr-only", () => {
+  const header = extractAppHeaderSource(read("../src/components/app-shell.tsx"));
+  // Every heading that reads {titles[view]} below lg must be sr-only; the one visible page-title
+  // heading (inside the desktop-only div) is gated behind the "hidden ... lg:flex" wrapper, not
+  // independently visible below lg.
+  assert.match(header, /<h2 className="sr-only lg:hidden">\{titles\[view\]\}<\/h2>/);
+  assert.equal(/<div className="lg:hidden">/.test(header), false, "the old visible mobile-only header block must be gone");
+});
+
+test("an accessible page heading remains available below lg for assistive tech and document structure", () => {
+  const header = extractAppHeaderSource(read("../src/components/app-shell.tsx"));
+  // sr-only (not aria-hidden, not display:none, not removed) -- present in the accessibility tree,
+  // just visually hidden, and carries the exact same page title the desktop heading shows.
+  assert.match(header, /<h2 className="sr-only lg:hidden">\{titles\[view\]\}<\/h2>/);
+});
+
+test("the desktop (>=lg) header keeps its exact existing text, structure and classes, unchanged", () => {
+  const header = extractAppHeaderSource(read("../src/components/app-shell.tsx"));
+  const desktopAt = header.indexOf('<div className="hidden border-b');
+  assert.ok(desktopAt > -1, "precondition: the desktop header block exists");
+  const desktopBlock = header.slice(desktopAt);
+  assert.match(desktopBlock, /border-b border-\[#e1d4c4\] bg-\[#fffaf3\] px-4 py-3 sm:px-6 lg:flex lg:flex-col lg:gap-4 lg:py-4 xl:flex-row xl:items-center xl:justify-between xl:px-8/);
+  assert.match(desktopBlock, />Private workspace</);
+  assert.match(desktopBlock, /<h2 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">\{titles\[view\]\}<\/h2>/);
+  assert.match(desktopBlock, /<WorkspaceBadges \/>/);
+});
+
+test("the active primary-nav item still clearly indicates the current page via aria-current", () => {
+  const shell = read("../src/components/app-shell.tsx");
+  const primaryNavAt = shell.indexOf("mobilePrimaryItems.map(");
+  const primaryNavEnd = shell.indexOf("</div>", primaryNavAt);
+  const primaryNav = shell.slice(primaryNavAt, primaryNavEnd);
+  assert.match(primaryNav, /aria-current=\{item\.view === view \? "page" : undefined\}/);
+  // The active item also gets a distinct visual treatment, not just an ARIA attribute.
+  assert.match(primaryNav, /item\.view === view \? "bg-\[#231813\] text-white" : "bg-\[#fffaf3\] text-\[#5f4a3d\]"/);
 });
 
 test("every ProductLab route passes its view explicitly, so the required prop is never satisfied by accident", () => {
