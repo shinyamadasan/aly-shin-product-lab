@@ -920,3 +920,53 @@ access, no merge/push/deploy.
 
 **Merge gate: `approved`** -- held for human review before merge to `main`, per the same explicit instruction as the
 prior entry.
+
+## 2026-09-26 — Mobile Inventory + Bake Consolidation V1
+
+**Scope:** `src/components/bake-page.tsx` (Finished Stock / Production History / Finished-stock
+Exceptions / reconciliation-preview tables get an `isMobileWidth`-gated card presentation below
+`lg`, plus 5-record paging on history/exceptions and a collapsed-on-mobile historical-cost
+disclosure), `src/components/inventory-stock-page.tsx` (a compact urgency-plus-expiration/flag
+summary strip and a "Needs attention" / "Everything else" grouped mobile view), a new shared
+`useIsMobileViewport()` hook in `src/components/ui.tsx`, five new pure exports in
+`src/lib/inventory-status.ts` (`getStockUrgencySummaryCounts`, `sortIngredientsByUrgency`,
+`hasActionableExpirationOrFlag`, `getExpirationOrFlagAttentionCount`,
+`groupIngredientsForMobileAttention`), two new pure exports in `src/lib/finished-stock.ts`
+(`getMobileHistoryPage`, `expandMobileHistoryPage`), a new `docs/ARCHITECTURE.md` subsection, and
+77 new/extended tests across four test files. Dashboard and Orders (already-shipped mobile work,
+commit `dde6524`) were not touched.
+
+**Verdict: sound, with one real gap flagged, not hidden.** Every business calculation this task was
+told not to touch was verified untouched by direct source read before editing (inventory
+thresholds, `getStockUrgencyStatus`/`getExpirationStatus`, bake deduction/reservation math,
+`isRealProduction`, cost basis) -- new mobile components receive only already-computed
+props/arrays and are proven (by source-scanning tests) to never call the underlying calculation
+functions themselves. The plan's own two amendments -- a boolean-OR union between the independent
+stock-urgency and expiration/flag models for "Needs attention" (never a merged cross-model score),
+and 5-record paging for Bake's mobile history/exceptions -- were implemented exactly as specified,
+including the explicitly reported limitation (a flagged-only ingredient with no expiration date has
+no existing canonical order relative to a dated one, so it sorts after dated ones alphabetically,
+inside the same group).
+
+**Not rubber-stamped -- the gap:** Part I's visual/browser acceptance (actually rendering at
+320/375/390/>=1280px and confirming no horizontal scrollbar, that disclosures open without
+overflowing, etc.) was **not performed** -- no browser-automation tool was available in this
+session. Structural safety was verified instead (`npx tsc --noEmit` clean, `next build` succeeds,
+84 new/updated tests pass alongside the full 4,363-test suite with zero failures, and dedicated
+source-scanning tests assert no `overflow-x-auto`/fixed-width class was introduced inside any new
+mobile component). For a task whose entire point is "does this actually reflow on a phone," a
+passing structural test is evidence, not proof -- the one hard acceptance criterion (Part C, no
+page-level horizontal scroll below `lg`) still needs a real device/browser check before this is
+truly done, not just structurally plausible. One pre-existing, unrelated lint error
+(`react-hooks/set-state-in-effect` in `BakePage`'s existing recipe-selection effect, confirmed
+present on `main` before this change via `git stash` + `eslint`) was left alone rather than
+opportunistically fixed, per this task's own surgical-changes scope.
+
+**Production boundary:** no Supabase schema/data change, no production write, no deploy, no
+migration -- purely a client-side presentational change behind a viewport-width branch.
+
+**Merge gate: `approved`** -- held for human review before merge to `main`. Not a data-safety
+concern (fully reversible via git, no schema/write surface touched), but the missing real-device
+visual verification against a hard "no horizontal scroll" acceptance criterion means a human should
+actually open Bake and Inventory Stock on a phone-width viewport before this ships, not rely on the
+structural tests alone.

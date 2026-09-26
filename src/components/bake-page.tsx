@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
-import type { FinishedStockExceptionType } from "@/lib/product-lab-types";
+import type { FinishedStockExceptionType, FinishedStockMovement, Product, ProductionExecution } from "@/lib/product-lab-types";
 import { parseBatchIngredients } from "@/lib/batches";
 import { isVoidedBatch } from "@/lib/batch-safety";
 import { isCostBaselineUncertified } from "@/lib/inventory-cost";
@@ -11,11 +11,13 @@ import { buildBakeBatchChoices, formatBakeBatchOption, isOlderBakeBatch, resolve
 import { formatQuantity } from "@/lib/quantity-display";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
-import { deriveFinishedStockBalances, isRealProduction, sortFinishedStockExceptionHistory, sortProductionHistory } from "@/lib/finished-stock";
+import {
+  deriveFinishedStockBalances, expandMobileHistoryPage, getMobileHistoryPage, isRealProduction, MOBILE_HISTORY_PAGE_SIZE, sortFinishedStockExceptionHistory, sortProductionHistory,
+} from "@/lib/finished-stock";
 import { buildOpeningBalanceCostEstimate, buildReconciliationPreview, type ReconciliationBatchItemInput, type ReconciliationPreviewRow } from "@/lib/finished-stock-reconciliation";
 import type { RuleEngineContext } from "@/lib/rule-engine/types";
 import { IngredientPicker } from "@/components/ingredient-picker";
-import { FormPanel, Tag } from "@/components/ui";
+import { FormPanel, Tag, useIsMobileViewport } from "@/components/ui";
 
 export function BakePage({
   remotePosting = false,
@@ -469,6 +471,7 @@ function FinishedStockPanel({
   const history = sortProductionHistory(labState.productionExecutions).slice(0, 20);
   const exceptionHistory = sortFinishedStockExceptionHistory(labState.finishedStockMovements).slice(0, 20);
   const productName = (id: string) => labState.products.find((product) => product.id === id)?.name ?? id;
+  const isMobileWidth = useIsMobileViewport();
 
   return (
     <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
@@ -476,6 +479,8 @@ function FinishedStockPanel({
       <h3 className="mt-1 text-lg font-semibold">Baked pieces on hand</h3>
       {balances.length === 0 ? (
         <p className="mt-3 text-sm text-[#6f5a4c]">No production yet. A confirmed Bake adds finished pieces here.</p>
+      ) : isMobileWidth ? (
+        <MobileFinishedStockList balances={balances} />
       ) : (
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-sm">
@@ -504,39 +509,50 @@ function FinishedStockPanel({
       {history.length > 0 ? (
         <>
           <h3 className="mt-6 text-lg font-semibold">Production history</h3>
-          <p className="mt-1 text-xs text-[#6f5a4c]"><span className="font-semibold">Actual</span> is the usable pieces the operator counted for that run; <span className="font-semibold">Expected</span> is what the recipe projected. Per-piece cost divides the raw cost by the actual count.</p>
-          <p className="mt-1 text-xs text-[#8a3827]">Raw cost was recorded from the ingredient costs used when this bake was posted; later cost corrections do not rewrite historical production cost. Verify ingredient costs before relying on this for financial decisions -- costs recorded before verification may be unreliable.</p>
-          <p className="mt-1 text-xs text-[#6f5a4c]">Rows marked <span className="font-semibold">Opening balance</span> are not a real Bake -- they are pre-tracking physical stock recorded once, with an estimated (not exact) cost.</p>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
-                  <th className="pb-2 pr-4">When</th>
-                  <th className="pb-2 pr-4">Product</th>
-                  <th className="pb-2 pr-4">Version</th>
-                  <th className="pb-2 pr-4 text-right">Expected</th>
-                  <th className="pb-2 pr-4 text-right">Actual</th>
-                  <th className="pb-2 pr-4 text-right">Raw cost</th>
-                  <th className="pb-2 text-right">Per piece</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((execution) => (
-                  <tr key={execution.id} className="border-t border-[#f0e4d8]">
-                    <td className="py-2 pr-4 text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</td>
-                    <td className="py-2 pr-4 font-semibold">{productName(execution.productId)}</td>
-                    <td className="py-2 pr-4 text-[#6f5a4c]">
-                      {isRealProduction(execution) ? execution.batchVersionSnapshot : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
-                    </td>
-                    <td className="py-2 pr-4 text-right text-[#6f5a4c]">{execution.expectedPieces}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">{execution.quantityProducedPieces}</td>
-                    <td className="py-2 pr-4 text-right">PHP {execution.frozenIngredientCostTotal.toFixed(2)}</td>
-                    <td className="py-2 text-right">PHP {execution.frozenCostPerPiece.toFixed(2)}</td>
+          {isMobileWidth ? (
+            <details className="mt-1">
+              <summary className="cursor-pointer text-xs font-semibold text-[#9a5b2f]">ⓘ About historical costs</summary>
+              <div className="mt-1">
+                <HistoricalCostNotes />
+              </div>
+            </details>
+          ) : (
+            <HistoricalCostNotes />
+          )}
+          {isMobileWidth ? (
+            <MobileProductionHistory history={history} productName={productName} />
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                    <th className="pb-2 pr-4">When</th>
+                    <th className="pb-2 pr-4">Product</th>
+                    <th className="pb-2 pr-4">Version</th>
+                    <th className="pb-2 pr-4 text-right">Expected</th>
+                    <th className="pb-2 pr-4 text-right">Actual</th>
+                    <th className="pb-2 pr-4 text-right">Raw cost</th>
+                    <th className="pb-2 text-right">Per piece</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {history.map((execution) => (
+                    <tr key={execution.id} className="border-t border-[#f0e4d8]">
+                      <td className="py-2 pr-4 text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</td>
+                      <td className="py-2 pr-4 font-semibold">{productName(execution.productId)}</td>
+                      <td className="py-2 pr-4 text-[#6f5a4c]">
+                        {isRealProduction(execution) ? execution.batchVersionSnapshot : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
+                      </td>
+                      <td className="py-2 pr-4 text-right text-[#6f5a4c]">{execution.expectedPieces}</td>
+                      <td className="py-2 pr-4 text-right font-semibold">{execution.quantityProducedPieces}</td>
+                      <td className="py-2 pr-4 text-right">PHP {execution.frozenIngredientCostTotal.toFixed(2)}</td>
+                      <td className="py-2 text-right">PHP {execution.frozenCostPerPiece.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       ) : null}
 
@@ -564,33 +580,142 @@ function FinishedStockPanel({
         <>
           <h3 className="mt-6 text-lg font-semibold">Finished-stock exceptions</h3>
           <p className="mt-1 text-xs text-[#6f5a4c]">Damage and giveaways always come from currently unreserved stock; a customer&apos;s reservation is never touched. A correction reconciles a physical count either direction.</p>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
-                  <th className="pb-2 pr-4">When</th>
-                  <th className="pb-2 pr-4">Product</th>
-                  <th className="pb-2 pr-4">Type</th>
-                  <th className="pb-2 pr-4 text-right">Pieces</th>
-                  <th className="pb-2">Note</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exceptionHistory.map((movement) => (
-                  <tr key={movement.id} className="border-t border-[#f0e4d8]">
-                    <td className="py-2 pr-4 text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</td>
-                    <td className="py-2 pr-4 font-semibold">{productName(movement.productId)}</td>
-                    <td className="py-2 pr-4"><Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag></td>
-                    <td className="py-2 pr-4 text-right font-semibold">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta}</td>
-                    <td className="py-2 text-[#6f5a4c]">{movement.note}</td>
+          {isMobileWidth ? (
+            <MobileFinishedStockExceptions exceptionHistory={exceptionHistory} productName={productName} />
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                    <th className="pb-2 pr-4">When</th>
+                    <th className="pb-2 pr-4">Product</th>
+                    <th className="pb-2 pr-4">Type</th>
+                    <th className="pb-2 pr-4 text-right">Pieces</th>
+                    <th className="pb-2">Note</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {exceptionHistory.map((movement) => (
+                    <tr key={movement.id} className="border-t border-[#f0e4d8]">
+                      <td className="py-2 pr-4 text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</td>
+                      <td className="py-2 pr-4 font-semibold">{productName(movement.productId)}</td>
+                      <td className="py-2 pr-4"><Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag></td>
+                      <td className="py-2 pr-4 text-right font-semibold">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta}</td>
+                      <td className="py-2 text-[#6f5a4c]">{movement.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       ) : null}
     </div>
+  );
+}
+
+// Mobile Inventory + Bake Consolidation V1 -- presentational-only mobile cards for Bake's Finished
+// Stock/Production History/Finished-stock Exceptions. Every prop here is already-computed data
+// (balances/history/exceptionHistory/productName all come from FinishedStockPanel, unchanged); none
+// of these components calls getStockUrgencyStatus, cost math, or any deduction/reservation logic.
+function MobileFinishedStockList({ balances }: { balances: ReturnType<typeof deriveFinishedStockBalances> }) {
+  return (
+    <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
+      {balances.map((balance) => (
+        <li className="py-2" key={balance.productId}>
+          <p className="font-semibold">{balance.productName}</p>
+          <p className="mt-0.5 text-[#6f5a4c]">
+            On hand {balance.onHandPieces} · Reserved {balance.reservedPieces} · Available <span className="font-semibold text-[#231813]">{balance.availablePieces}</span>
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// The exact three historical-cost sentences, extracted verbatim so desktop (called bare) and mobile
+// (called inside a collapsed <details>) render identical copy from one source -- never duplicated.
+function HistoricalCostNotes() {
+  return (
+    <>
+      <p className="mt-1 text-xs text-[#6f5a4c]"><span className="font-semibold">Actual</span> is the usable pieces the operator counted for that run; <span className="font-semibold">Expected</span> is what the recipe projected. Per-piece cost divides the raw cost by the actual count.</p>
+      <p className="mt-1 text-xs text-[#8a3827]">Raw cost was recorded from the ingredient costs used when this bake was posted; later cost corrections do not rewrite historical production cost. Verify ingredient costs before relying on this for financial decisions -- costs recorded before verification may be unreliable.</p>
+      <p className="mt-1 text-xs text-[#6f5a4c]">Rows marked <span className="font-semibold">Opening balance</span> are not a real Bake -- they are pre-tracking physical stock recorded once, with an estimated (not exact) cost.</p>
+    </>
+  );
+}
+
+// Mobile History Density Amendment: 5 records at a time, "Show N more"/"Show less" over the array
+// FinishedStockPanel already sliced/sorted -- getMobileHistoryPage/expandMobileHistoryPage only
+// slice what they're given, they never re-sort or re-query.
+function MobileProductionHistory({ history, productName }: { history: ProductionExecution[]; productName: (id: string) => string }) {
+  const [visibleCount, setVisibleCount] = useState(MOBILE_HISTORY_PAGE_SIZE);
+  const { visible, hasMore, canCollapse } = getMobileHistoryPage(history, visibleCount);
+  return (
+    <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
+      {visible.map((execution) => (
+        <li className="py-2" key={execution.id}>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="font-semibold">{productName(execution.productId)}</p>
+            {isRealProduction(execution) ? <span className="text-xs text-[#6f5a4c]">{execution.batchVersionSnapshot}</span> : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
+          </div>
+          <p className="mt-0.5 text-xs text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</p>
+          {isRealProduction(execution) ? (
+            <p className="mt-1 text-[#6f5a4c]">Expected {execution.expectedPieces} · Actual <span className="font-semibold text-[#231813]">{execution.quantityProducedPieces}</span></p>
+          ) : (
+            <p className="mt-1 text-[#6f5a4c]">{execution.quantityProducedPieces} pieces</p>
+          )}
+          <p className="mt-0.5 text-[#6f5a4c]">Raw cost PHP {execution.frozenIngredientCostTotal.toFixed(2)} · Per piece PHP {execution.frozenCostPerPiece.toFixed(2)}</p>
+        </li>
+      ))}
+      {hasMore || canCollapse ? (
+        <li className="flex gap-4 py-2">
+          {hasMore ? (
+            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount((count) => expandMobileHistoryPage(count, history.length))} type="button">
+              Show {Math.min(MOBILE_HISTORY_PAGE_SIZE, history.length - visibleCount)} more
+            </button>
+          ) : null}
+          {canCollapse ? (
+            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount(MOBILE_HISTORY_PAGE_SIZE)} type="button">
+              Show less
+            </button>
+          ) : null}
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
+function MobileFinishedStockExceptions({ exceptionHistory, productName }: { exceptionHistory: FinishedStockMovement[]; productName: (id: string) => string }) {
+  const [visibleCount, setVisibleCount] = useState(MOBILE_HISTORY_PAGE_SIZE);
+  const { visible, hasMore, canCollapse } = getMobileHistoryPage(exceptionHistory, visibleCount);
+  return (
+    <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
+      {visible.map((movement) => (
+        <li className="py-2" key={movement.id}>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="font-semibold">{productName(movement.productId)}</p>
+            <Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag>
+          </div>
+          <p className="mt-0.5 text-xs text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</p>
+          <p className="mt-1 text-[#6f5a4c]">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta} pieces{movement.note ? ` · ${movement.note}` : ""}</p>
+        </li>
+      ))}
+      {hasMore || canCollapse ? (
+        <li className="flex gap-4 py-2">
+          {hasMore ? (
+            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount((count) => expandMobileHistoryPage(count, exceptionHistory.length))} type="button">
+              Show {Math.min(MOBILE_HISTORY_PAGE_SIZE, exceptionHistory.length - visibleCount)} more
+            </button>
+          ) : null}
+          {canCollapse ? (
+            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount(MOBILE_HISTORY_PAGE_SIZE)} type="button">
+              Show less
+            </button>
+          ) : null}
+        </li>
+      ) : null}
+    </ul>
   );
 }
 
@@ -739,6 +864,7 @@ function FinishedStockReconciliationForm({
   // time, so it is captured once (a React-pure initializer) rather than calling Date.now() during
   // render.
   const [contextNow] = useState(() => Date.now());
+  const isMobileWidth = useIsMobileViewport();
 
   const ruleContext: RuleEngineContext = {
     batches: labState.batches,
@@ -831,37 +957,48 @@ function FinishedStockReconciliationForm({
         />
       </label>
 
-      <div className="mt-3 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
-              <th className="pb-2 pr-4">Product</th>
-              <th className="pb-2 pr-4 text-right">Counted</th>
-            </tr>
-          </thead>
-          <tbody>
-            {labState.products.map((product) => (
-              <tr key={product.id} className="border-t border-[#f0e4d8]">
-                <td className="py-2 pr-4 font-semibold">{product.name}</td>
-                <td className="py-2 pr-4 text-right">
-                  <input
-                    className="h-9 w-24 rounded-md border border-[#d8c7b7] bg-white px-2 text-right"
-                    inputMode="numeric"
-                    min="0"
-                    onChange={(event) => {
-                      setCountTexts((prev) => ({ ...prev, [product.id]: event.target.value }));
-                      setPreview(null);
-                    }}
-                    step="1"
-                    type="number"
-                    value={countTexts[product.id] ?? ""}
-                  />
-                </td>
+      {isMobileWidth ? (
+        <MobileReconciliationCountInputs
+          countTexts={countTexts}
+          onChange={(productId, value) => {
+            setCountTexts((prev) => ({ ...prev, [productId]: value }));
+            setPreview(null);
+          }}
+          products={labState.products}
+        />
+      ) : (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                <th className="pb-2 pr-4">Product</th>
+                <th className="pb-2 pr-4 text-right">Counted</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {labState.products.map((product) => (
+                <tr key={product.id} className="border-t border-[#f0e4d8]">
+                  <td className="py-2 pr-4 font-semibold">{product.name}</td>
+                  <td className="py-2 pr-4 text-right">
+                    <input
+                      className="h-9 w-24 rounded-md border border-[#d8c7b7] bg-white px-2 text-right"
+                      inputMode="numeric"
+                      min="0"
+                      onChange={(event) => {
+                        setCountTexts((prev) => ({ ...prev, [product.id]: event.target.value }));
+                        setPreview(null);
+                      }}
+                      step="1"
+                      type="number"
+                      value={countTexts[product.id] ?? ""}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <button className="mt-4 h-10 rounded-md border border-[#8a3827] px-4 text-sm font-semibold text-[#8a3827]" onClick={handlePreview} type="button">
         Preview reconciliation
@@ -869,64 +1006,82 @@ function FinishedStockReconciliationForm({
 
       {preview ? (
         <div className="mt-4">
-          {isStale ? <p className="text-sm font-semibold text-[#8a3827]">Stock changed since this preview. Re-preview before applying.</p> : null}
-          <div className="mt-2 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
-                  <th className="pb-2 pr-4">Include</th>
-                  <th className="pb-2 pr-4">Product</th>
-                  <th className="pb-2 pr-4 text-right">On hand</th>
-                  <th className="pb-2 pr-4 text-right">Reserved</th>
-                  <th className="pb-2 pr-4 text-right">Available</th>
-                  <th className="pb-2 pr-4 text-right">Counted</th>
-                  <th className="pb-2 pr-4 text-right">Difference</th>
-                  <th className="pb-2 pr-4">Action</th>
-                  <th className="pb-2 text-right">Est. unit cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {previewRows.map(({ row, costEstimate, blocked, selectable }) => (
-                  <tr key={row.productId} className="border-t border-[#f0e4d8]">
-                    <td className="py-2 pr-4">
-                      {row.action === "correction" || row.action === "opening_balance" ? (
-                        <input
-                          checked={selectable && includedIds.has(row.productId)}
-                          disabled={!selectable}
-                          onChange={(event) =>
-                            setIncludedIds((prev) => {
-                              const next = new Set(prev);
-                              if (event.target.checked) next.add(row.productId);
-                              else next.delete(row.productId);
-                              return next;
-                            })
-                          }
-                          type="checkbox"
-                        />
-                      ) : null}
-                    </td>
-                    <td className="py-2 pr-4 font-semibold">{row.productName}</td>
-                    <td className="py-2 pr-4 text-right">{row.onHand}</td>
-                    <td className="py-2 pr-4 text-right text-[#6f5a4c]">{row.reserved}</td>
-                    <td className="py-2 pr-4 text-right">{row.available}</td>
-                    <td className="py-2 pr-4 text-right">{row.physicalCount}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">{row.difference > 0 ? `+${row.difference}` : row.difference}</td>
-                    <td className="py-2 pr-4">
-                      {row.action === "no_change" ? <span className="text-[#6f5a4c]">No change</span> : null}
-                      {row.action === "correction" ? <Tag tone="warm">Correction</Tag> : null}
-                      {row.action === "opening_balance" ? <Tag tone="green">Opening balance</Tag> : null}
-                      {row.action === "investigate_required" ? <Tag tone="danger">Needs investigation</Tag> : null}
-                      {blocked ? <p className="mt-1 text-xs text-[#8a3827]">No costing on record -- cannot estimate a cost basis.</p> : null}
-                      {row.action === "investigate_required" ? (
-                        <p className="mt-1 text-xs text-[#6f5a4c]">This product already has production history; a further increase needs manual review, not automatic reconciliation.</p>
-                      ) : null}
-                    </td>
-                    <td className="py-2 text-right">{costEstimate ? `PHP ${costEstimate.costPerPiece.toFixed(2)}` : "--"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {isMobileWidth ? (
+            <MobileReconciliationPreviewList
+              includedIds={includedIds}
+              isStale={isStale}
+              onToggleInclude={(productId, checked) =>
+                setIncludedIds((prev) => {
+                  const next = new Set(prev);
+                  if (checked) next.add(productId);
+                  else next.delete(productId);
+                  return next;
+                })
+              }
+              previewRows={previewRows}
+            />
+          ) : (
+            <>
+              {isStale ? <p className="text-sm font-semibold text-[#8a3827]">Stock changed since this preview. Re-preview before applying.</p> : null}
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                      <th className="pb-2 pr-4">Include</th>
+                      <th className="pb-2 pr-4">Product</th>
+                      <th className="pb-2 pr-4 text-right">On hand</th>
+                      <th className="pb-2 pr-4 text-right">Reserved</th>
+                      <th className="pb-2 pr-4 text-right">Available</th>
+                      <th className="pb-2 pr-4 text-right">Counted</th>
+                      <th className="pb-2 pr-4 text-right">Difference</th>
+                      <th className="pb-2 pr-4">Action</th>
+                      <th className="pb-2 text-right">Est. unit cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewRows.map(({ row, costEstimate, blocked, selectable }) => (
+                      <tr key={row.productId} className="border-t border-[#f0e4d8]">
+                        <td className="py-2 pr-4">
+                          {row.action === "correction" || row.action === "opening_balance" ? (
+                            <input
+                              checked={selectable && includedIds.has(row.productId)}
+                              disabled={!selectable}
+                              onChange={(event) =>
+                                setIncludedIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (event.target.checked) next.add(row.productId);
+                                  else next.delete(row.productId);
+                                  return next;
+                                })
+                              }
+                              type="checkbox"
+                            />
+                          ) : null}
+                        </td>
+                        <td className="py-2 pr-4 font-semibold">{row.productName}</td>
+                        <td className="py-2 pr-4 text-right">{row.onHand}</td>
+                        <td className="py-2 pr-4 text-right text-[#6f5a4c]">{row.reserved}</td>
+                        <td className="py-2 pr-4 text-right">{row.available}</td>
+                        <td className="py-2 pr-4 text-right">{row.physicalCount}</td>
+                        <td className="py-2 pr-4 text-right font-semibold">{row.difference > 0 ? `+${row.difference}` : row.difference}</td>
+                        <td className="py-2 pr-4">
+                          {row.action === "no_change" ? <span className="text-[#6f5a4c]">No change</span> : null}
+                          {row.action === "correction" ? <Tag tone="warm">Correction</Tag> : null}
+                          {row.action === "opening_balance" ? <Tag tone="green">Opening balance</Tag> : null}
+                          {row.action === "investigate_required" ? <Tag tone="danger">Needs investigation</Tag> : null}
+                          {blocked ? <p className="mt-1 text-xs text-[#8a3827]">No costing on record -- cannot estimate a cost basis.</p> : null}
+                          {row.action === "investigate_required" ? (
+                            <p className="mt-1 text-xs text-[#6f5a4c]">This product already has production history; a further increase needs manual review, not automatic reconciliation.</p>
+                          ) : null}
+                        </td>
+                        <td className="py-2 text-right">{costEstimate ? `PHP ${costEstimate.costPerPiece.toFixed(2)}` : "--"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
 
           <button
             className="mt-4 h-10 w-fit rounded-md bg-[#8a3827] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
@@ -938,6 +1093,96 @@ function FinishedStockReconciliationForm({
           </button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+// Mobile Inventory + Bake Consolidation V1 -- mobile presentations for the (closed-by-default, but
+// still <lg-safe once opened) reconciliation form. Both delegate to the exact setters/callbacks the
+// desktop table already uses -- no new state, no recomputed preview math.
+function MobileReconciliationCountInputs({
+  products,
+  countTexts,
+  onChange,
+}: {
+  products: Pick<Product, "id" | "name">[];
+  countTexts: Record<string, string>;
+  onChange: (productId: string, value: string) => void;
+}) {
+  return (
+    <ul className="mt-3 divide-y divide-[#f0e4d8]">
+      {products.map((product) => (
+        <li className="flex items-center justify-between gap-3 py-2" key={product.id}>
+          <label className="text-sm font-semibold" htmlFor={`mobile-count-${product.id}`}>{product.name}</label>
+          <input
+            className="h-9 w-24 rounded-md border border-[#d8c7b7] bg-white px-2 text-right"
+            id={`mobile-count-${product.id}`}
+            inputMode="numeric"
+            min="0"
+            onChange={(event) => onChange(product.id, event.target.value)}
+            step="1"
+            type="number"
+            value={countTexts[product.id] ?? ""}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function MobileReconciliationPreviewList({
+  previewRows,
+  isStale,
+  includedIds,
+  onToggleInclude,
+}: {
+  previewRows: { row: ReconciliationPreviewRow; costEstimate: ReturnType<typeof buildOpeningBalanceCostEstimate> | null; blocked: boolean; selectable: boolean }[];
+  isStale: boolean;
+  includedIds: Set<string>;
+  onToggleInclude: (productId: string, checked: boolean) => void;
+}) {
+  return (
+    <div className="mt-2">
+      {isStale ? <p className="text-sm font-semibold text-[#8a3827]">Stock changed since this preview. Re-preview before applying.</p> : null}
+      <ul className="mt-2 divide-y divide-[#f0e4d8] text-sm">
+        {previewRows.map(({ row, costEstimate, blocked, selectable }) => (
+          <li className="py-2" key={row.productId}>
+            <div className="flex items-start gap-3">
+              {row.action === "correction" || row.action === "opening_balance" ? (
+                <input
+                  aria-label={`Include ${row.productName} in this reconciliation`}
+                  checked={selectable && includedIds.has(row.productId)}
+                  className="mt-1"
+                  disabled={!selectable}
+                  onChange={(event) => onToggleInclude(row.productId, event.target.checked)}
+                  type="checkbox"
+                />
+              ) : null}
+              <div className="flex-1">
+                <p className="font-semibold">{row.productName}</p>
+                <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-[#6f5a4c]">
+                  <div className="flex justify-between"><dt>On hand</dt><dd>{row.onHand}</dd></div>
+                  <div className="flex justify-between"><dt>Reserved</dt><dd>{row.reserved}</dd></div>
+                  <div className="flex justify-between"><dt>Available</dt><dd>{row.available}</dd></div>
+                  <div className="flex justify-between"><dt>Counted</dt><dd>{row.physicalCount}</dd></div>
+                  <div className="flex justify-between"><dt>Difference</dt><dd className="font-semibold text-[#231813]">{row.difference > 0 ? `+${row.difference}` : row.difference}</dd></div>
+                  <div className="flex justify-between"><dt>Est. unit cost</dt><dd>{costEstimate ? `PHP ${costEstimate.costPerPiece.toFixed(2)}` : "--"}</dd></div>
+                </dl>
+                <div className="mt-1">
+                  {row.action === "no_change" ? <span className="text-xs text-[#6f5a4c]">No change</span> : null}
+                  {row.action === "correction" ? <Tag tone="warm">Correction</Tag> : null}
+                  {row.action === "opening_balance" ? <Tag tone="green">Opening balance</Tag> : null}
+                  {row.action === "investigate_required" ? <Tag tone="danger">Needs investigation</Tag> : null}
+                  {blocked ? <p className="mt-1 text-xs text-[#8a3827]">No costing on record -- cannot estimate a cost basis.</p> : null}
+                  {row.action === "investigate_required" ? (
+                    <p className="mt-1 text-xs text-[#6f5a4c]">This product already has production history; a further increase needs manual review, not automatic reconciliation.</p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

@@ -52,3 +52,22 @@ export function sortFinishedStockExceptionHistory(movements: FinishedStockMoveme
     .filter((movement) => movement.movementType === "damage" || movement.movementType === "giveaway" || movement.movementType === "correction")
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
+
+// Mobile History Density Amendment: Bake's mobile Production History / Finished-stock Exceptions
+// cards show 5 records at a time rather than dumping their full slice at once. These two helpers are
+// pure presentational paging over whatever array they're given -- generic over T, so they can only
+// slice/cap it, never re-sort or re-derive it. The array's own order (already produced by
+// sortProductionHistory/sortFinishedStockExceptionHistory upstream) is preserved exactly.
+export const MOBILE_HISTORY_PAGE_SIZE = 5;
+
+export function getMobileHistoryPage<T>(items: T[], visibleCount: number): { visible: T[]; hasMore: boolean; canCollapse: boolean } {
+  return {
+    visible: items.slice(0, visibleCount),
+    hasMore: visibleCount < items.length,
+    canCollapse: visibleCount > MOBILE_HISTORY_PAGE_SIZE,
+  };
+}
+
+export function expandMobileHistoryPage(currentVisibleCount: number, total: number): number {
+  return Math.min(currentVisibleCount + MOBILE_HISTORY_PAGE_SIZE, total);
+}

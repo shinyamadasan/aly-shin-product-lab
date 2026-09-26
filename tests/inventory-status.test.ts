@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  formatProductionCoverage, getExpirationStatus, getExpiringIngredients, getFlaggedIngredients, getInventorySummaryCounts, getNeedToBuyList, getOneCycleRequirement,
-  getProductionCyclesRemaining, getStockStatus, getStockUrgencyStatus, getSuggestedBuyQuantity, matchesStockFilter, matchesStockSearch,
+  formatProductionCoverage, getExpirationOrFlagAttentionCount, getExpirationStatus, getExpiringIngredients, getFlaggedIngredients, getInventorySummaryCounts,
+  getNeedToBuyList, getOneCycleRequirement, getProductionCyclesRemaining, getStockStatus, getStockUrgencyStatus, getStockUrgencySummaryCounts, getSuggestedBuyQuantity,
+  groupIngredientsForMobileAttention, hasActionableExpirationOrFlag, matchesStockFilter, matchesStockSearch, sortIngredientsByUrgency,
 } from "../src/lib/inventory-status.ts";
 import type { Ingredient } from "../src/lib/product-lab-types.ts";
 
@@ -282,4 +283,119 @@ test("formatProductionCoverage renders '<1 cycle' below one full cycle, not a ro
 
 test("formatProductionCoverage is '' (omit) when not configured", () => {
   assert.equal(formatProductionCoverage(null), "");
+});
+
+// Mobile Inventory + Bake Consolidation V1 -- Inventory Stock's mobile summary strip and
+// "Needs attention" grouping. All of the below are thin derivations over getStockUrgencyStatus /
+// getExpirationStatus / isExpiringStatus -- never a second status model.
+
+test("getStockUrgencySummaryCounts tallies active ingredients into each urgency bucket", () => {
+  const ingredients = [
+    ingredient({ id: "out", currentQuantity: 0, lowStockThreshold: 220 }),
+    ingredient({ id: "critical", currentQuantity: 50, lowStockThreshold: 220 }),
+    ingredient({ id: "reorder", currentQuantity: 150, lowStockThreshold: 220 }),
+    ingredient({ id: "good", currentQuantity: 1000, lowStockThreshold: 220 }),
+    ingredient({ id: "not-configured", currentQuantity: 500, lowStockThreshold: 0 }),
+  ];
+
+  assert.deepEqual(getStockUrgencySummaryCounts(ingredients), { not_configured: 1, out_of_stock: 1, critical: 1, reorder_soon: 1, good: 1 });
+});
+
+test("getStockUrgencySummaryCounts excludes inactive ingredients", () => {
+  const inactive = ingredient({ id: "inactive", currentQuantity: 0, lowStockThreshold: 220, isActive: false });
+  assert.deepEqual(getStockUrgencySummaryCounts([inactive]), { not_configured: 0, out_of_stock: 0, critical: 0, reorder_soon: 0, good: 0 });
+});
+
+test("sortIngredientsByUrgency orders out_of_stock before critical before reorder_soon before good before not_configured", () => {
+  const good = ingredient({ id: "good", name: "Z Good", currentQuantity: 1000, lowStockThreshold: 220 });
+  const notConfigured = ingredient({ id: "nc", name: "A Not Configured", currentQuantity: 500, lowStockThreshold: 0 });
+  const out = ingredient({ id: "out", name: "Z Out", currentQuantity: 0, lowStockThreshold: 220 });
+  const critical = ingredient({ id: "critical", name: "Z Critical", currentQuantity: 50, lowStockThreshold: 220 });
+  const reorder = ingredient({ id: "reorder", name: "Z Reorder", currentQuantity: 150, lowStockThreshold: 220 });
+
+  const sorted = sortIngredientsByUrgency([good, notConfigured, out, critical, reorder]);
+
+  assert.deepEqual(sorted.map((item) => item.id), ["out", "critical", "reorder", "good", "nc"]);
+});
+
+test("sortIngredientsByUrgency ties within the same urgency alphabetically by name", () => {
+  const bananas = ingredient({ id: "bananas", name: "Bananas", currentQuantity: 0, lowStockThreshold: 220 });
+  const apples = ingredient({ id: "apples", name: "Apples", currentQuantity: 0, lowStockThreshold: 220 });
+
+  assert.deepEqual(sortIngredientsByUrgency([bananas, apples]).map((item) => item.id), ["apples", "bananas"]);
+});
+
+test("hasActionableExpirationOrFlag is true for expired/expires-today/expires-soon", () => {
+  assert.equal(hasActionableExpirationOrFlag(ingredient({ nearestExpirationDate: "2026-07-20" }), TODAY), true);
+  assert.equal(hasActionableExpirationOrFlag(ingredient({ nearestExpirationDate: "2026-07-24" }), TODAY), true);
+  assert.equal(hasActionableExpirationOrFlag(ingredient({ nearestExpirationDate: "2026-07-26" }), TODAY), true);
+});
+
+test("hasActionableExpirationOrFlag is true when only the data-integrity flag is set, even with no expiration date", () => {
+  const flaggedOnly = ingredient({ nearestExpirationDate: "", baseUnitMigrationFlaggedReason: "unrecognized_base_unit:oz" });
+  assert.equal(hasActionableExpirationOrFlag(flaggedOnly, TODAY), true);
+});
+
+test("hasActionableExpirationOrFlag is false for good/none with no flag", () => {
+  assert.equal(hasActionableExpirationOrFlag(ingredient({ nearestExpirationDate: "2026-08-15" }), TODAY), false);
+  assert.equal(hasActionableExpirationOrFlag(ingredient({ nearestExpirationDate: "" }), TODAY), false);
+});
+
+test("getExpirationOrFlagAttentionCount counts an ingredient once even when both expiring and flagged (union, not double-counted)", () => {
+  const both = ingredient({ id: "both", nearestExpirationDate: "2026-07-20", baseUnitMigrationFlaggedReason: "non_finite_numeric_field" });
+  const expiringOnly = ingredient({ id: "expiring-only", nearestExpirationDate: "2026-07-24" });
+  const flaggedOnly = ingredient({ id: "flagged-only", nearestExpirationDate: "", baseUnitMigrationFlaggedReason: "unrecognized_base_unit:oz" });
+  const neither = ingredient({ id: "neither", nearestExpirationDate: "2026-08-15" });
+
+  assert.equal(getExpirationOrFlagAttentionCount([both, expiringOnly, flaggedOnly, neither], TODAY), 3);
+});
+
+test("getExpirationOrFlagAttentionCount excludes inactive ingredients", () => {
+  const inactive = ingredient({ nearestExpirationDate: "2026-07-20", isActive: false });
+  assert.equal(getExpirationOrFlagAttentionCount([inactive], TODAY), 0);
+});
+
+// Inventory Attention Amendment: "Needs attention" is a union of two independent existing models
+// (stock urgency, expiration/flag), grouped -- never a combined numeric cross-model score.
+test("groupIngredientsForMobileAttention: an ingredient that is both out_of_stock and expired appears in expirationExceptions only, not also in stockUrgent", () => {
+  const both = ingredient({ id: "both", currentQuantity: 0, lowStockThreshold: 220, nearestExpirationDate: "2026-07-20" });
+  const groups = groupIngredientsForMobileAttention([both], TODAY);
+
+  assert.deepEqual(groups.expirationExceptions.map((item) => item.id), ["both"]);
+  assert.deepEqual(groups.stockUrgent, []);
+});
+
+test("groupIngredientsForMobileAttention: every input ingredient appears in exactly one output group", () => {
+  const ingredients = [
+    ingredient({ id: "expiring", currentQuantity: 1000, lowStockThreshold: 220, nearestExpirationDate: "2026-07-24" }),
+    ingredient({ id: "out", currentQuantity: 0, lowStockThreshold: 220 }),
+    ingredient({ id: "critical", currentQuantity: 50, lowStockThreshold: 220 }),
+    ingredient({ id: "reorder", currentQuantity: 150, lowStockThreshold: 220 }),
+    ingredient({ id: "good", currentQuantity: 1000, lowStockThreshold: 220 }),
+  ];
+
+  const groups = groupIngredientsForMobileAttention(ingredients, TODAY);
+  const allIds = [...groups.expirationExceptions, ...groups.stockUrgent, ...groups.reorderSoon, ...groups.everythingElse].map((item) => item.id);
+
+  assert.deepEqual(allIds.slice().sort(), ingredients.map((item) => item.id).sort());
+  assert.equal(allIds.length, ingredients.length, "no ingredient appears in more than one group");
+});
+
+test("groupIngredientsForMobileAttention orders expirationExceptions by nearestExpirationDate ascending, with a flagged-only ingredient (no date) sorted after dated ones -- the reported fallback, not an invented combined score", () => {
+  const soon = ingredient({ id: "soon", name: "Z Soon", nearestExpirationDate: "2026-07-26" });
+  const expired = ingredient({ id: "expired", name: "Z Expired", nearestExpirationDate: "2026-07-20" });
+  const flaggedOnly = ingredient({ id: "flagged", name: "A Flagged", nearestExpirationDate: "", baseUnitMigrationFlaggedReason: "unrecognized_base_unit:oz" });
+
+  const groups = groupIngredientsForMobileAttention([soon, flaggedOnly, expired], TODAY);
+
+  assert.deepEqual(groups.expirationExceptions.map((item) => item.id), ["expired", "soon", "flagged"]);
+});
+
+test("groupIngredientsForMobileAttention's stockUrgent/reorderSoon/everythingElse never consult expiration at all", () => {
+  const criticalAndGoodExpiration = ingredient({ id: "a", name: "A", currentQuantity: 50, lowStockThreshold: 220, nearestExpirationDate: "2026-08-15" });
+  const criticalWithNoExpiration = ingredient({ id: "b", name: "B", currentQuantity: 50, lowStockThreshold: 220, nearestExpirationDate: "" });
+
+  const groups = groupIngredientsForMobileAttention([criticalAndGoodExpiration, criticalWithNoExpiration], TODAY);
+
+  assert.deepEqual(groups.stockUrgent.map((item) => item.id), ["a", "b"], "both critical ingredients group together regardless of their (non-actionable) expiration state");
 });

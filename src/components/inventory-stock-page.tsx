@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { ClipboardCheck, ShoppingCart } from "lucide-react";
 import { getToday, type LabState } from "@/lib/lab-state";
+import type { Ingredient } from "@/lib/product-lab-types";
 import {
-  formatProductionCoverage, getExpirationStatus, getProductionCyclesRemaining, getStockUrgencyStatus, matchesStockFilter, matchesStockSearch, type StockViewFilter,
+  formatProductionCoverage, getExpirationOrFlagAttentionCount, getExpirationStatus, getProductionCyclesRemaining, getStockUrgencyStatus, getStockUrgencySummaryCounts,
+  groupIngredientsForMobileAttention, matchesStockFilter, matchesStockSearch, type StockViewFilter,
 } from "@/lib/inventory-status";
 import { findLatestBrandForItem } from "@/lib/purchase-history";
 import { formatQuantity } from "@/lib/quantity-display";
 import { expirationStatusLabel, expirationStatusTone, stockUrgencyLabel, stockUrgencyTone } from "@/components/inventory-page";
-import { Tag } from "@/components/ui";
+import { Tag, useIsMobileViewport } from "@/components/ui";
 
 const stockViewFilters: Array<{ key: StockViewFilter; label: string }> = [
   { key: "all", label: "All" },
@@ -36,6 +38,7 @@ export function InventoryStockPage({
   const ingredients = allIngredients
     .filter((item) => matchesStockFilter(item, filter, today))
     .filter((item) => matchesStockSearch(item, search));
+  const isMobileWidth = useIsMobileViewport();
 
   return (
     <div className="rounded-lg border border-[#e1d4c4] bg-white">
@@ -82,62 +85,129 @@ export function InventoryStockPage({
         </div>
       </div>
 
-      <div>
-        {allIngredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No items yet. Add one in Manage Items.</p> : null}
-        {allIngredients.length > 0 && ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">Nothing matches right now.</p> : null}
-        {ingredients.length > 0 ? (
-          <div>
-            {/* Column headers only make sense once there are columns to label -- below sm, each
-                row stacks into a plain name/quantity/tags card instead, so this row hides rather
-                than labeling a layout that no longer exists. */}
-            <div className="hidden border-b border-[#eaded2] bg-[#fffaf3] px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f] sm:grid sm:grid-cols-[minmax(200px,1fr)_140px_180px] sm:gap-4">
-              <p>Item</p>
-              <p>On hand</p>
-              <p>Status</p>
+      {isMobileWidth ? (
+        <MobileInventoryStockView allIngredients={allIngredients} ingredients={ingredients} labState={labState} today={today} />
+      ) : (
+        <div>
+          {allIngredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No items yet. Add one in Manage Items.</p> : null}
+          {allIngredients.length > 0 && ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">Nothing matches right now.</p> : null}
+          {ingredients.length > 0 ? (
+            <div>
+              {/* Column headers only make sense once there are columns to label -- below sm, each
+                  row stacks into a plain name/quantity/tags card instead, so this row hides rather
+                  than labeling a layout that no longer exists. */}
+              <div className="hidden border-b border-[#eaded2] bg-[#fffaf3] px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f] sm:grid sm:grid-cols-[minmax(200px,1fr)_140px_180px] sm:gap-4">
+                <p>Item</p>
+                <p>On hand</p>
+                <p>Status</p>
+              </div>
+              <div className="divide-y divide-[#f0e4d8]">
+                {ingredients.map((item) => <IngredientStockRow item={item} key={item.id} labState={labState} today={today} />)}
+              </div>
             </div>
-            <div className="divide-y divide-[#f0e4d8]">
-              {ingredients.map((item) => {
-                const urgencyStatus = getStockUrgencyStatus(item);
-                const productionCoverage = formatProductionCoverage(getProductionCyclesRemaining(item));
-                const expirationStatus = getExpirationStatus(item.nearestExpirationDate, today);
-                const isFlagged = Boolean(item.baseUnitMigrationFlaggedReason);
-                // Contextual only -- the most recent purchase that recorded a brand, not a claim
-                // about which brand every unit currently on hand actually is (see
-                // findLatestBrandForItem's own comment). Empty when nothing on file has a brand.
-                const latestBrand = findLatestBrandForItem(item, labState.supplies);
-                // Stock urgency is always shown, including "Good" -- Inventory Stock Status V1
-                // deliberately makes the healthy case visible rather than boring, so urgency reads
-                // as a scan-every-row status rather than an exception list. Expiration and
-                // reconciliation stay exception-only tags: a flagged (manual-reconciliation)
-                // ingredient always gets a tag even if its stock and expiration are otherwise
-                // fine -- the flag is a data-integrity issue, not a stock-level one.
-                // Single stacked column below sm (no fixed track widths, no horizontal scroll --
-                // a phone-width viewport never needs to scroll to read a row); the 3-column
-                // Item/On hand/Status grid only kicks in at sm and up, matching the header above.
-                return (
-                  <article className="grid grid-cols-1 gap-1 px-5 py-3 text-sm sm:grid-cols-[minmax(200px,1fr)_140px_180px] sm:items-center sm:gap-4" key={item.id}>
-                    <h4 className="min-w-0 truncate font-semibold">
-                      {item.name}
-                      {latestBrand ? <span className="font-normal text-[#6f5a4c]"> · {latestBrand}</span> : null}
-                    </h4>
-                    <p>{formatQuantity(item.currentQuantity, item.baseUnit)}</p>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {urgencyStatus === "not_configured" ? (
-                        <span className="text-xs text-[#6f5a4c]">{stockUrgencyLabel.not_configured}</span>
-                      ) : (
-                        <Tag tone={stockUrgencyTone[urgencyStatus]}>{stockUrgencyLabel[urgencyStatus]}</Tag>
-                      )}
-                      {productionCoverage ? <span className="text-xs text-[#6f5a4c]">{productionCoverage}</span> : null}
-                      {expirationStatus !== "none" && expirationStatus !== "good" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}
-                      {isFlagged ? <Tag tone="danger">Needs reconciliation</Tag> : null}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Stock urgency is always shown, including "Good" -- Inventory Stock Status V1 deliberately makes
+// the healthy case visible rather than boring, so urgency reads as a scan-every-row status rather
+// than an exception list. Expiration and reconciliation stay exception-only tags: a flagged
+// (manual-reconciliation) ingredient always gets a tag even if its stock and expiration are
+// otherwise fine -- the flag is a data-integrity issue, not a stock-level one.
+// Single stacked column below sm (no fixed track widths, no horizontal scroll -- a phone-width
+// viewport never needs to scroll to read a row); the 3-column Item/On hand/Status grid only kicks
+// in at sm and up. Shared verbatim by the desktop list above and MobileInventoryStockView below --
+// one row definition, not two.
+function IngredientStockRow({ item, labState, today }: { item: Ingredient; labState: LabState; today: string }) {
+  const urgencyStatus = getStockUrgencyStatus(item);
+  const productionCoverage = formatProductionCoverage(getProductionCyclesRemaining(item));
+  const expirationStatus = getExpirationStatus(item.nearestExpirationDate, today);
+  const isFlagged = Boolean(item.baseUnitMigrationFlaggedReason);
+  // Contextual only -- the most recent purchase that recorded a brand, not a claim about which
+  // brand every unit currently on hand actually is (see findLatestBrandForItem's own comment).
+  // Empty when nothing on file has a brand.
+  const latestBrand = findLatestBrandForItem(item, labState.supplies);
+  return (
+    <article className="grid grid-cols-1 gap-1 px-5 py-3 text-sm sm:grid-cols-[minmax(200px,1fr)_140px_180px] sm:items-center sm:gap-4">
+      <h4 className="min-w-0 truncate font-semibold">
+        {item.name}
+        {latestBrand ? <span className="font-normal text-[#6f5a4c]"> · {latestBrand}</span> : null}
+      </h4>
+      <p>{formatQuantity(item.currentQuantity, item.baseUnit)}</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {urgencyStatus === "not_configured" ? (
+          <span className="text-xs text-[#6f5a4c]">{stockUrgencyLabel.not_configured}</span>
+        ) : (
+          <Tag tone={stockUrgencyTone[urgencyStatus]}>{stockUrgencyLabel[urgencyStatus]}</Tag>
+        )}
+        {productionCoverage ? <span className="text-xs text-[#6f5a4c]">{productionCoverage}</span> : null}
+        {expirationStatus !== "none" && expirationStatus !== "good" ? <Tag tone={expirationStatusTone[expirationStatus]}>{expirationStatusLabel[expirationStatus]}</Tag> : null}
+        {isFlagged ? <Tag tone="danger">Needs reconciliation</Tag> : null}
       </div>
+    </article>
+  );
+}
+
+// Mobile Inventory Attention Amendment: compact urgency-plus-expiration/flag summary strip, "Other
+// attention" shown first so the strip never implies "all clear" while an expiration/flag exception
+// exists even when every ingredient's stock urgency is Good. Both counts delegate to the canonical
+// helpers in inventory-status.ts -- no second status model.
+function MobileInventoryStockSummary({ allIngredients, today }: { allIngredients: Ingredient[]; today: string }) {
+  const otherAttentionCount = getExpirationOrFlagAttentionCount(allIngredients, today);
+  const urgencyCounts = getStockUrgencySummaryCounts(allIngredients);
+  return (
+    <div className="flex flex-wrap gap-2 border-b border-[#eaded2] p-5">
+      <Tag tone="danger">Other attention {otherAttentionCount}</Tag>
+      <Tag tone="danger">Out of Stock {urgencyCounts.out_of_stock}</Tag>
+      <Tag tone="danger">Critical {urgencyCounts.critical}</Tag>
+      <Tag tone="warm">Reorder Soon {urgencyCounts.reorder_soon}</Tag>
+    </div>
+  );
+}
+
+// Mobile Inventory Attention Amendment: "Needs attention" = expirationExceptions + stockUrgent +
+// reorderSoon, in that order (groupIngredientsForMobileAttention's own priority), concatenated into
+// one section; "Everything else" = everythingElse. Every ingredient in `ingredients` (the
+// already-filtered/searched array -- untouched) appears in exactly one of the two sections.
+function MobileInventoryStockView({
+  allIngredients,
+  ingredients,
+  labState,
+  today,
+}: {
+  allIngredients: Ingredient[];
+  ingredients: Ingredient[];
+  labState: LabState;
+  today: string;
+}) {
+  const groups = groupIngredientsForMobileAttention(ingredients, today);
+  const needsAttention = [...groups.expirationExceptions, ...groups.stockUrgent, ...groups.reorderSoon];
+  const everythingElse = groups.everythingElse;
+
+  return (
+    <div>
+      <MobileInventoryStockSummary allIngredients={allIngredients} today={today} />
+      {allIngredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">No items yet. Add one in Manage Items.</p> : null}
+      {allIngredients.length > 0 && ingredients.length === 0 ? <p className="p-5 text-sm text-[#6f5a4c]">Nothing matches right now.</p> : null}
+      {needsAttention.length > 0 ? (
+        <div>
+          <h4 className="px-5 pt-4 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Needs attention</h4>
+          <div className="divide-y divide-[#f0e4d8]">
+            {needsAttention.map((item) => <IngredientStockRow item={item} key={item.id} labState={labState} today={today} />)}
+          </div>
+        </div>
+      ) : null}
+      {everythingElse.length > 0 ? (
+        <div>
+          <h4 className="px-5 pt-4 text-xs font-semibold uppercase tracking-[0.12em] text-[#9a5b2f]">Everything else</h4>
+          <div className="divide-y divide-[#f0e4d8]">
+            {everythingElse.map((item) => <IngredientStockRow item={item} key={item.id} labState={labState} today={today} />)}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -171,3 +171,108 @@ export function getInventorySummaryCounts(ingredients: Ingredient[], today: stri
     expiringCount: active.filter((ingredient) => isExpiringStatus(getExpirationStatus(ingredient.nearestExpirationDate, today, expiresSoonDays))).length,
   };
 }
+
+// Mobile Inventory + Bake Consolidation V1: Inventory Stock's mobile summary strip, one chip per
+// StockUrgencyStatus bucket. A thin tally over the existing getStockUrgencyStatus -- never a second
+// urgency model.
+export function getStockUrgencySummaryCounts(ingredients: Ingredient[]): Record<StockUrgencyStatus, number> {
+  const counts: Record<StockUrgencyStatus, number> = { not_configured: 0, out_of_stock: 0, critical: 0, reorder_soon: 0, good: 0 };
+  for (const ingredient of ingredients) {
+    if (!ingredient.isActive) {
+      continue;
+    }
+    counts[getStockUrgencyStatus(ingredient)] += 1;
+  }
+  return counts;
+}
+
+const URGENCY_SORT_RANK: Record<StockUrgencyStatus, number> = { out_of_stock: 0, critical: 1, reorder_soon: 2, good: 3, not_configured: 4 };
+
+// Orders by urgency (out_of_stock first, not_configured last), alphabetical within the same
+// urgency -- the same tie-break convention getNeedToBuyList already uses. Deliberately does not
+// consult expiration at all: that is a separate, independent model (see
+// hasActionableExpirationOrFlag below), never folded into one merged rank.
+export function sortIngredientsByUrgency<T extends Pick<Ingredient, "currentQuantity" | "lowStockThreshold" | "name">>(ingredients: T[]): T[] {
+  return [...ingredients].sort((a, b) => {
+    const rankDiff = URGENCY_SORT_RANK[getStockUrgencyStatus(a)] - URGENCY_SORT_RANK[getStockUrgencyStatus(b)];
+    return rankDiff !== 0 ? rankDiff : a.name.localeCompare(b.name);
+  });
+}
+
+// Mobile Inventory Attention Amendment: the union the mobile "Needs attention" grouping and summary
+// strip both need -- true when the ingredient's EXISTING expiration model already says
+// expired/expires-today/expires-soon, OR its EXISTING data-integrity flag is set. A boolean OR of
+// two already-canonical predicates, never a new expiration model and never a combined numeric score.
+export function hasActionableExpirationOrFlag(
+  ingredient: Pick<Ingredient, "nearestExpirationDate" | "baseUnitMigrationFlaggedReason">,
+  today: string,
+  expiresSoonDays: number = DEFAULT_EXPIRES_SOON_DAYS,
+): boolean {
+  return isExpiringStatus(getExpirationStatus(ingredient.nearestExpirationDate, today, expiresSoonDays)) || Boolean(ingredient.baseUnitMigrationFlaggedReason);
+}
+
+// Mobile summary-strip count for the amendment's "Other attention" chip -- each qualifying
+// ingredient counted once even when it is both expiring and flagged (a union, not two chips added
+// together), so the strip never implies "all clear" while an expiration/flag exception exists.
+export function getExpirationOrFlagAttentionCount(ingredients: Ingredient[], today: string, expiresSoonDays: number = DEFAULT_EXPIRES_SOON_DAYS): number {
+  return ingredients.filter((ingredient) => ingredient.isActive).filter((ingredient) => hasActionableExpirationOrFlag(ingredient, today, expiresSoonDays)).length;
+}
+
+export interface MobileInventoryAttentionGroups<T> {
+  expirationExceptions: T[];
+  stockUrgent: T[];
+  reorderSoon: T[];
+  everythingElse: T[];
+}
+
+// Mobile Inventory Attention Amendment's exact 4-group order: (1) an existing expiration/flag
+// exception, regardless of stock urgency; (2) remaining out_of_stock/critical; (3) remaining
+// reorder_soon; (4) everything else. Every ingredient lands in exactly one group -- an ingredient
+// that is both out_of_stock and expired appears once, in group 1, still carrying both of its
+// existing badges wherever it's rendered. This is boolean set-membership across two independent
+// existing models, never a merged numeric rank between them (the two models still have no shared
+// score anywhere in this codebase).
+//
+// Within-group order reuses each model's own existing canonical order rather than inventing one:
+// group 1 sorts by nearestExpirationDate ascending, the same order getExpiringIngredients already
+// establishes. A flagged-only ingredient (flag set, no expiration exception) has no date to compare
+// against a dated peer -- there is no existing canonical order between "flagged" and "expiring"
+// anywhere in this codebase, so flagged-only ingredients sort after the dated ones, alphabetically.
+// This is a reported limitation, not an invented cross-model rank. Groups 2/3/4 reuse
+// sortIngredientsByUrgency's existing rank + alphabetical order.
+export function groupIngredientsForMobileAttention<T extends Ingredient>(
+  ingredients: T[],
+  today: string,
+  expiresSoonDays: number = DEFAULT_EXPIRES_SOON_DAYS,
+): MobileInventoryAttentionGroups<T> {
+  const active = ingredients.filter((ingredient) => ingredient.isActive);
+
+  const expirationExceptions = active
+    .filter((ingredient) => hasActionableExpirationOrFlag(ingredient, today, expiresSoonDays))
+    .sort((a, b) => {
+      const aExpiring = isExpiringStatus(getExpirationStatus(a.nearestExpirationDate, today, expiresSoonDays));
+      const bExpiring = isExpiringStatus(getExpirationStatus(b.nearestExpirationDate, today, expiresSoonDays));
+      if (aExpiring && bExpiring) {
+        return Date.parse(a.nearestExpirationDate) - Date.parse(b.nearestExpirationDate);
+      }
+      if (aExpiring !== bExpiring) {
+        return aExpiring ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+
+  const expirationExceptionIds = new Set(expirationExceptions.map((ingredient) => ingredient.id));
+  const remaining = active.filter((ingredient) => !expirationExceptionIds.has(ingredient.id));
+
+  const stockUrgent = sortIngredientsByUrgency(remaining.filter((ingredient) => {
+    const status = getStockUrgencyStatus(ingredient);
+    return status === "out_of_stock" || status === "critical";
+  }));
+  const reorderSoon = sortIngredientsByUrgency(remaining.filter((ingredient) => getStockUrgencyStatus(ingredient) === "reorder_soon"));
+  const everythingElse = sortIngredientsByUrgency(remaining.filter((ingredient) => {
+    const status = getStockUrgencyStatus(ingredient);
+    return status !== "out_of_stock" && status !== "critical" && status !== "reorder_soon";
+  }));
+
+  return { expirationExceptions, stockUrgent, reorderSoon, everythingElse };
+}

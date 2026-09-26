@@ -1,6 +1,22 @@
 import { ArrowRight } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type React from "react";
+
+// Mobile Inventory + Bake Consolidation V1: the exact matchMedia pattern dashboard-page.tsx and
+// orders-page.tsx already hand-roll (max-width: 1023px, just below Tailwind's `lg`), extracted here
+// so new mobile call sites don't duplicate it a third/fourth/fifth time. Dashboard/Orders keep their
+// own inline copies untouched -- this is purely additive for new callers.
+export function useIsMobileViewport(query = "(max-width: 1023px)"): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const update = () => setIsMobile(mql.matches);
+    update();
+    mql.addEventListener("change", update);
+    return () => mql.removeEventListener("change", update);
+  }, [query]);
+  return isMobile;
+}
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string; helper?: string; ref?: React.Ref<HTMLInputElement> }) {
   const { label, helper, ref, ...inputProps } = props;

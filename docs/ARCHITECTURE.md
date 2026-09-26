@@ -895,3 +895,48 @@ is counted twice. `shortage = max(0, demand − available)`.
 
 **Not built (deliberately):** profit, recent activity, repeat-customer rate — see
 `planning/DASHBOARD_PROFIT_V1.md`.
+
+## Mobile page-level composition (Dashboard/Orders/Inventory/Bake)
+
+**Breakpoint.** `useIsMobileViewport()` (`src/components/ui.tsx`) wraps
+`window.matchMedia("(max-width: 1023px)")` — just below Tailwind's `lg` (1024px), so the JS branch
+stays in lockstep with `lg:` utility classes used everywhere else. Dashboard and Orders each hold an
+inline, hand-rolled copy of this same pattern (`dashboard-page.tsx`, `orders-page.tsx`, both
+predating the shared hook); Inventory Stock (`inventory-stock-page.tsx`) and Bake
+(`bake-page.tsx`) import the shared hook instead, so it isn't duplicated a third/fourth/fifth time.
+
+**Pattern.** At the page level, a component branches `isMobileWidth ? <MobileX .../> : <existing
+desktop tree/>`, passing the *same already-computed* data/variables to both branches — no business
+rule (inventory status, production-cycle math, bake deduction/reservation logic, cost basis) is ever
+recalculated inside a `Mobile*` component; it only formats/renders props or calls the same
+already-imported pure functions the desktop branch already calls. This preserves the desktop markup
+exactly (`>=lg` is unaffected) while letting mobile (`<lg`) use a card/list presentation instead of a
+wide `<table>`.
+
+**Inventory Stock's mobile view** (`MobileInventoryStockView`) adds two Inventory-specific pieces on
+top of the base pattern, layered onto the *existing* status models rather than a new one:
+- `getStockUrgencySummaryCounts` / `getExpirationOrFlagAttentionCount` (`src/lib/inventory-status.ts`)
+  power a compact summary strip. `getExpirationOrFlagAttentionCount` is a union (boolean OR) over the
+  existing expiration model (`isExpiringStatus(getExpirationStatus(...))`) and the existing
+  data-integrity flag (`baseUnitMigrationFlaggedReason`) — never a second expiration model, and never
+  summed alongside the urgency counts (an ingredient counted there is still counted once).
+- `groupIngredientsForMobileAttention` groups the (already filtered/searched) ingredient list into
+  four buckets by set-membership, never a merged cross-model numeric score: (1) an existing
+  expiration/flag exception, (2) remaining `out_of_stock`/`critical`, (3) remaining `reorder_soon`,
+  (4) everything else. Within-group order reuses each model's own existing canonical order
+  (expiration ascending by date, matching `getExpiringIngredients`; urgency rank + alphabetical
+  elsewhere via `sortIngredientsByUrgency`). A flagged-only ingredient (no expiration date) has no
+  existing canonical order relative to a dated one, so it sorts after dated ones, alphabetically —
+  a reported limitation, not an invented rank.
+
+**Bake's mobile view** swaps four genuine `<table>` sections (Finished Stock, Production History,
+Finished-stock Exceptions, and the reconciliation-preview table inside the already-collapsed
+"Physical count / reconcile" advanced tool) for card lists fed the exact same
+`deriveFinishedStockBalances`/`sortProductionHistory`/`sortFinishedStockExceptionHistory`/
+`buildReconciliationPreview` output the desktop tables already use. `MobileProductionHistory` and
+`MobileFinishedStockExceptions` additionally page 5 records at a time
+(`getMobileHistoryPage`/`expandMobileHistoryPage`/`MOBILE_HISTORY_PAGE_SIZE`,
+`src/lib/finished-stock.ts`) — presentational-only slicing over the array they're given; they never
+re-sort or re-query history. The historical-cost explanatory copy is a single `HistoricalCostNotes()`
+component called bare on desktop and inside a closed-by-default `<details>` on mobile, so the copy
+exists once regardless of which branch renders it.
