@@ -485,8 +485,11 @@ test("Bake: a fully resolved recipe collapses the ingredient mapping table into 
   assert.match(text, /selectedBatch && !fullyResolved \?/);
   // The fullyResolved case renders a <details> with no `open` attribute (closed by default),
   // labeled distinctly from the deductions disclosure so the two toggles are never confused.
-  const detailsMatch = text.match(/\{selectedBatch && fullyResolved \? \(\s*<details className="mt-3">/);
-  assert.ok(detailsMatch, "fullyResolved renders a plain, un-opened <details>");
+  // Mobile Bake Final Simplification additionally gates this on !isMobileWidth -- on mobile the
+  // disclosure is omitted entirely on the happy path rather than merely collapsed; desktop keeps
+  // exactly this closed-by-default <details>.
+  const detailsMatch = text.match(/\{selectedBatch && fullyResolved && !isMobileWidth \? \(\s*<details className="mt-3">/);
+  assert.ok(detailsMatch, "fullyResolved (and desktop) renders a plain, un-opened <details>");
   assert.match(text, /View ingredient mapping \(\{resolved\.length\}\)/);
 });
 

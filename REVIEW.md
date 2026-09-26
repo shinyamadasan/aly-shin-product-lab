@@ -1025,3 +1025,80 @@ instruction not to alter data or guess a fix without confirmation. Recommend the
 DB access this investigation didn't).
 
 **Merge gate: `approved`** -- unchanged from the prior entry; still held for human visual re-check.
+
+## 2026-09-26 — Mobile Bake Final Simplification
+
+**Scope:** `src/components/bake-page.tsx`, `src/lib/finished-stock.ts` (generalized
+`getMobileHistoryPage`/`expandMobileHistoryPage` to take an explicit `pageSize`, added
+`MOBILE_PRODUCTION_HISTORY_PAGE_SIZE = 3` alongside the existing `MOBILE_HISTORY_PAGE_SIZE = 5`),
+and three test files (one pre-existing AST-based test updated for an intentional condition change,
+two of this feature's own test files rewritten for the new structure).
+
+**Preflight guard trace, done before touching any UI (per the task's explicit requirement not to
+assume the green card itself is the safeguard):** read `isBakeFormulaFullyResolved`/
+`getInsufficientDeductions` (`src/lib/bake-deduction.ts`) directly, then read the actual
+`confirm_bake_v3` Postgres function body (`supabase/migrations/20260921120000_cost_system_simplification_v4.sql:688-844`)
+rather than trusting the code comments describing it. Findings: (1) "ingredients matched" and
+"enough raw stock" both gate `readyToConfirm`, which alone drives the Confirm Bake button's
+`disabled` attribute -- confirmed unchanged, byte-for-byte, by this task's own new test. (2) The
+server independently and authoritatively re-checks insufficient stock against live, row-locked
+`current_quantity` (not the client's snapshot) and unconditionally rejects it -- `allowNegative` is
+computed client-side but is never even forwarded into `confirmBakeArgs`/the RPC call
+(`src/app/product-lab.tsx:2709-2711`), so remote Bakes have no override at any layer, exactly as the
+existing UI already claims. The override only ever applies on the local-only, no-database demo path
+(`applyBakeConfirmation`), never a real posted Bake. (3) One real architectural gap found and
+reported, not silently worked around: the server's "One of the resolved Items could not be found"
+check verifies that ingredient IDs *present* in `p_deductions` exist -- it does not verify that
+*every* formula row was actually included, because an unmapped row is silently dropped by
+`groupDeductionsByIngredient` before the array is even built. The only thing preventing an
+incomplete Bake today is the client-side `readyToConfirm`/`disabled` gate (which requires
+`fullyResolved`). This is pre-existing behavior, unrelated to and unweakened by this task's actual
+change (hiding the *success* checklist text never touches `readyToConfirm` or the button's
+`disabled` attribute), so it did not meet the bar for a "STOP and report before expanding scope"
+correctness fix -- but it's recorded here since the task asked whether the server independently
+revalidates, and the honest answer is "partially."
+
+**What changed:** at `<lg`, the full Preflight card and the happy-path "View ingredient mapping"
+disclosure are now gated behind `!isMobileWidth` (desktop: byte-identical, still ungated). On mobile,
+a new compact "Can't confirm bake" panel renders only when `mobileBakeIssues.length > 0` --built
+by reformatting the exact same `resolved`/`insufficient`/`uncertifiedCostIngredientNames` values the
+desktop card already computes, never a new validation call -- positioned immediately before the
+Confirm Bake button. The already-existing unmapped-ingredient picker table and the ingredient-
+deductions disclosure are untouched (no viewport gating added) since they already only appear
+automatically when there's a real problem. `FinishedStockPanel` now branches its entire body on
+`isMobileWidth`: the desktop return is the pre-existing flat sequence, unchanged; the mobile return
+drops Finished Stock's balance display entirely (per the task's explicit instruction, `balances`
+itself and `deriveFinishedStockBalances` are untouched and still feed the desktop table and Stock
+correction's product picker) and collapses Production History and Advanced tools (Stock correction,
+Physical count/reconcile, Finished-stock exceptions) into two top-level `<details>`, the latter with
+three nested disclosures. `MobileFinishedStockList` became a true orphan once Finished Stock's
+mobile call site was removed -- deleted rather than left as dead code, since only the underlying
+calculation (not that one presentational component) was covered by the task's "do not delete the
+underlying component/data/calculation" instruction; flagged in the report in case that reading is
+wrong.
+
+**Horizontal overflow, re-audited end to end (the prior fix's own scope was too narrow):** found
+two pre-existing, previously-unaudited `<p className="flex h-10 items-center ...">` elements (the
+"every proof batch is voided" / "no proof batches yet" message, and the "Expected from recipe"
+readout) that wrap long text with no `flex-wrap` -- a flex container in the default `nowrap` mode
+never wraps its content onto a second line regardless of `min-width:0`, so long text just overflows
+past the box instead. Fixed with `min-h-10 min-w-0 flex-wrap break-words`, restoring the exact
+original single-line fixed-height look at `>=lg` via `lg:h-10 lg:flex-nowrap` (a responsive
+override, not a JS branch, so desktop's rendered result is unchanged). This is a more probable root
+cause than anything in Production History/Exceptions' own markup (re-examined and found no further
+defect beyond the previous round's fix) -- collapsing those sections by default also removes them
+from the initially-rendered layout entirely, independent of whether their internal fix was already
+sufficient.
+
+**Not rubber-stamped:** no browser-automation tooling was available in this session either, so
+`document.documentElement.scrollWidth <= document.documentElement.clientWidth` at 320/375/390px was
+not empirically measured -- the fix targets the specific mechanism found by rigorous line-by-line
+CSS reasoning against the actual rendered class list, not a guess, but it remains unverified in a
+real browser. No `overflow-x-hidden`/root-level workaround was used anywhere; verified by a
+dedicated test scanning the whole file plus the mobile branch specifically.
+
+**Merge gate: `approved`** -- held for human mobile visual QA, per the task's own explicit
+instruction to stop after this candidate commit. Two flags for that review beyond the usual visual
+check: (1) confirm the compact "Can't confirm bake" panel actually shows the right ingredient/
+shortfall names on a real failing batch; (2) the `MobileFinishedStockList` deletion decision above
+is a judgment call worth a second opinion.

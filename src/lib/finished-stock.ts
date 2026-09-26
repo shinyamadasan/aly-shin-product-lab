@@ -54,20 +54,25 @@ export function sortFinishedStockExceptionHistory(movements: FinishedStockMoveme
 }
 
 // Mobile History Density Amendment: Bake's mobile Production History / Finished-stock Exceptions
-// cards show 5 records at a time rather than dumping their full slice at once. These two helpers are
-// pure presentational paging over whatever array they're given -- generic over T, so they can only
-// slice/cap it, never re-sort or re-derive it. The array's own order (already produced by
-// sortProductionHistory/sortFinishedStockExceptionHistory upstream) is preserved exactly.
+// cards show a few records at a time rather than dumping their full slice at once. These two
+// helpers are pure presentational paging over whatever array they're given -- generic over T, so
+// they can only slice/cap it, never re-sort or re-derive it. The array's own order (already
+// produced by sortProductionHistory/sortFinishedStockExceptionHistory upstream) is preserved
+// exactly. pageSize is an explicit, required argument (not a shared default) because Mobile Bake
+// Final Simplification gave Production History (now behind its own collapsed disclosure) a
+// smaller initial reveal than Finished-stock Exceptions (nested one level deeper, under Advanced
+// tools) -- two different page sizes, same paging mechanics, never silently mismatched.
 export const MOBILE_HISTORY_PAGE_SIZE = 5;
+export const MOBILE_PRODUCTION_HISTORY_PAGE_SIZE = 3;
 
-export function getMobileHistoryPage<T>(items: T[], visibleCount: number): { visible: T[]; hasMore: boolean; canCollapse: boolean } {
+export function getMobileHistoryPage<T>(items: T[], visibleCount: number, pageSize: number): { visible: T[]; hasMore: boolean; canCollapse: boolean } {
   return {
     visible: items.slice(0, visibleCount),
     hasMore: visibleCount < items.length,
-    canCollapse: visibleCount > MOBILE_HISTORY_PAGE_SIZE,
+    canCollapse: visibleCount > pageSize,
   };
 }
 
-export function expandMobileHistoryPage(currentVisibleCount: number, total: number): number {
-  return Math.min(currentVisibleCount + MOBILE_HISTORY_PAGE_SIZE, total);
+export function expandMobileHistoryPage(currentVisibleCount: number, total: number, pageSize: number): number {
+  return Math.min(currentVisibleCount + pageSize, total);
 }

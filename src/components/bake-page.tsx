@@ -12,7 +12,8 @@ import { formatQuantity } from "@/lib/quantity-display";
 import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import {
-  deriveFinishedStockBalances, expandMobileHistoryPage, getMobileHistoryPage, isRealProduction, MOBILE_HISTORY_PAGE_SIZE, sortFinishedStockExceptionHistory, sortProductionHistory,
+  deriveFinishedStockBalances, expandMobileHistoryPage, getMobileHistoryPage, isRealProduction, MOBILE_HISTORY_PAGE_SIZE, MOBILE_PRODUCTION_HISTORY_PAGE_SIZE,
+  sortFinishedStockExceptionHistory, sortProductionHistory,
 } from "@/lib/finished-stock";
 import { buildOpeningBalanceCostEstimate, buildReconciliationPreview, type ReconciliationBatchItemInput, type ReconciliationPreviewRow } from "@/lib/finished-stock-reconciliation";
 import type { RuleEngineContext } from "@/lib/rule-engine/types";
@@ -141,6 +142,29 @@ export function BakePage({
     // remotely; this keeps the button honest with the alert above and covers the local-only demo path.
     && !(selectedBatch && isVoidedBatch(selectedBatch));
 
+  const isMobileWidth = useIsMobileViewport();
+
+  // Mobile Bake Final Simplification: a reformatting of the SAME data the desktop Preflight card
+  // and mapping table already compute (resolved/insufficient/uncertifiedCostIngredientNames) into
+  // one compact list -- no new validation calculation. Only rendered on mobile, and only when
+  // non-empty (the happy path renders nothing at all here). Blocking/override behavior itself
+  // lives entirely in readyToConfirm/canOverrideNegative/allowNegative above, untouched.
+  const mobileBakeIssues: { key: string; title: string; detail: string }[] = selectedBatch
+    ? [
+      ...resolved
+        .filter((row) => !row.ingredientId || row.convertedQuantity === null)
+        .map((row) => ({ key: row.rowId, title: row.ingredientName, detail: row.ingredientId ? "Needs unit fix" : "Not mapped" })),
+      ...insufficient.map((item) => ({
+        key: `short-${item.ingredientId}`,
+        title: item.name,
+        detail: `Short by ${formatQuantity(item.shortfall, labState.ingredients.find((i) => i.id === item.ingredientId)?.baseUnit ?? "")}`,
+      })),
+      ...(remotePosting && uncertifiedCostIngredientNames.length > 0
+        ? [{ key: "uncertified-cost", title: uncertifiedCostIngredientNames.length === 1 ? uncertifiedCostIngredientNames[0] : `${uncertifiedCostIngredientNames.length} ingredients`, detail: "Cost setup needed" }]
+        : []),
+    ]
+    : [];
+
   function handleAssign(row: ResolvedBakeRow, ingredientId: string) {
     saveIngredientAlias(row.ingredientName, ingredientId, "bake");
   }
@@ -195,7 +219,7 @@ export function BakePage({
               ))}
             </select>
           ) : (
-            <p className="flex h-10 items-center rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c]">
+            <p className="flex min-h-10 min-w-0 flex-wrap items-center break-words rounded-md border border-[#ead9c8] bg-white px-3 text-sm text-[#6f5a4c] lg:h-10 lg:flex-nowrap">
               {batchChoices.noCurrent.length > 0 ? "Every proof batch is voided -- record a new one on Proof Day first." : "No proof batches yet -- record one on Proof Day first."}
             </p>
           )}
@@ -257,7 +281,7 @@ export function BakePage({
           </label>
           <div className="grid gap-1 text-sm font-medium">
             Expected from recipe
-            <p className="flex h-10 items-center rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 font-semibold text-[#6f5a4c]">
+            <p className="flex min-h-10 min-w-0 flex-wrap items-center break-words rounded-md border border-[#d8c7b7] bg-[#f7f2ea] px-3 font-semibold text-[#6f5a4c] lg:h-10 lg:flex-nowrap">
               {expectedPieces === null ? "--" : `${Number.isInteger(expectedPieces) ? expectedPieces : `≈${expectedPieces}`} ${expectedPieces === 1 ? "piece" : "pieces"}`}
             </p>
           </div>
@@ -278,7 +302,7 @@ export function BakePage({
           {actualPiecesText.trim() !== "" && !isActualPiecesValid ? <span className="text-xs font-normal text-[#8a3827]">Enter a whole number of at least 1.</span> : null}
         </label>
 
-        {selectedBatch ? (
+        {selectedBatch && !isMobileWidth ? (
           <div className="mt-5 rounded-md border border-[#eaded2] p-4">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Preflight</p>
             <ul className="mt-2 grid gap-1.5 text-sm">
@@ -361,7 +385,7 @@ export function BakePage({
           </div>
         ) : null}
 
-        {selectedBatch && fullyResolved ? (
+        {selectedBatch && fullyResolved && !isMobileWidth ? (
           <details className="mt-3">
             <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">View ingredient mapping ({resolved.length})</summary>
             <div className="mt-2 divide-y divide-[#f0e4d8] rounded-md border border-[#eaded2]">
@@ -421,6 +445,19 @@ export function BakePage({
           </details>
         ) : null}
 
+        {isMobileWidth && mobileBakeIssues.length > 0 ? (
+          <div className="mt-5 w-full min-w-0 rounded-md border border-[#f3c9c0] bg-[#fde6df] p-3 text-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8a3827]">Can&apos;t confirm bake</p>
+            <ul className="mt-2 space-y-1.5">
+              {mobileBakeIssues.map((issue) => (
+                <li className="min-w-0 break-words text-[#8a3827]" key={issue.key}>
+                  <span className="font-semibold">{issue.title}</span> — {issue.detail}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         <div className="mt-5 flex flex-col gap-3">
           {insufficient.length > 0 && canOverrideNegative ? (
             <label className="flex items-center gap-2 text-sm font-medium text-[#8a3827]">
@@ -473,14 +510,76 @@ function FinishedStockPanel({
   const productName = (id: string) => labState.products.find((product) => product.id === id)?.name ?? id;
   const isMobileWidth = useIsMobileViewport();
 
+  if (isMobileWidth) {
+    // Mobile Bake Final Simplification: at <lg, Bake's one job is "record a bake correctly" --
+    // Finished Stock (balances) is not rendered here at all (it's already surfaced elsewhere in
+    // the app), and Production History / Advanced tools collapse into two disclosures instead of
+    // a flat, always-visible sequence. deriveFinishedStockBalances/balances is still computed
+    // above and still feeds Stock correction/Physical count exactly as before -- only its own
+    // "Baked pieces on hand" display is skipped.
+    return (
+      <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
+        {history.length > 0 ? (
+          <details>
+            <summary className="cursor-pointer text-lg font-semibold">Production history</summary>
+            <div className="mt-3">
+              <details className="mt-1">
+                <summary className="cursor-pointer text-xs font-semibold text-[#9a5b2f]">ⓘ About historical costs</summary>
+                <div className="mt-1">
+                  <HistoricalCostNotes />
+                </div>
+              </details>
+              <MobileProductionHistory history={history} productName={productName} />
+            </div>
+          </details>
+        ) : null}
+
+        {recordFinishedStockException || applyFinishedStockReconciliation || exceptionHistory.length > 0 ? (
+          <details className="mt-6">
+            <summary className="cursor-pointer text-lg font-semibold">Advanced tools</summary>
+            <div className="mt-3 space-y-4">
+              {recordFinishedStockException ? (
+                <details>
+                  <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">Stock correction</summary>
+                  <FinishedStockExceptionForm
+                    balances={balances}
+                    recordFinishedStockException={recordFinishedStockException}
+                  />
+                </details>
+              ) : null}
+
+              {applyFinishedStockReconciliation ? (
+                <details>
+                  <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">Physical count / reconcile</summary>
+                  <FinishedStockReconciliationForm
+                    applyFinishedStockReconciliation={applyFinishedStockReconciliation}
+                    labState={labState}
+                  />
+                </details>
+              ) : null}
+
+              {exceptionHistory.length > 0 ? (
+                <details>
+                  <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">Finished-stock exceptions ({exceptionHistory.length})</summary>
+                  <div className="mt-2">
+                    <p className="text-xs text-[#6f5a4c]">Damage and giveaways always come from currently unreserved stock; a customer&apos;s reservation is never touched. A correction reconciles a physical count either direction.</p>
+                    <MobileFinishedStockExceptions exceptionHistory={exceptionHistory} productName={productName} />
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#9a5b2f]">Finished stock</p>
       <h3 className="mt-1 text-lg font-semibold">Baked pieces on hand</h3>
       {balances.length === 0 ? (
         <p className="mt-3 text-sm text-[#6f5a4c]">No production yet. A confirmed Bake adds finished pieces here.</p>
-      ) : isMobileWidth ? (
-        <MobileFinishedStockList balances={balances} />
       ) : (
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-sm">
@@ -509,50 +608,37 @@ function FinishedStockPanel({
       {history.length > 0 ? (
         <>
           <h3 className="mt-6 text-lg font-semibold">Production history</h3>
-          {isMobileWidth ? (
-            <details className="mt-1">
-              <summary className="cursor-pointer text-xs font-semibold text-[#9a5b2f]">ⓘ About historical costs</summary>
-              <div className="mt-1">
-                <HistoricalCostNotes />
-              </div>
-            </details>
-          ) : (
-            <HistoricalCostNotes />
-          )}
-          {isMobileWidth ? (
-            <MobileProductionHistory history={history} productName={productName} />
-          ) : (
-            <div className="mt-3 overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
-                    <th className="pb-2 pr-4">When</th>
-                    <th className="pb-2 pr-4">Product</th>
-                    <th className="pb-2 pr-4">Version</th>
-                    <th className="pb-2 pr-4 text-right">Expected</th>
-                    <th className="pb-2 pr-4 text-right">Actual</th>
-                    <th className="pb-2 pr-4 text-right">Raw cost</th>
-                    <th className="pb-2 text-right">Per piece</th>
+          <HistoricalCostNotes />
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                  <th className="pb-2 pr-4">When</th>
+                  <th className="pb-2 pr-4">Product</th>
+                  <th className="pb-2 pr-4">Version</th>
+                  <th className="pb-2 pr-4 text-right">Expected</th>
+                  <th className="pb-2 pr-4 text-right">Actual</th>
+                  <th className="pb-2 pr-4 text-right">Raw cost</th>
+                  <th className="pb-2 text-right">Per piece</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((execution) => (
+                  <tr key={execution.id} className="border-t border-[#f0e4d8]">
+                    <td className="py-2 pr-4 text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</td>
+                    <td className="py-2 pr-4 font-semibold">{productName(execution.productId)}</td>
+                    <td className="py-2 pr-4 text-[#6f5a4c]">
+                      {isRealProduction(execution) ? execution.batchVersionSnapshot : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
+                    </td>
+                    <td className="py-2 pr-4 text-right text-[#6f5a4c]">{execution.expectedPieces}</td>
+                    <td className="py-2 pr-4 text-right font-semibold">{execution.quantityProducedPieces}</td>
+                    <td className="py-2 pr-4 text-right">PHP {execution.frozenIngredientCostTotal.toFixed(2)}</td>
+                    <td className="py-2 text-right">PHP {execution.frozenCostPerPiece.toFixed(2)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {history.map((execution) => (
-                    <tr key={execution.id} className="border-t border-[#f0e4d8]">
-                      <td className="py-2 pr-4 text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</td>
-                      <td className="py-2 pr-4 font-semibold">{productName(execution.productId)}</td>
-                      <td className="py-2 pr-4 text-[#6f5a4c]">
-                        {isRealProduction(execution) ? execution.batchVersionSnapshot : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
-                      </td>
-                      <td className="py-2 pr-4 text-right text-[#6f5a4c]">{execution.expectedPieces}</td>
-                      <td className="py-2 pr-4 text-right font-semibold">{execution.quantityProducedPieces}</td>
-                      <td className="py-2 pr-4 text-right">PHP {execution.frozenIngredientCostTotal.toFixed(2)}</td>
-                      <td className="py-2 text-right">PHP {execution.frozenCostPerPiece.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       ) : null}
 
@@ -580,58 +666,43 @@ function FinishedStockPanel({
         <>
           <h3 className="mt-6 text-lg font-semibold">Finished-stock exceptions</h3>
           <p className="mt-1 text-xs text-[#6f5a4c]">Damage and giveaways always come from currently unreserved stock; a customer&apos;s reservation is never touched. A correction reconciles a physical count either direction.</p>
-          {isMobileWidth ? (
-            <MobileFinishedStockExceptions exceptionHistory={exceptionHistory} productName={productName} />
-          ) : (
-            <div className="mt-3 overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
-                    <th className="pb-2 pr-4">When</th>
-                    <th className="pb-2 pr-4">Product</th>
-                    <th className="pb-2 pr-4">Type</th>
-                    <th className="pb-2 pr-4 text-right">Pieces</th>
-                    <th className="pb-2">Note</th>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs font-semibold uppercase tracking-[0.1em] text-[#9a5b2f]">
+                  <th className="pb-2 pr-4">When</th>
+                  <th className="pb-2 pr-4">Product</th>
+                  <th className="pb-2 pr-4">Type</th>
+                  <th className="pb-2 pr-4 text-right">Pieces</th>
+                  <th className="pb-2">Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {exceptionHistory.map((movement) => (
+                  <tr key={movement.id} className="border-t border-[#f0e4d8]">
+                    <td className="py-2 pr-4 text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</td>
+                    <td className="py-2 pr-4 font-semibold">{productName(movement.productId)}</td>
+                    <td className="py-2 pr-4"><Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag></td>
+                    <td className="py-2 pr-4 text-right font-semibold">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta}</td>
+                    <td className="py-2 text-[#6f5a4c]">{movement.note}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {exceptionHistory.map((movement) => (
-                    <tr key={movement.id} className="border-t border-[#f0e4d8]">
-                      <td className="py-2 pr-4 text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</td>
-                      <td className="py-2 pr-4 font-semibold">{productName(movement.productId)}</td>
-                      <td className="py-2 pr-4"><Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag></td>
-                      <td className="py-2 pr-4 text-right font-semibold">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta}</td>
-                      <td className="py-2 text-[#6f5a4c]">{movement.note}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       ) : null}
     </div>
   );
 }
 
-// Mobile Inventory + Bake Consolidation V1 -- presentational-only mobile cards for Bake's Finished
-// Stock/Production History/Finished-stock Exceptions. Every prop here is already-computed data
-// (balances/history/exceptionHistory/productName all come from FinishedStockPanel, unchanged); none
+// Mobile Inventory + Bake Consolidation V1 -- presentational-only mobile cards for Bake's
+// Production History/Finished-stock Exceptions. Every prop here is already-computed data
+// (history/exceptionHistory/productName all come from FinishedStockPanel, unchanged); none
 // of these components calls getStockUrgencyStatus, cost math, or any deduction/reservation logic.
-function MobileFinishedStockList({ balances }: { balances: ReturnType<typeof deriveFinishedStockBalances> }) {
-  return (
-    <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
-      {balances.map((balance) => (
-        <li className="w-full min-w-0 py-2" key={balance.productId}>
-          <p className="min-w-0 break-words font-semibold">{balance.productName}</p>
-          <p className="mt-0.5 text-[#6f5a4c]">
-            On hand {balance.onHandPieces} · Reserved {balance.reservedPieces} · Available <span className="font-semibold text-[#231813]">{balance.availablePieces}</span>
-          </p>
-        </li>
-      ))}
-    </ul>
-  );
-}
+// (Mobile Bake Final Simplification removed Finished Stock's own mobile card list, along with its
+// call site -- deriveFinishedStockBalances and balances themselves are untouched and still feed
+// both the desktop table and Stock correction's product picker.)
 
 // The exact three historical-cost sentences, extracted verbatim so desktop (called bare) and mobile
 // (called inside a collapsed <details>) render identical copy from one source -- never duplicated.
@@ -645,12 +716,14 @@ function HistoricalCostNotes() {
   );
 }
 
-// Mobile History Density Amendment: 5 records at a time, "Show N more"/"Show less" over the array
-// FinishedStockPanel already sliced/sorted -- getMobileHistoryPage/expandMobileHistoryPage only
-// slice what they're given, they never re-sort or re-query.
+// Mobile Bake Final Simplification: Production History now sits behind its own collapsed
+// disclosure, so it starts smaller than Finished-stock Exceptions -- 3 records, not 5,
+// "Show N more"/"Show less" over the array FinishedStockPanel already sliced/sorted.
+// getMobileHistoryPage/expandMobileHistoryPage only slice what they're given, they never
+// re-sort or re-query.
 function MobileProductionHistory({ history, productName }: { history: ProductionExecution[]; productName: (id: string) => string }) {
-  const [visibleCount, setVisibleCount] = useState(MOBILE_HISTORY_PAGE_SIZE);
-  const { visible, hasMore, canCollapse } = getMobileHistoryPage(history, visibleCount);
+  const [visibleCount, setVisibleCount] = useState(MOBILE_PRODUCTION_HISTORY_PAGE_SIZE);
+  const { visible, hasMore, canCollapse } = getMobileHistoryPage(history, visibleCount, MOBILE_PRODUCTION_HISTORY_PAGE_SIZE);
   return (
     <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
       {visible.map((execution) => (
@@ -675,12 +748,12 @@ function MobileProductionHistory({ history, productName }: { history: Production
       {hasMore || canCollapse ? (
         <li className="flex gap-4 py-2">
           {hasMore ? (
-            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount((count) => expandMobileHistoryPage(count, history.length))} type="button">
-              Show {Math.min(MOBILE_HISTORY_PAGE_SIZE, history.length - visibleCount)} more
+            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount((count) => expandMobileHistoryPage(count, history.length, MOBILE_PRODUCTION_HISTORY_PAGE_SIZE))} type="button">
+              Show {Math.min(MOBILE_PRODUCTION_HISTORY_PAGE_SIZE, history.length - visibleCount)} more
             </button>
           ) : null}
           {canCollapse ? (
-            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount(MOBILE_HISTORY_PAGE_SIZE)} type="button">
+            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount(MOBILE_PRODUCTION_HISTORY_PAGE_SIZE)} type="button">
               Show less
             </button>
           ) : null}
@@ -690,9 +763,12 @@ function MobileProductionHistory({ history, productName }: { history: Production
   );
 }
 
+// Finished-stock Exceptions keeps the original 5-record page size (Amendment 2) -- it now lives
+// one level deeper, nested under Advanced tools, so it stays less aggressively collapsed than
+// Production History above.
 function MobileFinishedStockExceptions({ exceptionHistory, productName }: { exceptionHistory: FinishedStockMovement[]; productName: (id: string) => string }) {
   const [visibleCount, setVisibleCount] = useState(MOBILE_HISTORY_PAGE_SIZE);
-  const { visible, hasMore, canCollapse } = getMobileHistoryPage(exceptionHistory, visibleCount);
+  const { visible, hasMore, canCollapse } = getMobileHistoryPage(exceptionHistory, visibleCount, MOBILE_HISTORY_PAGE_SIZE);
   return (
     <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
       {visible.map((movement) => (
@@ -708,7 +784,7 @@ function MobileFinishedStockExceptions({ exceptionHistory, productName }: { exce
       {hasMore || canCollapse ? (
         <li className="flex gap-4 py-2">
           {hasMore ? (
-            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount((count) => expandMobileHistoryPage(count, exceptionHistory.length))} type="button">
+            <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setVisibleCount((count) => expandMobileHistoryPage(count, exceptionHistory.length, MOBILE_HISTORY_PAGE_SIZE))} type="button">
               Show {Math.min(MOBILE_HISTORY_PAGE_SIZE, exceptionHistory.length - visibleCount)} more
             </button>
           ) : null}
