@@ -970,3 +970,58 @@ concern (fully reversible via git, no schema/write surface touched), but the mis
 visual verification against a hard "no horizontal scroll" acceptance criterion means a human should
 actually open Bake and Inventory Stock on a phone-width viewport before this ships, not rely on the
 structural tests alone.
+
+## 2026-09-26 — Mobile Inventory + Bake: visual QA fix 1
+
+**Scope:** `src/components/bake-page.tsx` only, in response to human visual QA against candidate
+`b8bd617`, which found real page-level horizontal scroll on Bake at phone width -- the exact gap
+the prior entry flagged as unverified.
+
+**Root cause, confirmed by re-reading the actual JSX (not guessed):** `MobileProductionHistory`'s
+per-row header was `<div className="flex flex-wrap items-baseline justify-between gap-2">` holding
+the product-name `<p>` and, for an opening-balance row, a `<Tag>` rendering "Opening balance
+(estimated cost)" -- neither flex child had `min-width: 0`, the browser's default flex-item minimum
+is its own content size, and `justify-between` pins the second item to the row's trailing edge. On
+a narrow viewport this let the Tag's content width exceed the remaining row space without reliably
+wrapping onto its own line, spilling past the card's right edge and forcing page-level horizontal
+scroll -- confirmed as the named offender in the screenshot. The same shape (a `flex-1` content
+column with no `min-w-0`, `flex justify-between` cells with no `min-w-0`) existed in
+`MobileFinishedStockExceptions`'s header and `MobileReconciliationPreviewList`/
+`MobileReconciliationCountInputs` under Advanced tools -- lower-risk (shorter text) but the same
+latent defect class, fixed the same way rather than left for the next report.
+
+**Fix:** for the opening-balance case, stopped trying to keep the name and the tag on one flex line
+at all -- switched to an unconditional stack (name, then `<Tag>` on the line below), matching the
+spec's own example format ("Brownies" / "Opening balance · estimated cost" as separate lines) rather
+than relying on `flex-wrap` behaving a particular way in a real mobile browser. For the real-bake
+case, "{product} · {version}" is now one plain-text `<p>`, not a flex row, so it can only ever wrap
+normally, never overflow. Elsewhere, added `min-w-0`/`break-words` to the text-holding flex/grid
+children and `shrink-0` to the fixed-width siblings (checkbox, `w-24` count input) so they can no
+longer refuse to shrink. No `overflow-x-hidden`/`overflow-x-auto` workaround was introduced anywhere
+-- verified by rerunning `tests/bake-mobile.test.ts`'s existing structural-safety test, which scans
+the changed components' source for exactly those two classes and still passes.
+
+**Not rubber-stamped:** this fix is still verified structurally (tsc/build/lint/tests), not visually
+-- no browser-automation tooling was available to actually screenshot the fixed layout in this
+session either. The fix targets the exact mechanism a human already visually confirmed was broken,
+but the next visual QA pass is what actually closes this out, not this entry.
+
+**Issue 2 (Inventory / Salted butter), read-only trace, no code change:** `mcp__product-lab__inventory_list`
+shows two distinct, currently-active ingredient rows: "Salted butter" (`ce08f67a-...`, 1077 g, last
+purchased 2026-09-17/19) and "Butter Salted" (`b216e9f7-...`, 0 g, last purchased 2026-08-24, zeroed
+by a stock-count correction on 2026-09-24) -- the most likely explanation for an apparent Dashboard-
+vs-Inventory disagreement is that the two screenshots were looking at two different rows, not one
+row disagreeing with itself. This could **not** be conclusively confirmed: `nearest_expiration_date`
+is not exposed by any read-only tool available in this session (the product-lab MCP tools' schema
+omits it, and a direct read-only Supabase REST `select` against `public.ingredients` with the app's
+own anon key was denied at the grant level -- `permission denied for table ingredients`, not an RLS
+row-filter). Source-level, both Dashboard and Inventory Stock read the same `labState.ingredients`
+array and both call the same `getExpirationStatus`/`isExpiringStatus` from
+`src/lib/inventory-status.ts` -- there is no second/forked expiration code path in this codebase to
+have caused a wiring bug. Conclusion: no evidence of a code-level inconsistency; the two-ingredient-
+name finding is the leading explanation but unverified; **no change made**, per the explicit
+instruction not to alter data or guess a fix without confirmation. Recommend the owner check both
+"Salted butter" and "Butter Salted" in Manage Items directly (their logged-in session has the
+DB access this investigation didn't).
+
+**Merge gate: `approved`** -- unchanged from the prior entry; still held for human visual re-check.

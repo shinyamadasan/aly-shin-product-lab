@@ -622,8 +622,8 @@ function MobileFinishedStockList({ balances }: { balances: ReturnType<typeof der
   return (
     <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
       {balances.map((balance) => (
-        <li className="py-2" key={balance.productId}>
-          <p className="font-semibold">{balance.productName}</p>
+        <li className="w-full min-w-0 py-2" key={balance.productId}>
+          <p className="min-w-0 break-words font-semibold">{balance.productName}</p>
           <p className="mt-0.5 text-[#6f5a4c]">
             On hand {balance.onHandPieces} · Reserved {balance.reservedPieces} · Available <span className="font-semibold text-[#231813]">{balance.availablePieces}</span>
           </p>
@@ -654,11 +654,15 @@ function MobileProductionHistory({ history, productName }: { history: Production
   return (
     <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
       {visible.map((execution) => (
-        <li className="py-2" key={execution.id}>
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="font-semibold">{productName(execution.productId)}</p>
-            {isRealProduction(execution) ? <span className="text-xs text-[#6f5a4c]">{execution.batchVersionSnapshot}</span> : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
-          </div>
+        <li className="w-full min-w-0 py-2" key={execution.id}>
+          {isRealProduction(execution) ? (
+            <p className="min-w-0 break-words font-semibold">{productName(execution.productId)} · {execution.batchVersionSnapshot}</p>
+          ) : (
+            <div className="flex min-w-0 flex-col gap-1">
+              <p className="min-w-0 break-words font-semibold">{productName(execution.productId)}</p>
+              <Tag tone="warm">Opening balance (estimated cost)</Tag>
+            </div>
+          )}
           <p className="mt-0.5 text-xs text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</p>
           {isRealProduction(execution) ? (
             <p className="mt-1 text-[#6f5a4c]">Expected {execution.expectedPieces} · Actual <span className="font-semibold text-[#231813]">{execution.quantityProducedPieces}</span></p>
@@ -692,9 +696,9 @@ function MobileFinishedStockExceptions({ exceptionHistory, productName }: { exce
   return (
     <ul className="mt-3 divide-y divide-[#f0e4d8] text-sm">
       {visible.map((movement) => (
-        <li className="py-2" key={movement.id}>
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="font-semibold">{productName(movement.productId)}</p>
+        <li className="w-full min-w-0 py-2" key={movement.id}>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+            <p className="min-w-0 flex-1 break-words font-semibold">{productName(movement.productId)}</p>
             <Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag>
           </div>
           <p className="mt-0.5 text-xs text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</p>
@@ -1112,10 +1116,10 @@ function MobileReconciliationCountInputs({
   return (
     <ul className="mt-3 divide-y divide-[#f0e4d8]">
       {products.map((product) => (
-        <li className="flex items-center justify-between gap-3 py-2" key={product.id}>
-          <label className="text-sm font-semibold" htmlFor={`mobile-count-${product.id}`}>{product.name}</label>
+        <li className="flex w-full min-w-0 items-center justify-between gap-3 py-2" key={product.id}>
+          <label className="min-w-0 flex-1 break-words text-sm font-semibold" htmlFor={`mobile-count-${product.id}`}>{product.name}</label>
           <input
-            className="h-9 w-24 rounded-md border border-[#d8c7b7] bg-white px-2 text-right"
+            className="h-9 w-24 shrink-0 rounded-md border border-[#d8c7b7] bg-white px-2 text-right"
             id={`mobile-count-${product.id}`}
             inputMode="numeric"
             min="0"
@@ -1146,27 +1150,27 @@ function MobileReconciliationPreviewList({
       {isStale ? <p className="text-sm font-semibold text-[#8a3827]">Stock changed since this preview. Re-preview before applying.</p> : null}
       <ul className="mt-2 divide-y divide-[#f0e4d8] text-sm">
         {previewRows.map(({ row, costEstimate, blocked, selectable }) => (
-          <li className="py-2" key={row.productId}>
-            <div className="flex items-start gap-3">
+          <li className="w-full min-w-0 py-2" key={row.productId}>
+            <div className="flex w-full min-w-0 items-start gap-3">
               {row.action === "correction" || row.action === "opening_balance" ? (
                 <input
                   aria-label={`Include ${row.productName} in this reconciliation`}
                   checked={selectable && includedIds.has(row.productId)}
-                  className="mt-1"
+                  className="mt-1 shrink-0"
                   disabled={!selectable}
                   onChange={(event) => onToggleInclude(row.productId, event.target.checked)}
                   type="checkbox"
                 />
               ) : null}
-              <div className="flex-1">
-                <p className="font-semibold">{row.productName}</p>
+              <div className="min-w-0 flex-1">
+                <p className="min-w-0 break-words font-semibold">{row.productName}</p>
                 <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-[#6f5a4c]">
-                  <div className="flex justify-between"><dt>On hand</dt><dd>{row.onHand}</dd></div>
-                  <div className="flex justify-between"><dt>Reserved</dt><dd>{row.reserved}</dd></div>
-                  <div className="flex justify-between"><dt>Available</dt><dd>{row.available}</dd></div>
-                  <div className="flex justify-between"><dt>Counted</dt><dd>{row.physicalCount}</dd></div>
-                  <div className="flex justify-between"><dt>Difference</dt><dd className="font-semibold text-[#231813]">{row.difference > 0 ? `+${row.difference}` : row.difference}</dd></div>
-                  <div className="flex justify-between"><dt>Est. unit cost</dt><dd>{costEstimate ? `PHP ${costEstimate.costPerPiece.toFixed(2)}` : "--"}</dd></div>
+                  <div className="flex min-w-0 justify-between gap-1"><dt className="shrink-0">On hand</dt><dd>{row.onHand}</dd></div>
+                  <div className="flex min-w-0 justify-between gap-1"><dt className="shrink-0">Reserved</dt><dd>{row.reserved}</dd></div>
+                  <div className="flex min-w-0 justify-between gap-1"><dt className="shrink-0">Available</dt><dd>{row.available}</dd></div>
+                  <div className="flex min-w-0 justify-between gap-1"><dt className="shrink-0">Counted</dt><dd>{row.physicalCount}</dd></div>
+                  <div className="flex min-w-0 justify-between gap-1"><dt className="shrink-0">Difference</dt><dd className="font-semibold text-[#231813]">{row.difference > 0 ? `+${row.difference}` : row.difference}</dd></div>
+                  <div className="flex min-w-0 justify-between gap-1"><dt className="shrink-0">Est. unit cost</dt><dd>{costEstimate ? `PHP ${costEstimate.costPerPiece.toFixed(2)}` : "--"}</dd></div>
                 </dl>
                 <div className="mt-1">
                   {row.action === "no_change" ? <span className="text-xs text-[#6f5a4c]">No change</span> : null}
