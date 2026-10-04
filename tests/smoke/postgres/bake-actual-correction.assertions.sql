@@ -277,8 +277,11 @@ begin
   perform public.t072_fails(format('select public.correct_bake_actual_pieces(null,%L,10,12,%L)', w.valid_exec, 'r'), '22023');
   perform public.t072_fails(format('select public.correct_bake_actual_pieces(%L,%L,10,10,%L)', gen_random_uuid(), w.valid_exec, 'same'), '22023');
   -- stale guard: the operator saw 9, the Bake is recorded as 10
-  msg := public.t072_fails(format('select public.correct_bake_actual_pieces(%L,%L,9,12,%L)', gen_random_uuid(), w.valid_exec, 'stale'), '40001');
+  msg := public.t072_fails(format('select public.correct_bake_actual_pieces(%L,%L,9,12,%L)', gen_random_uuid(), w.valid_exec, 'stale'), 'PT409');
   if msg not like '%Reload and try again%' then raise exception 'TEST FAILED: stale message wrong: %', msg; end if;
+  -- TASK-072A regression: PostgREST 14 retries SQLSTATE 40001, so the RPC must never raise it.
+  if pg_get_functiondef('inventory_private.correct_bake_actual_pieces(uuid,uuid,integer,numeric,text)'::regprocedure) like '%40001%' then
+    raise exception 'TEST FAILED: correct_bake_actual_pieces must not use SQLSTATE 40001'; end if;
   select quantity_produced_pieces, frozen_cost_per_piece into v_qty, v_cpp from public.production_executions where id = w.valid_exec;
   if v_qty <> 10 or v_cpp <> 12 or exists (select 1 from public.production_execution_corrections where production_execution_id = w.valid_exec) then
     raise exception 'TEST FAILED: every rejected call above must leave the Bake untouched'; end if;

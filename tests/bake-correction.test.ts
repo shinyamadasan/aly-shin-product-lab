@@ -7,6 +7,7 @@ import { mapProductionExecutionCorrectionRow } from "../src/lib/supabase-mappers
 import { correctBakeActualArgs } from "../src/lib/raw-inventory-authority.ts";
 import type { FinishedStockMovement, ProductionExecution, ProductionExecutionCorrection } from "../src/lib/product-lab-types.ts";
 
+const NL = String.fromCharCode(10);
 const EXEC_ID = "11111111-1111-4111-8111-111111111111";
 
 function bake(overrides: Partial<ProductionExecution> = {}): ProductionExecution {
@@ -126,4 +127,19 @@ test("migration contract: owner-only definer behind an invoker wrapper, fixed se
   assert.doesNotMatch(code, /create or replace function (public|inventory_private)\.record_finished_stock_exception/);
   // Existing Bake confirmation is not touched.
   assert.doesNotMatch(code, /confirm_bake_v3/);
+});
+
+test("TASK-072A: stale guard raises PT409 (never 40001, which PostgREST 14 retries) and the UI reloads on PT409", () => {
+  const hotfix = readFileSync(path.join(import.meta.dirname, "../supabase/migrations/20260924180000_bake_actual_correction_postgrest_safe_stale.sql"), "utf8");
+  const code = hotfix.split(NL).filter((line) => !line.trim().startsWith("--")).join(NL);
+  assert.match(code, /raise sqlstate 'PT409' using message = format\('This Bake was changed since you opened it/);
+  assert.doesNotMatch(code, /40001/);
+  assert.match(code, /security definer set search_path = ''/);
+  // Only the one private function is replaced; the wrapper and the table are untouched.
+  assert.equal((code.match(/create or replace function/g) ?? []).length, 1);
+  assert.match(code, /create or replace function inventory_private\.correct_bake_actual_pieces/);
+  const app = readFileSync(path.join(import.meta.dirname, "../src/app/product-lab.tsx"), "utf8");
+  const handler = app.slice(app.indexOf("async function correctBakeActual("), app.indexOf("async function applyFinishedStockReconciliation"));
+  assert.match(handler, /error\.code === "PT409"/);
+  assert.doesNotMatch(handler, /40001"\)/);
 });
