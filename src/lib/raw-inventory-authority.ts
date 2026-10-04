@@ -195,6 +195,24 @@ export function recordFinishedStockExceptionArgs(
   };
 }
 
+// TASK-072: correct_bake_actual_pieces is the single narrow writer for fixing a wrongly typed ACTUAL
+// usable-piece count on a REAL Bake. expectedCurrentActual is the count the operator saw when they
+// opened the correction (the database's stale guard: a different recorded value means another tab or
+// session already changed this Bake). Nothing else about a Bake is editable through it -- not the
+// product, recipe version, expected yield, timestamp, raw cost total, or ingredient deductions.
+export function correctBakeActualArgs(
+  productionExecutionId: string, expectedCurrentActual: number, correctedActual: number,
+  reason: string, operationId: string,
+) {
+  return {
+    p_operation_id: operationId,
+    p_production_execution_id: productionExecutionId,
+    p_expected_current_actual: expectedCurrentActual,
+    p_corrected_actual: correctedActual,
+    p_reason: reason.trim(),
+  };
+}
+
 // Deliberately enumerate metadata: neither hidden form inputs nor object spreads can add caches.
 export function ingredientMetadataPayload(ingredient: Ingredient) {
   return {

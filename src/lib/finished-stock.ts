@@ -1,4 +1,4 @@
-import type { FinishedStockBalance, FinishedStockMovement, ProductionExecution, Product } from "./product-lab-types.ts";
+import type { FinishedStockBalance, FinishedStockMovement, ProductionExecution, ProductionExecutionCorrection, Product } from "./product-lab-types.ts";
 
 // Wave 1: on_hand / reserved / available are derived from the append-only movement ledger, never
 // cached. Small bakery scale -- summing a handful of rows in the browser is fine and matches how
@@ -43,6 +43,79 @@ export function sortProductionHistory(executions: ProductionExecution[]): Produc
 // production/Bake event.
 export function isRealProduction(execution: ProductionExecution): boolean {
   return execution.sourceType === "bake";
+}
+
+// TASK-072: "Corrected 10 -> 12" indicator for Production History. originalActual is what the operator
+// first recorded (the earliest correction's previousActual); currentActual is what the Bake records now.
+// Null when the Bake has never been corrected. Pure derivation from the append-only audit rows.
+export function summarizeBakeCorrections(
+  executionId: string,
+  corrections: ProductionExecutionCorrection[],
+): { originalActual: number; currentActual: number; count: number } | null {
+  const mine = corrections
+    .filter((correction) => correction.productionExecutionId === executionId)
+    .sort((a, b) => a.correctedAt.localeCompare(b.correctedAt));
+  if (mine.length === 0) {
+    return null;
+  }
+  return { originalActual: mine[0].previousActual, currentActual: mine[mine.length - 1].correctedActual, count: mine.length };
+}
+
+export type BakeCorrectionPreview =
+  | { valid: false; message: string }
+  | {
+      valid: true;
+      previousActual: number;
+      correctedActual: number;
+      delta: number;
+      // Pieces of this Bake already sold (fulfilled) -- their raw cost is restated at the new cost per piece.
+      fulfilledPieces: number;
+      frozenCostTotal: number;
+      previousCostPerPiece: number;
+      correctedCostPerPiece: number;
+    };
+
+// TASK-072: advisory client preview of a Correct Bake. The database re-derives everything under lock
+// and is the only authority -- this exists so the operator sees the effect before confirming, and
+// is never trusted by the server. A decrease is blocked here with the same rule the server enforces:
+// the lot's own unreserved on-hand pieces must cover the reduction.
+export function previewBakeCorrection(
+  execution: ProductionExecution,
+  correctedText: string,
+  movements: FinishedStockMovement[],
+): BakeCorrectionPreview {
+  if (!isRealProduction(execution)) {
+    return { valid: false, message: "Only a real Bake can be corrected here." };
+  }
+  const trimmed = correctedText.trim();
+  const corrected = Number(trimmed);
+  if (trimmed === "" || !Number.isInteger(corrected) || corrected < 1) {
+    return { valid: false, message: "Enter a whole number of at least 1." };
+  }
+  if (corrected === execution.quantityProducedPieces) {
+    return { valid: false, message: "This is already the recorded actual count." };
+  }
+  const lot = movements.filter((movement) => movement.productionExecutionId === execution.id);
+  const onHand = lot.reduce((sum, movement) => sum + movement.onHandDelta, 0);
+  const reservedPieces = lot.reduce((sum, movement) => sum + movement.reservedDelta, 0);
+  const fulfilledPieces = lot.filter((movement) => movement.movementType === "fulfill").reduce((sum, movement) => sum - movement.onHandDelta, 0);
+  const delta = corrected - execution.quantityProducedPieces;
+  if (delta < 0 && onHand - reservedPieces < -delta) {
+    return {
+      valid: false,
+      message: `Only ${Math.max(onHand - reservedPieces, 0)} of this Bake's pieces are still unreserved and on hand -- the rest are sold, reserved, damaged, or given away. It cannot be lowered to ${corrected}.`,
+    };
+  }
+  return {
+    valid: true,
+    previousActual: execution.quantityProducedPieces,
+    correctedActual: corrected,
+    delta,
+    fulfilledPieces,
+    frozenCostTotal: execution.frozenIngredientCostTotal,
+    previousCostPerPiece: execution.frozenCostPerPiece,
+    correctedCostPerPiece: execution.frozenIngredientCostTotal / corrected,
+  };
 }
 
 // Wave 3: exception history (damage/giveaway/correction), newest-first, for the minimal operator

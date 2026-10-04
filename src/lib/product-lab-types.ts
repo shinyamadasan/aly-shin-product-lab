@@ -388,10 +388,30 @@ export type ProductionExecution = {
   createdAt: string;
 };
 
+// TASK-072: one append-only audit row per Correct Bake event (production_execution_corrections).
+// previousActual/correctedActual are the operator-entered ACTUAL usable-piece counts; the frozen raw
+// cost total never changes, only the cost per piece is recomputed from it.
+export type ProductionExecutionCorrection = {
+  id: string;
+  productionExecutionId: string;
+  operationId: string;
+  previousActual: number;
+  correctedActual: number;
+  delta: number;
+  reason: string;
+  frozenIngredientCostTotal: number;
+  previousCostPerPiece: number;
+  correctedCostPerPiece: number;
+  correctedAt: string;
+};
+
 // Wave 1: 'production_receipt'. Wave 2: 'reserve' | 'release' | 'fulfill'. Wave 3: 'damage' |
 // 'giveaway' | 'correction' -- physical finished-stock exceptions recorded through
 // record_finished_stock_exception, always lot-linked and never touching reserved_delta.
-export type FinishedStockMovementType = "production_receipt" | "reserve" | "release" | "fulfill" | "damage" | "giveaway" | "correction";
+// TASK-072: 'bake_correction' -- a signed on-hand adjustment of ONE production execution's produced
+// quantity, written only by correct_bake_actual_pieces. Deliberately not one of the Wave 3 exception
+// types (damage/giveaway/correction are physical losses and stay negative-only).
+export type FinishedStockMovementType = "production_receipt" | "reserve" | "release" | "fulfill" | "damage" | "giveaway" | "correction" | "bake_correction";
 
 // Wave 3: the three exception types an operator can record against physical finished stock.
 export type FinishedStockExceptionType = "damage" | "giveaway" | "correction";
