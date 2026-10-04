@@ -127,7 +127,8 @@ test("mobile Production History sits behind one <details> summary, containing th
   assert.match(mobileBranch, /<details>\s*<summary className="cursor-pointer text-lg font-semibold">Production history<\/summary>/);
   assert.equal(/<details open\b/.test(mobileBranch), false, "Production history's own <details> must have no open attribute -- collapsed by default");
   assert.match(mobileBranch, /ⓘ About historical costs/);
-  assert.match(mobileBranch, /<MobileProductionHistory history=\{history\} productName=\{productName\} \/>/);
+  // TASK-072 adds Correct Bake props to this call; history/productName must still be passed as before.
+  assert.match(mobileBranch, /<MobileProductionHistory history=\{history\} productName=\{productName\}[^>]*\/>/);
 });
 
 test("MobileProductionHistory's initial reveal is MOBILE_PRODUCTION_HISTORY_PAGE_SIZE (3), not the Exceptions page size (5)", () => {

@@ -1,4 +1,4 @@
-import type { AiReviewRecord, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, FinishedStockMovement, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, ProductionExecution, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "./product-lab-types";
+import type { AiReviewRecord, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingSummary, EquipmentEntry, FinishedStockMovement, Ingredient, IngredientAlias, InventoryTransaction, Product, ProductBatch, ProductionExecution, ProductionExecutionCorrection, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SupplyEntry, TastingFeedback } from "./product-lab-types";
 
 export type LabView =
   | "today"
@@ -75,6 +75,7 @@ export type LabState = {
   purchaseImportRows: PurchaseImportRow[];
   inventoryTransactions: InventoryTransaction[];
   productionExecutions: ProductionExecution[];
+  productionExecutionCorrections: ProductionExecutionCorrection[];
   finishedStockMovements: FinishedStockMovement[];
   tastings: TastingFeedback[];
   journal: ContentJournalEntry[];
@@ -99,6 +100,7 @@ export const emptyState: LabState = {
   purchaseImportRows: [],
   inventoryTransactions: [],
   productionExecutions: [],
+  productionExecutionCorrections: [],
   finishedStockMovements: [],
   tastings: [],
   journal: [],

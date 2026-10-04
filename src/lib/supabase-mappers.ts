@@ -12,6 +12,7 @@ import type {
   Product,
   ProductBatch,
   ProductionExecution,
+  ProductionExecutionCorrection,
   StockAdjustmentReason,
   TastingFeedback,
 } from "./product-lab-types";
@@ -397,6 +398,36 @@ export function mapProductionExecutionRow(row: ProductionExecutionRow): Producti
     note: row.note ?? "",
     completedAt: row.completed_at ?? "",
     createdAt: row.created_at ?? "",
+  };
+}
+
+export type ProductionExecutionCorrectionRow = {
+  id: string;
+  production_execution_id: string;
+  operation_id: string;
+  previous_actual: number | string;
+  corrected_actual: number | string;
+  delta: number | string;
+  reason: string;
+  frozen_ingredient_cost_total: number | string;
+  previous_cost_per_piece: number | string;
+  corrected_cost_per_piece: number | string;
+  corrected_at: string;
+};
+
+export function mapProductionExecutionCorrectionRow(row: ProductionExecutionCorrectionRow): ProductionExecutionCorrection {
+  return {
+    id: row.id,
+    productionExecutionId: row.production_execution_id,
+    operationId: row.operation_id,
+    previousActual: Number(row.previous_actual ?? 0),
+    correctedActual: Number(row.corrected_actual ?? 0),
+    delta: Number(row.delta ?? 0),
+    reason: row.reason ?? "",
+    frozenIngredientCostTotal: Number(row.frozen_ingredient_cost_total ?? 0),
+    previousCostPerPiece: Number(row.previous_cost_per_piece ?? 0),
+    correctedCostPerPiece: Number(row.corrected_cost_per_piece ?? 0),
+    correctedAt: row.corrected_at ?? "",
   };
 }
 

@@ -31,7 +31,7 @@ import {
   getShinReviewItems,
 } from "@/lib/readiness";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
-import { mapFinishedStockMovementRow, mapProductionExecutionRow } from "@/lib/supabase-mappers";
+import { mapFinishedStockMovementRow, mapProductionExecutionCorrectionRow, mapProductionExecutionRow } from "@/lib/supabase-mappers";
 import { buildReconciliationBatchPayload, hashReconciliationPayload, type ReconciliationBatchItemInput } from "@/lib/finished-stock-reconciliation";
 import type { AiAction, BatchPhoto, BrandProfile, ContentDraft, ContentJournalEntry, CostingEntry, CostingIngredientRow, CostingSummary, EquipmentCalculationMode, EquipmentEntry, FinishedStockExceptionType, Ingredient, IngredientCategory, InventoryTransaction, Product, ProductBatch, PurchaseImport, PurchaseImportRow, SellingFormat, SellingFormatPackagingLine, SpecialistId, StockAdjustmentReason, SupplyEntry, TastingFeedback } from "@/lib/product-lab-types";
 import { AiAdvisorPanel } from "@/components/ai-advisor-panel";
@@ -46,7 +46,7 @@ import { InventoryStockPage } from "@/components/inventory-stock-page";
 import { InventoryTimeline } from "@/components/inventory-timeline";
 import { RawInventoryReconciliation } from "@/components/raw-inventory-reconciliation";
 import {
-  confirmBakeArgs, deletePostedPurchaseIfReversibleArgs, getPurchaseDeleteEligibility,
+  confirmBakeArgs, correctBakeActualArgs, deletePostedPurchaseIfReversibleArgs, getPurchaseDeleteEligibility,
   ingredientMetadataPayload, postedPurchaseInventoryFieldsChanged, postRawPurchaseArgs,
   rawAdjustmentArgs, RAW_PURCHASE_DELETE_BLOCKED, RAW_REPAIR_BLOCKED, recordFinishedStockExceptionArgs,
   setOpeningCostBasisArgs, updatePostedPurchaseMetadataArgs,
@@ -368,7 +368,7 @@ export default function ProductLab({
       return false;
     }
 
-    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult, productionExecutionResult, finishedStockMovementResult] = await Promise.all([
+    const [productResult, batchResult, batchPhotoResult, costingEntryResult, costingResult, sellingFormatResult, sellingFormatPackagingLineResult, supplyResult, equipmentResult, tastingResult, journalResult, contentDraftResult, aiReviewResult, ingredientResult, ingredientAliasResult, purchaseImportResult, purchaseImportRowResult, inventoryTransactionResult, brandProfileResult, productionExecutionResult, finishedStockMovementResult, productionExecutionCorrectionResult] = await Promise.all([
       supabase.from("products").select("*").order("name", { ascending: true }),
       supabase.from("product_batches").select("*").order("created_at", { ascending: false }),
       supabase.from("batch_photos").select("*").order("created_at", { ascending: false }),
@@ -390,6 +390,7 @@ export default function ProductLab({
       supabase.from("brand_profiles").select("*").eq("is_active", true).limit(1).maybeSingle(),
       supabase.from("production_executions").select("*").order("completed_at", { ascending: false }),
       supabase.from("finished_stock_movements").select("*").order("created_at", { ascending: false }),
+      supabase.from("production_execution_corrections").select("*").order("corrected_at", { ascending: false }),
     ]);
 
     const supplyMissing = isMissingTableError(supplyResult.error);
@@ -697,6 +698,9 @@ export default function ProductLab({
       // migration -- one shared missing flag (same rationale as the inventory bundle above).
       productionExecutions: isMissingTableError(productionExecutionResult.error) ? [] : (productionExecutionResult.data ?? []).map(mapProductionExecutionRow),
       finishedStockMovements: isMissingTableError(finishedStockMovementResult.error) ? [] : (finishedStockMovementResult.data ?? []).map(mapFinishedStockMovementRow),
+      // TASK-072: its own missing flag -- the table ships in its own migration, so a deployment that has
+      // not applied it yet still loads Production History (just without correction indicators).
+      productionExecutionCorrections: isMissingTableError(productionExecutionCorrectionResult.error) ? [] : (productionExecutionCorrectionResult.data ?? []).map(mapProductionExecutionCorrectionRow),
     });
     return true;
   }
@@ -2787,6 +2791,36 @@ export default function ProductLab({
     return true;
   }
 
+  // TASK-072: correct the ACTUAL usable-piece count of a real Bake via correct_bake_actual_pieces. The
+  // database is the only authority -- it re-derives the delta under lock, refuses a decrease that
+  // would drop below pieces already sold/reserved/damaged from that lot, and rejects a stale
+  // expectedCurrentActual. There is no local-only path: finished stock only exists once a real Bake
+  // has posted through the database.
+  async function correctBakeActual(productionExecutionId: string, expectedCurrentActual: number, correctedActual: number, reason: string, operationId: string): Promise<boolean> {
+    if (!supabase || !session) {
+      setMessage("Correcting a Bake requires a connected database session.");
+      setMessageTone("bad");
+      return false;
+    }
+
+    const { error } = await supabase.rpc("correct_bake_actual_pieces", correctBakeActualArgs(productionExecutionId, expectedCurrentActual, correctedActual, reason, operationId));
+    if (error) {
+      setMessage(`Bake not corrected: ${describeIngredientConstraintError(error)}`);
+      setMessageTone("bad");
+      // A stale-guard rejection means another tab/session already changed this Bake -- reload so the
+      // operator sees the current recorded count before trying again.
+      if (error.code === "40001") {
+        await loadSupabaseData();
+      }
+      return false;
+    }
+
+    setMessage(`Bake corrected from ${expectedCurrentActual} to ${correctedActual} pieces. Finished stock and cost per piece updated.`);
+    setMessageTone("good");
+    await loadSupabaseData();
+    return true;
+  }
+
   // Finished Stock Opening Balance / Physical Count Reconciliation: applies a previewed batch
   // (buildReconciliationPreview/buildReconciliationBatchPayload, src/lib/finished-stock-reconciliation.ts)
   // via apply_finished_stock_reconciliation_batch, atomic and idempotent for the whole batch. The
@@ -3555,7 +3589,7 @@ export default function ProductLab({
             />
             </>
           ) : null}
-          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} applyFinishedStockReconciliation={applyFinishedStockReconciliation} confirmBake={confirmBake} isInventoryTableMissing={isInventoryTableMissing} labState={labState} recordFinishedStockException={recordFinishedStockException} saveIngredientAlias={saveIngredientAlias} /> : null}
+          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} applyFinishedStockReconciliation={applyFinishedStockReconciliation} confirmBake={confirmBake} correctBakeActual={correctBakeActual} isInventoryTableMissing={isInventoryTableMissing} labState={labState} recordFinishedStockException={recordFinishedStockException} saveIngredientAlias={saveIngredientAlias} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
-import type { FinishedStockExceptionType, FinishedStockMovement, Product, ProductionExecution } from "@/lib/product-lab-types";
+import type { FinishedStockExceptionType, FinishedStockMovement, Product, ProductionExecution, ProductionExecutionCorrection } from "@/lib/product-lab-types";
 import { parseBatchIngredients } from "@/lib/batches";
 import { isVoidedBatch } from "@/lib/batch-safety";
 import { isCostBaselineUncertified } from "@/lib/inventory-cost";
@@ -13,7 +13,7 @@ import { batchDisplayName } from "@/components/product-controls";
 import { getInsufficientDeductions, groupDeductionsByIngredient, isBakeFormulaFullyResolved, resolveBakeFormula, type BakeDeduction, type ResolvedBakeRow } from "@/lib/bake-deduction";
 import {
   deriveFinishedStockBalances, expandMobileHistoryPage, getMobileHistoryPage, isRealProduction, MOBILE_HISTORY_PAGE_SIZE, MOBILE_PRODUCTION_HISTORY_PAGE_SIZE,
-  sortFinishedStockExceptionHistory, sortProductionHistory,
+  previewBakeCorrection, sortFinishedStockExceptionHistory, sortProductionHistory, summarizeBakeCorrections,
 } from "@/lib/finished-stock";
 import { buildOpeningBalanceCostEstimate, buildReconciliationPreview, type ReconciliationBatchItemInput, type ReconciliationPreviewRow } from "@/lib/finished-stock-reconciliation";
 import type { RuleEngineContext } from "@/lib/rule-engine/types";
@@ -24,6 +24,7 @@ export function BakePage({
   remotePosting = false,
   applyFinishedStockReconciliation,
   confirmBake,
+  correctBakeActual,
   isInventoryTableMissing,
   labState,
   recordFinishedStockException,
@@ -40,6 +41,9 @@ export function BakePage({
   // call site) -- there is no local finished stock to reconcile without a connected session.
   applyFinishedStockReconciliation: (items: ReconciliationBatchItemInput[], operationId: string) => Promise<{ ok: boolean; verified: boolean }>;
   confirmBake: (batchId: string, productId: string, batchLabel: string, multiplier: number, actualPieces: number, deductions: BakeDeduction[], allowNegative: boolean, operationId: string) => Promise<boolean>;
+  // TASK-072: fix a wrongly typed ACTUAL count on a real Bake (correct_bake_actual_pieces). Same
+  // remotePosting-gated null-out-at-render pattern as recordFinishedStockException.
+  correctBakeActual: (productionExecutionId: string, expectedCurrentActual: number, correctedActual: number, reason: string, operationId: string) => Promise<boolean>;
   isInventoryTableMissing: boolean;
   labState: LabState;
   recordFinishedStockException: (productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>;
@@ -481,6 +485,7 @@ export function BakePage({
 
       <FinishedStockPanel
         applyFinishedStockReconciliation={remotePosting ? applyFinishedStockReconciliation : null}
+        correctBakeActual={remotePosting ? correctBakeActual : null}
         labState={labState}
         recordFinishedStockException={remotePosting ? recordFinishedStockException : null}
       />
@@ -496,10 +501,12 @@ export function BakePage({
 // hides itself entirely rather than offering an action that cannot work.
 function FinishedStockPanel({
   applyFinishedStockReconciliation,
+  correctBakeActual,
   labState,
   recordFinishedStockException,
 }: {
   applyFinishedStockReconciliation: ((items: ReconciliationBatchItemInput[], operationId: string) => Promise<{ ok: boolean; verified: boolean }>) | null;
+  correctBakeActual: ((productionExecutionId: string, expectedCurrentActual: number, correctedActual: number, reason: string, operationId: string) => Promise<boolean>) | null;
   labState: LabState;
   recordFinishedStockException: ((productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>) | null;
 }) {
@@ -509,6 +516,9 @@ function FinishedStockPanel({
   const exceptionHistory = sortFinishedStockExceptionHistory(labState.finishedStockMovements).slice(0, 20);
   const productName = (id: string) => labState.products.find((product) => product.id === id)?.name ?? id;
   const isMobileWidth = useIsMobileViewport();
+  // TASK-072: at most one Correct Bake panel open at a time, shared by the desktop table and the mobile cards.
+  const [correctingId, setCorrectingId] = useState<string | null>(null);
+  const correctionProps = { correctBakeActual, correctingId, setCorrectingId, corrections: labState.productionExecutionCorrections, movements: labState.finishedStockMovements };
 
   if (isMobileWidth) {
     // Mobile Bake Final Simplification: at <lg, Bake's one job is "record a bake correctly" --
@@ -529,7 +539,7 @@ function FinishedStockPanel({
                   <HistoricalCostNotes />
                 </div>
               </details>
-              <MobileProductionHistory history={history} productName={productName} />
+              <MobileProductionHistory history={history} productName={productName} {...correctionProps} />
             </div>
           </details>
         ) : null}
@@ -619,23 +629,46 @@ function FinishedStockPanel({
                   <th className="pb-2 pr-4 text-right">Expected</th>
                   <th className="pb-2 pr-4 text-right">Actual</th>
                   <th className="pb-2 pr-4 text-right">Raw cost</th>
-                  <th className="pb-2 text-right">Per piece</th>
+                  <th className="pb-2 pr-4 text-right">Per piece</th>
+                  <th className="pb-2"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
-                {history.map((execution) => (
-                  <tr key={execution.id} className="border-t border-[#f0e4d8]">
+                {history.map((execution) => {
+                  const correction = summarizeBakeCorrections(execution.id, labState.productionExecutionCorrections);
+                  return (
+                  <Fragment key={execution.id}>
+                  <tr className="border-t border-[#f0e4d8]">
                     <td className="py-2 pr-4 text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</td>
                     <td className="py-2 pr-4 font-semibold">{productName(execution.productId)}</td>
                     <td className="py-2 pr-4 text-[#6f5a4c]">
                       {isRealProduction(execution) ? execution.batchVersionSnapshot : <Tag tone="warm">Opening balance (estimated cost)</Tag>}
                     </td>
                     <td className="py-2 pr-4 text-right text-[#6f5a4c]">{execution.expectedPieces}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">{execution.quantityProducedPieces}</td>
+                    <td className="py-2 pr-4 text-right font-semibold">
+                      {execution.quantityProducedPieces}
+                      {correction ? <span className="block whitespace-nowrap text-xs font-normal text-[#9a5b2f]">Corrected {correction.originalActual} → {correction.currentActual}</span> : null}
+                    </td>
                     <td className="py-2 pr-4 text-right">PHP {execution.frozenIngredientCostTotal.toFixed(2)}</td>
-                    <td className="py-2 text-right">PHP {execution.frozenCostPerPiece.toFixed(2)}</td>
+                    <td className="py-2 pr-4 text-right">PHP {execution.frozenCostPerPiece.toFixed(2)}</td>
+                    <td className="py-2 text-right">
+                      {correctBakeActual && isRealProduction(execution) ? (
+                        <button className="text-xs font-semibold text-[#8f5632]" onClick={() => setCorrectingId(correctingId === execution.id ? null : execution.id)} type="button">
+                          {correctingId === execution.id ? "Close" : "Correct Bake"}
+                        </button>
+                      ) : null}
+                    </td>
                   </tr>
-                ))}
+                  {correctBakeActual && correctingId === execution.id ? (
+                    <tr>
+                      <td className="pb-3" colSpan={8}>
+                        <CorrectBakePanel corrections={labState.productionExecutionCorrections} execution={execution} movements={labState.finishedStockMovements} onClose={() => setCorrectingId(null)} onCorrect={correctBakeActual} productName={productName(execution.productId)} />
+                      </td>
+                    </tr>
+                  ) : null}
+                  </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -721,7 +754,17 @@ function HistoricalCostNotes() {
 // "Show N more"/"Show less" over the array FinishedStockPanel already sliced/sorted.
 // getMobileHistoryPage/expandMobileHistoryPage only slice what they're given, they never
 // re-sort or re-query.
-function MobileProductionHistory({ history, productName }: { history: ProductionExecution[]; productName: (id: string) => string }) {
+function MobileProductionHistory({
+  history, productName, correctBakeActual, correctingId, setCorrectingId, corrections, movements,
+}: {
+  history: ProductionExecution[];
+  productName: (id: string) => string;
+  correctBakeActual: ((productionExecutionId: string, expectedCurrentActual: number, correctedActual: number, reason: string, operationId: string) => Promise<boolean>) | null;
+  correctingId: string | null;
+  setCorrectingId: (id: string | null) => void;
+  corrections: ProductionExecutionCorrection[];
+  movements: FinishedStockMovement[];
+}) {
   const [visibleCount, setVisibleCount] = useState(MOBILE_PRODUCTION_HISTORY_PAGE_SIZE);
   const { visible, hasMore, canCollapse } = getMobileHistoryPage(history, visibleCount, MOBILE_PRODUCTION_HISTORY_PAGE_SIZE);
   return (
@@ -738,11 +781,24 @@ function MobileProductionHistory({ history, productName }: { history: Production
           )}
           <p className="mt-0.5 text-xs text-[#6f5a4c]">{execution.completedAt ? new Date(execution.completedAt).toLocaleString() : "--"}</p>
           {isRealProduction(execution) ? (
-            <p className="mt-1 text-[#6f5a4c]">Expected {execution.expectedPieces} · Actual <span className="font-semibold text-[#231813]">{execution.quantityProducedPieces}</span></p>
+            <p className="mt-1 text-[#6f5a4c]">
+              Expected {execution.expectedPieces} · Actual <span className="font-semibold text-[#231813]">{execution.quantityProducedPieces}</span>
+              {(() => {
+                const correction = summarizeBakeCorrections(execution.id, corrections);
+                return correction ? <span className="ml-2 text-xs text-[#9a5b2f]">Corrected {correction.originalActual} → {correction.currentActual}</span> : null;
+              })()}
+            </p>
           ) : (
             <p className="mt-1 text-[#6f5a4c]">{execution.quantityProducedPieces} pieces</p>
           )}
           <p className="mt-0.5 text-[#6f5a4c]">Raw cost PHP {execution.frozenIngredientCostTotal.toFixed(2)} · Per piece PHP {execution.frozenCostPerPiece.toFixed(2)}</p>
+          {correctBakeActual && isRealProduction(execution) ? (
+            correctingId === execution.id ? (
+              <CorrectBakePanel corrections={corrections} execution={execution} movements={movements} onClose={() => setCorrectingId(null)} onCorrect={correctBakeActual} productName={productName(execution.productId)} />
+            ) : (
+              <button className="mt-2 min-h-10 text-xs font-semibold text-[#8f5632]" onClick={() => setCorrectingId(execution.id)} type="button">Correct Bake</button>
+            )
+          ) : null}
         </li>
       ))}
       {hasMore || canCollapse ? (
@@ -796,6 +852,121 @@ function MobileFinishedStockExceptions({ exceptionHistory, productName }: { exce
         </li>
       ) : null}
     </ul>
+  );
+}
+
+// TASK-072: "Correct Bake" -- fixes ONLY a wrongly typed ACTUAL usable-piece count on a real Bake.
+// Expected is a read-only historical fact; nothing else about the Bake is editable. The preview is
+// advisory (previewBakeCorrection) -- correct_bake_actual_pieces re-derives the delta under lock, is
+// owner-only, idempotent on operationId, and rejects a decrease below pieces already sold/reserved.
+// One operationId per opened panel: a retry of the same payload after a lost response replays safely,
+// a changed payload under the same id is rejected by the database.
+function CorrectBakePanel({
+  corrections,
+  execution,
+  movements,
+  onClose,
+  onCorrect,
+  productName,
+}: {
+  corrections: ProductionExecutionCorrection[];
+  execution: ProductionExecution;
+  movements: FinishedStockMovement[];
+  onClose: () => void;
+  onCorrect: (productionExecutionId: string, expectedCurrentActual: number, correctedActual: number, reason: string, operationId: string) => Promise<boolean>;
+  productName: string;
+}) {
+  const [correctedText, setCorrectedText] = useState("");
+  const [reason, setReason] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
+  const [operationId] = useState(() => crypto.randomUUID());
+  const preview = previewBakeCorrection(execution, correctedText, movements);
+  const hasReason = reason.trim() !== "";
+  const priorCorrections = corrections.filter((correction) => correction.productionExecutionId === execution.id).sort((a, b) => b.correctedAt.localeCompare(a.correctedAt));
+
+  async function handleConfirm() {
+    if (isSubmittingRef.current || !preview.valid || !hasReason) {
+      return;
+    }
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    const succeeded = await onCorrect(execution.id, execution.quantityProducedPieces, preview.correctedActual, reason, operationId);
+    isSubmittingRef.current = false;
+    setIsSubmitting(false);
+    if (succeeded) {
+      onClose();
+    }
+  }
+
+  return (
+    <div className="mt-2 w-full min-w-0 rounded-md border border-[#eaded2] bg-[#fdf9f4] p-4 text-left text-sm">
+      <h4 className="text-base font-semibold">Correct Bake</h4>
+      <p className="mt-1 text-xs text-[#6f5a4c]">Use this only if the actual count was typed wrong. If fewer pieces were really sellable, the recorded count is correct history. The recipe, expected yield, and raw ingredient cost are not changed.</p>
+      <dl className="mt-3 grid gap-x-6 gap-y-1 sm:grid-cols-3">
+        <div><dt className="text-xs text-[#6f5a4c]">Product</dt><dd className="font-semibold">{productName}</dd></div>
+        <div><dt className="text-xs text-[#6f5a4c]">Version</dt><dd className="font-semibold">{execution.batchVersionSnapshot}</dd></div>
+        <div><dt className="text-xs text-[#6f5a4c]">Expected from recipe</dt><dd className="font-semibold">{execution.expectedPieces}</dd></div>
+        <div><dt className="text-xs text-[#6f5a4c]">Currently recorded actual</dt><dd className="font-semibold">{execution.quantityProducedPieces}</dd></div>
+      </dl>
+
+      <label className="mt-3 grid gap-1 font-medium">
+        Correct actual usable pieces
+        <input
+          className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+          inputMode="numeric"
+          min="1"
+          onChange={(event) => setCorrectedText(event.target.value)}
+          step="1"
+          type="number"
+          value={correctedText}
+        />
+      </label>
+      <label className="mt-3 grid gap-1 font-medium">
+        Reason
+        <input className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setReason(event.target.value)} placeholder="Entered wrong piece count" type="text" value={reason} />
+      </label>
+
+      {correctedText.trim() !== "" && !preview.valid ? <p className="mt-2 text-xs text-[#8a3827]">{preview.message}</p> : null}
+      {preview.valid ? (
+        <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 rounded-md border border-[#eaded2] bg-white p-3">
+          <dt className="text-[#6f5a4c]">Recorded actual</dt><dd className="text-right font-semibold">{preview.previousActual}</dd>
+          <dt className="text-[#6f5a4c]">Corrected actual</dt><dd className="text-right font-semibold">{preview.correctedActual}</dd>
+          <dt className="text-[#6f5a4c]">Finished-stock difference</dt><dd className="text-right font-semibold">{preview.delta > 0 ? "+" : ""}{preview.delta}</dd>
+          <dt className="text-[#6f5a4c]">Raw production cost</dt><dd className="text-right">unchanged (PHP {preview.frozenCostTotal.toFixed(2)})</dd>
+          <dt className="text-[#6f5a4c]">Old cost / piece</dt><dd className="text-right">PHP {preview.previousCostPerPiece.toFixed(2)}</dd>
+          <dt className="text-[#6f5a4c]">New cost / piece</dt><dd className="text-right font-semibold">PHP {preview.correctedCostPerPiece.toFixed(2)}</dd>
+        </dl>
+      ) : null}
+      {preview.valid && preview.fulfilledPieces > 0 ? (
+        <p className="mt-2 text-xs text-[#8a3827]">{preview.fulfilledPieces} piece{preview.fulfilledPieces === 1 ? "" : "s"} from this Bake were already sold. Their raw cost will now be reported at the new cost per piece.</p>
+      ) : null}
+
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button
+          className="min-h-10 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={!preview.valid || !hasReason || isSubmitting}
+          onClick={handleConfirm}
+          type="button"
+        >
+          {isSubmitting ? "Correcting..." : "Confirm correction"}
+        </button>
+        <button className="min-h-10 text-sm font-semibold text-[#6f5a4c]" disabled={isSubmitting} onClick={onClose} type="button">Cancel</button>
+      </div>
+
+      {priorCorrections.length > 0 ? (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs font-semibold text-[#9a5b2f]">Correction history ({priorCorrections.length})</summary>
+          <ul className="mt-1 space-y-1 text-xs text-[#6f5a4c]">
+            {priorCorrections.map((correction) => (
+              <li key={correction.id}>
+                {correction.correctedAt ? new Date(correction.correctedAt).toLocaleString() : "--"} · {correction.previousActual} → {correction.correctedActual} ({correction.delta > 0 ? "+" : ""}{correction.delta}) · {correction.reason}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
