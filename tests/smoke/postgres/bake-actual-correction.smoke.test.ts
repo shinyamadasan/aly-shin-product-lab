@@ -83,6 +83,7 @@ test("TASK-072 Correct Bake: atomic, idempotent, lot-safe correction of a real B
     create policy p_costings on public.costing_summaries for all to authenticated using (public.is_product_lab_owner()) with check (public.is_product_lab_owner());`);
   run(sql("supabase/migrations/20260923130000_finished_stock_opening_balance.sql"));
   run(sql("supabase/migrations/20260924120000_bake_actual_correction.sql"));
+  run(sql("supabase/migrations/20260924180000_bake_actual_correction_postgrest_safe_stale.sql"));
 
   await t.test("single-shot invariants: up/down correction, expected historical, frozen total unchanged, cost recompute, append-only ledger + audit, per-lot decrease safety, atomic rejection, idempotent replay, changed-payload rejection, opening balance excluded, validation, authority, COGS/reservation consistency", () => {
     const result = run(sql("tests/smoke/postgres/bake-actual-correction.assertions.sql"));
@@ -128,7 +129,7 @@ test("TASK-072 Correct Bake: atomic, idempotent, lot-safe correction of a real B
     const call = (op: string, corrected: number, tag: string) => spawnPsqlAsync(`${owner(`select pg_sleep(0.3);`)} do $$ begin
       perform public.correct_bake_actual_pieces('${op}', '${f.execution}', 10, ${corrected}, 'tab ${tag}');
       raise notice '${tag}_landed';
-    exception when serialization_failure then raise notice '${tag}_stale'; end $$; commit;`);
+    exception when sqlstate 'PT409' then raise notice '${tag}_stale'; end $$; commit;`);
     const [ra, rb] = await Promise.all([call(opA, 12, "A"), call(opB, 11, "B")]);
     assert.doesNotMatch(ra.stdout, /ERROR/);
     assert.doesNotMatch(rb.stdout, /ERROR/);
