@@ -3,7 +3,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { PhysicalCountIntent } from "./core.ts";
-import { createInventoryCountService } from "../product-lab/inventory-count-service.ts";
+import { createInventoryCountService } from "../product-lab/inventory-count-service-local.ts";
 import { createProductLabReadService } from "../product-lab/read-service.ts";
 const readService = createProductLabReadService();
 const inventoryCountService = createInventoryCountService();

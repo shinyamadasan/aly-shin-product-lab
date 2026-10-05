@@ -1,0 +1,15 @@
+// Product Lab remote MCP Worker (TASK-073). Transport/hosting only -- see docs/PRODUCT_LAB_MCP.md.
+//
+// Required runtime configuration (NOT committed; set with `wrangler secret put --config
+// wrangler.product-lab-mcp.jsonc <NAME>` or in the Cloudflare dashboard):
+//   PRODUCT_LAB_SUPABASE_URL
+//   PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY   (the unprivileged publishable key only)
+//   PRODUCT_LAB_MCP_PUBLIC_HOSTNAME        (must equal this Worker's real public hostname)
+// They are deliberately absent from `vars` here so a deploy never overwrites them.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "alyandpon-product-lab-mcp",
+  "main": "workers/product-lab-mcp/index.ts",
+  "compatibility_date": "2026-10-05",
+  "workers_dev": true
+}

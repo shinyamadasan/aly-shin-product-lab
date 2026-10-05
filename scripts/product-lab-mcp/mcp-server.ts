@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { ProductLabError } from "../product-lab/auth.ts";
-import { createInventoryCountService, type InventoryCountService } from "../product-lab/inventory-count-service.ts";
-import { createProductLabReadService, type ProductLabReadService } from "../product-lab/read-service.ts";
+import type { InventoryCountService } from "../product-lab/inventory-count-service.ts";
+import type { ProductLabReadService } from "../product-lab/read-service.ts";
 
 const nullableText = z.string().nullable();
 const inventoryItemSchema = z.object({
@@ -228,8 +228,8 @@ function failure(error: unknown) {
 }
 
 export function createProductLabMcpServer(
-  readService: ProductLabReadService = createProductLabReadService(),
-  inventoryCountService: InventoryCountService = createInventoryCountService(),
+  readService: ProductLabReadService,
+  inventoryCountService: InventoryCountService,
 ): McpServer {
   const server = new McpServer(
     { name: "product-lab", version: "2.0.0" },

@@ -97,3 +97,7 @@ daily-advisor-session.log
 /scripts/production-static-renderer/render-reference-model-spike.ts
 
 /.worktrees/
+
+# Cloudflare Worker (TASK-073): local dev secrets and Wrangler build output
+.dev.vars*
+/.wrangler/

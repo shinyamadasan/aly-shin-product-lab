@@ -26,9 +26,11 @@ hashing, preview identity, approval binding, stale-state guards, RPC rows, recon
 cost-certification semantics remain owned entirely by the shared V1A core and are not reimplemented,
 duplicated, or transport-specific.
 
-`scripts/product-lab/inventory-count-service.ts` owns preview-artifact persistence and the existing
-preview/apply/verify orchestration. Both `scripts/inventory-operator/run.ts` and the MCP adapter call
-that service. Matching, unit normalization, payload hashing, preview identity, approval binding,
+`scripts/product-lab/inventory-count-service.ts` owns the existing preview/apply/verify orchestration and
+the Supabase-backed durable preview store (the only store the remote transport imports). The local
+filesystem preview store and its environment-token wiring live in
+`scripts/product-lab/inventory-count-service-local.ts`, used only by the stdio server and
+`scripts/inventory-operator/run.ts` (TASK-073). Matching, unit normalization, payload hashing, preview identity, approval binding,
 stale-state guards, RPC rows, reconciliation rules, and cost-certification semantics are not
 reimplemented in MCP.
 
@@ -180,7 +182,9 @@ slice.
 
 ### Remote endpoint: `/api/mcp`
 
-`src/app/api/mcp/route.ts` mounts the same `createProductLabMcpServer(...)` registry behind
+`src/app/api/mcp/route.ts` (since TASK-073 a thin adapter over the shared
+`scripts/product-lab-mcp/http-handler.ts`; see "TASK-073" below) mounts the same
+`createProductLabMcpServer(...)` registry behind
 `@modelcontextprotocol/server`'s `createMcpHandler`, over Streamable HTTP. Every request must carry
 `Authorization: Bearer <Supabase OAuth access token>`; the request is authenticated exactly once per
 HTTP exchange (`scripts/product-lab-mcp/remote-auth.ts` -> `scripts/product-lab/auth.ts`'s
@@ -268,6 +272,132 @@ defense-in-depth only if multiple distinct protected-resource servers ever exist
 Supabase OAuth project (so a token minted for one cannot be replayed against another); Product Lab MCP
 has exactly one resource (`/api/mcp`) today, so there is nothing for it to distinguish yet. Revisit
 this if a second protected resource is ever added under the same Supabase project.
+
+## TASK-073 -- remote MCP on a Cloudflare Worker
+
+TASK-073 moves the remote HTTP transport's **host**, not its behavior. The five tools, their approval
+rules, the Supabase OAuth authority, RLS, the durable preview store and the single mutation RPC are
+untouched, and no database migration is required.
+
+### Topology
+
+```text
+Web app:      Browser                -> current web host (Netlify)       -> Supabase
+Remote MCP:   Claude / ChatGPT       -> Cloudflare Worker (this section) -> Supabase
+Local/debug:  Claude / Codex (stdio) -> stdio MCP server                 -> Supabase
+```
+
+- **The Worker is the intended remote MCP host.** `workers/product-lab-mcp/index.ts` serves
+  `GET|POST|DELETE /api/mcp`, `GET /.well-known/oauth-protected-resource/api/mcp` and
+  `GET /.well-known/oauth-authorization-server`; everything else is 404, and a wrong method on a known
+  route is 405 with an `Allow` header. Nothing is proxied to the web app.
+- **The web-app `/api/mcp` implementation remains present and unchanged, as a conditional rollback.**
+  It is a usable rollback **only while the Netlify/web host is operational.** The Netlify-hosted
+  endpoint has been observed returning `503 {"error":"usage_exceeded"}` while the Netlify team is
+  paused for credit exhaustion; during such a pause it is **not an available runtime fallback**. Local
+  stdio is the independent debugging/recovery path and does not depend on any host. The old endpoint
+  has not been retired, and nothing in this repo disables it.
+- **Supabase is still the OAuth 2.1 authorization server, the token/user authority, the RLS/data
+  authority, the durable preview store and the inventory mutation authority.** The Worker is only the
+  resource server.
+- **The Worker moves only the MCP resource-server transport.** Supabase remains the OAuth authorization
+  server, and `/oauth/consent` (`app.alyandpon.com/oauth/consent`, `src/app/oauth/consent/page.tsx`)
+  remains the authorization UI on the web app. TASK-073 does not move the consent page to Cloudflare.
+  See "Cutover prerequisite: the web host must be reachable" below.
+- **workers.dev is acceptable for the initial controlled cutover.** A custom domain can follow later.
+
+### One implementation, two adapters
+
+`scripts/product-lab-mcp/http-handler.ts` (`handleProductLabMcpRequest`) and
+`scripts/product-lab-mcp/oauth-discovery.ts` (`handleProductLabOAuthDiscoveryRequest`) hold all
+transport composition: config, Host/Origin validation, canonical resource URL, the RFC 9728 challenge,
+`requireBearerAuth`, the Supabase token verifier, and the request-scoped tool registry. The Next.js
+routes and the Worker are thin adapters that call them, so the tool registry is not forked. Both take
+`(request, env)`; `env` defaults to `process.env` (Next.js) and the Worker passes its own.
+
+### Worker configuration
+
+`wrangler.product-lab-mcp.jsonc`: name `alyandpon-product-lab-mcp`, entry
+`workers/product-lab-mcp/index.ts`, `compatibility_date` `2026-10-05`, `workers_dev` on. No
+`nodejs_compat` flag is declared: Node.js compatibility is on by default at this compatibility date.
+Three values are required and are **not committed** (they are deliberately not `vars`, so a deploy never
+overwrites them):
+
+| Name | Value |
+| --- | --- |
+| `PRODUCT_LAB_SUPABASE_URL` | the Supabase project URL |
+| `PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY` | the unprivileged publishable key (never a service-role/secret key) |
+| `PRODUCT_LAB_MCP_PUBLIC_HOSTNAME` | **must equal the Worker's real public hostname**, e.g. `alyandpon-product-lab-mcp.<account>.workers.dev` |
+
+```powershell
+npx wrangler secret put PRODUCT_LAB_SUPABASE_URL --config wrangler.product-lab-mcp.jsonc
+npx wrangler secret put PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY --config wrangler.product-lab-mcp.jsonc
+npx wrangler secret put PRODUCT_LAB_MCP_PUBLIC_HOSTNAME --config wrangler.product-lab-mcp.jsonc
+```
+
+Host trust is unchanged and fails closed. The Worker entrypoint forwards **only** those three bindings
+and **forces `NODE_ENV=production`** itself: `origin-policy.ts` trusts localhost whenever `NODE_ENV` is
+not `production`, and a Worker has no `NODE_ENV` unless one is configured, so leaving it to
+configuration would let a missing variable fail open. A request Host/Origin outside the configured
+hostname is refused before any token reaches Supabase; `Host` / `X-Forwarded-Host` never choose the
+advertised resource URL.
+
+### Node / Workers compatibility findings
+
+- **Real finding, fixed:** `inventory-count-service.ts` evaluated `fileURLToPath(import.meta.url)` at
+  module load for its local-filesystem preview store. `wrangler deploy --dry-run` bundled it fine, but
+  workerd threw at startup (`import.meta.url` is undefined in a Worker). A bundle check alone does not
+  prove a Worker runs. The local store (`node:fs`, `node:path`, `node:url`) was split into
+  `scripts/product-lab/inventory-count-service-local.ts`, imported only by the stdio server and the
+  inventory-operator CLI. `InventoryCountService` and its interface are unchanged, and the Worker's
+  import graph now contains no filesystem code (asserted by `tests/product-lab-mcp-worker.test.ts`), so
+  a remote preview can only ever be the Supabase-backed one.
+- `@modelcontextprotocol/server`, `@supabase/supabase-js`, `zod`, `Buffer` (`remote-auth.ts`) and
+  `node:crypto` (`inventory-operator/core.ts`) all run under workerd with no flags. The Worker does not
+  read `process.env`.
+- Runtime smoke (local workerd via `wrangler dev`, fake Supabase, no deploy): the Worker started, a real
+  MCP client completed OAuth-bearer initialize, listed exactly the five tools and ran `inventory_list`;
+  `/nope` was 404, `PUT /api/mcp` 405, a foreign `Host` 403, a missing bearer 401 with an RFC 9728
+  `WWW-Authenticate` challenge, and both discovery documents were served. This is a manual check;
+  `tests/product-lab-mcp-worker.test.ts` covers the same behavior in Node plus the structural claims.
+- Stateless per request, so no Durable Object is used or needed.
+- Bundle: about 1989 KiB / 360 KiB gzipped.
+
+### Commands
+
+```powershell
+npm run product-lab:mcp:worker:dev       # wrangler dev (local workerd); needs a git-ignored .dev.vars
+npm run product-lab:mcp:worker:dry-run   # bundle only; deploys nothing
+npm run product-lab:mcp:worker:deploy    # DEPLOYS -- do not run until the cutover is approved
+```
+
+### Cutover prerequisite: the web host must be reachable
+
+A fresh OAuth authorization needs the consent page, which lives on the web app. If the web host is
+paused or down, a new authorization/consent flow cannot complete, whatever the Worker's state.
+**Do not attempt the initial Worker cutover while the web host is paused**, unless an
+already-authorized client is shown to authenticate against the Worker without a new consent flow
+(unverified; the Worker is a different origin, so a client may well ask to re-authorize).
+
+No Supabase setting change is currently expected: the existing pre-registered OAuth client and its
+localhost callback remain, DCR stays OFF, the Site URL is unchanged, and the Authorization Path stays
+`/oauth/consent`. These are **assumptions to verify** during the controlled read-only cutover, not
+verified facts.
+
+### Where the active remote client configuration lives
+
+The repo's `.mcp.json` is the **stdio** server and is not the remote configuration. The active remote
+entry is user-global, in the Claude Code user configuration file `~/.claude.json` under
+`mcpServers.product-lab` (type `http`, pointing at the current web host's `/api/mcp`, with a
+pre-registered OAuth client and a fixed callback port). It is **not changed** by TASK-073. Cutting a
+client over means pointing that entry (or a new one) at the Worker URL, which is a different origin, so
+expect the client to run the OAuth flow again; that re-authorization is expected but not yet verified.
+
+### Cutover boundary
+
+TASK-073 does **not** deploy the Worker, change DNS, change any Supabase OAuth setting or Site URL,
+enable DCR, change the consent page, change any client configuration, disable the web-app endpoint, or
+write production data.
 
 ## Production configuration required before deployment
 

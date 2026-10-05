@@ -786,7 +786,10 @@ Inventory Operator CLI calls that same read service for inventory state and matc
 Slice 2 adds only `inventory_count_preview`, `inventory_count_apply`, and
 `inventory_count_verify`. The CLI and MCP both call
 `scripts/product-lab/inventory-count-service.ts`; that service owns transient preview artifacts and
-the V1A orchestration previously embedded in the CLI runner. It delegates matching, normalization,
+the V1A orchestration previously embedded in the CLI runner. (TASK-073: the local filesystem preview
+store and its environment-token wiring now live in `inventory-count-service-local.ts`, used only by the
+stdio server and CLI, so the remote Cloudflare Worker's import graph carries only the Supabase-backed
+store; see `docs/PRODUCT_LAB_MCP.md`.) It delegates matching, normalization,
 hashing, approval binding, and RPC argument construction to `scripts/inventory-operator/core.ts`,
 and delegates the sole mutation to the existing `public.apply_inventory_physical_count_batch` RPC.
 Apply creates a fresh authenticated client, so preview-time authentication is never reused. It
