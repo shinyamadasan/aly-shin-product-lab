@@ -2807,9 +2807,9 @@ export default function ProductLab({
     if (error) {
       setMessage(`Bake not corrected: ${describeIngredientConstraintError(error)}`);
       setMessageTone("bad");
-      // A stale-guard rejection means another tab/session already changed this Bake -- reload so the
+      // A stale-guard rejection (PT409 -- not 40001, which PostgREST 14 retries) means another tab/session already changed this Bake -- reload so the
       // operator sees the current recorded count before trying again.
-      if (error.code === "40001") {
+      if (error.code === "PT409") {
         await loadSupabaseData();
       }
       return false;
