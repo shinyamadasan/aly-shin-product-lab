@@ -26,6 +26,9 @@
     "postgres:smoke": "node --test tests/smoke/postgres/*.test.ts",
     "inventory-operator": "node scripts/inventory-operator/run.ts",
     "product-lab:mcp": "node scripts/product-lab-mcp/server.ts",
+    "product-lab:mcp:worker:dev": "wrangler dev --config wrangler.product-lab-mcp.jsonc",
+    "product-lab:mcp:worker:dry-run": "wrangler deploy --dry-run --outdir .wrangler/dry-run --config wrangler.product-lab-mcp.jsonc",
+    "product-lab:mcp:worker:deploy": "wrangler deploy --config wrangler.product-lab-mcp.jsonc",
     "remotion:render": "node scripts/remotion/render-warm-open.ts",
     "remotion:worker": "node scripts/asset-workers/remotion-worker.ts"
   },
@@ -55,7 +58,8 @@
     "eslint-config-next": "16.2.11",
     "remotion": "4.0.515",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wrangler": "^4.147.0"
   },
   "overrides": {
     "sharp": "^0.35.0",
