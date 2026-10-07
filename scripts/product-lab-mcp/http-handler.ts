@@ -6,7 +6,7 @@
 // policy. Nothing in this file knows which platform is calling it -- it takes a web-standard Request
 // and returns a web-standard Response.
 //
-// This is a transport/hosting seam only. The five tools, their approval rules, the Supabase OAuth
+// This is a transport/hosting seam only. The eight tools (five inventory/read tools plus the three purchase tools), their approval rules, the Supabase OAuth
 // authority, RLS, and the durable preview store are unchanged; see docs/PRODUCT_LAB_MCP.md.
 //
 // AUTH MODEL.
@@ -52,6 +52,7 @@ import { ProductLabError, readProductLabProjectConfig } from "../product-lab/aut
 import { createInventoryCountServiceForClient } from "../product-lab/inventory-count-service.ts";
 import { createProductLabMcpServer } from "./mcp-server.ts";
 import { allowedMcpHostnames, canonicalMcpResourceUrl } from "./origin-policy.ts";
+import { createPurchaseServiceForClient } from "./purchase-service.ts";
 import { createProductLabOAuthTokenVerifier, ownerContextFromAuthInfo } from "./remote-auth.ts";
 import { createProductLabReadServiceForClient } from "../product-lab/read-service.ts";
 
@@ -60,6 +61,7 @@ const factory: McpServerFactory = (ctx) => {
   return createProductLabMcpServer(
     createProductLabReadServiceForClient(context.client),
     createInventoryCountServiceForClient(context.client),
+    createPurchaseServiceForClient(context.client),
   );
 };
 

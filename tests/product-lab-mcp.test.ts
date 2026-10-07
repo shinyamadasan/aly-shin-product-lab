@@ -270,12 +270,15 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
       "inventory_count_preview",
       "inventory_count_verify",
       "inventory_list",
+      "purchase_apply",
+      "purchase_preview",
+      "purchase_verify",
     ]);
     for (const tool of discovery.tools) {
       assert.equal(tool.inputSchema.type, "object");
       assert.equal(tool.outputSchema?.type, "object");
     }
-    for (const name of ["inventory_list", "ingredient_inspect", "inventory_count_verify"]) {
+    for (const name of ["inventory_list", "ingredient_inspect", "inventory_count_verify", "purchase_verify"]) {
       const tool = discovery.tools.find((item) => item.name === name);
       assert.equal(tool?.annotations?.readOnlyHint, true);
       assert.equal(tool?.annotations?.destructiveHint, false);
@@ -594,17 +597,27 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
       "inventory_count_preview",
       "inventory_count_apply",
       "inventory_count_verify",
+      "purchase_preview",
+      "purchase_apply",
+      "purchase_verify",
     ];
-    for (const forbidden of ["sql", "rpc", "purchase_post", "cost_certification", "order_transition", "bake", "inventory_adjustment"]) {
+    for (const forbidden of ["sql", "rpc", "purchase_post", "purchase_reverse", "purchase_delete", "cost_certification", "order_transition", "bake", "inventory_adjustment"]) {
       assert.equal(approvedTools.includes(forbidden), false);
     }
     const codexEnabledTools = codexConfig.match(/enabled_tools\s*=\s*\[([^\]]*)\]/)?.[1] ?? "";
     assert.match(codexEnabledTools, /"inventory_count_preview"/);
     assert.match(codexEnabledTools, /"inventory_count_verify"/);
     assert.match(codexEnabledTools, /"inventory_count_apply"/);
+    assert.match(codexEnabledTools, /"purchase_preview"/);
+    assert.match(codexEnabledTools, /"purchase_apply"/);
+    assert.match(codexEnabledTools, /"purchase_verify"/);
     assert.match(codexConfig, /approvals_reviewer\s*=\s*"user"/);
     assert.match(codexConfig, /\[mcp_servers\.product_lab\.tools\.inventory_count_apply\][\s\S]*approval_mode\s*=\s*"prompt"/);
-    assert.deepEqual(JSON.parse(claudeConfig).permissions.ask, ["mcp__product_lab__inventory_count_apply"]);
+    assert.match(codexConfig, /\[mcp_servers\.product_lab\.tools\.purchase_apply\][\s\S]*approval_mode\s*=\s*"prompt"/);
+    assert.deepEqual(JSON.parse(claudeConfig).permissions.ask, [
+      "mcp__product_lab__inventory_count_apply",
+      "mcp__product_lab__purchase_apply",
+    ]);
     assert.doesNotMatch(claudeConfig, /"allow"\s*:\s*\[[\s\S]*inventory_count_apply/);
     assert.doesNotMatch(mcpConfig, /allowedTools|inventory_count_apply/);
   });

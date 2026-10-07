@@ -318,11 +318,11 @@ test("Product Lab remote MCP endpoint (Slice 2.1A)", async (t) => {
     // already proves the full authenticated flow still works end to end.
     const client = await connect("owner-token");
     const discovery = await client.listTools();
-    assert.equal(discovery.tools.length, 5);
+    assert.equal(discovery.tools.length, 8);
     await client.close();
   });
 
-  await t.test("a verified owner session lists exactly the five approved tools and reads through request-scoped auth", async (subtest) => {
+  await t.test("a verified owner session lists exactly the eight approved tools and reads through request-scoped auth", async (subtest) => {
     const client = await connect("owner-token");
     subtest.after(() => client.close());
 
@@ -333,6 +333,9 @@ test("Product Lab remote MCP endpoint (Slice 2.1A)", async (t) => {
       "inventory_count_preview",
       "inventory_count_verify",
       "inventory_list",
+      "purchase_apply",
+      "purchase_preview",
+      "purchase_verify",
     ]);
 
     const inventory = await client.callTool({ name: "inventory_list", arguments: {} });

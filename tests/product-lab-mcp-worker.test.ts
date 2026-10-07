@@ -16,12 +16,15 @@ const root = path.resolve(import.meta.dirname, "..");
 const WORKER_HOSTNAME = "alyandpon-product-lab-mcp.example.workers.dev";
 const OWNER_ID = "99999999-9999-4999-8999-999999999999";
 const SALT_ID = "11111111-1111-4111-8111-111111111111";
-const FIVE_TOOLS = [
+const EIGHT_TOOLS = [
   "ingredient_inspect",
   "inventory_count_apply",
   "inventory_count_preview",
   "inventory_count_verify",
   "inventory_list",
+  "purchase_apply",
+  "purchase_preview",
+  "purchase_verify",
 ];
 
 function json(res: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}) {
@@ -271,10 +274,10 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     }
   });
 
-  await t.test("a verified owner lists exactly the five tools and reads through request-scoped auth", async (subtest) => {
+  await t.test("a verified owner lists exactly the eight tools and reads through request-scoped auth", async (subtest) => {
     const client = await connect("owner-token");
     subtest.after(() => client.close());
-    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), FIVE_TOOLS);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), EIGHT_TOOLS);
     const inventory = await client.callTool({ name: "inventory_list", arguments: {} });
     assert.equal(inventory.isError, undefined);
     assert.equal((inventory.structuredContent as { returned: number }).returned, 1);
@@ -309,7 +312,7 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     assert.equal(supabase.applyRpcCalls(), 0, "no apply RPC without a stored, approved preview");
   });
 
-  await t.test("the Next.js /api/mcp rollback route still serves the same five tools through the same shared handler", async (subtest) => {
+  await t.test("the Next.js /api/mcp rollback route still serves the same eight tools through the same shared handler", async (subtest) => {
     const previous = {
       url: process.env.PRODUCT_LAB_SUPABASE_URL,
       key: process.env.PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY,
@@ -336,7 +339,7 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     const client = new Client({ name: "rollback-test", version: "1.0.0" });
     await client.connect(transport);
     subtest.after(() => client.close());
-    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), FIVE_TOOLS);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), EIGHT_TOOLS);
   });
 });
 
@@ -378,6 +381,7 @@ test("Product Lab MCP Worker structure (TASK-073)", async (t) => {
     // The one place the tool registry is built for a remote request:
     assert.match(handler, /createProductLabMcpServer/);
     assert.match(handler, /createInventoryCountServiceForClient/);
+    assert.match(handler, /createPurchaseServiceForClient/);
     assert.match(handler, /requireBearerAuth/);
     assert.match(discovery, /oauthMetadataResponse/);
     // Neither adapter, nor the Worker, may carry its own registry, auth gate or token logic.
@@ -385,7 +389,12 @@ test("Product Lab MCP Worker structure (TASK-073)", async (t) => {
       assert.doesNotMatch(adapter, /registerTool|createProductLabMcpServer|requireBearerAuth|verifyAccessToken|createMcpHandler|\.rpc\(/);
     }
     const registry = await read("scripts", "product-lab-mcp", "mcp-server.ts");
-    assert.equal((registry.match(/registerTool\(/g) ?? []).length, 5);
+    assert.equal((registry.match(/registerTool\(/g) ?? []).length, 8);
+    // The purchase service is a REQUIRED parameter of the registry: there is no default (and so no
+    // default filesystem-backed) purchase service for a remote registry to fall back to.
+    assert.match(registry, /purchaseService: PurchaseService,?\s*\)/);
+    assert.doesNotMatch(registry, /purchaseService: PurchaseService\s*=/);
+    assert.doesNotMatch(registry, /purchase-service-local/);
   });
 
   await t.test("the remote import graph contains no local-filesystem code, so remote previews can only be Supabase-backed", async () => {
@@ -394,12 +403,20 @@ test("Product Lab MCP Worker structure (TASK-073)", async (t) => {
     assert.ok(files.includes("scripts/product-lab/inventory-count-service.ts"));
     assert.ok(files.includes("scripts/product-lab-mcp/mcp-server.ts"));
     assert.ok(!files.includes("scripts/product-lab/inventory-count-service-local.ts"));
+    // Purchases V3: the shared purchase service and the pure domain core are in the Worker graph; the
+    // filesystem-backed local service is not, and nothing in the graph can reach it.
+    assert.ok(files.includes("scripts/product-lab-mcp/purchase-service.ts"));
+    assert.ok(files.includes("scripts/purchase-operator/core.ts"));
+    assert.ok(!files.includes("scripts/product-lab-mcp/purchase-service-local.ts"));
+    assert.deepEqual(files.filter((file) => /-local\.ts$/.test(file)), []);
     for (const [file, source] of graph) {
-      assert.doesNotMatch(source, /node:fs|node:path|node:url|import\.meta\.url|createInventoryCountArtifactStore/, path.relative(root, file));
+      assert.doesNotMatch(source, /node:fs|node:path|node:url|import\.meta\.url|createInventoryCountArtifactStore|createPurchaseArtifactStore|purchase-service-local/, path.relative(root, file));
     }
-    // And the shared service still ships only the durable store.
+    // And the shared services still ship only their durable stores.
     const service = await read("scripts", "product-lab", "inventory-count-service.ts");
     assert.match(service, /createDurableInventoryCountArtifactStore/);
+    const purchaseService = await read("scripts", "product-lab-mcp", "purchase-service.ts");
+    assert.match(purchaseService, /createDurablePurchaseArtifactStore/);
   });
 
   await t.test("local stdio keeps its filesystem store and its environment-token configuration unchanged", async () => {
@@ -409,9 +426,13 @@ test("Product Lab MCP Worker structure (TASK-073)", async (t) => {
       read(".mcp.json"),
     ]);
     assert.match(stdio, /inventory-count-service-local\.ts/);
+    assert.match(stdio, /purchase-service-local\.ts/);
     assert.match(stdio, /serveStdio/);
     assert.match(local, /node:fs\/promises/);
     assert.match(local, /\.inventory-operator/);
+    const purchaseLocal = await read("scripts", "product-lab-mcp", "purchase-service-local.ts");
+    assert.match(purchaseLocal, /node:fs\/promises/);
+    assert.match(purchaseLocal, /\.purchase-operator/);
     assert.deepEqual(JSON.parse(mcpConfig), {
       mcpServers: {
         product_lab: {
