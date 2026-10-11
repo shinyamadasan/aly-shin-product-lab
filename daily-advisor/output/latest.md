@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-10-10 (Asia/Manila)
+Date: 2026-10-11 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -40,8 +40,8 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-Today's top item matters because an ingredient flagged as time- and temperature-sensitive, with no stated handling plan, is a food-safety gap. Taste and cost won't matter if a product can't be held safely between baking and eating. Closing this gap now, before anyone outside the kitchen tries it, protects customers and the business's reputation.
+Blondies come first because milk powder is a time- and temperature-sensitive ingredient. If nobody has stated how long it can sit out or when it must be chilled, a customer could end up with food that spoiled without anyone noticing. That is a food-safety risk, not just a polish issue.
 
-All three actions are the same kind of fix, so handle them together. Write one handling plan using Blondies, then adapt it for Brownies and Chocolate Chip Cookies in the listed order. That avoids solving the same problem three times.
+Work the three actions in the order shown. Once you've worked out and tested a plan for Blondies, reuse the same method for Brownies and the cookies instead of starting over each time.
 
-AI suggestion: When you log tasting feedback for the pending batches, also note where each sample was stored and how long since baking. Later tastings would then double as evidence for your time-limit plan.
+AI suggestion: write down a one-page hold-time check (what was tested, how long it sat out, and what you observed) and keep it with each product's batch notes. It would also give you a record to refer to later.
