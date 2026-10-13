@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { changeMediaProduct, listMediaForProduct, uploadProductMedia, uploadProductMediaBatch, type ProductMediaClient, type ProductMediaRow } from "../src/lib/product-media.ts";
+import { changeMediaProduct, listMediaForProduct, PRODUCT_MEDIA_ACCEPT, uploadProductMedia, uploadProductMediaBatch, type ProductMediaClient, type ProductMediaRow } from "../src/lib/product-media.ts";
 
 function fixture(extension: string, name = `test-pattern.${extension}`) {
   return new File([readFileSync(new URL(`./fixtures/product-media/test-pattern.${extension}`, import.meta.url))], name);
@@ -139,4 +139,20 @@ test("missing setup and failed reads report an owner-facing error", async () => 
   const client = { from: () => ({ select: () => ({ order() { return this; }, then(resolve: (v: unknown) => void) { resolve({ data: null, error: { code: "PGRST205", message: "Missing table" } }); } }) }) } as unknown as ProductMediaClient;
   const result = await listMediaForProduct(client);
   assert.ok(!result.ok); assert.match(result.message, /one-time setup/);
+});
+
+test("picker advertises only JPEG/PNG/WebP/MP4 so iOS can supply compatible representations", () => {
+  const accepted = PRODUCT_MEDIA_ACCEPT.split(",");
+  for (const extension of [".jpg", ".jpeg", ".png", ".webp", ".mp4"]) assert.ok(accepted.includes(extension), extension);
+  for (const extension of [".mov", ".heic", ".heif"]) assert.ok(!accepted.includes(extension), extension);
+});
+
+test("HEIC/HEIF that bypass the picker still reject without writing storage", async () => {
+  const db = memoryClient();
+  for (const name of ["photo.HEIC", "photo.heif"]) {
+    const result = await uploadProductMedia(db.client, new File(["ftypheic"], name), null);
+    assert.equal(result.ok, false);
+    assert.match(result.ok ? "" : result.message, /HEIC/);
+  }
+  assert.deepEqual(db.calls, []);
 });

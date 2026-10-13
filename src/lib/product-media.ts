@@ -3,7 +3,7 @@ import { maxGeneratedAssetFileSizeBytes } from "./asset-generation-validation.ts
 import { createSignedUrlForPrivateMedia } from "./asset-file-urls.ts";
 
 export const PRODUCT_MEDIA_BUCKET = "product-media";
-export const PRODUCT_MEDIA_ACCEPT = ".jpg,.jpeg,.png,.webp,.mp4,.mov,.heic,.heif";
+export const PRODUCT_MEDIA_ACCEPT = ".jpg,.jpeg,.png,.webp,.mp4";
 
 export type ProductMediaRow = {
   id: string;
