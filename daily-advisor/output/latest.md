@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-10-12 (Asia/Manila)
+Date: 2026-10-13 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -40,8 +40,8 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-Blondies come first because an ingredient that is sensitive to time and temperature, with no written handling plan, is a food-safety risk. Customers can't see that risk, so it's the one gap you can't fix after something has been sold.
+Blondies come first because milk powder is perishable. Without a stated storage and time limit, you can't say how long a batch stays safe once it leaves your kitchen. That is a food-safety gap, and it is much harder to fix after a customer has already eaten the product.
 
-Sequencing: the top three actions share one issue, so work them in the listed order. Settle the approach on Blondies, then reuse the same method and wording for Brownies and Chocolate Chip Cookies, adjusting only for each recipe's ingredients. That should be much faster than starting from scratch each time.
+Work through the three actions in the order listed. The same question applies to each, so once you've settled the plan for Blondies, you can reuse most of the reasoning for Brownies and Chocolate Chip Cookies. Test each plan on its own, since recipes behave differently.
 
-AI suggestion: when you run the handling test on each batch, taste it at the same session and log the feedback. That could clear the missing-tasting-feedback notes at the same time.
+AI suggestion: keep one short shared cold-chain checklist that every product's batch notes can point to, rather than rewriting it each time.
