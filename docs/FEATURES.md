@@ -1,5 +1,14 @@
 # Features
 
+## Content Studio Media Library V1
+
+Implemented on `feat/content-studio-media-library-v1`, pending review and authorized migration
+rollout. Content Studio → Media supports multiple JPEG/PNG/WebP photos and H.264 MP4 videos,
+owner-selected Product/Unassigned, reusable grid, signed previews, per-file rejection, reassignment,
+product filtering, and session selection. `listMediaForProduct` supplies the future recipe seam.
+No recipes, usage flags, delete, transcoding, composition or publishing.
+See `planning/CONTENT_STUDIO_MEDIA_LIBRARY_V1.md` for acceptance evidence and rollout limits.
+
 > Catalog by area, with status. The source of truth for whether a feature EXISTS —
 > not whether it is good.
 

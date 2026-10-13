@@ -1,5 +1,25 @@
 # Architecture
 
+## Product source media library V1
+
+Content Studio's Media view consumes the raw `product_media` source library through
+`src/lib/product-media.ts`. It preserves `MARKETING_MODULE.md`'s raw/produced lifecycle split:
+batch photos retain their original domain, and generated `assets`/`asset_files` remain completed-job
+artifacts. Raw upload does not fabricate an Asset Job or Creative Package.
+
+Flow: native multi-file selection → shared `buildAssetUploadCandidate` image/H.264 byte inspection
+→ private `product-media` storage → source row → five-minute signed previews. Files process
+sequentially, with failure isolated to each file. Co-owner business scope uses the existing
+`is_product_lab_owner()` RLS helper; workers/public-order/anonymous users have no source access.
+Only the product association is mutable. No media delete or overwrite capability is introduced.
+
+`listMediaForProduct(client, productId)` is the future recipe read seam; undefined means All and
+null means Unassigned. URLs are ephemeral read information, never persisted. The UI re-signs
+before expiry and on return to the browser tab, and offers manual refresh. Selection is session
+state, not persisted usage. Ambiguous registration failures retain private objects for recovery.
+Details, limits, verification and production rollout gate:
+`planning/CONTENT_STUDIO_MEDIA_LIBRARY_V1.md`. Migration is **not applied to production**.
+
 > Subsystems by **named entry point**, data flow, and where things live.
 > Never reference line numbers — they rot. Name functions, DOM ids, storage keys, DB paths.
 

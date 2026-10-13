@@ -1102,3 +1102,48 @@ instruction to stop after this candidate commit. Two flags for that review beyon
 check: (1) confirm the compact "Can't confirm bake" panel actually shows the right ingredient/
 shortfall names on a real failing batch; (2) the `MobileFinishedStockList` deletion decision above
 is a judgment call worth a second opinion.
+
+## 2026-10-13 — Content Studio Media Library V1 candidate
+
+**Scope:** direct owner-requested slice on `feat/content-studio-media-library-v1`, clean isolated
+worktree based on `origin/main` at `30881f291855fc5a827b785423e7cca09673c20f`. Original checkout,
+other worktrees, AI Dev OS implementation/queues, Purchases V3, MCP, Worker and website untouched.
+
+**Architecture:** `MINIMAL_NEW_MODEL`. The approved raw/produced split in MARKETING_MODULE stays
+intact. `assets.asset_job_id` is required and unique; raw captures have no completed generation job.
+The additive product-source table avoids fabricated provenance or relaxation of Asset constraints.
+Shared byte/H.264 validation, size limits, owner claim and signed-preview mechanism are reused.
+No generated/batch storage policy is modified. D-007 and the slice record document this boundary.
+
+**Self-review (SELF_REVIEW.md):** own diff reviewed, including new untracked files. No duplicated
+inspection/signing logic, new dependencies, dead code, unused state, TODOs, unrelated refactors,
+price facts or speculative features. Re-entry uses a synchronous mutation ref; read generations
+ignore stale responses and unmount; file processing is sequential. Uncertain registration retains
+private bytes. No delete/overwrite is exposed, and only association can change. Would I ship this:
+`ship-pending-human-review` for real phone feel/visual acceptance; technical candidate is reviewable.
+
+**QA:** focused 97/97; full suite 4407 passed, 0 failed, 1 existing Windows platform skip
+(`resolveClaudeExecutable: non-Windows platforms pass the binary name through unchanged`).
+Disposable PostgreSQL migration/RLS smoke passed, including four source fixture rows read from fresh
+connections, co-owner sharing, unrelated/public-order/worker exclusion, audit identity, immutable
+file facts, nullable Product, private bucket, and no delete/overwrite. Browser harness passed with
+three real photos and one playable H.264 MP4, signed previews, reload, filters, reassignment,
+Unassigned and selection. Widths 320/375/390/1280 have no horizontal overflow and selects use at
+least 16px text. Mobile/desktop screenshots inspected. Scoped lint, standalone typecheck and Next
+build pass; git whitespace/scope checks pass. Local harness uses fixture storage/row adapters;
+PostgreSQL uses Supabase auth/storage schema stubs. No live Supabase or physical phone proof claimed.
+
+**Review fixes resolved:** SQL CHECK null semantics now reject duration-less video; a signing outage
+keeps records visible; the global font inheritance override is handled explicitly; product filter
+gets a full mobile row; security table coverage now demands proof of this table's own owner RLS.
+
+**Limits / rollout:** migration not applied to production. No db push, deploy, merge or real bakery
+media upload. Owner readiness needs target Supabase role/storage verification after separately
+authorized migration application. An ambiguous registration may retain an unlisted private object
+for later operator recovery. Browser intake validates codecs; Storage itself enforces MIME/size,
+not server-side codec decoding. MOV/HEVC, delete, persisted usage and recipe automation deferred.
+Session selection is not a persisted usage/handoff relation. Real iOS/Android rendering, phone feel,
+polish and owner workflow acceptance remain pending.
+
+**Merge gate: `approved`** — held for human review because this introduces a database/storage
+boundary and the owner explicitly prohibited merging without review. Candidate commit only.

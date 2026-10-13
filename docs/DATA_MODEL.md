@@ -1,5 +1,21 @@
 # Data Model
 
+## Product source media V1
+
+`public.product_media`, added by `supabase/migrations/20261013090000_product_media_library_v1.sql`:
+`id` (UUID), nullable `product_id` (text FK to products, on delete set null), `media_type`
+(photo/video), fixed private `storage_bucket` (product-media), unique `storage_path` (UUID plus
+validated format extension), `original_filename`, `mime_type`, `file_size_bytes`, positive `width`/
+`height`, nullable `duration_ms` (required positive for video), `created_at` (database time), and
+`created_by` (auth UID audit). No price/offer facts, generated provenance, or usage flag.
+
+Owner-role RLS shares records between this business's co-owners. Inserts require the caller's audit
+UID; column grants allow only `product_id` updates. No delete grant. Storage is private, owner-only
+select/insert, no overwrite/delete. Photo limits: JPEG/PNG/WebP 10 MiB; video: H.264 MP4 50 MiB.
+The raw-source model does not change existing `assets`, `asset_files`, `batch_photos`, or LabState
+serialization. Previews are signed on reads and never stored in rows. Deployment remains gated;
+see `planning/CONTENT_STUDIO_MEDIA_LIBRARY_V1.md`.
+
 > State shapes, storage keys, and persistence paths.
 
 ## Products

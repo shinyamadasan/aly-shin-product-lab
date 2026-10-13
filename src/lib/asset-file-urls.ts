@@ -21,6 +21,19 @@ export type AssetFileSignedUrlResult =
   | { ok: true; signedUrl: string; expiresInSeconds: typeof ASSET_FILE_SIGNED_URL_EXPIRES_IN_SECONDS }
   | { ok: false; reason: "unsupported-bucket" | "failed"; message: string };
 
+// Shared signing mechanism; each caller still restricts its own allowed bucket.
+export async function createSignedUrlForPrivateMedia<TBucket extends "generated-assets" | "product-media">(
+  client: { storage: { from(bucket: TBucket): { createSignedUrl(path: string, expiresIn: number): SignedUrlResult } } },
+  bucket: TBucket,
+  path: string,
+): Promise<AssetFileSignedUrlResult> {
+  const result = await client.storage.from(bucket).createSignedUrl(path, ASSET_FILE_SIGNED_URL_EXPIRES_IN_SECONDS);
+  if (result.error || !result.data?.signedUrl) {
+    return { ok: false, reason: "failed", message: result.error?.message ?? "Media preview could not be opened." };
+  }
+  return { ok: true, signedUrl: result.data.signedUrl, expiresInSeconds: ASSET_FILE_SIGNED_URL_EXPIRES_IN_SECONDS };
+}
+
 export async function createSignedUrlForAssetFile(client: AssetFileUrlClient, file: AssetFileRecord): Promise<AssetFileSignedUrlResult> {
   if (file.storageBucket !== GENERATED_ASSETS_SIGNED_URL_BUCKET) {
     return {
@@ -30,10 +43,5 @@ export async function createSignedUrlForAssetFile(client: AssetFileUrlClient, fi
     };
   }
 
-  const result = await client.storage.from(GENERATED_ASSETS_SIGNED_URL_BUCKET).createSignedUrl(file.storagePath, ASSET_FILE_SIGNED_URL_EXPIRES_IN_SECONDS);
-  if (result.error || !result.data?.signedUrl) {
-    return { ok: false, reason: "failed", message: result.error?.message ?? "Generated Asset signed URL could not be created." };
-  }
-
-  return { ok: true, signedUrl: result.data.signedUrl, expiresInSeconds: ASSET_FILE_SIGNED_URL_EXPIRES_IN_SECONDS };
+  return createSignedUrlForPrivateMedia(client, GENERATED_ASSETS_SIGNED_URL_BUCKET, file.storagePath);
 }

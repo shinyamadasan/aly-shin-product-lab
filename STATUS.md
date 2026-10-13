@@ -2,6 +2,25 @@
 
 > Where the project is right now. The first thing any agent reads.
 
+## 2026-10-13 — Content Studio Media Library V1 candidate
+
+Implemented and locally verified on isolated `feat/content-studio-media-library-v1`, based on
+`origin/main` at `30881f291855fc5a827b785423e7cca09673c20f`. No production schema application,
+deploy, merge or real owner media upload. `product_media` preserves raw source authority while
+reusing generated-media validation and private signing. Review gate: `approved`; see
+`planning/CONTENT_STUDIO_MEDIA_LIBRARY_V1.md` and the append-only REVIEW entry.
+
+Verified: focused 97/97; full 4407 passed / 1 pre-existing platform skip / 0 failed; local PostgreSQL
+migration, owner RLS and four-fixture persistence; browser upload, photo previews, H.264 playback,
+reload, Product/Unassigned/filter/selection; responsive widths 320/375/390/1280; lint/typecheck/build.
+Browser uses local fixture adapters; PostgreSQL uses auth/storage schema stubs. Target Supabase
+verification remains after separately authorized migration application. Recovery retains private
+bytes on uncertain registration; orphan cleanup, delete, usage tracking and MOV/HEVC are deferred.
+
+Needs human verification (`ship-pending-human-review`): real iOS Safari/Android Chrome rendering,
+phone tap/scroll feel, transitions, spacing/polish, microcopy and workflow intuition. Next action:
+review this candidate; separately authorize migration/target-environment checks before owner uploads.
+
 **Milestone:** Marketing Advisor v1 (PROP-018–022) and Asset Generation Foundation through
 real-byte materialization and read-only UI (PROP-023–026) both shipped and merged to `main` via
 PR #18 (`feat/asset-generation-foundation`, merge commit `abeb391`, 2026-08-05). A post-merge

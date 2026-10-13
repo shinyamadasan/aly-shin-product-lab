@@ -153,3 +153,20 @@ cached by browsers indefinitely.
 
 Verify: src/lib/dashboard/finished-stock-demand.ts contains "THE ONE RULE HERE: only `new` orders are unreserved demand."
 Verify: src/lib/route-redirects.ts contains "dashboardHomeRedirects"
+
+## D-007 — Raw reusable product media remains source material, not a generated Asset
+
+**Decision:** Media Library V1 uses the minimal `product_media` source model and a private
+`product-media` bucket, while reusing the existing upload byte validation and signing mechanism.
+Content Studio hosts intake and consumes the library; `assets`/`asset_files` keep their produced
+artifact authority. Existing batch photos are not moved or made public/private differently.
+
+**Why:** Asset rows require a unique completed generation job; raw phone uploads have none.
+Making that FK nullable would change existing constraints, and fabricated jobs would misstate
+provenance. Batch photos are batch-bound and historically public. The source model preserves the
+raw/produced distinction already approved in `MARKETING_MODULE.md`, with additive schema only.
+No usage lifecycle is inferred from preview or selection. No delete is exposed. Uncertain
+registration retains private bytes; safe orphan recovery is deferred instead of destructive cleanup.
+Scope, technical acceptance and rollout: `planning/CONTENT_STUDIO_MEDIA_LIBRARY_V1.md`.
+
+Verify: src/lib/product-media.ts contains "export async function listMediaForProduct"

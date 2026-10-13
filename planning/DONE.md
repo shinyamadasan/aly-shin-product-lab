@@ -682,3 +682,13 @@ introduce. S1.2 closed the replay defect and nothing else.
 
 No Cloudflare call was made, no migration was applied, and no SQL of any kind was run against the
 live project.
+
+## 2026-10-13 — Content Studio Media Library V1 candidate, pending review/rollout
+
+Direct owner-requested implementation on `feat/content-studio-media-library-v1`: private raw product
+source library, native multiple-file upload, Product/Unassigned association, preview/playback,
+reusable grid, filtering and session selection. Existing Asset authority preserved; no new dependency.
+Local technical acceptance: focused 97/97, full 4407 pass/1 existing skip, PostgreSQL migration/RLS
+and four-row persistence smoke, browser fixture workflow at 320/375/390/1280, lint/typecheck/build.
+Not shipped to production: migration application, target Supabase acceptance, real owner upload,
+deployment and merge remain gated. See `planning/CONTENT_STUDIO_MEDIA_LIBRARY_V1.md` and REVIEW.

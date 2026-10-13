@@ -171,7 +171,15 @@ function hardenedTables(): string[] {
 }
 
 test("every table the application and workers touch is either hardened by S1 or owned by Wave B", () => {
-  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS]);
+  // Media V1 owns its own RLS from creation; require that proof before adding its coverage.
+  const media = statementsOf(readFileSync(new URL("supabase/migrations/20261013090000_product_media_library_v1.sql", ROOT), "utf8"));
+  assert.match(media, /alter table public\.product_media enable row level security/i);
+  assert.match(media, /revoke all on public\.product_media from public, anon, authenticated/i);
+  for (const operation of ["select", "insert", "update"]) {
+    assert.match(media, new RegExp(`create policy[^;]*on public\\.product_media for ${operation} to authenticated[^;]*public\\.is_product_lab_owner\\(\\)`, "i"));
+  }
+  assert.doesNotMatch(media, /using\s*\(true\)|with check\s*\(true\)/i);
+  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS, "product_media"]);
   const uncovered = [...tablesReferencedInCode()].filter((table) => !covered.has(table)).sort();
   assert.deepEqual(uncovered, [], `these tables are used by the code but hardened by nobody: ${uncovered.join(", ")}`);
 });
