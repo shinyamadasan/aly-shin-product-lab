@@ -11,6 +11,9 @@ import { PRODUCTION_IMAGE_DIMENSIONS, type ProductionImageSpecV1 } from "../src/
 import { PRODUCTION_STATIC_RENDERER_FONT, renderProductionStaticImage } from "../src/lib/production-static-renderer.ts";
 import { EMBEDDED_PRODUCTION_FONTS } from "../src/lib/production-fonts.ts";
 
+// The `geist` package exports only its next/font wrappers (dist/sans.js), so its root is found from there.
+const GEIST_PACKAGE_ROOT = path.dirname(path.dirname(createRequire(import.meta.url).resolve("geist/font/sans")));
+
 function spec(overrides: Partial<ProductionImageSpecV1> = {}): ProductionImageSpecV1 {
   return {
     schemaVersion: "production-v1",
@@ -74,7 +77,7 @@ test("static_renderer executor requires ProductionSpecV1 and returns exactly one
 
 test("the renderer's fonts are app-owned, OFL licensed, and embedded rather than resolved", () => {
   assert.equal(PRODUCTION_STATIC_RENDERER_FONT.family, "Geist");
-  assert.equal(PRODUCTION_STATIC_RENDERER_FONT.package, "@fontsource/geist-sans");
+  assert.equal(PRODUCTION_STATIC_RENDERER_FONT.package, "geist");
   assert.equal(PRODUCTION_STATIC_RENDERER_FONT.license, "OFL-1.1");
   // Embedded: no filesystem path is resolved at render time. require.resolve worked under node and
   // failed inside the Next server runtime, which is what this guarantees cannot recur.
@@ -82,16 +85,15 @@ test("the renderer's fonts are app-owned, OFL licensed, and embedded rather than
   assert.match(PRODUCTION_STATIC_RENDERER_FONT.version, /^\d+\.\d+\.\d+$/);
 
   // The licence text must actually travel with the dependency the bytes came from.
-  const licensePath = createRequire(import.meta.url).resolve("@fontsource/geist-sans/LICENSE");
+  const licensePath = path.join(GEIST_PACKAGE_ROOT, "LICENSE.txt");
   assert.ok(existsSync(licensePath));
   assert.match(readFileSync(licensePath, "utf8"), /SIL OPEN FONT LICENSE/i);
 });
 
 test("the embedded faces really are the two the dependency ships", () => {
   assert.equal(EMBEDDED_PRODUCTION_FONTS.length, 2);
-  const packageRoot = path.dirname(createRequire(import.meta.url).resolve("@fontsource/geist-sans/package.json"));
   for (const face of EMBEDDED_PRODUCTION_FONTS) {
-    const onDisk = readFileSync(path.join(packageRoot, "files", face.fileName));
+    const onDisk = readFileSync(path.join(GEIST_PACKAGE_ROOT, "dist", "fonts", "geist-sans", face.fileName));
     assert.deepEqual(
       new Uint8Array(Buffer.from(face.base64, "base64")),
       new Uint8Array(onDisk),
@@ -137,7 +139,7 @@ test("[static] the renderer RESOLVES no font from a framework-private path", () 
 
   // Every resolved module must come from a declared dependency.
   for (const resolved of source.match(/require\.resolve\("([^"]+)"\)/g) ?? []) {
-    assert.match(resolved, /@fontsource\/geist-sans/);
+    assert.match(resolved, /"geist\//);
   }
 });
 

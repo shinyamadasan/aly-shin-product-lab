@@ -68,6 +68,41 @@ export async function measureTextBlockHeight(box: Omit<CopyFitBox, "candidateSiz
   return bbox ? bbox.height : 0;
 }
 
+// The horizontal extent the text actually reaches when laid out in a box of maxWidth. Wrapping keeps
+// ordinary copy inside the box, but one word longer than the box cannot wrap and runs out sideways --
+// which a height measurement alone never sees. The probe canvas is wider than the box so the overflow
+// is drawn and measured rather than cut off by the canvas edge.
+const PROBE_WIDTH_MULTIPLIER = 4;
+
+export async function measureTextBlockRightEdge(box: Omit<CopyFitBox, "candidateSizes">, fontSize: number, fonts: FittableFont[]): Promise<number> {
+  const probeWidth = Math.ceil(box.maxWidth * PROBE_WIDTH_MULTIPLIER);
+  const probeHeight = Math.ceil(Math.max(box.maxHeight * PROBE_HEIGHT_MULTIPLIER, fontSize * box.lineHeight * 24));
+  const svg = await satori(
+    createElement(
+      "div",
+      { style: { display: "flex", width: probeWidth, height: probeHeight } },
+      createElement(
+        "div",
+        {
+          style: {
+            width: `${box.maxWidth}px`,
+            display: "flex",
+            fontFamily: fonts[0]?.name ?? "Geist",
+            fontSize,
+            fontWeight: box.fontWeight ?? 400,
+            lineHeight: box.lineHeight,
+            color: "#000000",
+          },
+        },
+        box.text,
+      ),
+    ),
+    { width: probeWidth, height: probeHeight, fonts },
+  );
+  const bbox = new Resvg(svg, { fitTo: { mode: "width", value: probeWidth } }).innerBBox();
+  return bbox ? bbox.x + bbox.width : 0;
+}
+
 // Largest candidate size whose real laid-out height fits the box.
 //
 // Returns copy_does_not_fit rather than shrinking past the smallest stated size. That refusal is the

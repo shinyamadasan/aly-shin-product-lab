@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { AbsoluteFill, Easing, interpolate, useCurrentFrame } from "remotion";
 
+import { ALY_PON_BRAND_TOKENS } from "../lib/content-studio/brand-tokens.ts";
 import { REMOTION_FONT_STACK } from "./fonts.ts";
 import { windowEnd, type TimingWindow } from "./timing.ts";
 
@@ -25,13 +26,14 @@ import { windowEnd, type TimingWindow } from "./timing.ts";
 //
 // Warm and editorial rather than neutral-and-modern: a paper ground, coffee-brown ink, and a single
 // terracotta accent borrowed from crust colour. Five values, because a sixth would have to earn a
-// meaning and none of them can here.
+// meaning and none of them can here. The values come from the shared brand tokens, so the
+// Content Studio carousel and reel draw the same colours.
 export const WARM_PALETTE = {
-  ground: "#F6EFE4",
-  ink: "#2E2117",
-  muted: "#8A7250",
-  accent: "#B4551F",
-  frame: "#EADBC4",
+  ground: ALY_PON_BRAND_TOKENS.color.background,
+  ink: ALY_PON_BRAND_TOKENS.color.foreground,
+  muted: ALY_PON_BRAND_TOKENS.color.muted,
+  accent: ALY_PON_BRAND_TOKENS.color.accent,
+  frame: ALY_PON_BRAND_TOKENS.color.surface,
 } as const;
 
 // The vertical safe frame. Generous on purpose -- roughly a tenth of the width on each side, and

@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   // @resvg/resvg-js is a native .node binding ("non-ecmascript placeable asset" to the bundler) and
   // sharp is likewise native; bundling either fails the build outright.
   //
-  // The FONTS are deliberately NOT in this list. Externalizing @fontsource/geist-sans still did not
+  // The FONTS are deliberately NOT in this list. Externalizing the font package still did not
   // make a require.resolve subpath real inside a Next server chunk -- the first live owner-facing run
   // died on an "[externals]/..." ENOENT -- so the faces are embedded as base64 in
   // src/lib/production-fonts.ts and need no resolution at all.
@@ -54,6 +54,17 @@ const nextConfig: NextConfig = {
       "./node_modules/@img/sharp-libvips-linux-x64/**/*",
       "./node_modules/@img/sharp-linux-x64/**/*",
       "./node_modules/@resvg/resvg-js-linux-x64-gnu/**/*",
+    ],
+    // Content Studio Fast Mode runs the same satori/resvg/sharp stack for the carousel, and sharp
+    // for the Reel's photos.
+    "/api/content-studio/carousel": [
+      "./node_modules/@img/sharp-libvips-linux-x64/**/*",
+      "./node_modules/@img/sharp-linux-x64/**/*",
+      "./node_modules/@resvg/resvg-js-linux-x64-gnu/**/*",
+    ],
+    "/api/content-studio/reel": [
+      "./node_modules/@img/sharp-libvips-linux-x64/**/*",
+      "./node_modules/@img/sharp-linux-x64/**/*",
     ],
   },
   async redirects() {

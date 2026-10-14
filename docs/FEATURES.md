@@ -1,5 +1,18 @@
 # Features
 
+## Content Studio Fast Mode V1 (Carousel / Reel)
+
+Implemented on `feat/content-studio-fast-mode-v1`, pending review; not deployed. Content Studio →
+**Carousel / Reel**: pick a product, Carousel or Reel, five of that product's own Media Library
+items in order (main, close-up, in hand, price, closing), type and confirm price / selling unit /
+call to action, then Generate → Preview → Export. Carousel = five 1080×1350 PNGs (swipeable preview,
+`carousel.zip` of the exact previewed bytes). Reel = 11 s 1080×1920 H.264 (playable preview,
+`reel.mp4`); real clips play as filmed, photos are shown still with a slow zoom. Only the owner's
+own media can be exported. Reels are made only on a server marked
+`CONTENT_STUDIO_REEL_RENDERING=1` (the studio computer); elsewhere the UI says so. Nothing is
+saved server-side; no AI, publishing, scheduling, editor, extra templates or HEVC conversion.
+Architecture: `docs/ARCHITECTURE.md` → Content Studio Fast Mode.
+
 ## Content Studio Media Library V1
 
 Implemented on `feat/content-studio-media-library-v1`, pending review and authorized migration

@@ -2419,3 +2419,30 @@ same-page enhancement, not a new route — 19 routes total). No changes to any e
 migration, RLS policy, or already-shipped file beyond the additive columns and the Brand Presence
 section described above. Follower counts, analytics, posting, scheduling, and any social-management
 capability remain fully unbuilt, per the owner's own explicit non-goals.
+
+## Content Studio Fast Mode V1 implementation record (2026-10-14)
+
+Promotes the dual-renderer proof (`feat/content-studio-dual-renderer-proof` @ `54779b6`, verdict
+DUAL_RENDERER_GOOD_FIT) into Content Studio as an owner fast path: PRODUCT → REAL MEDIA → FORMAT →
+CONFIRMED OFFER → GENERATE → PREVIEW → EXPORT.
+
+**Production rendering rule.** STATIC / CAROUSEL → Satori + Resvg. MOTION / REEL → Remotion. Both →
+one shared `CreativeSpec` + one shared brand token source + one embedded font authority (full Geist,
+so ₱ renders). **Customer-facing food → real owner media only**
+(`CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL = true`); test fixtures, generated food and synthetic
+product media cannot pass export.
+
+**Raw/produced split preserved.** Fast Mode reads `product_media` (raw source, D-007) and produces
+downloads only; it creates no Asset, Asset Job or Creative Package row and does not touch Saved
+Creatives, Create Now or the Asset Job Remotion worker.
+
+**Offer authority.** Price, selling unit and CTA are typed and explicitly confirmed by the owner for
+every generation; nothing is prefilled from selling formats (no unambiguous current-public-offer
+authority exists). No price, discount, availability, scarcity, freshness or delivery claim is
+generated.
+
+**AI.** None visible or invisible. Media roles come from the owner's pick order (`MEDIA_ROLES`),
+which is the seam a future role/crop/order suggestion would fill.
+
+Architecture and gates: `docs/ARCHITECTURE.md` → Content Studio Fast Mode V1. Decision: D-008.
+Not built: editor, extra templates, Story, publishing, scheduler, Meta API, analytics, HEVC.

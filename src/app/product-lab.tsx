@@ -72,6 +72,7 @@ import {
 } from "@/lib/owner-access";
 import { SavedCreatives } from "@/components/saved-creatives";
 import { ProductMediaLibrary } from "@/components/product-media-library";
+import { ContentStudioFastMode } from "@/components/content-studio-fast-mode";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -4628,6 +4629,7 @@ function ContentStudio({
   const [creativeJobId, setCreativeJobId] = useState(initialCreativeJobId);
   const [isCreating, setIsCreating] = useState(initialCreativeJobId !== null);
   const [showMedia, setShowMedia] = useState(false);
+  const [showFastMode, setShowFastMode] = useState(false);
 
   // Leaving the reopened creative also drops `?job=` from the URL, so "back" stays back across a
   // refresh. replaceState rather than a router push, for the same reason CreateNow uses it: this is
@@ -4644,6 +4646,10 @@ function ContentStudio({
     return <CreateNow jobId={creativeJobId} onExit={exitCreating} onJobIdChange={setCreativeJobId} products={labState.products} />;
   }
 
+  if (showFastMode) {
+    return <ContentStudioFastMode onExit={() => setShowFastMode(false)} products={labState.products} />;
+  }
+
   if (showMedia) {
     return <div className="space-y-5"><SecondaryButton onClick={() => setShowMedia(false)}>Back to creatives</SecondaryButton><ProductMediaLibrary products={labState.products} /></div>;
   }
@@ -4658,6 +4664,7 @@ function ContentStudio({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold tracking-tight">Recent creatives</h2>
         <SecondaryButton onClick={() => setShowMedia(true)}>Media</SecondaryButton>
+        <SecondaryButton onClick={() => setShowFastMode(true)}>Carousel / Reel</SecondaryButton>
         <button
           className="inline-flex h-10 items-center gap-2 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427]"
           onClick={() => {

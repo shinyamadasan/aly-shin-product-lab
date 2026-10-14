@@ -18,7 +18,7 @@ import { EMBEDDED_PRODUCTION_FONTS, PRODUCTION_FONT_LICENSE, PRODUCTION_FONT_SOU
 // That path is a PRIVATE Next build artefact. Nothing guarantees it survives the next Next release,
 // it does not exist in an install that omits Next, and depending on it made this renderer's
 // typography a side effect of a framework's internal layout rather than a decision this app owns.
-// @fontsource/geist-sans is a declared production dependency, so the faces below resolve from our
+// `geist` is a declared production dependency, so the faces below resolve from our
 // own dependency graph and survive `npm ci --omit=dev --omit=optional`.
 //
 // Same typeface as the composition the owner accepted (Geist Sans) -- this is a SOURCING change, not
@@ -26,7 +26,8 @@ import { EMBEDDED_PRODUCTION_FONTS, PRODUCTION_FONT_LICENSE, PRODUCTION_FONT_SOU
 //
 // LICENCE: SIL Open Font License 1.1. Geist Sans (C) 2023 Vercel, made in collaboration with
 // basement.studio. Embedding and redistributing the faces in this form is exactly what the OFL
-// permits, and the full licence text ships inside the package at @fontsource/geist-sans/LICENSE.
+// permits, and the full licence text ships inside the package at geist/LICENSE.txt. The faces are the
+// full TTFs (not a latin subset) so a peso sign renders.
 // Upstream source: https://github.com/vercel/geist-font
 //
 // No proprietary system font is read, bundled or redistributed anywhere in this module.
@@ -48,7 +49,7 @@ const FONT_FAMILY = "Geist";
 // Embedding removes the question entirely -- no resolution, no file tracing, no bundler interaction,
 // and the identical code path under node --test, the CLI, the dev server and a serverless
 // deployment. See scripts/production-static-renderer/generate-embedded-fonts.ts for provenance and
-// the OFL-1.1 licence note; @fontsource/geist-sans remains a declared dependency and the source of
+// the OFL-1.1 licence note; `geist` remains a declared dependency and the source of
 // truth for the bytes.
 const FONT_WEIGHTS = [400, 700] as const;
 
@@ -494,5 +495,5 @@ export const PRODUCTION_STATIC_RENDERER_FONT = {
   license: PRODUCTION_FONT_LICENSE,
   // Embedded rather than resolved -- see the note above loadFonts.
   embedded: true,
-  source: "Geist Sans (C) 2023 Vercel / basement.studio, redistributed under the SIL Open Font License 1.1 via the @fontsource/geist-sans dependency.",
+  source: "Geist Sans (C) 2023 Vercel / basement.studio, redistributed under the SIL Open Font License 1.1 via the geist dependency.",
 };

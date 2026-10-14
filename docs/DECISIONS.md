@@ -170,3 +170,25 @@ registration retains private bytes; safe orphan recovery is deferred instead of 
 Scope, technical acceptance and rollout: `planning/CONTENT_STUDIO_MEDIA_LIBRARY_V1.md`.
 
 Verify: src/lib/product-media.ts contains "export async function listMediaForProduct"
+
+## D-008 — Content Studio Fast Mode: dual renderer, one spec, real owner media only, stateless Reel host
+
+**Decision:** Production carousel = Satori + Resvg; production Reel = Remotion. Both consume one
+`CreativeSpec` and one brand token source (`src/lib/content-studio/`). The single font authority
+`src/lib/production-fonts.ts` now embeds the full Geist TTFs (`geist@1.7.2`) instead of the
+`@fontsource/geist-sans` latin subset, for every renderer. Export requires every media item to be
+`owner_media` from the Media Library, assigned server-side from `product_media` rows; fixtures,
+generated food and synthetic product media fail closed. The Reel renders in a child process on a
+host flagged `CONTENT_STUDIO_REEL_RENDERING=1`; Fast Mode persists nothing.
+
+**Why:** The dual-renderer proof (`feat/content-studio-dual-renderer-proof` @ `54779b6`) showed the
+latin subset draws ₱ as a missing-glyph box; rewording a confirmed price is not acceptable, and a
+second font loader would be two authorities. Provenance taken from the browser would be a claim,
+not a fact. Remotion cannot run in the serverless host, and the Asset Job queue requires a Creative
+Package (no migration authorized, and fabricated packages would misstate provenance), so the reel
+reuses the production bundler/encoder/probe on an explicitly marked host. The proof's fixtures,
+harness, contact sheets and outputs were not promoted.
+
+Verify: src/lib/content-studio/creative-spec.ts contains "export const CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL = true;"
+Verify: src/lib/content-studio/fast-mode-service.ts contains "assertExportableSpec(spec);"
+Verify: scripts/production-static-renderer/generate-embedded-fonts.ts contains "Geist-Bold.ttf"

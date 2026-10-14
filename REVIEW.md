@@ -1147,3 +1147,37 @@ polish and owner workflow acceptance remain pending.
 
 **Merge gate: `approved`** — held for human review because this introduces a database/storage
 boundary and the owner explicitly prohibited merging without review. Candidate commit only.
+
+## 2026-10-14 — Content Studio Fast Mode V1 (Carousel / Reel)
+
+**Scope:** Promotes the dual-renderer proof (`54779b6`) into Content Studio: product → owner media →
+format → confirmed offer → Generate → Preview → Export. Shared `CreativeSpec`, brand tokens and font
+authority; Satori carousel (5 × 1080×1350 PNG + `carousel.zip`); Remotion Reel (11 s 1080×1920 H.264,
+real clips preferred); export gate `CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL`. Base `origin/main`
+`064b800`. Proof fixtures, harness, contact sheets and outputs not promoted. D-008.
+
+**Self-review:** Reuses `production-copy-fit` (extended with a width measurement after the review
+found an unbreakable word could overflow sideways while "fitting" by height), `production-fonts`
+(regenerated from full Geist TTFs, replacing the latin subset — one authority, ₱ renders),
+`bundleRemotionProductionModule`, `REMOTION_RENDER_SETTINGS`, `probeVideoFile`/`validateProbedVideo`,
+`listMediaForProduct`, `createSignedUrlForPrivateMedia` and the `/api/production` owner auth seam.
+Remotion stays out of the Next bundle (child process on a host flagged
+`CONTENT_STUDIO_REEL_RENDERING=1`). No schema change; nothing persisted.
+
+**QA:** focused 21/21 (17 spec/gate/carousel/continuity + 4 route-service); full suite 4431 / 4430
+pass / 0 fail / 1 existing platform skip (baseline 4410 / 4409 / 0 / 1). Opt-in real Reel smoke
+(`RUN_REEL_SMOKE=1`, photo + real H.264 clip through the child-process host) PASS: h264 1080×1920
+11.05 s, every frame scrubbed, none blank. Browser acceptance
+(`tests/smoke/browser/content-studio-fast-mode.smoke.mjs`, real component + real service/renderers,
+fixture owner client) PASS: product/format/media selection, other product's media hidden, offer
+confirmation gate, server error message, 5-slide preview, ZIP byte-identical to preview, Regenerate,
+Back, Reel playable preview 11.05 s and MP4 export byte-identical to preview, no technical words, no
+overflow at 320/375/390/1280. Existing static renderer 19/19 and warm-open CLI render PASS on the new
+faces. Typecheck, scoped lint, `next build` clean; built routes load under `next start`.
+
+**Not verified (human / environment):** live Supabase owner session (worktree has no env; routes
+answered 503 not-configured), real owner bakery photos/clips, phone feel, creative acceptance. Media
+in all automated runs are synthetic test patterns. Owner uploads to the Media Library are trusted as
+real; an AI image uploaded there cannot be detected (no provenance field exists).
+
+**Merge gate: `approved`** — held for independent review; no push, deploy, migration or merge.

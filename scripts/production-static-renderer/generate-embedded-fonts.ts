@@ -2,7 +2,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-// Regenerates src/lib/production-fonts.ts from the @fontsource/geist-sans dependency.
+// Regenerates src/lib/production-fonts.ts from the full Geist Sans TTFs in the `geist` dependency.
+//
+// WHY THE FULL TTFs, NOT THE @fontsource LATIN SUBSET THIS USED TO EMBED.
+//
+// The latin subset has no peso sign (U+20B1). The Content Studio dual-renderer proof drew the verified
+// offer "₱160 / 2 pcs" with a NO-GLYPH box. Rewording a price to dodge a glyph would change a verified
+// fact, so the one production font authority now embeds the full-coverage faces instead. The typeface
+// is the same Geist Sans; only its character coverage grew.
 //
 // WHY THE FACES ARE EMBEDDED RATHER THAN READ FROM DISK AT RUNTIME.
 //
@@ -22,9 +29,9 @@ import path from "node:path";
 // the CLI, the Next dev server, and a serverless deployment.
 //
 // LICENCE. Geist Sans is SIL Open Font License 1.1, which expressly permits embedding and
-// redistribution. The generated module carries the attribution, and @fontsource/geist-sans stays a
-// declared dependency so the bytes remain traceable to a versioned, licensed source rather than
-// appearing from nowhere.
+// redistribution. The generated module carries the attribution, and `geist` stays a declared
+// dependency so the bytes remain traceable to a versioned, licensed source rather than appearing
+// from nowhere.
 //
 // Run with:  node scripts/production-static-renderer/generate-embedded-fonts.ts
 
@@ -32,17 +39,19 @@ const require = createRequire(import.meta.url);
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const OUTPUT = path.join(PROJECT_ROOT, "src", "lib", "production-fonts.ts");
 
-const packageRoot = path.dirname(require.resolve("@fontsource/geist-sans/package.json"));
+// The package exports only its next/font wrappers (dist/sans.js); the TTFs sit beside them.
+const distDir = path.dirname(require.resolve("geist/font/sans"));
+const packageRoot = path.dirname(distDir);
 const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")).version as string;
 
 const FACES = [
-  { weight: 400, file: "geist-sans-latin-400-normal.woff" },
-  { weight: 700, file: "geist-sans-latin-700-normal.woff" },
+  { weight: 400, file: "Geist-Regular.ttf" },
+  { weight: 700, file: "Geist-Bold.ttf" },
 ] as const;
 
 const encoded = FACES.map((face) => ({
   ...face,
-  base64: readFileSync(path.join(packageRoot, "files", face.file)).toString("base64"),
+  base64: readFileSync(path.join(distDir, "fonts", "geist-sans", face.file)).toString("base64"),
 }));
 
 const body = `// GENERATED FILE -- do not edit by hand.
@@ -54,24 +63,26 @@ const body = `// GENERATED FILE -- do not edit by hand.
 // renderer needs no filesystem access and no module resolution at render time. See that script's
 // header for the Next server-runtime failure this exists to prevent.
 //
-// Source:  @fontsource/geist-sans@${packageVersion} (latin subset)
+// Source:  geist@${packageVersion} (full Geist Sans TTFs; includes the peso sign U+20B1)
 // Typeface: Geist Sans (C) 2023 Vercel, made in collaboration with basement.studio
 // Licence: SIL Open Font License 1.1 -- embedding and redistribution are expressly permitted.
-//          Full text ships at node_modules/@fontsource/geist-sans/LICENSE
+//          Full text ships at node_modules/geist/LICENSE.txt
 // Upstream: https://github.com/vercel/geist-font
 
-export const PRODUCTION_FONT_SOURCE_PACKAGE = "@fontsource/geist-sans";
+export const PRODUCTION_FONT_SOURCE_PACKAGE = "geist";
 export const PRODUCTION_FONT_SOURCE_VERSION = "${packageVersion}";
 export const PRODUCTION_FONT_LICENSE = "OFL-1.1";
 
 export type EmbeddedProductionFont = {
   weight: 400 | 700;
   fileName: string;
+  // CSS @font-face format name, stated because a data URL has no extension to infer it from.
+  format: "truetype";
   base64: string;
 };
 
 export const EMBEDDED_PRODUCTION_FONTS: EmbeddedProductionFont[] = [
-${encoded.map((face) => `  { weight: ${face.weight}, fileName: ${JSON.stringify(face.file)}, base64: ${JSON.stringify(face.base64)} },`).join("\n")}
+${encoded.map((face) => `  { weight: ${face.weight}, fileName: ${JSON.stringify(face.file)}, format: "truetype", base64: ${JSON.stringify(face.base64)} },`).join("\n")}
 ];
 `;
 

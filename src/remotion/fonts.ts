@@ -6,8 +6,8 @@ import { EMBEDDED_PRODUCTION_FONTS, PRODUCTION_FONT_LICENSE, PRODUCTION_FONT_SOU
 // renderer already draws with.
 //
 // src/lib/production-fonts.ts is a generated, dependency-free data module: two Geist Sans faces
-// (400 and 700, latin subset) as base64, under OFL-1.1, sourced from the declared @fontsource
-// dependency. Wave B embedded them because require.resolve returned a bundler identifier rather than
+// (400 and 700, full TTFs including the peso sign) as base64, under OFL-1.1, sourced from the
+// declared `geist` dependency. Wave B embedded them because require.resolve returned a bundler identifier rather than
 // a real path inside a Next server chunk. That same property is exactly what this module needs for a
 // different reason: a Remotion render runs inside headless Chrome against a webpack bundle, and a
 // font fetched over the network would make the render non-deterministic and non-offline. A base64
@@ -42,9 +42,9 @@ const fontHandle = delayRender(`Loading ${EMBEDDED_PRODUCTION_FONTS.length} embe
 
 Promise.all(
   EMBEDDED_PRODUCTION_FONTS.map(async (face) => {
-    // The faces are .woff. The format has to be stated rather than inferred, because a data URL has
-    // no extension for anything to infer from.
-    const font = new FontFace(REMOTION_FONT_FAMILY, `url(data:font/woff;base64,${face.base64}) format('woff')`, {
+    // The format has to be stated rather than inferred, because a data URL has no extension for
+    // anything to infer from. The generated module declares it per face.
+    const font = new FontFace(REMOTION_FONT_FAMILY, `url(data:font/ttf;base64,${face.base64}) format('${face.format}')`, {
       weight: String(face.weight),
       style: "normal",
       // "block" rather than "swap": a render must never capture a frame drawn in a fallback face.

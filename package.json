@@ -33,11 +33,11 @@
     "remotion:worker": "node scripts/asset-workers/remotion-worker.ts"
   },
   "dependencies": {
-    "@fontsource/geist-sans": "^5.3.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "@resvg/resvg-js": "^2.6.2",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.110.8",
+    "geist": "1.7.2",
     "lucide-react": "^1.25.0",
     "next": "16.2.11",
     "react": "19.2.4",
