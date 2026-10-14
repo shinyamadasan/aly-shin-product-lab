@@ -70,6 +70,7 @@ test("a mixed photo + real-clip Reel renders as valid 1080x1920 H.264 ~11s with 
         provenance: "test_fixture",
         durationSeconds: role === "context" ? 5 : null,
       })),
+      mediaAttestedByOwner: true,
       brand: ALY_PON_BRAND_TOKENS,
       offer: { price: { amount: 160, currency: "PHP" }, unit: "2 pcs", cta: "Message us to order", confirmedByOwner: true },
       content: { purpose: "product_offer", headline: null },

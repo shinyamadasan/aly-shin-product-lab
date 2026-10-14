@@ -22,22 +22,30 @@ import {
 } from "../src/lib/content-studio/creative-plan.ts";
 import {
   CREATIVE_OUTPUT_V1,
-  CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL,
+  CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_OWNER_ATTESTED,
   ExportBlockedError,
   InvalidCreativeSpecError,
   assertExportableSpec,
   assertSpecSupportsFormat,
+  hasAtMostTwoDecimals,
   hasNonOwnerMedia,
   parseCreativeSpec,
   type CreativeMedia,
   type CreativeSpec,
 } from "../src/lib/content-studio/creative-spec.ts";
 import { createStoredZip, readPngDimensions, readStoredZip, validateCarouselExport } from "../src/lib/content-studio/export-output.ts";
-import { FastModeRequestError, buildFastModeSpec, parseFastModeRequest, type TrustedMediaRow } from "../src/lib/content-studio/fast-mode-request.ts";
+import {
+  FastModeRequestError,
+  MEDIA_ATTESTATION_PROBLEM,
+  buildFastModeSpec,
+  offerProblems,
+  parseFastModeRequest,
+  type TrustedMediaRow,
+} from "../src/lib/content-studio/fast-mode-request.ts";
 import { EMBEDDED_PRODUCTION_FONTS } from "../src/lib/production-fonts.ts";
 
 // Content Studio Fast Mode -- one production spec, two renderers, one brand token and font authority,
-// and an export gate that only real owner media can pass.
+// and an export gate that only owner-uploaded, owner-attested media can pass.
 //
 // The images here are SYNTHETIC test patterns made in-process by sharp. They stand in for owner photos
 // where a test needs pixels; none of them is food, and none is shipped.
@@ -63,6 +71,7 @@ function ownerSpec(overrides: { unit?: string; cta?: string; amount?: number; na
     specVersion: 1,
     product: { id: "revel-bars", name: overrides.name ?? "Revel Bars" },
     media: [0, 1, 2, 3, 4].map((i) => ownerMedia(i)),
+    mediaAttestedByOwner: true,
     brand: ALY_PON_BRAND_TOKENS,
     offer: { price: { amount: overrides.amount ?? 160, currency: "PHP" }, unit: overrides.unit ?? "2 pcs", cta: overrides.cta ?? "Message us to order", confirmedByOwner: true },
     content: { purpose: "product_offer", headline: null },
@@ -206,9 +215,10 @@ test("the carousel refuses video media; the reel refuses a clip shorter than its
 
 // --- authenticity ------------------------------------------------------------------------------------
 
-test("CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL: owner media exports; fixtures, generated and synthetic media cannot", () => {
-  assert.equal(CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL, true);
+test("CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_OWNER_ATTESTED: attested owner media exports; fixtures, generated and synthetic media cannot, even attested", () => {
+  assert.equal(CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_OWNER_ATTESTED, true);
   const owner = ownerSpec();
+  assert.equal(owner.mediaAttestedByOwner, true);
   assert.equal(hasNonOwnerMedia(owner), false);
   assert.doesNotThrow(() => assertExportableSpec(owner));
 
@@ -216,6 +226,8 @@ test("CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL: owner media exports; fixtures, ge
     const spec = structuredClone(owner);
     spec.media[2] = { ...spec.media[2], source: { kind: "fixture", name: "pattern" }, provenance };
     const parsed = parseCreativeSpec(spec);
+    // Attested, and still refused: an attestation never turns a fixture or generated image into owner media.
+    assert.equal(parsed.mediaAttestedByOwner, true);
     assert.equal(hasNonOwnerMedia(parsed), true);
     assert.throws(() => assertExportableSpec(parsed), (error: unknown) => error instanceof ExportBlockedError && error.message.includes(provenance));
   }
@@ -226,12 +238,76 @@ test("CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL: owner media exports; fixtures, ge
   assert.ok(issuesFor(relabelled).some((issue) => issue.startsWith("media.0.provenance:")));
 });
 
+test("the spec requires the owner's media attestation as literal true, and the export gate re-checks it", () => {
+  for (const value of [false, undefined, "true", 1, null]) {
+    const spec = structuredClone(ownerSpec()) as unknown as Mutable;
+    if (value === undefined) delete spec.mediaAttestedByOwner;
+    else spec.mediaAttestedByOwner = value;
+    assert.ok(issuesFor(spec).some((issue) => issue.startsWith("mediaAttestedByOwner:")), `mediaAttestedByOwner=${String(value)} must be refused`);
+  }
+  // A spec that skipped parsing still cannot pass the gate unattested.
+  const unparsed = { ...ownerSpec(), mediaAttestedByOwner: false } as unknown as CreativeSpec;
+  assert.throws(() => assertExportableSpec(unparsed), (error: unknown) => error instanceof ExportBlockedError && error.reason === "media_not_attested");
+});
+
+test("the request must carry mediaAttested: missing or false is refused before anything is read; the server never defaults it", () => {
+  const base = {
+    format: "carousel",
+    productId: "revel-bars",
+    mediaIds: ["m1", "m2", "m3", "m4", "m5"],
+    offer: { priceAmount: 160, unit: "2 pcs", cta: "Message us to order", confirmed: true },
+  };
+  const rows: TrustedMediaRow[] = base.mediaIds.map((id) => ({ id, product_id: "revel-bars", media_type: "photo", duration_ms: null }));
+  const product = { id: "revel-bars", name: "Revel Bars" };
+
+  // Missing, or not a boolean: the request does not parse.
+  for (const crafted of [base, { ...base, mediaAttested: "true" }, { ...base, mediaAttested: 1 }, { ...base, mediaAttested: null }]) {
+    assert.throws(() => parseFastModeRequest(crafted), (error: unknown) => error instanceof FastModeRequestError && error.status === 400);
+  }
+  // False: refused with the owner-facing words, before any spec exists.
+  assert.throws(
+    () => buildFastModeSpec({ request: parseFastModeRequest({ ...base, mediaAttested: false }), product, mediaRows: rows }),
+    (error: unknown) => error instanceof FastModeRequestError && error.status === 400 && error.message.includes(MEDIA_ATTESTATION_PROBLEM),
+  );
+  // A browser cannot attest through the spec's own field name instead.
+  assert.throws(() => parseFastModeRequest({ ...base, mediaAttestedByOwner: true }), FastModeRequestError);
+  // True, with everything else in order: accepted, copied into the spec, exportable.
+  const spec = buildFastModeSpec({ request: parseFastModeRequest({ ...base, mediaAttested: true }), product, mediaRows: rows });
+  assert.equal(spec.mediaAttestedByOwner, true);
+  assert.doesNotThrow(() => assertExportableSpec(spec));
+});
+
+test("centavo prices: request and spec accept the same two-decimal amounts and refuse the same others, without rounding", () => {
+  const specWith = (amount: number) => {
+    const spec = structuredClone(ownerSpec()) as unknown as Mutable;
+    spec.offer.price.amount = amount;
+    return spec;
+  };
+  const requestProblems = (amount: number) => offerProblems({ priceAmount: amount, unit: "2 pcs", cta: "Message us", confirmed: true });
+
+  for (const amount of [149.95, 160.55, 4.35, 1.1, 160, 170, 0.07, 999.99]) {
+    assert.equal(hasAtMostTwoDecimals(amount), true, `${amount}`);
+    assert.deepEqual(requestProblems(amount), [], `request must accept ${amount}`);
+    assert.equal(parseCreativeSpec(specWith(amount)).offer.price.amount, amount, `spec must accept ${amount} unchanged`);
+  }
+  for (const amount of [1.234, 149.999, 160.001]) {
+    assert.equal(hasAtMostTwoDecimals(amount), false, `${amount}`);
+    assert.deepEqual(requestProblems(amount), ["Use at most two decimal places for the price."], `request must refuse ${amount}`);
+    assert.ok(issuesFor(specWith(amount)).some((issue) => issue.startsWith("offer.price.amount:")), `spec must refuse ${amount}`);
+  }
+  for (const amount of [0, -5, -149.95, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.deepEqual(requestProblems(amount), ["Enter the price."], `request must refuse ${amount}`);
+    assert.ok(issuesFor(specWith(amount)).some((issue) => issue.startsWith("offer.price.amount:")), `spec must refuse ${amount}`);
+  }
+});
+
 test("the server builds the spec from trusted rows: provenance, product and media type never come from the browser", () => {
   const request = parseFastModeRequest({
     format: "carousel",
     productId: "revel-bars",
     mediaIds: ["m1", "m2", "m3", "m4", "m5"],
     offer: { priceAmount: 160, unit: " 2 pcs ", cta: "Message us to order", confirmed: true },
+    mediaAttested: true,
   });
   const rows: TrustedMediaRow[] = ["m1", "m2", "m3", "m4", "m5"].map((id) => ({ id, product_id: "revel-bars", media_type: "photo", duration_ms: null }));
   const spec = buildFastModeSpec({ request, product: { id: "revel-bars", name: "Revel Bars" }, mediaRows: rows });

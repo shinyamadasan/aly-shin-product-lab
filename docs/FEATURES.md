@@ -8,7 +8,10 @@ items in order (main, close-up, in hand, price, closing), type and confirm price
 call to action, then Generate → Preview → Export. Carousel = five 1080×1350 PNGs (swipeable preview,
 `carousel.zip` of the exact previewed bytes). Reel = 11 s 1080×1920 H.264 (playable preview,
 `reel.mp4`); real clips play as filmed, photos are shown still with a slow zoom. Only the owner's
-own media can be exported. Reels are made only on a server marked
+own Media Library items can be exported, and only after the owner ticks "These photos and videos are
+real pictures of our own food, not AI-generated, stock, or heavily edited." for the picked set (it
+clears whenever the picked media change). The app does not detect AI images; that attestation is the
+safeguard. Reels are made only on a server marked
 `CONTENT_STUDIO_REEL_RENDERING=1` (the studio computer); elsewhere the UI says so. Nothing is
 saved server-side; no AI, publishing, scheduling, editor, extra templates or HEVC conversion.
 Architecture: `docs/ARCHITECTURE.md` → Content Studio Fast Mode.

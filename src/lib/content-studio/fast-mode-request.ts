@@ -5,6 +5,7 @@ import { MEDIA_ROLE_LABELS, MEDIA_ROLES, reelClipShortfalls } from "./creative-p
 import {
   CREATIVE_OUTPUT_V1,
   InvalidCreativeSpecError,
+  hasAtMostTwoDecimals,
   OFFER_CTA_MAX_LENGTH,
   OFFER_UNIT_MAX_LENGTH,
   parseCreativeSpec,
@@ -18,6 +19,10 @@ import {
 // media item's type, product, clip length and PROVENANCE come from rows the server reads under the
 // owner's own RLS. A Media Library row is the owner's upload, so it -- and only it -- becomes
 // "owner_media". There is no field in the request through which provenance could be claimed.
+//
+// "owner_media" proves where a file came from, not that it is a real photo. The request therefore also
+// carries the owner's attestation for this media set (`mediaAttested`); it is required, never
+// defaulted, and anything but `true` is refused before any media is read or rendered.
 
 export const FastModeRequestSchema = z.object({
   format: z.enum(["carousel", "reel"]),
@@ -30,6 +35,8 @@ export const FastModeRequestSchema = z.object({
     cta: z.string().max(200),
     confirmed: z.boolean(),
   }),
+  // Required: a request without it does not parse. Only `true` passes buildFastModeSpec.
+  mediaAttested: z.boolean(),
 });
 
 export type FastModeRequest = z.infer<typeof FastModeRequestSchema>;
@@ -54,13 +61,20 @@ export function parseFastModeRequest(body: unknown): FastModeRequest {
 export function offerProblems(offer: FastModeRequest["offer"]): string[] {
   const problems: string[] = [];
   if (!Number.isFinite(offer.priceAmount) || offer.priceAmount <= 0) problems.push("Enter the price.");
-  else if (Math.round(offer.priceAmount * 100) !== offer.priceAmount * 100) problems.push("Use at most two decimal places for the price.");
+  else if (!hasAtMostTwoDecimals(offer.priceAmount)) problems.push("Use at most two decimal places for the price.");
   if (offer.unit.trim().length === 0) problems.push("Enter the selling unit, for example 2 pcs.");
   else if (offer.unit.trim().length > OFFER_UNIT_MAX_LENGTH) problems.push(`Keep the selling unit to ${OFFER_UNIT_MAX_LENGTH} characters.`);
   if (offer.cta.trim().length === 0) problems.push("Enter the call to action, for example Message us to order.");
   else if (offer.cta.trim().length > OFFER_CTA_MAX_LENGTH) problems.push(`Keep the call to action to ${OFFER_CTA_MAX_LENGTH} characters.`);
   if (!offer.confirmed) problems.push("Confirm the price, unit and call to action are current.");
   return problems;
+}
+
+// Shown in the form and returned by the server, so the owner sees the same words either way.
+export const MEDIA_ATTESTATION_PROBLEM = "Confirm these photos and videos are real pictures of your own food.";
+
+export function mediaAttestationProblems(mediaAttested: boolean): string[] {
+  return mediaAttested === true ? [] : [MEDIA_ATTESTATION_PROBLEM];
 }
 
 export type TrustedProduct = { id: string; name: string };
@@ -79,7 +93,7 @@ export function buildFastModeSpec(args: {
   mediaRows: TrustedMediaRow[];
 }): CreativeSpec {
   const { request, product } = args;
-  const problems = offerProblems(request.offer);
+  const problems = [...offerProblems(request.offer), ...mediaAttestationProblems(request.mediaAttested)];
   if (problems.length > 0) throw new FastModeRequestError(400, problems.join(" "));
   if (!product) throw new FastModeRequestError(404, "That product could not be found. Reload and pick it again.");
 
@@ -118,6 +132,8 @@ export function buildFastModeSpec(args: {
       specVersion: 1,
       product: { id: product.id, name: product.name.trim() },
       media,
+      // Copied, never assumed: parseCreativeSpec refuses anything but true.
+      mediaAttestedByOwner: request.mediaAttested,
       brand: ALY_PON_BRAND_TOKENS,
       offer: {
         price: { amount: request.offer.priceAmount, currency: "PHP" },

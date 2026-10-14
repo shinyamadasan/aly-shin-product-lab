@@ -2428,9 +2428,11 @@ CONFIRMED OFFER → GENERATE → PREVIEW → EXPORT.
 
 **Production rendering rule.** STATIC / CAROUSEL → Satori + Resvg. MOTION / REEL → Remotion. Both →
 one shared `CreativeSpec` + one shared brand token source + one embedded font authority (full Geist,
-so ₱ renders). **Customer-facing food → real owner media only**
-(`CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL = true`); test fixtures, generated food and synthetic
-product media cannot pass export.
+so ₱ renders). **Customer-facing food media → owner-uploaded and owner-attested as real Aly & Pon
+media** (`CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_OWNER_ATTESTED = true`): every item must be a Media
+Library item AND the owner must attest, per generation, that the picked set is real pictures of their
+own food. Product Lab does not detect AI imagery; the attestation is the V1 trust boundary. Test
+fixtures, generated food and synthetic product media cannot pass export even when attested.
 
 **Raw/produced split preserved.** Fast Mode reads `product_media` (raw source, D-007) and produces
 downloads only; it creates no Asset, Asset Job or Creative Package row and does not touch Saved

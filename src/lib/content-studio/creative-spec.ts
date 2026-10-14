@@ -14,11 +14,21 @@ import { MEDIA_ROLES } from "./creative-plan.ts";
 
 // --- authenticity ---------------------------------------------------------------------------------
 //
-// Customer-facing food content must show the owner's real food. Media from the owner's Media Library
-// is "owner_media"; anything else (internal test fixtures, generated food, synthetic product shots)
-// may be rendered for internal review but can never pass the export gate below. Provenance is assigned
-// by the server from the media's source authority, never taken from a browser request.
-export const CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL = true;
+// Customer-facing food media must be owner-uploaded AND owner-attested as real Aly & Pon media.
+//
+// What the software knows, and no more:
+//   - "owner_media" means the file is a row in the owner's Media Library (uploaded by an owner
+//     account into the private product-media bucket). It does NOT prove the picture was taken with a
+//     camera, is not AI-generated, is not stock, or is not heavily edited.
+//   - Product Lab does not attempt to detect AI imagery. The V1 trust boundary is the owner's explicit
+//     attestation, given for each generation (`mediaAttestedByOwner` below), that the selected photos
+//     and videos are real pictures of their own food.
+//   - Anything that is not owner_media (internal test fixtures, generated food, synthetic product
+//     shots) may be rendered for internal review but can never pass the export gate below, attested
+//     or not.
+// Provenance is assigned by the server from the media's source authority, never taken from a browser
+// request.
+export const CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_OWNER_ATTESTED = true;
 
 export const MEDIA_PROVENANCES = ["owner_media", "test_fixture", "generated_food", "synthetic_product"] as const;
 export type MediaProvenance = (typeof MEDIA_PROVENANCES)[number];
@@ -30,6 +40,16 @@ export const OFFER_UNIT_MAX_LENGTH = 24;
 export const OFFER_CTA_MAX_LENGTH = 40;
 export const HEADLINE_MAX_LENGTH = 40;
 export const PRODUCT_NAME_MAX_LENGTH = 60;
+
+// True when a peso amount has at most two decimal places, exactly as entered.
+//
+// `Math.round(x * 100) === x * 100` is wrong for IEEE-754 doubles (149.95 * 100 is 14994.999...).
+// Instead: the two-decimal rendering, read back, must be the very same double. A real two-decimal
+// entry always survives that round trip; 1.234 or 149.999 never does, and nothing is rounded into
+// validity -- the owner's value is either accepted as is or refused.
+export function hasAtMostTwoDecimals(amount: number): boolean {
+  return Number.isFinite(amount) && Number(amount.toFixed(2)) === amount;
+}
 
 const CreativeMediaSchema = z
   .object({
@@ -91,6 +111,10 @@ export const CreativeSpecSchema = z
     specVersion: z.literal(1),
     product: z.object({ id: z.string().min(1), name: nonBlank(PRODUCT_NAME_MAX_LENGTH) }),
     media: z.array(CreativeMediaSchema).length(MEDIA_ROLES.length),
+    // The owner's attestation, for THIS set of media, that it is real pictures of their own food --
+    // not AI-generated, stock or heavily edited. Never defaulted: the spec builder copies exactly what
+    // the request carried, and anything but `true` fails here.
+    mediaAttestedByOwner: z.literal(true, { error: "the owner must confirm the photos and videos are real pictures of their own food." }),
     brand: BrandTokensSchema,
     // Exactly what the owner typed and confirmed. Nothing here is inferred from history.
     offer: z.object({
@@ -100,7 +124,7 @@ export const CreativeSpecSchema = z
           .number()
           .positive()
           .max(1_000_000)
-          .refine((value) => Math.round(value * 100) === value * 100, { error: "use at most two decimal places." }),
+          .refine(hasAtMostTwoDecimals, { error: "use at most two decimal places." }),
         currency: z.literal("PHP"),
       }),
       unit: nonBlank(OFFER_UNIT_MAX_LENGTH),
@@ -182,24 +206,32 @@ export function hasNonOwnerMedia(spec: CreativeSpec): boolean {
 }
 
 export class ExportBlockedError extends Error {
-  readonly reason: "non_owner_media";
-  constructor(message: string) {
+  readonly reason: "non_owner_media" | "media_not_attested";
+  constructor(message: string, reason: ExportBlockedError["reason"] = "non_owner_media") {
     super(message);
     this.name = "ExportBlockedError";
-    this.reason = "non_owner_media";
+    this.reason = reason;
   }
 }
 
-// THE production export gate for media authenticity. Every customer-facing output passes through it
-// before bytes are produced for export; test fixtures, generated food and synthetic product media fail
-// closed here. Offer completeness is already enforced by parseCreativeSpec (confirmedByOwner, unit,
-// CTA and price are required), so a parsed spec plus this gate is an exportable spec.
+// THE production export gate for customer-facing food media. Every customer-facing output passes
+// through it before bytes are produced for export. Two independent conditions, both fail closed:
+//   1. every item is owner_media from the Media Library -- test fixtures, generated food and synthetic
+//      product media are refused even when attested;
+//   2. the owner attested this media set as real pictures of their own food. parseCreativeSpec already
+//      requires it; it is checked again here so the gate never depends on how the spec was built.
+// This gate does not, and cannot, tell a camera photo from an AI image; the attestation is the trust
+// boundary. Offer completeness is enforced by parseCreativeSpec (confirmedByOwner, unit, CTA and
+// price are required), so a parsed spec plus this gate is an exportable spec.
 export function assertExportableSpec(spec: CreativeSpec): void {
-  if (!CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL) return;
+  if (!CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_OWNER_ATTESTED) return;
   const blocked = spec.media.filter((item) => item.provenance !== EXPORTABLE_MEDIA_PROVENANCE || item.source.kind !== "product_media");
   if (blocked.length > 0) {
     throw new ExportBlockedError(
       `Only your own photos and videos can be exported. Not allowed: ${blocked.map((item) => `${item.id} (${item.provenance})`).join(", ")}.`,
     );
+  }
+  if ((spec.mediaAttestedByOwner as unknown) !== true) {
+    throw new ExportBlockedError("Confirm these photos and videos are real pictures of your own food before exporting.", "media_not_attested");
   }
 }

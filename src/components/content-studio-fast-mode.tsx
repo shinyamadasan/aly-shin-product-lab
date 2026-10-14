@@ -6,13 +6,15 @@ import { supabase } from "../lib/supabase";
 import { listMediaForProduct, type ProductMedia, type ProductMediaClient } from "../lib/product-media";
 import { CAROUSEL_FILE_NAMES, CAROUSEL_ZIP_FILE_NAME, MEDIA_ROLE_LABELS, MEDIA_ROLES, REEL_FILE_NAME } from "../lib/content-studio/creative-plan";
 import { createStoredZip, validateCarouselExport } from "../lib/content-studio/export-output";
-import { offerProblems, type FastModeRequest } from "../lib/content-studio/fast-mode-request";
+import { mediaAttestationProblems, offerProblems, type FastModeRequest } from "../lib/content-studio/fast-mode-request";
 
 // Content Studio Fast Mode -- the owner's quick path: product, format, five of their own photos or
 // clips, a confirmed offer, then Generate -> Preview -> Export.
 //
 // The browser never decides anything that matters: the server re-reads the product and media under the
-// owner's sign-in and refuses anything that is not their own media. The preview holds the exact bytes
+// owner's sign-in and refuses anything that is not their own media. The app cannot tell a real photo
+// from an AI image, so the owner attests, for each set of picked media, that it is real pictures of
+// their own food; picking a different set clears that attestation. The preview holds the exact bytes
 // the server returned, and Export packages those same bytes, so what was inspected is what is saved.
 // Nothing is kept on the server; leaving this screen discards the result.
 
@@ -69,6 +71,7 @@ export function ContentStudioFastMode({
   const [unit, setUnit] = useState("");
   const [cta, setCta] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [mediaAttested, setMediaAttested] = useState(false);
   const [reelAvailable, setReelAvailable] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -130,8 +133,15 @@ export function ContentStudioFastMode({
 
   useEffect(() => clearOutput, [clearOutput]);
 
+  // Every change to the picked set goes through here: the attestation covers exactly the media it was
+  // given for, so a different set (added, removed, reordered or cleared) must be attested again.
+  function selectMedia(next: string[]) {
+    if (next.length !== picked.length || next.some((id, i) => id !== picked[i])) setMediaAttested(false);
+    setPicked(next);
+  }
+
   function togglePick(id: string) {
-    setPicked((ids) => (ids.includes(id) ? ids.filter((value) => value !== id) : ids.length < MEDIA_ROLES.length ? [...ids, id] : ids));
+    selectMedia(picked.includes(id) ? picked.filter((value) => value !== id) : picked.length < MEDIA_ROLES.length ? [...picked, id] : picked);
   }
 
   const offer = { priceAmount: Number(price), unit, cta, confirmed };
@@ -139,6 +149,7 @@ export function ContentStudioFastMode({
     ...(product ? [] : ["Pick a product."]),
     ...(picked.length === MEDIA_ROLES.length ? [] : [`Pick ${MEDIA_ROLES.length} ${format === "carousel" ? "photos" : "photos or clips"} (${picked.length} picked).`]),
     ...offerProblems(offer),
+    ...mediaAttestationProblems(mediaAttested),
     ...(format === "reel" && reelAvailable === false ? ["Reels can only be made on the studio computer right now."] : []),
   ];
 
@@ -152,7 +163,7 @@ export function ContentStudioFastMode({
         setError("Sign in again to create content.");
         return;
       }
-      const request: FastModeRequest = { format, productId, mediaIds: picked, offer };
+      const request: FastModeRequest = { format, productId, mediaIds: picked, offer, mediaAttested };
       const headers = { "content-type": "application/json", Authorization: `Bearer ${token}` };
 
       if (format === "carousel") {
@@ -260,14 +271,14 @@ export function ContentStudioFastMode({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold">Create content</h2>
-          <p className="mt-1 text-sm opacity-75">A carousel or Reel made from your own photos and videos, with the offer you confirm.</p>
+          <p className="mt-1 text-sm opacity-75">A carousel or Reel made from your own real photos and videos, with the offer you confirm.</p>
         </div>
         <button className={buttonStyle} onClick={onExit} type="button">Back to creatives</button>
       </div>
 
       <label className="grid min-w-0 gap-1 text-sm font-medium">
         Product
-        <select className={fieldStyle} disabled={busy} onChange={(e) => { setProductId(e.target.value); setPicked([]); }} value={productId}>
+        <select className={fieldStyle} disabled={busy} onChange={(e) => { setProductId(e.target.value); selectMedia([]); }} value={productId}>
           <option value="">Select a product</option>
           {products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
@@ -282,7 +293,7 @@ export function ContentStudioFastMode({
               className={`${buttonStyle} ${format === value ? "border-[#8f5632]! bg-[#fff2d8]!" : ""}`}
               disabled={busy}
               key={value}
-              onClick={() => { setFormat(value); setPicked((ids) => (value === "carousel" ? ids.filter((id) => media.find((m) => m.id === id)?.mediaType === "photo") : ids)); }}
+              onClick={() => { setFormat(value); selectMedia(value === "carousel" ? picked.filter((id) => media.find((m) => m.id === id)?.mediaType === "photo") : picked); }}
               type="button"
             >
               {value === "carousel" ? "Carousel" : "Reel"}
@@ -336,6 +347,10 @@ export function ContentStudioFastMode({
             );
           })}
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input checked={mediaAttested} className="mt-1 h-5 w-5" disabled={busy} name="media-attested" onChange={(e) => setMediaAttested(e.target.checked)} type="checkbox" />
+          <span>These photos and videos are real pictures of our own food, not AI-generated, stock, or heavily edited.</span>
+        </label>
       </fieldset>
 
       <fieldset className="grid min-w-0 gap-3 rounded-lg border border-current/15 p-4 sm:grid-cols-3">
@@ -353,7 +368,7 @@ export function ContentStudioFastMode({
           <input className={fieldStyle} disabled={busy} maxLength={40} onChange={(e) => { setCta(e.target.value); setConfirmed(false); }} placeholder="Message us to order" value={cta} />
         </label>
         <label className="flex items-start gap-2 text-sm sm:col-span-3">
-          <input checked={confirmed} className="mt-1 h-5 w-5" disabled={busy} onChange={(e) => setConfirmed(e.target.checked)} type="checkbox" />
+          <input checked={confirmed} className="mt-1 h-5 w-5" disabled={busy} name="offer-confirmed" onChange={(e) => setConfirmed(e.target.checked)} type="checkbox" />
           <span>This price, selling unit and call to action are current and correct. They will appear exactly as typed.</span>
         </label>
       </fieldset>

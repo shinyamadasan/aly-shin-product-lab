@@ -23,6 +23,8 @@ const REGISTRATION_ONLY: PreparedCampaign = {
       provenance: "test_fixture" as const,
       durationSeconds: null,
     })),
+    // Registration-only placeholder; its test_fixture media can never pass the export gate anyway.
+    mediaAttestedByOwner: true,
     brand: ALY_PON_BRAND_TOKENS,
     offer: { price: { amount: 1, currency: "PHP" }, unit: "-", cta: "-", confirmedByOwner: true },
     content: { purpose: "product_offer", headline: null },

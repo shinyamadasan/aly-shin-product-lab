@@ -168,17 +168,47 @@ try {
   await setField("input[placeholder='Message us to order']", "Message us to order");
   await wait("document.body.innerText.includes('Confirm the price')");
   assert.equal(await buttonDisabled("Generate"), true);
-  await page.evaluate(() => document.querySelector("input[type=checkbox]").click());
+  await page.evaluate(() => document.querySelector("input[name=offer-confirmed]").click());
   await wait("!document.body.innerText.includes('Confirm the price')");
+
+  // Media attestation: unchecked by default, required for Generate, and cleared by ANY change to the
+  // picked media -- it covers exactly the set it was given for.
+  const attested = () => page.evaluate("document.querySelector('input[name=media-attested]').checked");
+  assert.equal(await attested(), false);
+  await wait("document.body.innerText.includes('real pictures of your own food')");
+  assert.equal(await buttonDisabled("Generate"), true);
+  const attest = () => page.evaluate(() => document.querySelector("input[name=media-attested]").click());
+  const pickPattern = (n) => page.evaluate((k) => [...document.querySelectorAll("button[aria-label]")].find((b) => b.getAttribute("aria-label").endsWith(`pattern-${k}.jpg`)).click(), n);
+  await attest();
+  await wait("document.querySelector('input[name=media-attested]').checked && !document.body.innerText.includes('real pictures of your own food')");
+  // Remove one item: attestation cleared.
+  await pickPattern(5);
+  await wait("!document.querySelector('input[name=media-attested]').checked");
+  // Picking it again does not restore the attestation: the owner must attest again.
+  await pickPattern(5);
+  await wait("document.querySelectorAll('button[aria-label^=\"Picked\"]').length === 5");
+  assert.equal(await attested(), false);
+  assert.equal(await buttonDisabled("Generate"), true);
+  await attest();
+  // Replace the selection by changing product and back: cleared again.
+  await page.evaluate(() => { const s = document.querySelector("select"); s.value = "other-product"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+  await wait("!document.querySelector('input[name=media-attested]').checked");
+  await page.evaluate(() => { const s = document.querySelector("select"); s.value = "fm-product"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+  await wait("document.querySelectorAll('button[aria-pressed]').length === 2 + 6");
+  for (const id of [1, 2, 3, 4, 5]) await pickPattern(id);
+  await wait("document.querySelectorAll('button[aria-label^=\"Picked\"]').length === 5");
+  assert.equal(await attested(), false);
+  await attest();
+  await wait("document.querySelector('input[name=media-attested]').checked");
   await noOverflow("form");
 
   // Error state from the server: a selling unit that cannot fit is refused with an owner message.
   await setField("input[placeholder='2 pcs']", "W".repeat(24));
-  await page.evaluate(() => document.querySelector("input[type=checkbox]").click());
+  await page.evaluate(() => document.querySelector("input[name=offer-confirmed]").click());
   await click("Generate");
   await wait("document.querySelector('[role=alert]')?.innerText.includes('Shorten the selling unit')");
   await setField("input[placeholder='2 pcs']", "2 pcs");
-  await page.evaluate(() => document.querySelector("input[type=checkbox]").click());
+  await page.evaluate(() => document.querySelector("input[name=offer-confirmed]").click());
 
   // Generate -> carousel preview of five 1080x1350 slides.
   await click("Generate");
@@ -231,13 +261,21 @@ try {
   assert.deepEqual(reelBytes, Buffer.from(previewedReel, "base64"), "exported MP4 differs from the previewed MP4");
   writeFileSync(path.join(output, "reel-ui.mp4"), reelBytes);
 
+  // The server, not the checkbox, is the gate: a crafted request without the attestation is refused.
+  const crafted = await fetch(`${address}/api/content-studio/carousel`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer owner-test-token" },
+    body: JSON.stringify({ format: "carousel", productId: "fm-product", mediaIds: ["p1", "p2", "p3", "p4", "p5"], offer: { priceAmount: 160, unit: "2 pcs", cta: "Message us", confirmed: true }, mediaAttested: false, slide: 1 }),
+  });
+  assert.equal(crafted.status, 400);
+
   // Unauthenticated calls never reach the service.
   assert.equal((await fetch(`${address}/api/content-studio/carousel`, { method: "POST", body: "{}" })).status, 401);
 
   const evidence = {
     status: "PASS",
     productSelection: true, formatSelection: true, mediaLibrarySelection: true, otherProductMediaHidden: true,
-    offerConfirmationGate: true, serverErrorState: true,
+    offerConfirmationGate: true, mediaAttestationGate: true, attestationResetsOnMediaChange: true, craftedUnattestedRequestRefused: true, serverErrorState: true,
     carousel: { slides: 5, size: "1080x1350", zipMatchesPreview: true, regenerate: true, back: true },
     reel: { previewDurationSeconds: duration, playable: true, exportMatchesPreview: true, bytes: reelBytes.length },
     noTechnicalVocabulary: true, widths: [320, 375, 390, 1280],

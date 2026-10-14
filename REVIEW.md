@@ -1181,3 +1181,36 @@ in all automated runs are synthetic test patterns. Owner uploads to the Media Li
 real; an AI image uploaded there cannot be detected (no provenance field exists).
 
 **Merge gate: `approved`** — held for independent review; no push, deploy, migration or merge.
+
+## 2026-10-14 — Content Studio Fast Mode V1 FIX_FIRST patch (on `8aa066c`)
+
+**Scope:** Independent review of `8aa066c` returned FIX_FIRST (architecture, Netlify boundary and
+studio-computer Reel accepted). Two bounded fixes plus route tests; no execution-boundary, schema or
+Supabase change.
+
+**Fix 1 — authenticity semantics.** `owner_media` proves only an owner upload, not a real photo, so
+`CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_REAL` overclaimed. Renamed to
+`CUSTOMER_FACING_FOOD_MEDIA_MUST_BE_OWNER_ATTESTED`; the request now requires `mediaAttested`
+(boolean, never defaulted; only `true` builds a spec), `CreativeSpec` requires
+`mediaAttestedByOwner: z.literal(true)`, and `assertExportableSpec` re-checks it. UI checkbox
+"These photos and videos are real pictures of our own food, not AI-generated, stock, or heavily
+edited." starts unchecked and clears on any change to the picked set (add/remove/reorder/product
+change/format filter). Fixture/generated/synthetic provenance stays export-blocked even when
+attested. No AI detection is claimed; docs, D-008 and comments say attestation is the V1 trust boundary.
+
+**Fix 2 — centavo validation.** `Math.round(x*100) === x*100` rejected valid prices (₱149.95, ₱160.55,
+₱4.35, ₱1.10). Replaced in both request and spec by one shared `hasAtMostTwoDecimals`
+(`Number(x.toFixed(2)) === x`): no epsilon, nothing rounded into validity; 1.234 / 149.999 refused.
+
+**Fix 3 — route tests.** Route HTTP handling moved into `src/lib/content-studio/fast-mode-routes.ts`
+(auth injected; route files pass the unchanged `authenticateOwner`). Tests over the real
+`authenticateOwnerWith` rule: 401 missing/forged token, 403 non-owner, 503 unconfigured, Reel 503
+where hosted rendering is unavailable, owner reaches normal validation (200 PNG / 400 unattested).
+
+**QA:** focused 45/45; full suite 4436 / 4435 pass / 0 fail / 1 existing skip; typecheck, lint of
+changed files and `next build` clean; reel route trace still has no Remotion/Chromium/src files.
+Browser smoke PASS (adds attestation gate, reset-on-media-change, crafted unattested request → 400).
+Real Reel smoke PASS (1080×1920 H.264 11.05 s, no blank frame). Netlify preview check not performed
+(no authorized preview) — pending release precondition.
+
+**Merge gate: `approved`** — held for independent re-review; no push, deploy, migration or merge.
