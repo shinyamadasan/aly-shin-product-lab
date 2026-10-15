@@ -28,6 +28,19 @@ production creates no creative job and works when AI planning fails. Existing ca
 generated-visual and external production routes remain available. No new persistence or migration.
 Renderer layouts, byte identity and Netlify carousel / studio-computer Reel boundaries are unchanged.
 
+**Pending-job manual escape.** While a CreateNow job is not settled and no package is available
+(worker stopped, AI unavailable), the job view shows a quiet **Build with my photos** that opens the
+same `ContentStudioFastMode` with no prefill. It does not cancel, update or re-submit the job and
+does not create a package; returning shows the same job, and its package if the worker has since
+produced one. The job view keeps CreateNow's default `CreativePackageAssetCreate` /
+`CreativePackageAssets` presentation (job status, tags, refresh); the `ritual` variant remains only
+for Today's own recommendation surface (`today-page.tsx`).
+
+**Today (decision: intended shared surface).** Today's Create Now renders the same `CreateNow`, so
+it shows the same **Build with my photos** (landing and pending-job) and **Make it from my photos**
+(completed carousel/reel plan) actions as Content Studio. This is deliberate: one creation surface,
+no route-specific gating; Today's "Back to today" exit is unchanged.
+
 ## Content Studio Fast Mode V1 (`src/lib/content-studio/`, `src/remotion/fast-mode/`)
 
 **Rendering rule.** STATIC / CAROUSEL → Satori + Resvg (sharp for photo prep). MOTION / REEL →

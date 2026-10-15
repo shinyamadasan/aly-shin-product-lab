@@ -104,19 +104,24 @@ const content = {
 };
 const time = '2026-10-14T00:00:00Z';
 const job = { id: jobId, opportunity_id: null, intent: params.has('noProduct') ? {} : { productId: 'fm-product' },
-  status: 'completed', worker_type: 'creative_ai', result: {}, created_at: time, updated_at: time };
+  // stuck=1: the worker never picks the job up -- it stays queued and no package ever exists.
+  status: params.has('stuck') ? 'queued' : 'completed', worker_type: 'creative_ai', result: {}, created_at: time, updated_at: time };
 const pkg = { id: 'fixture-package', creative_job_id: jobId, status: 'ready', schema_version: 'v2', content, created_at: time, updated_at: time };
 window.__aiCalls = [];
 window.__inserted = [];
+window.__updated = [];
+window.__job = job;
 export const isSupabaseConfigured = true;
 export const supabase = {
   auth: { async getSession() { return { data: { session: { access_token: 'owner-test-token' } } }; } },
   from(table) {
     if (table === 'creative_jobs' || table === 'creative_packages') window.__aiCalls.push(table);
-    let data = table === 'creative_jobs' ? [job] : table === 'creative_packages' ? [pkg] : table === 'product_media' ? ${JSON.stringify(rows)} : [];
+    let data = table === 'creative_jobs' ? [job] : table === 'creative_packages' ? (params.has('stuck') ? [] : [pkg]) : table === 'product_media' ? ${JSON.stringify(rows)} : [];
     const q = {
       select() { return q; },
       insert(row) { window.__inserted.push({ table, row }); job.intent = row.intent; return q; },
+      update(row) { window.__updated.push({ table, row }); return q; },
+      delete() { window.__updated.push({ table, row: 'delete' }); return q; },
       eq(c, v) { data = data.filter(r => r[c] === v); return q; },
       is(c, v) { return q.eq(c, v); },
       order() { return q; }, limit() { return q; },
@@ -330,7 +335,10 @@ try {
     await page.goto({ url: address + '/?job=' + fixtureJob + '&format=' + format, timeout: 30000 });
     await wait("document.body.innerText.includes('Make it from my photos')");
     const planWords = await page.evaluate('document.body.innerText');
-    for (const word of ['CreateNow', 'Fast Mode', 'Creative Package', 'Creative Job', 'Asset Job', 'Satori', 'Remotion', 'Worker']) assert.equal(planWords.toLowerCase().includes(word.toLowerCase()), false, word);
+    // The plan view keeps CreateNow's DEFAULT asset/production panels (FIX_FIRST F1), which already show
+    // job-status wording such as "Creative Package", "Asset Job" and "Worker". That pre-existing status
+    // detail is intentional there; this check guards only against renderer and internal names leaking.
+    for (const word of ['CreateNow', 'Fast Mode', 'Creative Job', 'Satori', 'Remotion']) assert.equal(planWords.toLowerCase().includes(word.toLowerCase()), false, word);
     await click('Make it from my photos');
     await wait("document.querySelector('section[aria-label=\"Create content\"] select')?.value === 'fm-product'");
     assert.equal(await page.evaluate("[...document.querySelectorAll('button[aria-pressed=true]')].map(b => b.textContent.trim()).join('')"), format === 'carousel' ? 'Carousel' : 'Reel');
@@ -373,6 +381,40 @@ try {
   await wait("document.body.innerText.includes('This product has 1.')");
   assert.equal(await buttonDisabled('Generate'), true);
 
+  // STUCK JOB: an assisted brief whose job never starts (worker stopped / AI down) must not trap the
+  // owner. "Build with my photos" opens the same production screen without touching the job, creating
+  // another one, or inventing a package; the job is still there, still pending, on return.
+  await page.goto({ url: address + '/?stuck=1', timeout: 30000 });
+  await wait("!!document.querySelector('textarea')");
+  await setField('textarea', 'Show our bars');
+  await click('Create content');
+  await wait("document.body.innerText.includes('Build with my photos') && !document.querySelector('textarea')");
+  const stuckInserts = await page.evaluate('window.__inserted');
+  assert.equal(stuckInserts.length, 1, 'exactly one assisted job submitted');
+  assert.equal(stuckInserts[0].table, 'creative_jobs');
+  assert.equal(await page.evaluate('window.__job.status'), 'queued');
+  assert.equal(await page.evaluate("document.body.innerText.includes('Make it from my photos')"), false, 'no package, so no package handoff');
+  await click('Build with my photos');
+  await wait("!!document.querySelector('section[aria-label=\"Create content\"]')");
+  assert.equal(await page.evaluate("document.querySelector('select').value"), '', 'no untrusted prefill from a pending job');
+  await page.evaluate(() => { const s = document.querySelector('select'); s.value = 'fm-product'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await wait("document.querySelectorAll('button[aria-pressed]').length === 8");
+  for (const id of [1, 2, 3, 4, 5]) await pickPattern(id);
+  await setField('input[type=number]', '160');
+  await setField("input[placeholder='2 pcs']", '2 pcs');
+  await setField("input[placeholder='Message us to order']", 'Message us to order');
+  await page.evaluate(() => document.querySelector('input[name=offer-confirmed]').click());
+  await page.evaluate(() => document.querySelector('input[name=media-attested]').click());
+  await wait("!" + `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Generate").disabled`);
+  await click('Generate');
+  await wait(`document.querySelectorAll('[aria-label="Slides"] img').length === 5 && [...document.querySelectorAll('[aria-label="Slides"] img')].every(i => i.complete && i.naturalWidth === 1080)`);
+  await click('Back');
+  await click('Back to create content');
+  await wait("document.body.innerText.includes('Build with my photos') && !document.querySelector('textarea')");
+  assert.equal((await page.evaluate('window.__inserted')).length, 1, 'manual escape created no second job and no package');
+  assert.deepEqual(await page.evaluate('window.__updated'), [], 'manual escape never mutated the job or a package');
+  assert.equal(await page.evaluate('window.__job.status'), 'queued', 'the AI job is left running, not cancelled');
+
   // Successful assisted submission still uses the original job contract, then reaches the package.
   await page.goto({ url: address, timeout: 30000 });
   await wait("!!document.querySelector('textarea')");
@@ -401,6 +443,7 @@ try {
   const evidence = {
     status: "PASS",
     assistedHandoff: ["carousel", "reel"], manualWhenPlanningUnavailable: true, manualWithoutAIJob: true,
+    stuckJobManualEscape: { jobsCreated: 1, jobStatusAfter: "queued", packagesCreated: 0, jobMutations: 0, manualCarouselGenerated: true },
     priceWarningBeforeGenerationAndExport: true, copyUnchanged: true, unsupportedFormatsHidden: ["photo", "story"],
     missingProductUnselected: true, fiveMediaExplanation: true, assistedSubmissionIntact: true,
     productSelection: true, formatSelection: true, mediaLibrarySelection: true, otherProductMediaHidden: true,

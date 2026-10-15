@@ -449,6 +449,17 @@ export function CreateNow({
         ) : null}
         {packageView ? <PackageView view={packageView} /> : null}
 
+        {/* Manual path never depends on AI. While the plan is still pending (worker stopped, AI down),
+            the owner can leave for the SAME owner-media production screen the landing page opens. It
+            reads nothing from the job and writes nothing: the job keeps running and its package, if
+            it arrives, is still here on return. */}
+        {!packageView && !progress?.isSettled ? (
+          <div className="space-y-2 border-t border-current/15 pt-4">
+            <p className="text-sm opacity-75">Don&apos;t want to wait? Build directly from your own photos instead.</p>
+            <QuietAction onClick={() => setProduction({ initial: {} })}>Build with my photos</QuietAction>
+          </div>
+        ) : null}
+
         {/* The SAME entry component every other Creative Package surface renders, making the same
             decision it makes there: it resolves this package's Production Route and shows either the
             Production panel (template_only -> static_renderer, generate_visual -> generative_image)
@@ -456,8 +467,8 @@ export function CreateNow({
             duplicated here -- this screen only supplies the package id. */}
         {packageId ? (
           <>
-            <CreativePackageAssetCreate creativePackageId={packageId} variant="ritual" onUploaded={() => setAssetRefreshToken((current) => current + 1)} />
-            <CreativePackageAssets creativePackageId={packageId} variant="ritual" refreshSignal={assetRefreshToken} />
+            <CreativePackageAssetCreate creativePackageId={packageId} onUploaded={() => setAssetRefreshToken((current) => current + 1)} />
+            <CreativePackageAssets creativePackageId={packageId} refreshSignal={assetRefreshToken} />
           </>
         ) : null}
 

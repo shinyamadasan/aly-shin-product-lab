@@ -6,7 +6,9 @@ Implemented locally on `feat/content-studio-unification-v1`, pending independent
 One **Create content** entry offers the existing assisted brief form or **Build with my photos**.
 Completed assisted carousel/reel plans also offer **Make it from my photos**, prefilling only the
 originating job's product (when present) and package format into the same production component.
-Photo/story keep their existing production choices. AI planning is optional for manual production.
+Photo/story keep their existing production choices. AI planning is optional for manual production:
+a submitted brief whose plan is still pending also offers **Build with my photos**, leaving the job
+untouched. Today hosts the same Create Now, so these actions appear there too (intended).
 In shared production, pick/change a product, Carousel or Reel, five of that product's own Media Library
 items in order (main, close-up, in hand, price, closing), type and confirm price / selling unit /
 call to action, then Generate → Preview → Export. Carousel = five 1080×1350 PNGs (swipeable preview,

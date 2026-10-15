@@ -1255,3 +1255,26 @@ animation, on-voice copy and real-device/real-owner-media acceptance remain pend
 
 **Merge gate: `approved`** — ready for independent review, held locally as explicitly requested.
 No merge/push/deploy authorized or performed. STOP after the candidate commit.
+
+## 2026-10-14 — Content Studio Unification V1: FIX_FIRST patch (supersedes the `ritual` note above)
+
+**Review verdict on `7fb9a9d`:** FIX_FIRST; architecture accepted. Two code fixes + one doc clarification.
+
+**F1:** `variant="ritual"` removed from CreateNow's `CreativePackageAssetCreate` /
+`CreativePackageAssets`; CreateNow (and therefore Today's Create Now) is back to the default
+presentation with job status, tags and refresh. Component defaults and Today's own
+`today-page.tsx` ritual callers untouched. The browser smoke's plan-view vocabulary check now
+excludes the restored panels' pre-existing status words ("Creative Package", "Asset Job",
+"Worker") and still guards renderer/internal names.
+
+**F2:** while a job is unsettled and no package exists, the job view offers a quiet **Build with my
+photos** → `setProduction({ initial: {} })`, the same `ContentStudioFastMode`. No job cancel,
+update or resubmit; no package. Browser smoke (job fixture stays `queued`, no package): one job
+inserted, zero updates/deletes, no package handoff shown, no prefill, real carousel generated
+manually, return shows the same pending job.
+
+**Doc:** Today = intended shared surface (ARCHITECTURE, FEATURES, STATUS).
+
+**QA:** focused 151/151, Today 26/26, full 4448 / 4447 / 0 / 1 existing skip, typecheck, scoped
+lint, `next build`, browser smoke PASS. No renderer, authority, handoff, price-guard, schema or
+execution-boundary change. Merge gate `approved` — held for independent review.
