@@ -2448,3 +2448,18 @@ which is the seam a future role/crop/order suggestion would fill.
 
 Architecture and gates: `docs/ARCHITECTURE.md` → Content Studio Fast Mode V1. Decision: D-008.
 Not built: editor, extra templates, Story, publishing, scheduler, Meta API, analytics, HEVC.
+
+## Content Studio Unification V1 implementation record (2026-10-14)
+
+Local-only successor to accepted Fast Mode `e544c36495ba84dbe1cbdb9f61ce21630e05b9fa`.
+The Content Studio front door now offers the existing CreateNow assisted brief or **Build with my
+photos**. Completed carousel/reel packages add **Make it from my photos**. Both use the same
+real-media component/service; the handoff carries only job-intent product identity and supported
+package format. Owner media choice, offer confirmation and authenticity remain mandatory.
+
+Creative Package remains planning/copy authority; CreativeSpec remains verified-offer/render
+safety authority. Explicit PHP price mismatches in base/platform captions are flagged before
+production/export without changing copy. Saved Creatives keeps assisted plans; manual outputs
+remain download-only and create no job. Existing production choices and Media Library stay intact.
+No renderer redesign, migration, Supabase modification, deployment or production write.
+See `docs/ARCHITECTURE.md` → Content Studio entry and package handoff V1 for the current flow.

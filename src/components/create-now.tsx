@@ -18,6 +18,9 @@ import {
   shouldRefreshCreateNowJob,
   type CreateNowFormatChoice,
 } from "@/lib/create-now";
+import { ContentStudioFastMode } from "@/components/content-studio-fast-mode";
+import { packageHandoff, type FastModeInitialState } from "@/lib/content-studio/package-handoff";
+import type { PlannedCopy } from "@/lib/content-studio/price-mismatch";
 import { CreativePackageAssetCreate } from "@/components/creative-package-asset-create";
 import { CreativePackageAssets } from "@/components/creative-package-assets";
 import { buildCreativePackageView, formatCreativePackageForClipboard, formatHashtags, type CreativePackageView } from "@/lib/creative-package-view";
@@ -209,6 +212,7 @@ export function CreateNow({
   const jobClient = supabase as unknown as CreativeJobClient | null;
   const packageClient = supabase as unknown as CreativePackageClient | null;
 
+  const [production, setProduction] = useState<{ initial: FastModeInitialState; copy?: PlannedCopy } | null>(null);
   const [text, setText] = useState("");
   const [productId, setProductId] = useState(CREATE_NOW_NO_PRODUCT_CHOICE);
   const [formatChoice, setFormatChoice] = useState<CreateNowFormatChoice>(CREATE_NOW_DEFAULT_FORMAT_CHOICE);
@@ -407,11 +411,17 @@ export function CreateNow({
     setActiveJob(null);
   }
 
+  if (production) {
+    return <ContentStudioFastMode initialProductId={production.initial.productId} initialFormat={production.initial.format} plannedCopy={production.copy} onExit={() => setProduction(null)} products={products} />;
+  }
+
   if (jobId !== null) {
     const progress =
       job === null
         ? null
         : describeCreateNowScreenProgress(job.status, refreshState, { createdAt: job.createdAt, startedAt: job.startedAt, nowMs });
+
+    const handoff = packageView && job?.id === jobId && job.status === "completed" ? packageHandoff(packageView, job) : null;
 
     return (
       <section className="mx-auto max-w-xl space-y-5">
@@ -434,6 +444,9 @@ export function CreateNow({
             has already said it in the heading and detail above, in the same calm shape every other
             waiting state uses. An amber box here would style a slow write as something gone wrong. */}
 
+        {handoff && packageView ? (
+          <PrimaryAction onClick={() => setProduction({ initial: handoff, copy: packageView })}>Make it from my photos</PrimaryAction>
+        ) : null}
         {packageView ? <PackageView view={packageView} /> : null}
 
         {/* The SAME entry component every other Creative Package surface renders, making the same
@@ -443,8 +456,8 @@ export function CreateNow({
             duplicated here -- this screen only supplies the package id. */}
         {packageId ? (
           <>
-            <CreativePackageAssetCreate creativePackageId={packageId} onUploaded={() => setAssetRefreshToken((current) => current + 1)} />
-            <CreativePackageAssets creativePackageId={packageId} refreshSignal={assetRefreshToken} />
+            <CreativePackageAssetCreate creativePackageId={packageId} variant="ritual" onUploaded={() => setAssetRefreshToken((current) => current + 1)} />
+            <CreativePackageAssets creativePackageId={packageId} variant="ritual" refreshSignal={assetRefreshToken} />
           </>
         ) : null}
 
@@ -460,7 +473,7 @@ export function CreateNow({
   return (
     <section className="mx-auto max-w-xl space-y-5">
       <div>
-        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#9a5b2f]">Something specific</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#9a5b2f]">Create content</p>
         <h2 className="mt-1 text-3xl font-semibold tracking-tight">What do you want to make?</h2>
       </div>
 
@@ -497,7 +510,7 @@ export function CreateNow({
         <label className="grid gap-1 text-sm font-medium">
           Product — optional
           <select
-            className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+            className="h-11 rounded-md border border-[#d8c7b7] bg-white px-3 text-base"
             name={CREATE_NOW_PRODUCT_FIELD_NAME}
             onChange={(event) => setProductId(event.target.value)}
             value={productId}
@@ -536,6 +549,11 @@ export function CreateNow({
       </form>
 
       {submitError ? <MessageBox message={submitError} tone="bad" /> : null}
+
+      <div className="space-y-3 border-t border-current/15 pt-5">
+        <p className="text-sm opacity-75">Or build directly from your own photos. No content plan needed.</p>
+        <button className="min-h-11 rounded-md border border-current/20 px-4 py-2 text-sm font-semibold" onClick={() => setProduction({ initial: {} })} type="button">Build with my photos</button>
+      </div>
 
       {onExit ? <QuietAction onClick={onExit}>Back to today</QuietAction> : null}
     </section>

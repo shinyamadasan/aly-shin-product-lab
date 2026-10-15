@@ -1214,3 +1214,44 @@ Real Reel smoke PASS (1080×1920 H.264 11.05 s, no blank frame). Netlify preview
 (no authorized preview) — pending release precondition.
 
 **Merge gate: `approved`** — held for independent re-review; no push, deploy, migration or merge.
+
+## 2026-10-14 — Content Studio Unification V1
+
+**Scope/base:** Direct, authorized local implementation on `feat/content-studio-unification-v1`,
+branched exactly from accepted `e544c36495ba84dbe1cbdb9f61ce21630e05b9fa`. The unrelated original
+checkout and its Netlify artifacts remain untouched. The pinned base is retained; no pull/rebase,
+push, deployment, migration or production data access. This is not a formal planning milestone.
+
+**Self-review (SELF_REVIEW.md):** One `ContentStudioFastMode` mount inside CreateNow handles both
+manual and assisted entry. No duplicate picker, offer/spec builder, renderer, preview or export.
+The pure handoff returns only legitimate job-intent product identity and the validated carousel/reel
+format; `creative-formats.ts` stays authoritative. `FastModeRenderFormat` is a mechanical rename.
+Package copy only reaches the pure price guard, never the request/spec. Owner media picks, offer
+confirmation and attestation remain required. Product changes explicitly clear attestation even
+before any media is picked. Reused existing `ritual` asset presentation to hide internal job terms;
+removed the Plus import orphaned by the old Create button. No speculative persistence or APIs.
+Would I ship the code? Yes, as a local candidate pending independent and human visual review.
+
+**QA (QA.md):** Functional/event handlers and both entry paths verified. Existing job submission,
+package view, Saved Creatives and alternative production routes retained. Twelve focused handoff/
+price/orchestration tests added; focused 151/151, full 4448 total / 4447 pass / 0 fail / 1 existing
+skip, typecheck, changed-file lint (zero warnings) and `npm run build` PASS. Browser smoke runs real
+CreateNow, package view, handoff, production component, Satori and Remotion with a local owner-client
+fixture: manual without a job/after planning failure; assisted carousel/reel; editable prefills and
+blank offer/media/attestation; photo/story hidden; missing product; five-item shortage; matching
+submission contract; warnings before generation and preview/export; unchanged clipboard copy;
+media/product attestation reset; crafted unattested request refused; playable 11.050667 s Reel;
+preview/export byte identity; no internal vocabulary; no overflow at 320/375/390/1280.
+Screenshots inspected for entry and shared production. Expected failure fixtures returned 422;
+these are assertions of the existing copy-fit guard, not regressions.
+
+**Integrity/documentation/git:** Exact-diff checks confirm renderer files, static renderer, Reel
+host, export-output, Media Library, creative-format vocabulary and AI contracts unchanged. New
+helpers are in-memory orchestration only, so no persisted data-model change or migration. Existing
+Architecture, Features and Marketing authorities updated; STATUS and DONE record this local
+candidate. Code/docs only; generated logs, media and copied dependencies ignored. No new dependency
+or secret. Original checkout branch/HEAD/tracked state unchanged. Human phone feel, polish,
+animation, on-voice copy and real-device/real-owner-media acceptance remain pending in STATUS.
+
+**Merge gate: `approved`** — ready for independent review, held locally as explicitly requested.
+No merge/push/deploy authorized or performed. STOP after the candidate commit.

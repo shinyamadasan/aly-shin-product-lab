@@ -14,7 +14,6 @@ import {
   FlaskConical,
   GripVertical,
   NotebookPen,
-  Plus,
   PackageCheck,
   ShieldAlert,
   Sparkles,
@@ -72,7 +71,6 @@ import {
 } from "@/lib/owner-access";
 import { SavedCreatives } from "@/components/saved-creatives";
 import { ProductMediaLibrary } from "@/components/product-media-library";
-import { ContentStudioFastMode } from "@/components/content-studio-fast-mode";
 import { Button, FormPanel, Input, MessageBox, MetricCard, Panel, SecondaryButton, Select, StatusPill, Tag, Textarea } from "@/components/ui";
 import { emptyState, storageKey, getToday, type LabState, type LabView } from "@/lib/lab-state";
 import { AppShell } from "@/components/app-shell";
@@ -4627,15 +4625,13 @@ function ContentStudio({
   // exactly its reason: stepping back to the list and returning must not resurrect a job the owner
   // already left.
   const [creativeJobId, setCreativeJobId] = useState(initialCreativeJobId);
-  const [isCreating, setIsCreating] = useState(initialCreativeJobId !== null);
+  const isCreating = creativeJobId !== null;
   const [showMedia, setShowMedia] = useState(false);
-  const [showFastMode, setShowFastMode] = useState(false);
 
   // Leaving the reopened creative also drops `?job=` from the URL, so "back" stays back across a
   // refresh. replaceState rather than a router push, for the same reason CreateNow uses it: this is
   // the same screen showing a different part of itself, not a new place to go back from.
   function exitCreating() {
-    setIsCreating(false);
     setCreativeJobId(null);
     const url = new URL(window.location.href);
     url.searchParams.delete(CREATE_NOW_JOB_SEARCH_PARAM);
@@ -4644,10 +4640,6 @@ function ContentStudio({
 
   if (isCreating) {
     return <CreateNow jobId={creativeJobId} onExit={exitCreating} onJobIdChange={setCreativeJobId} products={labState.products} />;
-  }
-
-  if (showFastMode) {
-    return <ContentStudioFastMode onExit={() => setShowFastMode(false)} products={labState.products} />;
   }
 
   if (showMedia) {
@@ -4661,20 +4653,10 @@ function ContentStudio({
   // supabase-add-content-drafts.sql must still be able to find and reopen its finished creatives.
   const creativeHistory = (
     <section className="space-y-4">
+      <CreateNow jobId={creativeJobId} onExit={null} onJobIdChange={setCreativeJobId} products={labState.products} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-semibold tracking-tight">Recent creatives</h2>
-        <SecondaryButton onClick={() => setShowMedia(true)}>Media</SecondaryButton>
-        <SecondaryButton onClick={() => setShowFastMode(true)}>Carousel / Reel</SecondaryButton>
-        <button
-          className="inline-flex h-10 items-center gap-2 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white hover:bg-[#774427]"
-          onClick={() => {
-            setCreativeJobId(null);
-            setIsCreating(true);
-          }}
-          type="button"
-        >
-          <Plus size={16} /> Create
-        </button>
+        <SecondaryButton onClick={() => setShowMedia(true)}>Media Library</SecondaryButton>
       </div>
       <SavedCreatives basePath="/content-studio" />
     </section>

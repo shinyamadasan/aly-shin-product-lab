@@ -3,7 +3,7 @@ import { MediaUnreadableError, prepareCampaign } from "./campaign-media.ts";
 import { renderCarouselSlide } from "./carousel-renderer.ts";
 import { copyDoesNotFitMessage } from "./copy-fit.ts";
 import { planCarousel, type PreparedCampaign } from "./creative-plan.ts";
-import { ExportBlockedError, assertExportableSpec, assertSpecSupportsFormat, type CreativeFormat, type CreativeSpec } from "./creative-spec.ts";
+import { ExportBlockedError, assertExportableSpec, assertSpecSupportsFormat, type FastModeRenderFormat, type CreativeSpec } from "./creative-spec.ts";
 import { readPngDimensions } from "./export-output.ts";
 import { FastModeRequestError, buildFastModeSpec, parseFastModeRequest } from "./fast-mode-request.ts";
 import { loadFastModeSources, productMediaReader, type FastModeSourceClient } from "./fast-mode-sources.ts";
@@ -26,7 +26,7 @@ function failure(error: unknown): FastModeFailure {
   return { ok: false, status: 500, message: "This could not be made just now. Try again." };
 }
 
-async function buildExportableSpec(client: FastModeSourceClient, body: unknown, format: CreativeFormat) {
+async function buildExportableSpec(client: FastModeSourceClient, body: unknown, format: FastModeRenderFormat) {
   const request = parseFastModeRequest(body);
   if (request.format !== format) throw new FastModeRequestError(400, "That request could not be read. Reload and try again.");
   const sources = await loadFastModeSources(client, request);

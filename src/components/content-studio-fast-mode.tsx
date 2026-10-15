@@ -6,6 +6,8 @@ import { supabase } from "../lib/supabase";
 import { listMediaForProduct, type ProductMedia, type ProductMediaClient } from "../lib/product-media";
 import { CAROUSEL_FILE_NAMES, CAROUSEL_ZIP_FILE_NAME, MEDIA_ROLE_LABELS, MEDIA_ROLES, REEL_FILE_NAME } from "../lib/content-studio/creative-plan";
 import { createStoredZip, validateCarouselExport } from "../lib/content-studio/export-output";
+import { findPriceMismatches, type PlannedCopy } from "../lib/content-studio/price-mismatch";
+import type { FastModeRenderFormat } from "../lib/content-studio/creative-spec";
 import { mediaAttestationProblems, offerProblems, type FastModeRequest } from "../lib/content-studio/fast-mode-request";
 
 // Content Studio Fast Mode -- the owner's quick path: product, format, five of their own photos or
@@ -54,16 +56,22 @@ async function messageFrom(response: Response): Promise<string> {
 export function ContentStudioFastMode({
   products,
   onExit,
+  initialProductId,
+  initialFormat,
+  plannedCopy,
   client = supabase as unknown as ProductMediaClient | null,
   getToken = defaultToken,
 }: {
   products: Product[];
   onExit: () => void;
+  initialProductId?: string;
+  initialFormat?: FastModeRenderFormat;
+  plannedCopy?: PlannedCopy;
   client?: ProductMediaClient | null;
   getToken?: () => Promise<string | null>;
 }) {
-  const [productId, setProductId] = useState("");
-  const [format, setFormat] = useState<Format>("carousel");
+  const [productId, setProductId] = useState(initialProductId ?? "");
+  const [format, setFormat] = useState<Format>(initialFormat ?? "carousel");
   const [media, setMedia] = useState<ProductMedia[]>([]);
   const [mediaMessage, setMediaMessage] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
@@ -152,6 +160,16 @@ export function ContentStudioFastMode({
     ...mediaAttestationProblems(mediaAttested),
     ...(format === "reel" && reelAvailable === false ? ["Reels can only be made on the studio computer right now."] : []),
   ];
+
+  const priceMismatches = plannedCopy && confirmed ? findPriceMismatches(plannedCopy, offer.priceAmount) : [];
+  const priceWarning = priceMismatches.length > 0 ? (
+    <aside className="space-y-1 rounded-md border border-current/30 p-3 text-sm" role="alert">
+      <p className="font-semibold">Check your caption prices before copying or exporting.</p>
+      <p>Your confirmed on-media price is ₱{offer.priceAmount.toFixed(2)}. The original copy has not been changed.</p>
+      <ul>{priceMismatches.map((mismatch, i) => <li key={i}>{mismatch.source}: ₱{mismatch.amount.toFixed(2)}</li>)}</ul>
+      <p>Go back to your content plan to review the copy before using it.</p>
+    </aside>
+  ) : null;
 
   async function generate() {
     if (problems.length > 0 || busy) return;
@@ -256,6 +274,7 @@ export function ContentStudioFastMode({
         ) : (
           <video aria-label="Reel preview" className="aspect-[9/16] w-full max-w-xs rounded-md border border-current/15 bg-black" controls playsInline src={output.url} />
         )}
+        {priceWarning}
         {error ? <p className="text-sm" role="alert">{error}</p> : null}
         <div className="flex flex-wrap gap-3">
           <button className={buttonStyle} disabled={busy} onClick={() => { setError(""); clearOutput(); }} type="button">Back</button>
@@ -273,12 +292,12 @@ export function ContentStudioFastMode({
           <h2 className="text-xl font-semibold">Create content</h2>
           <p className="mt-1 text-sm opacity-75">A carousel or Reel made from your own real photos and videos, with the offer you confirm.</p>
         </div>
-        <button className={buttonStyle} onClick={onExit} type="button">Back to creatives</button>
+        <button className={buttonStyle} onClick={onExit} type="button">{plannedCopy ? "Back to content plan" : "Back to create content"}</button>
       </div>
 
       <label className="grid min-w-0 gap-1 text-sm font-medium">
         Product
-        <select className={fieldStyle} disabled={busy} onChange={(e) => { setProductId(e.target.value); selectMedia([]); }} value={productId}>
+        <select className={fieldStyle} disabled={busy} onChange={(e) => { setProductId(e.target.value); selectMedia([]); setMediaAttested(false); }} value={productId}>
           <option value="">Select a product</option>
           {products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
@@ -315,8 +334,8 @@ export function ContentStudioFastMode({
         </p>
         {!productId ? <p className="text-sm">Select a product to see its media.</p> : null}
         {mediaMessage ? <p className="text-sm" role="status">{mediaMessage}</p> : null}
-        {productId && !mediaMessage && usable.length === 0 ? (
-          <p className="text-sm">No {format === "carousel" ? "photos" : "media"} for this product yet. Add them in Media first.</p>
+        {productId && !mediaMessage && usable.length < MEDIA_ROLES.length ? (
+          <p className="text-sm">This {format === "carousel" ? "carousel needs five distinct photos" : "Reel needs five distinct photos or clips"}. This product has {usable.length}. Add more in the Media Library before generating.</p>
         ) : null}
         <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {usable.map((item) => {
@@ -373,6 +392,7 @@ export function ContentStudioFastMode({
         </label>
       </fieldset>
 
+      {priceWarning}
       {problems.length > 0 ? (
         <ul aria-label="Still needed" className="space-y-1 text-sm opacity-80">{problems.map((problem) => <li key={problem}>{problem}</li>)}</ul>
       ) : null}

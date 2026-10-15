@@ -2,8 +2,12 @@
 
 ## Content Studio Fast Mode V1 (Carousel / Reel)
 
-Implemented on `feat/content-studio-fast-mode-v1`, pending review; not deployed. Content Studio →
-**Carousel / Reel**: pick a product, Carousel or Reel, five of that product's own Media Library
+Implemented locally on `feat/content-studio-unification-v1`, pending independent review; not deployed.
+One **Create content** entry offers the existing assisted brief form or **Build with my photos**.
+Completed assisted carousel/reel plans also offer **Make it from my photos**, prefilling only the
+originating job's product (when present) and package format into the same production component.
+Photo/story keep their existing production choices. AI planning is optional for manual production.
+In shared production, pick/change a product, Carousel or Reel, five of that product's own Media Library
 items in order (main, close-up, in hand, price, closing), type and confirm price / selling unit /
 call to action, then Generate → Preview → Export. Carousel = five 1080×1350 PNGs (swipeable preview,
 `carousel.zip` of the exact previewed bytes). Reel = 11 s 1080×1920 H.264 (playable preview,
@@ -13,13 +17,17 @@ real pictures of our own food, not AI-generated, stock, or heavily edited." for 
 clears whenever the picked media change). The app does not detect AI images; that attestation is the
 safeguard. Reels are made only on a server marked
 `CONTENT_STUDIO_REEL_RENDERING=1` (the studio computer); elsewhere the UI says so. Nothing is
-saved server-side; no AI, publishing, scheduling, editor, extra templates or HEVC conversion.
+saved server-side by real-media production; assisted plans remain in existing Saved Creatives.
+Explicit PHP amounts in assisted captions/platform copy that differ from the owner-confirmed price
+are flagged before generation and at preview/export, without rewriting copy or blocking price-free
+captions. Creative Package owns planning/copy; CreativeSpec owns the verified on-media offer.
+No publishing, scheduling, editor, extra templates or HEVC conversion.
 Architecture: `docs/ARCHITECTURE.md` → Content Studio Fast Mode.
 
 ## Content Studio Media Library V1
 
 Implemented on `feat/content-studio-media-library-v1`, pending review and authorized migration
-rollout. Content Studio → Media supports multiple JPEG/PNG/WebP photos and H.264 MP4 videos,
+rollout. Content Studio → Media Library supports multiple JPEG/PNG/WebP photos and H.264 MP4 videos,
 owner-selected Product/Unassigned, reusable grid, signed previews, per-file rejection, reassignment,
 product filtering, and session selection. `listMediaForProduct` supplies the future recipe seam.
 No recipes, usage flags, delete, transcoding, composition or publishing.

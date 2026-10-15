@@ -1,5 +1,33 @@
 # Architecture
 
+## Content Studio entry and package handoff V1
+
+One Content Studio front door presents the existing CreateNow brief form (product and format
+optional) and **Build with my photos**. `CreateNow` keeps its existing request → creative job →
+AI worker → package contracts. Completed carousel/reel packages add **Make it from my photos**;
+photo/story packages keep their existing production choices without this handoff.
+
+Both entry modes mount the same `ContentStudioFastMode`. `package-handoff.ts` is a pure adapter:
+it accepts the validated package format from `creative-formats.ts` and the originating job's
+`intent.productId`, and returns only optional product/format prefills. Missing product identity
+stays unselected. No offer, selected media or attestation crosses that boundary. The renderer's
+narrow format type is `FastModeRenderFormat`; the creative-format vocabulary is unchanged.
+
+**Two authorities.** Creative Package owns caption, platform variants, angle, hook, headline and
+production guidance. `CreativeSpec` owns the confirmed on-media offer, media, owner attestation
+and render constraints. Package copy stays outside the spec/request. `price-mismatch.ts` checks
+explicit PHP amounts in the caption and every platform caption against the confirmed price;
+nonblocking warnings appear before generation and at preview/export. Copy is never rewritten,
+and price-free captions are allowed. This is a narrow numeric check, not semantic fact checking.
+
+The owner selects exactly five distinct suitable Media Library items, enters price/unit/CTA and
+confirms the offer and authenticity. Product/media changes clear authenticity. Fewer than five
+items gets an explanatory message; no automatic picks or duplicates. Assisted planning stays in
+Saved Creatives through its existing job; both real-media outputs remain download-only. Manual
+production creates no creative job and works when AI planning fails. Existing capture, template,
+generated-visual and external production routes remain available. No new persistence or migration.
+Renderer layouts, byte identity and Netlify carousel / studio-computer Reel boundaries are unchanged.
+
 ## Content Studio Fast Mode V1 (`src/lib/content-studio/`, `src/remotion/fast-mode/`)
 
 **Rendering rule.** STATIC / CAROUSEL → Satori + Resvg (sharp for photo prep). MOTION / REEL →

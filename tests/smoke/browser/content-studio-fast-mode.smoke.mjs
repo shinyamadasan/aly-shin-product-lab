@@ -1,4 +1,4 @@
-// Opt-in browser acceptance of Content Studio Fast Mode: the REAL component in headless Chrome,
+// Opt-in browser acceptance of both Content Studio entry paths: the REAL component in headless Chrome,
 // talking to local endpoints that run the REAL owner-route service (spec builder, export gate, Satori
 // carousel, child-process Remotion Reel and output gates). Only the owner-scoped Supabase client is a
 // local fixture adapter, and the media are SYNTHETIC test patterns (not food).
@@ -67,27 +67,71 @@ const ownerClient = {
 const entry = `
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { ContentStudioFastMode } from './src/components/content-studio-fast-mode';
-const rows = ${JSON.stringify(rows)};
-const client = {
-  from() { return { select() { let result = rows; const q = {
-    eq(c, v) { result = result.filter(r => r[c] === v); return q; },
-    is(c, v) { result = result.filter(r => r[c] === v); return q; },
-    order() { return q; }, then(resolve) { resolve({ data: result, error: null }); }
-  }; return q; } }; },
-  storage: { from() { return { async createSignedUrl(p) { return { data: { signedUrl: '/media?path=' + encodeURIComponent(p) }, error: null }; } }; } }
-};
+import { useState } from 'react';
+import { CreateNow } from './src/components/create-now';
 // Capture exports: the exact bytes the Export button hands to the browser.
 window.__downloads = [];
+Object.defineProperty(navigator, 'clipboard', { value: { async writeText(value) { window.__copied = value; } } });
 HTMLAnchorElement.prototype.click = function () {
   const name = this.download;
   fetch(this.href).then(r => r.arrayBuffer()).then(b => { let s = ''; new Uint8Array(b).forEach(x => s += String.fromCharCode(x)); window.__downloads.push({ name, base64: btoa(s) }); });
 };
+function Studio() {
+  const [jobId, setJobId] = useState(new URLSearchParams(location.search).get('job'));
+  return <CreateNow jobId={jobId} onJobIdChange={setJobId} onExit={null} products={${JSON.stringify(products)}} />;
+}
 createRoot(document.getElementById('root')).render(
-  <ContentStudioFastMode client={client} getToken={async () => 'owner-test-token'} onExit={() => { window.__exited = true; }} products={${JSON.stringify(products)}} />
+  <Studio />
 );
 `;
-await build({ stdin: { contents: entry, resolveDir: root, loader: "jsx" }, outfile: path.join(output, "app.js"), bundle: true, platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"', "process.env.NEXT_PUBLIC_SUPABASE_URL": "undefined", "process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY": "undefined" } });
+// A local Supabase adapter is the only replaced module. Planning components, validation,
+// handoff, offer/media UI and production services all run their real code.
+const fixtureModule = `
+const params = new URLSearchParams(location.search);
+const format = params.get('format') || 'carousel';
+const jobId = '11111111-1111-4111-8111-111111111111';
+const content = {
+  schemaVersion: 'v2', format, subject: 'Revel Bars', angle: 'Freshly baked',
+  hook: 'See the layers', headline: 'Revel Bars', caption: 'Order a box for ₱170.', cta: 'Message us',
+  platformVariants: [{ platform: 'instagram', caption: 'Only ₱180.', hashtags: [] }],
+  metadata: { generatedFromOpportunity: null, generatorVersion: '2', sourceCreativeJobId: jobId,
+    sourceWorker: 'creative_ai', sourceJobResultSchemaVersion: 'v2', formatChosenBy: 'ai',
+    formatRationale: 'Shows the layers.', subjectSource: 'stated', subjectGrounding: null },
+  ...(format === 'carousel' ? { slides: [{ heading: 'Layers', body: 'Chocolate and oats', visualDirection: 'Close photo' }] }
+    : format === 'reel' ? { shots: [{ direction: 'Show the bars', onScreenText: null }], spokenScript: null, audioDirection: 'Kitchen sounds', targetDurationSeconds: 11 }
+    : format === 'photo' ? { visualDirection: 'Overhead photo', overlayText: null }
+    : { frames: [{ visualDirection: 'Show bars', text: 'Fresh today' }], interaction: null }),
+};
+const time = '2026-10-14T00:00:00Z';
+const job = { id: jobId, opportunity_id: null, intent: params.has('noProduct') ? {} : { productId: 'fm-product' },
+  status: 'completed', worker_type: 'creative_ai', result: {}, created_at: time, updated_at: time };
+const pkg = { id: 'fixture-package', creative_job_id: jobId, status: 'ready', schema_version: 'v2', content, created_at: time, updated_at: time };
+window.__aiCalls = [];
+window.__inserted = [];
+export const isSupabaseConfigured = true;
+export const supabase = {
+  auth: { async getSession() { return { data: { session: { access_token: 'owner-test-token' } } }; } },
+  from(table) {
+    if (table === 'creative_jobs' || table === 'creative_packages') window.__aiCalls.push(table);
+    let data = table === 'creative_jobs' ? [job] : table === 'creative_packages' ? [pkg] : table === 'product_media' ? ${JSON.stringify(rows)} : [];
+    const q = {
+      select() { return q; },
+      insert(row) { window.__inserted.push({ table, row }); job.intent = row.intent; return q; },
+      eq(c, v) { data = data.filter(r => r[c] === v); return q; },
+      is(c, v) { return q.eq(c, v); },
+      order() { return q; }, limit() { return q; },
+      async maybeSingle() { return { data: data[0] || null, error: null }; },
+      async single() { return params.has('aiOff') ? { data: null, error: { message: 'Planning is unavailable' } } : { data: data[0] || null, error: null }; },
+      then(resolve) { resolve({ data, error: null }); },
+    }; return q;
+  },
+  storage: { from() { return { async createSignedUrl(p) { return { data: { signedUrl: '/media?path=' + encodeURIComponent(p) }, error: null }; } }; } },
+};
+`;
+await build({ plugins: [{ name: 'local-owner-fixture', setup(b) {
+  b.onResolve({ filter: /(?:^|\/)supabase$/ }, () => ({ path: 'owner-fixture', namespace: 'fixture' }));
+  b.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: fixtureModule, loader: 'js' }));
+} }], stdin: { contents: entry, resolveDir: root, loader: "jsx" }, outfile: path.join(output, "app.js"), bundle: true, platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"production"', "process.env.NEXT_PUBLIC_SUPABASE_URL": "undefined", "process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY": "undefined" } });
 const css = await postcss([tailwind({ base: root })]).process(readFileSync(path.join(root, "src/app/globals.css"), "utf8"), { from: path.join(root, "src/app/globals.css") });
 writeFileSync(path.join(output, "app.css"), css.css);
 
@@ -128,7 +172,7 @@ try {
   await page.setViewport({ width: 390, height: 1000, deviceScaleFactor: 1 });
   const wait = async (expression, tries = 600) => {
     for (let i = 0; i < tries; i++) { if (await page.evaluate(expression)) return; await new Promise((resolve) => setTimeout(resolve, 250)); }
-    throw new Error(`Timed out: ${expression}`);
+    throw new Error(`Timed out: ${expression}; visible: ${await page.evaluate("document.body.innerText")}`);
   };
   const setField = (selector, value) => page.evaluate((s, v) => {
     const el = document.querySelector(s);
@@ -146,7 +190,23 @@ try {
     await page.setViewport({ width: 390, height: 1000, deviceScaleFactor: 1 });
   };
 
-  await page.goto({ url: address, timeout: 30000 });
+  await page.goto({ url: address + '/?aiOff=1', timeout: 30000 });
+  await wait("!!document.querySelector('textarea')");
+  await noOverflow("entry");
+  assert.equal(await page.evaluate('window.__aiCalls.length'), 0);
+  await click('Build with my photos');
+  await wait("!!document.querySelector('section[aria-label=\"Create content\"]')");
+  assert.equal(await page.evaluate('window.__inserted.length'), 0, 'manual entry needs no creative job');
+  await click('Back to create content');
+  await wait("!!document.querySelector('textarea')");
+  // Exercise a failed assisted submission before entering manual mode: planning failure must
+  // not hide or disable the manual action, and manual mode must not create another AI job.
+  await setField('textarea', 'Show our bars');
+  await click('Create content');
+  await wait("document.body.innerText.includes('Planning is unavailable')");
+  const aiCallsBeforeManual = await page.evaluate('window.__aiCalls.length');
+  const insertsBeforeManual = await page.evaluate('window.__inserted.length');
+  await click('Build with my photos');
   await wait("!!document.querySelector('section[aria-label=\"Create content\"]')");
   // Owner-facing words only.
   const visible = await page.evaluate("document.body.innerText");
@@ -261,6 +321,72 @@ try {
   assert.deepEqual(reelBytes, Buffer.from(previewedReel, "base64"), "exported MP4 differs from the previewed MP4");
   writeFileSync(path.join(output, "reel-ui.mp4"), reelBytes);
 
+  assert.equal(await page.evaluate('window.__aiCalls.length'), aiCallsBeforeManual, 'manual render reads no AI jobs');
+  assert.equal(await page.evaluate('window.__inserted.length'), insertsBeforeManual, 'manual render creates no job');
+
+  // Completed assisted plans enter the same production UI and real renderer endpoints.
+  const fixtureJob = '11111111-1111-4111-8111-111111111111';
+  for (const format of ['carousel', 'reel']) {
+    await page.goto({ url: address + '/?job=' + fixtureJob + '&format=' + format, timeout: 30000 });
+    await wait("document.body.innerText.includes('Make it from my photos')");
+    const planWords = await page.evaluate('document.body.innerText');
+    for (const word of ['CreateNow', 'Fast Mode', 'Creative Package', 'Creative Job', 'Asset Job', 'Satori', 'Remotion', 'Worker']) assert.equal(planWords.toLowerCase().includes(word.toLowerCase()), false, word);
+    await click('Make it from my photos');
+    await wait("document.querySelector('section[aria-label=\"Create content\"] select')?.value === 'fm-product'");
+    assert.equal(await page.evaluate("[...document.querySelectorAll('button[aria-pressed=true]')].map(b => b.textContent.trim()).join('')"), format === 'carousel' ? 'Carousel' : 'Reel');
+    assert.deepEqual(await page.evaluate("[...document.querySelectorAll('input')].map(i => i.type === 'checkbox' ? i.checked : i.value)"), [false, '', '', '', false]);
+    await wait("document.querySelectorAll('button[aria-pressed]').length === 8");
+    for (const id of [1, 2, 3, 4, 5]) await pickPattern(id);
+    await setField('input[type=number]', '160');
+    await setField("input[placeholder='2 pcs']", '2 pcs');
+    await setField("input[placeholder='Message us to order']", 'Message us to order');
+    await page.evaluate(() => document.querySelector('input[name=offer-confirmed]').click());
+    await page.evaluate(() => document.querySelector('input[name=media-attested]').click());
+    await wait("document.querySelector('[role=alert]')?.innerText.includes('instagram caption: ₱180.00')");
+    await wait("!" + `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Generate").disabled`);
+    await noOverflow('assisted-' + format);
+    await click('Generate');
+    await wait("!!document.querySelector('section[aria-label=\"Preview\"]')", 2400);
+    assert.match(await page.evaluate("document.querySelector('[role=alert]').innerText"), /Caption: ₱170.00/);
+    assert.match(await page.evaluate("document.querySelector('[role=alert]').innerText"), /instagram caption: ₱180.00/);
+    await click('Export');
+    await wait('window.__downloads.length === 1');
+    await click('Back');
+    await click('Back to content plan');
+    await wait("document.body.innerText.includes('Make it from my photos')");
+    await click('Copy caption');
+    await wait("window.__copied === 'Order a box for ₱170.'");
+  }
+
+  for (const format of ['photo', 'story']) {
+    await page.goto({ url: address + '/?job=' + fixtureJob + '&format=' + format, timeout: 30000 });
+    await wait("document.body.innerText.includes('Creative details')");
+    assert.equal(await page.evaluate("document.body.innerText.includes('Make it from my photos')"), false);
+  }
+  await page.goto({ url: address + '/?job=' + fixtureJob + '&noProduct=1', timeout: 30000 });
+  await wait("document.body.innerText.includes('Make it from my photos')");
+  await click('Make it from my photos');
+  await wait("!!document.querySelector('section[aria-label=\"Create content\"] select')");
+  assert.equal(await page.evaluate("document.querySelector('select').value"), '');
+  // Prefills are changeable, and a product with fewer than five items gets a clear explanation.
+  await page.evaluate(() => { const s = document.querySelector('select'); s.value = 'other-product'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await wait("document.body.innerText.includes('This product has 1.')");
+  assert.equal(await buttonDisabled('Generate'), true);
+
+  // Successful assisted submission still uses the original job contract, then reaches the package.
+  await page.goto({ url: address, timeout: 30000 });
+  await wait("!!document.querySelector('textarea')");
+  await setField('textarea', 'Show our bars');
+  await page.evaluate(() => { const s = document.querySelector('select'); s.value = 'fm-product'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await click('Create content');
+  await wait("document.body.innerText.includes('Make it from my photos')");
+  const inserted = await page.evaluate('window.__inserted');
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].table, 'creative_jobs');
+  assert.equal(inserted[0].row.intent.text, 'Show our bars');
+  assert.equal(inserted[0].row.intent.productId, 'fm-product');
+  assert.equal(inserted[0].row.worker_type, 'creative_ai');
+
   // The server, not the checkbox, is the gate: a crafted request without the attestation is refused.
   const crafted = await fetch(`${address}/api/content-studio/carousel`, {
     method: "POST",
@@ -274,6 +400,9 @@ try {
 
   const evidence = {
     status: "PASS",
+    assistedHandoff: ["carousel", "reel"], manualWhenPlanningUnavailable: true, manualWithoutAIJob: true,
+    priceWarningBeforeGenerationAndExport: true, copyUnchanged: true, unsupportedFormatsHidden: ["photo", "story"],
+    missingProductUnselected: true, fiveMediaExplanation: true, assistedSubmissionIntact: true,
     productSelection: true, formatSelection: true, mediaLibrarySelection: true, otherProductMediaHidden: true,
     offerConfirmationGate: true, mediaAttestationGate: true, attestationResetsOnMediaChange: true, craftedUnattestedRequestRefused: true, serverErrorState: true,
     carousel: { slides: 5, size: "1080x1350", zipMatchesPreview: true, regenerate: true, back: true },

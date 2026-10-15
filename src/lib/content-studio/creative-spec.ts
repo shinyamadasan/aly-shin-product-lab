@@ -164,7 +164,7 @@ export const CreativeSpecSchema = z
 export type CreativeSpec = z.infer<typeof CreativeSpecSchema>;
 export type CreativeMedia = CreativeSpec["media"][number];
 export type BrandTokens = CreativeSpec["brand"];
-export type CreativeFormat = "carousel" | "reel";
+export type FastModeRenderFormat = "carousel" | "reel";
 
 export const CREATIVE_OUTPUT_V1 = {
   carousel: { format: "png", width: 1080, height: 1350, slideCount: 5 },
@@ -193,7 +193,7 @@ export function parseCreativeSpec(input: unknown): CreativeSpec {
 }
 
 // A valid spec can still be wrong for one output: the carousel is five still photos.
-export function assertSpecSupportsFormat(spec: CreativeSpec, format: CreativeFormat): void {
+export function assertSpecSupportsFormat(spec: CreativeSpec, format: FastModeRenderFormat): void {
   if (format === "carousel" && spec.media.some((item) => item.mediaType !== "photo")) {
     throw new InvalidCreativeSpecError(["media: a carousel uses five photos; videos are only used in a Reel."]);
   }
