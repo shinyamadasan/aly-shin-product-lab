@@ -1,11 +1,11 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-10-15 (Asia/Manila)
+Date: 2026-10-17 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
 ## Portfolio summary
-58 active findings across the portfolio. 0 product(s) need no action today.
+66 active findings across the portfolio. 0 product(s) need no action today.
 
 ## Highest-priority product
 **Blondies** -- QUAL-005: V3 contains Milk powder (time/temperature-sensitive) with no stated cold-chain or time-limit plan.
@@ -34,14 +34,15 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 - **Brownies** (lacks recent observations): Latest batch V12 (made 2026-09-24) has no tasting feedback recorded yet.
 - **Chocolate Chip Cookies** (lacks recent observations): Latest batch V2 (made 2026-10-02) has no tasting feedback recorded yet.
 - **Chocolate Walnut Cookies** (lacks recent observations): Latest batch Choc chip walnut v2 (made 2026-09-22) has no tasting feedback recorded yet.
+- **Red velvet cookies** (lacks recent observations): Latest batch Red Velvet White Chocolate Cream Cheese V1 (made 2026-10-17) has no tasting feedback recorded yet.
 - **Revel Bars** (lacks recent observations): Latest batch V2 (made 2026-09-29) has no tasting feedback recorded yet.
 
 ## Products needing no action
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-Blondies come first because milk powder is a time- and temperature-sensitive ingredient. If a batch sits warm too long, it can become unsafe, and right now there is no written plan for how long or how cold it should be kept. Until that exists, nobody can say whether a batch is safe to hand to a customer, which makes this a safety gate that comes before pricing or taste work.
+Blondies come first because milk powder is time- and temperature-sensitive. Without a stated storage or time limit, a batch could spoil or make someone ill, and for a small home-based brand one bad experience can damage trust before launch. It is also easy to fix now, while no customers are involved.
 
-Sequencing: the same gap appears on Brownies and Chocolate Chip Cookies. Draft one storage-and-time-limit approach, test it on Blondies, then adapt it for the other two instead of starting from scratch each time.
+Work in the order given. Settle the Blondies plan first, then reuse the same approach and wording for Brownies and Chocolate Chip Cookies, since they carry the same flag. That is a faster pass than starting from scratch each time.
 
-AI suggestion: during testing, jot down the kitchen temperature and how many hours each sample sat out. That gives you evidence to base the limit on.
+AI suggestion: when you run the storage test, taste a sample at each checkpoint and log your notes. That would also fill the missing tasting feedback on several batches.
