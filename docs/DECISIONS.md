@@ -199,3 +199,29 @@ Verify: src/lib/content-studio/creative-spec.ts contains "export const CUSTOMER_
 Verify: src/lib/content-studio/creative-spec.ts contains "mediaAttestedByOwner: z.literal(true"
 Verify: src/lib/content-studio/fast-mode-service.ts contains "assertExportableSpec(spec);"
 Verify: scripts/production-static-renderer/generate-embedded-fonts.ts contains "Geist-Bold.ttf"
+
+## D-010 — Refunds ask first; a mistaken refund is undone by an audited, owner-only correction, never by editing the order
+
+**Decision:** The normal Refund button asks for confirmation before it records anything (a refund is terminal
+in the order state machine). A refund that was nevertheless recorded by mistake (no money returned) is undone
+only by `correct_mistaken_refund`: owner-only, a reason of 10-300 characters, an echo of the exact `refunded_at`
+and `paid_amount` the owner was looking at, refused for a cancelled order, for a refund older than 7 days, for
+an order that is not refunded, and for a second correction of the same order. It changes exactly
+`payment_status` (refunded to paid), `refunded_at` (to null) and `updated_at`; status, completion, the original
+payment facts, order lines, stock allocations, finished-stock movements and ingredient COGS are untouched, and
+no payment or order row is created. The erased refund is preserved in the append-only
+`order_refund_corrections` table, one row per order. A trigger refuses any other client write that reverses a
+refund or edits its `refunded_at` / `paid_amount`; a session with no JWT (the SQL editor) is not gated, so owner
+maintenance is never locked out.
+
+**Why:** A refund is a real money event, so the state machine is right to make it terminal -- and wrong for a
+button pressed by mistake, where the recorded fact is false. The existing "Clear payment record" cannot touch a
+refunded order and leaves no trace. Rewriting the fields in SQL would erase the evidence that the owner once
+recorded a refund. A confirmation prevents the mistake; the audited correction repairs the ones that get
+through, while keeping a stale screen, a second click, an old genuine refund or a different order from being
+reversed by it. (D-009 is reserved by Financial Release 1, which is not yet merged.)
+
+Verify: supabase/migrations/20261019120000_order_refund_correction.sql contains "A refund cannot be reversed directly"
+Verify: supabase/migrations/20261019120000_order_refund_correction.sql contains "already corrected once"
+Verify: src/lib/orders/refund-correction.ts contains "REFUND_CORRECTION_WINDOW_DAYS = 7"
+Verify: src/lib/orders/refund-correction.ts contains "Only continue if this money has actually been returned"

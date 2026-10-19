@@ -1278,3 +1278,33 @@ manually, return shows the same pending job.
 **QA:** focused 151/151, Today 26/26, full 4448 / 4447 / 0 / 1 existing skip, typecheck, scoped
 lint, `next build`, browser smoke PASS. No renderer, authority, handoff, price-guard, schema or
 execution-boundary change. Merge gate `approved` — held for independent review.
+
+## 2026-10-19 -- Refund hotfix: Correct Mistaken Refund + Refund confirmation (isolated on origin/main)
+
+**Scope:** order 60b69833 (a real PHP 200 sale) was refunded by a mis-click 2 s after payment; no money was
+returned. Smallest safe hotfix, rebased onto origin/main 27bc899 and kept free of Financial Release 1: the
+audited `correct_mistaken_refund` (migration `20261019120000_order_refund_correction.sql`, NOT applied), the
+owner-only Orders-page action, and a confirmation on the normal Refund button. Decision D-010.
+
+**Review:** the correction (database + UI) was independently reviewed twice before the rebase (security and
+correctness; every finding verified first). Fixed then: rollback ran past a failed guard in plain psql; a client
+could edit `refunded_at`/`paid_amount` to dodge the 7-day window; whitespace-only reasons; replay hash depended
+on session TimeZone; corrected orders were offered permanent delete; stale form echo; a mistyped test. The
+rebased tree and the NEW Refund confirmation were then reviewed by a third independent reviewer: **no HIGH or
+MEDIUM findings.** Verified by that review: the confirmation has exactly one call site and cannot be bypassed
+(no other code path records a refund); the new trigger does not fire for any existing writer to `orders`
+(confirm/cancel/complete, fulfilment and attribution edits, `save_order` re-saves); the migration sorts after
+every migration on origin/main; nothing from Financial Release 1 is in the tree. LOW findings fixed: comment
+wording that referred to code not present in this tree. Accepted: D-009 is reserved by the unmerged Release 1
+branch, so DECISIONS jumps D-008 to D-010; the confirmation shows the loaded amount while the refund records the
+persisted one (they differ only if another tab amended the payment in between).
+
+**Evidence (hotfix tree, rebased on origin/main 27bc899, all in disposable containers or a local rig):** unit
+4,466 pass / 0 fail / 1 pre-existing skip; every Postgres smoke suite 154/154 (146 existing + 8 new); browser
+35/35 at desktop, 390 and 320 px (incident order, ineligible orders, validations, stale-screen refusal, Refund
+confirmation cancel/accept); `tsc` clean; `next build` clean; eslint clean on every changed file; 4 mutants of the
+confirmation and 5 of the review fixes caught, on top of 11 SQL and 10 TS mutants. The owner-session correction
+script was rehearsed end to end (dry run, apply with five before/after checks, same-operation-id retry, recovery)
+on a disposable database. Production was only read.
+
+**Merge gate: `approved`** -- held for the owner's explicit authorization. Apply the migration first, then deploy.

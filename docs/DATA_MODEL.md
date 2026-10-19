@@ -291,6 +291,23 @@ shapes (`BakeDeduction`, `ResolvedBakeRow`, both defined in `src/lib/bake-deduct
 than `product-lab-types.ts`, since they're derived/transient shapes computed from a batch formula
 at bake time, not persisted rows with their own DB table).
 
+## Orders — refund corrections
+
+### `order_refund_corrections` (Supabase table, `supabase/migrations/20261019120000_order_refund_correction.sql`)
+
+Append-only audit of refunds undone as mistakes. One row per order (`order_id` unique, FK `on delete restrict`;
+`operation_id` unique). Holds `corrected_at`, `corrected_by`, `reason` (10-300 characters), and a snapshot of
+what was erased: `order_status`, `original_payment_status` (always `refunded`), `original_payment_method`,
+`original_paid_at`, `original_paid_amount`, `original_refunded_at`, `original_order_updated_at`. Triggers refuse
+UPDATE, DELETE and TRUNCATE for every caller. The owner may SELECT (RLS); no API role can write; `service_role`
+writes are revoked. Rows are created only by `correct_mistaken_refund(operation_id, order_id, reason,
+expected_refunded_at, expected_paid_amount)` (owner-checked, idempotent through `claim_mutation` with operation
+type `refund_correct`, locks the order row). The migration also adds the trigger
+`orders_enforce_refund_reversal_authority` (`before update of payment_status, refunded_at, paid_amount` on
+`orders`), which raises 42501 when a client session moves a refunded order to another payment status or edits
+its refund time or amount; the correction function authorizes itself with a transaction-local setting. An order
+with a correction row can no longer be permanently deleted (the FK), and the app does not offer it.
+
 ## Brand Foundation
 
 ### `brand_profiles` (Supabase table, `supabase-add-brand-profiles.sql` + `supabase-add-brand-foundation-fields.sql` + `supabase-add-brand-presence-fields.sql`)

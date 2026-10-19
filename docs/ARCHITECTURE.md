@@ -1063,3 +1063,15 @@ Finished-stock Exceptions, and the reconciliation-preview table inside the alrea
 re-sort or re-query history. The historical-cost explanatory copy is a single `HistoricalCostNotes()`
 component called bare on desktop and inside a closed-by-default `<details>` on mobile, so the copy
 exists once regardless of which branch renders it.
+
+## Refund safeguards (D-010)
+
+Refund stays terminal in the order state machine (`src/lib/orders/transitions.ts`, unchanged). The Refund button
+in `src/components/orders-page.tsx` confirms through `window.confirm(buildRefundConfirmation(...))` before the one
+call site that builds a refund. The only way back from `refunded` is `correct_mistaken_refund`, a database function
+(definer in `inventory_private`, invoker wrapper in `public`, idempotent through `claim_mutation`) that owns every
+eligibility rule; `src/lib/orders/refund-correction.ts` only decides whether to OFFER the action and
+`src/lib/orders-repository.ts` `correctMistakenRefund` reads the database's answer. A narrow trigger on `orders`
+makes the function the only path that can reverse a refund or edit its time or amount for a client session.
+Migration `20261019120000_order_refund_correction.sql` only adds objects. Apply it before deploying the app; the
+app degrades gracefully without it (no corrections are shown and the action reports it is unavailable).

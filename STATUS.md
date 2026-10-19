@@ -1,5 +1,15 @@
 # STATUS
 
+## 2026-10-19 -- Refund hotfix prepared locally (hotfix/refund-correction, off origin/main 27bc899)
+
+Owner-only audited `correct_mistaken_refund` (migration `20261019120000_order_refund_correction.sql`), the
+Orders-page "Correct mistaken refund" action, and a confirmation on the normal Refund button. Targets the one
+mistaken refund in production (order 60b69833, PHP 200). Independent of Financial Release 1. **Not pushed, not
+merged, migration NOT applied, nothing deployed.** Evidence: unit 4,466 pass (1 pre-existing skip), Postgres smoke
+154/154, browser 35/35, tsc/build/eslint clean, independent review with no HIGH/MEDIUM findings. Runbook:
+`docs/REFUND_CORRECTION_RUNBOOK.md`. Needs the owner: authorize the migration, the order
+correction, the push/merge and the deploy. See D-010 and `REVIEW.md` 2026-10-19.
+
 ## 2026-10-14 — Content Studio Unification V1 local candidate
 
 Implemented on isolated `feat/content-studio-unification-v1`, directly from accepted Fast Mode
