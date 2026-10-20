@@ -1,6 +1,9 @@
 # Runbook: correct the mistaken refund on order 60b69833 (D-010)
 
-Status: PREPARED, NOT EXECUTED. Every step that writes to production needs the owner's explicit approval.
+Status: COMPLETED. Refund migration `20261019120000` and incident migration `20261020120000` are already
+applied and recorded in production. The three orders have been recovered. The original procedure below
+is retained as incident history, not as pending instructions: do not re-run it or the one-off recovery SQL.
+Verify with `scripts/sql/check-refund-release-state.sql` (read only). Financial Release 1 is separate.
 
 ## The incident
 
@@ -138,3 +141,24 @@ select count(*) from public.orders where payment_status = 'refunded';
 3. **Production verification is read-only**: load pages, read text, read the served JavaScript. To prove a build has the Refund
    confirmation, grep its JS for "actually been returned"; do not click.
 4. A Netlify draft built with the production-context environment IS connected to production data. Treat it like production.
+
+5. Use `createGuardedContext` from the tracked guard, which forces `serviceWorkers: "block"`. The guard now
+   blocks every non-read app/preview/server-function request, including public orders, MCP and Next server
+   actions. Browser routing cannot inspect server-side egress. Do not install a later `context.route` handler
+   that calls `continue()` ahead of the guard, and do not send writes through `context.request`.
+6. For a verified disposable backend only, pass `{ disposableSupabaseUrl: "http://127.0.0.1:<port>" }`.
+   This permits only `/auth/v1/`, `/rest/v1/` and `/storage/v1/` calls to that exact loopback origin;
+   app/function writes still fail closed. Local application server environments must point to the same
+   disposable backend. Do not allow a remote origin as disposable.
+
+## Source-control closeout (2026-10-20)
+
+PR #106 is merged at `0489e3bc9be52777688eff8a363bb2e12f904bec`. Production remains the tested
+Netlify deploy `6ad77d3799debf1d75d48671`, source `91811ef`. The recovery commits are integrated
+separately, without executing their SQL. Version-list evidence confirms both recovery versions are
+already remote; Finance's `20261016120000` remains local-only. Older migration-history differences
+exist, so never use an unrestricted `db push` for Finance: follow its separately approved single-migration plan.
+
+Netlify has no Git provider/repository or build hooks; GitHub has no repository webhooks or Actions
+workflows. These merges cannot automatically deploy Netlify. Keep it disconnected. The validated
+Linux adapter procedure is in `docs/NETLIFY_DEPLOYMENT.md`.

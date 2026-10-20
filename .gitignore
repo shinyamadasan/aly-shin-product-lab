@@ -40,6 +40,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Netlify generated adapter output and deployment state
+/.netlify/
+
 # supabase CLI local cache (version pins, temp state) -- never source
 supabase/.temp/
 

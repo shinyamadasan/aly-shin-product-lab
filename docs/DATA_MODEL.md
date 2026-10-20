@@ -381,3 +381,12 @@ Ordinary cache/history writes are revoked; metadata uses column grants. Base-uni
 import history triggers protect existing facts. The new `apply_raw_inventory_adjustment` RPC
 supports count, delta, and reversal operations atomically. See
 [Wave 0A](../planning/SELLING_WAVE_0A.md) for boundaries, permissions, and rollout limitations.
+
+## Order payment incident events
+
+`public.order_payment_incident_events` (migration `20261020120000`, already applied) records maintenance
+recovery facts: order FK, event type, actor/authorizer/reason, incident refund timestamp, original payment
+and completion-status facts, order update timestamp and optional prior refund-correction FK. A unique
+order/event/refund-timestamp key prevents duplicate incident records. Owner SELECT is allowed; no client
+or service-role insert/update/delete is granted. Triggers prevent update/delete/truncate. Normal refund
+corrections remain in their own immutable `order_refund_corrections` table. Neither history is rewritten.

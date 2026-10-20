@@ -10,7 +10,8 @@
 -- any write privilege; service_role writes are revoked; update/delete/truncate are blocked for everyone).
 -- See scripts/sql/recover-qa-refund-60b69833.sql.
 --
--- NOT APPLIED until explicitly authorized. Additive only; see ROLLBACK.
+-- PRODUCTION STATUS: already applied and recorded as version 20261020120000. Do not re-apply.
+-- The authorized recovery is complete. See docs/REFUND_CORRECTION_RUNBOOK.md and the read-only check script.
 --
 -- ROLLBACK (this file only adds objects). Run the indented block as ONE script INCLUDING its begin/commit: the
 -- guard aborts the whole transaction, before anything is dropped, if the table has ever held an event (the rows

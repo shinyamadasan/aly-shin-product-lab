@@ -5,12 +5,12 @@
 // send a mutation to the production Supabase project, whichever app URL it is driving (production, a Netlify draft, or a
 // local server that happens to be configured with production keys).
 //
-// The decision is made on the SUPABASE host the request is going to, not on the app host, so a preview deployment that
-// was built with production environment variables is covered too.
+// Direct production writes AND non-read app/preview/function requests are blocked. Browser routing cannot inspect
+// a function's server-side egress, so allowing a preview POST would defeat the production-host check.
 //
 // Usage (Playwright):
-//   import { installProductionWriteGuard } from "./production-write-guard.mjs";
-//   const guard = await installProductionWriteGuard(context, process.env.OWNER_SUPABASE_URL);
+//   import { createGuardedContext } from "./production-write-guard.mjs";
+//   const { context, guard } = await createGuardedContext(browser, process.env.OWNER_SUPABASE_URL);
 //   ...run the test...
 //   if (guard.blocked.length) fail the run   // an attempted write is a test bug even though it was stopped
 //
@@ -33,7 +33,7 @@ export function productionHostOf(supabaseUrl) {
 }
 
 // Pure decision, unit-tested. Returns { allow: boolean, reason: string }.
-export function decideRequest({ method, url }, productionHost) {
+export function decideRequest({ method, url }, productionHost, disposableSupabaseOrigin) {
   if (!productionHost) return { allow: false, reason: "no production host configured (fail closed)" };
   let parsed;
   try {
@@ -41,22 +41,40 @@ export function decideRequest({ method, url }, productionHost) {
   } catch {
     return { allow: false, reason: "unparseable URL (fail closed)" };
   }
-  if (parsed.host !== productionHost) return { allow: true, reason: "not the production Supabase project" };
   const m = String(method).toUpperCase();
   if (SAFE_METHODS.has(m)) return { allow: true, reason: "read-only request" };
-  if (ALLOWED_WRITES.some((rule) => rule.method === m && rule.path.test(parsed.pathname))) return { allow: true, reason: "sign-in/out or owner check" };
-  return { allow: false, reason: `${m} ${parsed.pathname} would mutate the production project` };
+  if (parsed.host === productionHost && ALLOWED_WRITES.some((rule) => rule.method === m && rule.path.test(parsed.pathname))) return { allow: true, reason: "sign-in/out or owner check" };
+  if (disposableSupabaseOrigin && parsed.origin === disposableSupabaseOrigin
+      && parsed.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)
+      && parsed.host !== productionHost && /^\/(auth|rest|storage)\/v1\//.test(parsed.pathname)) {
+    return { allow: true, reason: "explicit disposable Supabase backend" };
+  }
+  return { allow: false, reason: `${m} ${parsed.pathname} could mutate production directly or through a server function` };
 }
 
-export async function installProductionWriteGuard(context, supabaseUrl) {
+export async function installProductionWriteGuard(context, supabaseUrl, { disposableSupabaseUrl } = {}) {
   const productionHost = productionHostOf(supabaseUrl);
+  const disposable = disposableSupabaseUrl ? new URL(disposableSupabaseUrl) : undefined;
+  const disposableSupabaseOrigin = disposable?.origin;
+  if (disposable && (disposable.protocol !== "http:"
+      || !["127.0.0.1", "localhost", "[::1]"].includes(disposable.hostname)
+      || disposable.host === productionHost)) {
+    throw new Error("production-write-guard: disposable backend must be a separate loopback HTTP origin");
+  }
   const blocked = [];
   await context.route("**/*", (route) => {
     const request = route.request();
-    const decision = decideRequest({ method: request.method(), url: request.url() }, productionHost);
+    const decision = decideRequest({ method: request.method(), url: request.url() }, productionHost, disposableSupabaseOrigin);
     if (decision.allow) return route.continue();
     blocked.push(decision.reason);
     return route.abort("blockedbyclient");
   });
   return { blocked, productionHost };
+}
+
+// Own context creation so service workers cannot intercept requests before Playwright's routes.
+export async function createGuardedContext(browser, supabaseUrl, options = {}, guardOptions = {}) {
+  const context = await browser.newContext({ ...options, serviceWorkers: "block" });
+  const guard = await installProductionWriteGuard(context, supabaseUrl, guardOptions);
+  return { context, guard };
 }

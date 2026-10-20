@@ -1,7 +1,7 @@
 // The fail-closed guard that keeps browser QA from mutating the production Supabase project (incident 2026-10-20).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideRequest, installProductionWriteGuard, productionHostOf } from "../scripts/qa/production-write-guard.mjs";
+import { createGuardedContext, decideRequest, installProductionWriteGuard, productionHostOf } from "../scripts/qa/production-write-guard.mjs";
 
 const PROD = "kouesgllnyallmyesvrl.supabase.co";
 const at = (path: string) => `https://${PROD}${path}`;
@@ -25,10 +25,36 @@ test("every kind of mutation to the production project is blocked", () => {
   }
 });
 
-test("method case does not matter, and look-alike hosts are not the production project but unknown hosts are not blocked either", () => {
+test("method case does not matter; unknown and look-alike hosts cannot bypass the guard", () => {
   assert.equal(decideRequest({ method: "patch", url: at("/rest/v1/orders") }, PROD).allow, false);
-  assert.equal(decideRequest({ method: "PATCH", url: "https://example.com/rest/v1/orders" }, PROD).allow, true, "other hosts are outside this guard's scope");
-  assert.equal(decideRequest({ method: "PATCH", url: `https://${PROD}.evil.test/rest/v1/orders` }, PROD).allow, true, "a different host is a different host");
+  assert.equal(decideRequest({ method: "PATCH", url: "https://example.com/rest/v1/orders" }, PROD).allow, false);
+  assert.equal(decideRequest({ method: "PATCH", url: `https://${PROD}.evil.test/rest/v1/orders` }, PROD).allow, false);
+});
+
+test("preview functions, public orders, MCP and Next server actions cannot send mutations", () => {
+  for (const host of ["app.alyandpon.com", "draft.example.netlify.app", "localhost:3100"]) {
+    for (const path of ["/api/production", "/api/public-orders", "/api/mcp", "/.netlify/functions/handler", "/orders"]) {
+      assert.equal(decideRequest({ method: "POST", url: `https://${host}${path}` }, PROD).allow, false, `${host}${path}`);
+    }
+  }
+});
+
+test("only explicit loopback Supabase mutations pass; app functions remain blocked", async () => {
+  const local = "http://127.0.0.1:54321";
+  assert.equal(decideRequest({ method: "POST", url: local + "/rest/v1/rpc/create_business_expense" }, PROD).allow, false);
+  assert.equal(decideRequest({ method: "POST", url: local + "/rest/v1/rpc/create_business_expense" }, PROD, local).allow, true);
+  assert.equal(decideRequest({ method: "POST", url: local + "/api/production" }, PROD, local).allow, false);
+  assert.equal(decideRequest({ method: "PATCH", url: at("/rest/v1/orders") }, PROD, `https://${PROD}`).allow, false);
+  await assert.rejects(installProductionWriteGuard({}, `https://${PROD}`, { disposableSupabaseUrl: `https://${PROD}` }), /separate loopback/);
+});
+
+test("guarded context creation blocks service workers even if caller requests them", async () => {
+  let options;
+  const context = { route: async () => {} };
+  const browser = { newContext: async (value: unknown) => { options = value; return context; } };
+  const result = await createGuardedContext(browser, `https://${PROD}`, { serviceWorkers: "allow" });
+  assert.deepEqual(options, { serviceWorkers: "block" });
+  assert.equal(result.context, context);
 });
 
 test("reads, sign-in/out and the owner check pass", () => {
@@ -58,5 +84,5 @@ test("the Playwright wiring aborts a blocked request, records it, and lets allow
   assert.equal(outcome("GET", "/rest/v1/orders"), "continue");
   assert.equal(outcome("POST", "/auth/v1/token"), "continue");
   assert.equal(guard.blocked.length, 1);
-  assert.match(guard.blocked[0], /would mutate the production project/);
+  assert.match(guard.blocked[0], /could mutate production/);
 });
