@@ -73,7 +73,7 @@ test("zero yield does not generate a misleading margin", () => {
   });
 
   assert.equal(metrics.margin, null);
-  assert.equal(metrics.grossProfit, null);
+  assert.equal(metrics.operatingProfitPerPiece, null);
   assert.equal(metrics.foodCostPercent, null);
   assert.equal(metrics.markup, null);
   assert.equal(metrics.targetPrice, null);
@@ -105,7 +105,7 @@ test("a real yield produces the expected unit cost and margin", () => {
   });
 
   assert.equal(metrics.costPerPiece, 50);
-  assert.equal(metrics.grossProfit, 0);
+  assert.equal(metrics.operatingProfitPerPiece, 0);
   assert.equal(metrics.margin, 0);
 });
 

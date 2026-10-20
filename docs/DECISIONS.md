@@ -225,3 +225,39 @@ Verify: supabase/migrations/20261019120000_order_refund_correction.sql contains 
 Verify: supabase/migrations/20261019120000_order_refund_correction.sql contains "already corrected once"
 Verify: src/lib/orders/refund-correction.ts contains "REFUND_CORRECTION_WINDOW_DAYS = 7"
 Verify: src/lib/orders/refund-correction.ts contains "Only continue if this money has actually been returned"
+
+## D-009 — Financial Release 1: accrual at fulfilment, withheld rather than guessed, expenses append-only
+
+**Decision:** The monthly view at `/finance` recognizes an order's revenue in the Manila month it is
+**completed**, and that order's ingredient COGS (`order_raw_cogs`) in the same month. A paid order that
+is not yet completed is a customer **deposit**; a completed order that is unpaid is a **receivable**.
+Inventory purchases are an asset, shown only as a memo line, and never reach profit. A refund of a
+completed order is contra-revenue in the **refund's** month (the earlier month is not rewritten); a
+refund of an order that never completed returns a deposit and does not touch profit. When any product
+sale in a month has no recorded ingredient cost, gross margin and operating result are **withheld**
+(shown as an em dash with the reason), not shown as a smaller number. No operating result exists before
+`2026-10`. The result is always labelled provisional and never "profit"; packaging, waste, owner labor
+and depreciation are disclosed as excluded on every report. Operating expenses live in a new
+append-only, owner-only `business_expenses` ledger whose closed category list contains no inventory
+category, written only through idempotent owner-checked functions (void or correct, never delete).
+
+**Why:** Revenue minus an understated COGS looks like a larger profit than exists -- a plausible-looking
+wrong number is worse than no number (September has cost data for only part of its sales). Paying for
+stock is not a cost until the stock is sold, and Bake only moves cost from raw to finished stock, so
+reading COGS solely from fulfilled allocations is what prevents a purchase or a Bake being counted
+twice. Cash received, recognized revenue, purchases and earnings answer four different questions and
+are kept in four different places. The expense ledger copies the Wave 1 posture (select-only grant,
+definer functions, mutation receipts) rather than the older permissive table template, because it is
+financial data. The `grossProfit` field on the Costing page was renamed `operatingProfitPerPiece` (it is
+price minus fully loaded cost per piece, an estimate) so the word "gross profit" is reserved for
+revenue minus COGS; the Business Context key `grossProfit` is a published schema name and was kept.
+
+**Amended in acceptance (2026-10-19):** cost drawn from an ESTIMATED lot is counted but disclosed, and a zero-cost or
+unseen lot is not evidence of cost; completeness is decided by uncosted product units, not pesos; a completed
+order with no lines, or one refunded before it was completed, withholds the month for review.
+
+Verify: src/lib/finance/report.ts contains "ACCRUAL AT FULFILMENT"
+Verify: src/lib/finance/report.ts contains "WHAT IS WITHHELD, NOT GUESSED"
+Verify: src/lib/finance/period.ts contains "FINANCIAL_REPORTING_START_MONTH"
+Verify: supabase/migrations/20261016120000_business_expenses.sql contains "Expenses cannot be deleted"
+Verify: src/lib/costing.ts contains "NOT accounting"

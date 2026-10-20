@@ -1,5 +1,7 @@
 # Dashboard Profit V1 — required data, formula, coverage handling
 
+**Update (Financial Release 1):** the monthly financial view now lives at `/finance` (D-009). It adopts this document's coverage rule -- a figure is withheld, not shown smaller, when cost data is incomplete -- and settles the open basis question as accrual at fulfilment. The Dashboard itself still shows no profit figure; the "Gross profit (ingredients + packaging)" label below remains the target once packaging cost is frozen per order.
+
 **Status:** NOT IMPLEMENTED. Deliberately absent from Operations Dashboard V1. This is a follow-up
 spec, not an approved plan: nothing here is authorized until the owner approves it.
 

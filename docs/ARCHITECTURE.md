@@ -1090,3 +1090,54 @@ The browser QA guard denies direct production mutations and non-read app/preview
 server-side egress cannot be intercepted by Playwright. Its context factory disables service workers.
 Only explicitly named loopback Supabase endpoints may accept disposable-test writes. Deployment remains
 manual; see `docs/NETLIFY_DEPLOYMENT.md`.
+
+## Financial Release 1
+
+**Shape.** `src/lib/finance/` is pure (no React, no client, no clock): `peso.ts` (integer-centavo
+sums; the only rounding point is the reported figure), `period.ts` (Manila months;
+`FINANCIAL_REPORTING_START_MONTH`), `expenses.ts` (categories, form validation, lookalike warnings,
+wire mapping) and `report.ts` (`buildMonthlyFinancialReport`, `buildFinancialBalances`).
+`src/lib/finance-repository.ts` is the only I/O: it reads orders/lines/`order_raw_cogs` (through the
+orders repository's own readers, in chunks of 50 ids) and `business_expenses`, and writes the ledger
+only through its three RPCs with a client-minted operation id. `src/components/finance-page.tsx` loads,
+formats and renders; `/finance` is a thin route like the others.
+
+**What it composes, and does not recompute.** Cash received is `grossRevenue`/`refunds` from
+`orders/revenue.ts`; an order's line total is `orders/totals.ts`; COGS is `order_raw_cogs` (Wave 3);
+finished-goods value is the finished-stock ledger times each lot's frozen cost; raw-stock value uses
+`cost_reconciled_at` (Cost System V4) as its trust test. COGS is read **only** from fulfilled
+allocations, never from Bake consumption.
+
+**Rules (D-009).** Revenue and COGS are recognized at order completion in the Manila month; deposits
+and receivables are balances, not revenue; purchases are a memo line; a refund of a completed order is
+contra-revenue in its own month. Per-order cost coverage classes: `costed`, `partial`, `uncosted`,
+`no-product` (manual lines such as a delivery fee are reported as their own bucket and excluded from the
+coverage ratio, with a disclosure). Gross margin and operating result are withheld when coverage is not
+100%, when the source may be cut off at the 1,000-row request cap, before the reporting start month, or
+when the expense ledger is unreadable.
+
+**Cost trust.** A piece counts as costed only if its lot is visible to the report and frozen at a positive cost.
+Opening-balance (`historical_estimate`) lots are counted but disclosed as an estimate with their amount.
+Completeness is decided by uncosted product units (unsized lines, under-covered products, line-less orders),
+never by pesos. An order refunded before it completed withholds the month (`needs-review`). A Bake yield
+correction (TASK-072) restates COGS live, which the page discloses.
+
+**Mistaken refunds (D-010).** Refund stays terminal in the order state machine (`src/lib/orders/transitions.ts`,
+unchanged). The only way back is `correct_mistaken_refund`, a database function (definer in `inventory_private`,
+invoker wrapper in `public`) that owns every eligibility rule; `src/lib/orders/refund-correction.ts` only decides
+whether to OFFER the button and `src/lib/orders-repository.ts` `correctMistakenRefund` reads the database's
+answer. The report needs no change: with `refunded_at` cleared the order is simply a paid, completed sale. Migration
+`20261019120000_order_refund_correction.sql` is independent of the expense-ledger migration.
+
+**Database.** One new table (`business_expenses`) and three function pairs, in the same
+`inventory_private` definer / `public` invoker shape as Waves 0B-3, idempotent through `claim_mutation`
+and a unique `operation_id`. A "possible duplicate" refusal raises, so its claim rolls back and the same
+operation id stays reusable for the confirmed retry. See `docs/DATA_MODEL.md`.
+
+**Not built (deliberately; see the Release 1 plan).** Packaging in COGS, valued waste/adjustments,
+money on ledger rows, payment events and cash accounts, supplier payment dates, depreciation, a
+historical backfill. The expense ledger is the only new write surface.
+
+**Deployment order.** Apply the migration first, then deploy the app. The page degrades gracefully
+before that: with no ledger it still shows sales and margin and says the result is unavailable, instead
+of showing an expense total of zero.

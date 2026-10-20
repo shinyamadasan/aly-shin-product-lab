@@ -173,7 +173,8 @@ test("Dashboard is the first destination, and lives at '/'", () => {
 });
 
 test("Operations, Marketing and More hold exactly the agreed pages, in order", () => {
-  assert.deepEqual(labelsIn("operations"), ["Dashboard", "Orders", "Inventory", "Bake", "Products"]);
+  // Finance joined Operations in Financial Release 1 (the owner asked for a financial section).
+  assert.deepEqual(labelsIn("operations"), ["Dashboard", "Orders", "Inventory", "Bake", "Products", "Finance"]);
   assert.deepEqual(labelsIn("marketing"), ["Today", "Content Studio", "Journey", "Opportunities"]);
   assert.deepEqual(labelsIn("more"), [
     "Proof Day",

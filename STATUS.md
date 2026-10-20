@@ -1,5 +1,29 @@
 # STATUS
 
+## 2026-10-20 -- Financial Release 1 integration checkpoint: SECURITY BLOCKED
+
+Refund PR #106 and recovery/configuration PR #107 are merged. Production remains Netlify
+6ad77d3799debf1d75d48671; merges have no deployment automation. Both recovery migrations are
+already recorded in production. The three recovered orders remain unchanged; no recovery rerun.
+Legacy Vercel CLI logout succeeded and removed its access/refresh session file.
+
+Finance is integrated on feat/financial-release-1-ready off main44d0bb1, retaining current
+Refund, Bake, Content Studio, incident history, testing guard and validated Netlify configuration.
+Original dirty Finance work remains untouched; clean preservation ref
+safety/finance-pre-integration-clean-20261020 (e71ddbb). Existing older status entries below are historical.
+
+Linux unit tests:4547pass/0fail/4Windows-only skips. Disposable PostgreSQL:191pass/0fail/0skip.
+Type checking and local Linux Netlify build pass (CLI27.10.2,adapter5.16.3,Node24.19.0).
+Independent Finance code/plan review PASS. Desktop disposable browser35assertions passed before
+the run was interrupted; full desktop/mobile acceptance remains outstanding. Do not call browser QA complete.
+Production read-only October:33/33costed, COGS3398.13, margin4981.87; September's42uncosted
+orders and pre-start warning preserved. Expense ledger remains absent in production.
+
+Release gate BLOCKED: unchanged production lockfile npm audit reports1critical/3high affected packages.
+See docs/FINANCIAL_RELEASE_1_SECURITY_HOLD.md. No Finance merge, upload, migration or deploy.
+Next: separate dependency security repair and renewed security/remaining browser gates, then separate
+production approval and docs/FINANCIAL_RELEASE_1_DEPLOYMENT.md. Real-device QA remains human verification.
+
 ## 2026-10-20 -- Refund source-control closeout verified
 
 PR #106 is merged (`0489e3b`). The independent recovery/deployment closeout review passes with no
@@ -97,6 +121,26 @@ physical-phone checks also remain under "Needs human verification" below.
 
 ## Last shipped
 
+- **2026-10-19 -- Correct Mistaken Refund built and reviewed locally, NOT committed, NOT applied:** owner-only,
+  audited undo for the mistaken refund on order 60b69833 (the only refunded order; it alone holds October's
+  margin back). New migration `20261019120000_order_refund_correction.sql` plus an Orders-page action. Awaiting
+  the owner's explicit go-ahead to apply the migration and deploy; the exact steps are in the hand-off. See
+  D-010 and `REVIEW.md` 2026-10-19.
+- **2026-10-19 -- Financial Release 1 independent review + browser acceptance complete (fixes applied, still
+  uncommitted, migration still NOT applied):** three independent reviews, 64 Playwright checks on desktop
+  and 390/320px against a disposable DB, and read-only production reconciliation. September stays withheld
+  (14 of 56 costed); October is 33/33 costed but held for review of one test-like order refunded before
+  completion. See `REVIEW.md` 2026-10-19. **Needs the owner:** review order 60b69833, authorize the
+  migration, decide the rebase onto origin/main.
+- **2026-10-16 -- Financial Release 1 implemented locally, not committed, not applied:** `/finance`
+  (monthly provisional operating result on an accrual-at-fulfilment basis, with cost coverage and
+  withheld figures), an append-only owner-only expense ledger (`business_expenses`, migration
+  `20261016120000_business_expenses.sql`, NOT applied to production), Costing's `grossProfit` renamed
+  `operatingProfitPerPiece`. 4432 unit tests and the full Postgres smoke suite pass; tsc, ESLint and
+  the production build pass. No production read or write occurred. See D-009, `REVIEW.md`, and
+  `docs/ARCHITECTURE.md`'s "Financial Release 1". **Needs human verification:** the Finance page on a
+  real phone (layout, tap targets, copy), and the migration's application order (migration first, then
+  deploy). Ready for independent review.
 - **2026-09-13 — Product Lab MCP Slice 2 reviewer fixes implemented locally, not committed:**
   verification now reports `cost_reconciled_at` from authoritative ingredient read-back and a
   regression proves a tampered local apply artifact cannot falsify it. Unit/static test names now

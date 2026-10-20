@@ -2,7 +2,7 @@ import type { CostingSummary, ProductBatch } from "./product-lab-types";
 
 export type CostingMetrics = {
   costPerPiece: number | null;
-  grossProfit: number | null;
+  operatingProfitPerPiece: number | null;
   margin: number | null;
   foodCostPercent: number | null;
   markup: number | null;
@@ -14,7 +14,7 @@ export type CostingMetrics = {
 
 const unavailableMetrics: CostingMetrics = {
   costPerPiece: null,
-  grossProfit: null,
+  operatingProfitPerPiece: null,
   margin: null,
   foodCostPercent: null,
   markup: null,
@@ -47,8 +47,11 @@ export function getCostingMetrics({
   }
 
   const costPerPiece = totalBatchCost / costingYield;
-  const grossProfit = suggestedPrice - costPerPiece;
-  const margin = suggestedPrice > 0 ? (grossProfit / suggestedPrice) * 100 : 0;
+  // Price minus the FULLY LOADED cost per piece (ingredients, packaging, labor, utilities, waste,
+  // overhead, equipment). An estimate of operating profit per piece for pricing -- NOT accounting
+  // gross profit (revenue minus COGS), which the Finance page reports from real fulfilled orders.
+  const operatingProfitPerPiece = suggestedPrice - costPerPiece;
+  const margin = suggestedPrice > 0 ? (operatingProfitPerPiece / suggestedPrice) * 100 : 0;
   const foodCostPercent = suggestedPrice > 0 ? (costPerPiece / suggestedPrice) * 100 : 0;
   const markup = costPerPiece > 0 ? ((suggestedPrice - costPerPiece) / costPerPiece) * 100 : 0;
   const targetPrice = targetFoodCost > 0 ? costPerPiece / targetFoodCost : 0;
@@ -56,7 +59,7 @@ export function getCostingMetrics({
   const contributionMarginPerPiece = suggestedPrice - variableCostPerPiece;
   const breakEvenUnits = contributionMarginPerPiece > 0 ? Math.ceil(indirectCost / contributionMarginPerPiece) : 0;
 
-  return { costPerPiece, grossProfit, margin, foodCostPercent, markup, targetPrice, variableCostPerPiece, contributionMarginPerPiece, breakEvenUnits };
+  return { costPerPiece, operatingProfitPerPiece, margin, foodCostPercent, markup, targetPrice, variableCostPerPiece, contributionMarginPerPiece, breakEvenUnits };
 }
 
 // One place that turns a possibly-null metric into display text, so Costing, Product Detail,
