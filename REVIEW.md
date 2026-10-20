@@ -1584,3 +1584,29 @@ Merge gate: **approved** for PR review/readiness; would I ship this candidate? Y
 owner source-control and production approval. This does not merge Finance or the security PR,
 apply production SQL, upload a Finance draft, or publish a production build. Exact plan remains
 docs/FINANCIAL_RELEASE_1_DEPLOYMENT.md; future draft-edge checks and real-device checks are explicit.
+
+## 2026-10-20 — Financial Release 2 audit: implementation stopped
+
+Baseline: fetched origin/main 771997f47d0cc40e4b45726f00624f8894d9a3ff, isolated feat/financial-release-2.
+Independent read-only review confirmed the approved Wave 0A count-boundary reversal guard is absent
+from the effective V4 database function. Disposable PostgreSQL reproduced 2600 → 2650 by reversing
+an older −50 adjustment after the verified count. The existing Wave 0A regression runner does not
+load the replacing migrations. Architecture Protection STOP applies; no silent repair or Release 2
+implementation. Proposed bounded additive repair and evidence: docs/FINANCIAL_RELEASE_2_AUDIT.md.
+Merge gate: neither done nor approved; no implementation/PR to approve. Release 2 QA and final
+independent implementation review remain pending. Baseline 4531 pass / 1 fail / 1 skip; missing
+geist/font/sans in shared dependencies prevents claiming a green baseline. No production writes,
+commit, push, migration, merge or deployment.
+
+## 2026-10-20 — Raw inventory count-boundary safeguard: approved
+
+User explicitly approved the additive repair before implementation. Independent reviewer APPROVED
+exact V4 function replacement plus original timestamp guard; public wrapper and ACLs untouched.
+Final full-chain disposable PostgreSQL:37/37 pass, zero skipped; metadata parity, equality boundary,
+valid/duplicate/stale reversals, complete-state rollback and deterministic lock race covered.
+Isolated lockfile install resolved shared-dependency Geist failure:4550 unit passes, zero failures,
+one skip; lockfile unchanged. Touched-test ESLint and CRLF-aware whitespace checks pass.
+Self-review/code health clear; would ship this bounded repair after production approval:yes.
+Merge gate:approved (independent exact-function/permissions review requested and completed).
+No production writes, migration execution, history backfill, merge or deployment authorized.
+See docs/RAW_INVENTORY_REVERSAL_BOUNDARY_REPAIR.md for verification and release/recovery procedure.

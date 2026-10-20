@@ -6,7 +6,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 // Cost System Simplification V4 -- database authority. Applies the full migration chain (Wave 0A ->
-// 0B -> Wave 1 -> Cost Baseline Repair -> Safe Purchase Delete -> V4) to a disposable Postgres
+// 0B -> Wave 1 -> Cost Baseline Repair -> Safe Purchase Delete -> V4 -> reversal-boundary repair)
+// to a disposable Postgres
 // container and proves: a purchase establishes / preserves / withholds cost trust atomically,
 // stock adjustments and purchase reversal keep trust truthful, Opening Cost Setup (the certify RPC)
 // still behaves, and Bake still refuses an untrusted cost with cost-setup wording.
@@ -68,6 +69,14 @@ test("Cost System Simplification V4: automatic purchase trust, truthful reversal
     grant select, insert, update, delete on public.products, public.product_batches to authenticated;
     create policy p_products on public.products for all to authenticated using (public.is_product_lab_owner()) with check (public.is_product_lab_owner());
     create policy p_batches on public.product_batches for all to authenticated using (public.is_product_lab_owner()) with check (public.is_product_lab_owner());`);
+  const rawAuthorityProperties = () => run(`select jsonb_agg(jsonb_build_object(
+    'schema', n.nspname, 'owner', pg_get_userbyid(p.proowner), 'acl', p.proacl,
+    'security_definer', p.prosecdef, 'config', p.proconfig,
+    'arguments', pg_get_function_identity_arguments(p.oid), 'result', pg_get_function_result(p.oid),
+    'authenticated_execute', has_function_privilege('authenticated', p.oid, 'EXECUTE'),
+    'anon_execute', has_function_privilege('anon', p.oid, 'EXECUTE')) order by n.nspname)
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('public', 'inventory_private') and p.proname = 'apply_raw_inventory_adjustment'`).trim();
   for (const migration of [
     "20260909132327_selling_wave_0a_raw_authority.sql",
     "20260909162224_selling_wave_0a_reversal_boundary.sql",
@@ -77,8 +86,24 @@ test("Cost System Simplification V4: automatic purchase trust, truthful reversal
     "20260912193053_claude_inventory_operator_v1a.sql",
     "20260917175840_safe_purchase_delete.sql",
     "20260921120000_cost_system_simplification_v4.sql",
+    "20261020202509_raw_inventory_reversal_boundary_restore.sql",
   ]) {
+    const beforeRepair = migration === "20261020202509_raw_inventory_reversal_boundary_restore.sql" ? rawAuthorityProperties() : null;
     run(sql(`supabase/migrations/${migration}`));
+    if (beforeRepair !== null) {
+      await t.test("the repair preserves function ACLs, owners, security modes, search paths and signatures", () => {
+        assert.equal(rawAuthorityProperties(), beforeRepair);
+        const properties = JSON.parse(beforeRepair);
+        assert.equal(properties.length, 2);
+        for (const authority of properties) {
+          assert.equal(authority.owner, "postgres");
+          assert.equal(authority.security_definer, authority.schema === "inventory_private");
+          assert.deepEqual(authority.config, ['search_path=""']);
+          assert.equal(authority.authenticated_execute, true);
+          assert.equal(authority.anon_execute, false);
+        }
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -244,6 +269,55 @@ test("Cost System Simplification V4: automatic purchase trust, truthful reversal
   // ---------------------------------------------------------------------------------------------
   // 3. Stock adjustments and counts
   // ---------------------------------------------------------------------------------------------
+  await t.test("the original Wave 0A authority, count-boundary, duplicate-reversal and rollback contracts survive the effective migration chain", () => {
+    assert.match(run(sql("tests/smoke/postgres/raw-inventory-authority.assertions.sql")), /wave_0a_assertions_passed/);
+  });
+
+  const inventorySnapshot = (id: string) => q1(`select jsonb_build_object(
+    'ingredient', (select to_jsonb(i) from public.ingredients i where id = '${id}'),
+    'movements', (select coalesce(jsonb_agg(to_jsonb(m) order by id), '[]'::jsonb)
+      from public.inventory_transactions m where ingredient_id = '${id}'))`);
+  const reverseAdjustmentSql = (id: string, originalId: string) =>
+    `select public.apply_raw_inventory_adjustment('${id}', null, 'reverse', null, 'undo', ${state(id).qty}, ${latestSql(id)}, 'g', '${originalId}');`;
+
+  await t.test("a count and adjustment at the same instant reject reversal without changing stock, trust or history", () => {
+    const id = mk(2700, 0.3, true);
+    const originalId = adjust(id, -50, "delta", "household_use");
+    adjust(id, 2600, "count", null);
+    run(`update public.inventory_transactions set created_at = (select inventory_reconciled_at from public.ingredients where id = '${id}') where id = '${originalId}';`);
+    const before = inventorySnapshot(id);
+    fails(reverseAdjustmentSql(id, originalId), /This adjustment cannot be reversed because a later physical reconciliation superseded it\./, "equal timestamps are conservatively superseded");
+    assert.equal(inventorySnapshot(id), before);
+  });
+
+  await t.test("post-count reversal keeps exact cost trust, reverses once, and cannot itself be reversed", () => {
+    const id = mk(2700, 0.3, true);
+    adjust(id, 2600, "count", null);
+    const originalId = adjust(id, -25, "delta", "household_use");
+    const trustBefore = state(id);
+    const reversalId = asOwner(reverseAdjustmentSql(id, originalId));
+    assert.deepEqual(state(id), { ...trustBefore, qty: 2600 });
+    const before = inventorySnapshot(id);
+    fails(reverseAdjustmentSql(id, originalId), /duplicate key value violates unique constraint "inventory_adjustment_reversal_once_idx"/, "a fresh-state duplicate reversal is blocked by its unique source");
+    assert.equal(inventorySnapshot(id), before);
+    fails(reverseAdjustmentSql(id, reversalId), /Only an ordinary adjustment can be reversed/, "a reversal cannot be reversed");
+    assert.equal(inventorySnapshot(id), before);
+  });
+
+  await t.test("each stale reversal fingerprint is rejected without changing the complete ingredient or ledger", () => {
+    const id = mk(100, 0.3, true);
+    const originalId = adjust(id, -20, "delta", "spillage");
+    const before = inventorySnapshot(id);
+    for (const expected of [
+      { qty: 100, latest: `'${originalId}'`, unit: "g" },
+      { qty: 80, latest: "null", unit: "g" },
+      { qty: 80, latest: `'${originalId}'`, unit: "ml" },
+    ]) {
+      fails(`select public.apply_raw_inventory_adjustment('${id}', null, 'reverse', null, 'stale undo', ${expected.qty}, ${expected.latest}, '${expected.unit}', '${originalId}');`, /Inventory changed\. Reload and verify the count again\./, "quantity, latest movement and unit remain authoritative");
+      assert.equal(inventorySnapshot(id), before);
+    }
+  });
+
   await t.test("F: an upward adjustment or count (stock no priced purchase backs) clears trust; average untouched", () => {
     const viaDelta = mk(100, 0.3, true);
     adjust(viaDelta, 25, "delta", "other"); // "Increase stock"
@@ -417,6 +491,77 @@ test("Cost System Simplification V4: automatic purchase trust, truthful reversal
   }
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   const owner = (extra = "") => `begin; set local role authenticated; ${OWNER_JWT} ${extra}`;
+
+  await t.test("a count racing an old adjustment reversal serializes, rejects the stale reversal, and preserves the new count", async () => {
+    const id = mk(2700, 0.3, true);
+    const originalId = adjust(id, -50, "delta", "household_use");
+    const staleReversal = reverseAdjustmentSql(id, originalId);
+    const countSession = spawn("docker", ["exec", "-i", container, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-tA"], { stdio: ["pipe", "pipe", "pipe"] });
+    let countOutput = "";
+    countSession.stdout.on("data", (chunk) => { countOutput += chunk; });
+    countSession.stderr.on("data", (chunk) => { countOutput += chunk; });
+    const countFinished = new Promise<{ code: number | null; stdout: string }>((resolve) => {
+      countSession.on("error", (error) => resolve({ code: -1, stdout: String(error) }));
+      countSession.on("close", (code) => resolve({ code, stdout: countOutput }));
+    });
+    const timeoutMs = 15000;
+    const watchdog = setTimeout(() => countSession.kill(), timeoutMs * 3);
+    let reversal: Promise<{ stdout: string }> | undefined;
+    let countResult: Awaited<typeof countFinished> | undefined;
+    let reversalResult: { stdout: string } | undefined;
+    try {
+      const countLocked = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Count session did not reach its lock sentinel: ${countOutput}`)), timeoutMs);
+        countSession.stdout.on("data", () => {
+          if (countOutput.includes("COUNT_LOCKED")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        void countFinished.then((result) => {
+          clearTimeout(timer);
+          if (!result.stdout.includes("COUNT_LOCKED")) reject(new Error(`Count session exited before its lock sentinel: ${result.stdout}`));
+        });
+      });
+      // Keep stdin and the transaction open after the count returns, so the ingredient lock
+      // cannot disappear before the competing reversal is observed waiting on it.
+      countSession.stdin.write(`set idle_in_transaction_session_timeout = '30s'; ${owner()}
+        select public.apply_raw_inventory_adjustment('${id}', 2600, 'count', null, 'racing count', 2650, '${originalId}', 'g');
+\\echo COUNT_LOCKED
+`);
+      await countLocked;
+      const applicationName = `reversal-${id}`;
+      reversal = spawnPsqlAsync(`set application_name = '${applicationName}'; set statement_timeout = '25s'; ${owner()} ${staleReversal} commit;`);
+      let waiting = false;
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (q1(`select count(*) from pg_stat_activity where application_name = '${applicationName}' and wait_event_type = 'Lock'`) === "1") {
+          waiting = true;
+          break;
+        }
+        await sleep(50);
+      }
+      assert.ok(waiting, "the reversal must be waiting on the uncommitted count lock");
+      countSession.stdin.end("commit;\n");
+      [countResult, reversalResult] = await Promise.all([countFinished, reversal]);
+    } finally {
+      if (!countSession.stdin.destroyed && !countSession.stdin.writableEnded) countSession.stdin.end("rollback;\n");
+      await countFinished;
+      if (reversal) await reversal;
+      clearTimeout(watchdog);
+    }
+    assert.ok(countResult);
+    assert.equal(countResult.code, 0, countResult.stdout);
+    assert.doesNotMatch(countResult.stdout, /ERROR/);
+    assert.ok(reversalResult);
+    assert.match(reversalResult.stdout, /Inventory changed\. Reload and verify the count again\./);
+    assert.equal(state(id).qty, 2600);
+    assert.equal(state(id).trusted, true);
+    assert.equal(q1(`select count(*) from public.inventory_transactions where ingredient_id = '${id}'`), "2", "only the removal and physical count are recorded");
+    const before = inventorySnapshot(id);
+    fails(reverseAdjustmentSql(id, originalId), /This adjustment cannot be reversed because a later physical reconciliation superseded it\./, "refreshing state cannot bypass the count boundary");
+    assert.equal(inventorySnapshot(id), before);
+  });
 
   await t.test("11: an Opening Cost Setup racing a purchase on the same Item -- the purchase wins, the stale setup is refused, trust is never stamped over a moved baseline", async () => {
     const id = mk(20, null);
