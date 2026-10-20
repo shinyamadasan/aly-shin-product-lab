@@ -288,3 +288,12 @@ retain immutable owner evidence and explicitly deny service-role writes under Su
 Verify: src/lib/finance/report.ts contains "stockAttribution.operatingCost"
 Verify: supabase/migrations/20261020203106_financial_release_2_stock_attribution.sql contains "financial_unit_cost_snapshot"
 Verify: supabase/migrations/20261020203106_financial_release_2_stock_attribution.sql contains "finished_stock_count_boundaries"
+
+### D-011 clarification — verified count gains (2026-10-20, pending hotfix release)
+
+The earlier blanket unvalued-event withholding rule incorrectly treated physical increases as
+unexplained financial losses. Derive a non-expense stock_count_gain only from original matching
+structured count evidence, preserving explicit owner-review precedence. Keep amount unknown and
+valuation warnings visible, without inventing expense or income or withholding solely for this
+category. Ordinary positive deltas, losses and reversals keep existing rules. This changes reporting
+only; acquisition cost and opening-stock value remain unverified. See FINANCIAL_STOCK_COUNT_HOTFIX.md.

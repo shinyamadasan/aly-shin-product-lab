@@ -87,6 +87,8 @@ if (!process.argv.includes("--no-expenses-migration")) psql(sql("supabase/migrat
 
 for (const file of ["supabase/migrations/20261020202509_raw_inventory_reversal_boundary_restore.sql", "supabase/migrations/20261020203106_financial_release_2_stock_attribution.sql"]) psql(sql(file));
 
+psql(sql("supabase/migrations/20261020232146_financial_stock_count_gains.sql"));
+
 // ---- seed: real Bake, real order flow; September left uncosted on purpose ----
 const OWNER = `set role authenticated;
   select set_config('request.jwt.claims','{"sub":"${OWNER_SUB}","role":"authenticated","app_metadata":{"app_role":"owner"}}',false);`;

@@ -4,6 +4,9 @@ import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { mapStockFinancialEventRow, type StockFinancialEvent } from "../../../src/lib/finance/stock-events.ts";
+import { buildMonthlyFinancialReport } from "../../../src/lib/finance/report.ts";
+import { buildGoldenInputs } from "../../fixtures/finance-golden.ts";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const sql = (file: string) => readFileSync(path.join(root, file), "utf8");
@@ -95,6 +98,48 @@ test("Financial Release 2: authoritative stock financial attribution", { skip: p
   });
   await t.test("single-shot cost, classification, history, receipts and authorization invariants", () => {
     assert.match(run(sql("tests/smoke/postgres/stock-financial-events.assertions.sql")), /stock_financial_events_assertions_passed/);
+  });
+  await t.test("count-gain hotfix preserves every table and function and distinguishes the complete historical set", () => {
+    run(sql("supabase/migrations/20261020232146_financial_stock_count_gains.sql"));
+    assert.match(run(sql("tests/smoke/postgres/raw-inventory-authority.assertions.sql")), /wave_0a_assertions_passed/);
+    assert.match(run(sql("tests/smoke/postgres/stock-financial-events.assertions.sql")), /stock_financial_events_assertions_passed/);
+    const history = JSON.parse(sql("tests/fixtures/stock-count-history.json"));
+    for (const row of history) {
+      run(`insert into ingredients(id,name,base_unit) values ('${row.id}','Historical ${row.id}','g');
+        insert into inventory_transactions(id,ingredient_id,transaction_type,quantity_before,quantity_after,quantity_change,source_type,reason,source_id,reconciliation_snapshot,created_at)
+        values ('${row.id}','${row.id}','adjustment',${row.before},${row.after},${row.delta},'manual','${row.reason}',null,'${JSON.stringify(row.snapshot)}'::jsonb,'${row.date}');`);
+    }
+    const fingerprint = () => {
+      const tables = JSON.parse(run("select json_agg(tablename order by tablename) from pg_tables where schemaname='public'").trim());
+      return {
+        tables: tables.map((table: string) => run(`select coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text),'[]') from public.${table} t`).trim()),
+        functions: run("select jsonb_agg(jsonb_build_array(p.oid,pg_get_functiondef(p.oid),p.proacl) order by p.oid) from pg_proc p join pg_namespace n on p.pronamespace=n.oid where n.nspname in ('public','inventory_private') and p.prokind='f'").trim(),
+        grants: run("select jsonb_build_array(relacl,reloptions) from pg_class where oid='public.stock_financial_events'::regclass").trim(),
+      };
+    };
+    const before = fingerprint();
+    run(sql("supabase/migrations/20261020232146_financial_stock_count_gains.sql"));
+    assert.deepEqual(fingerprint(), before, "reporting migration changes no business/audit/transaction/function/permission state");
+    const events: StockFinancialEvent[] = JSON.parse(run("select json_agg(e order by e.source_id) from stock_financial_events e").trim()).map(mapStockFinancialEventRow);
+    assert.equal(events.length, 62, "only two exact counts omitted");
+    assert.equal(events.filter((e) => e.classification === "stock_count_gain").length, 32);
+    assert.equal(events.filter((e) => e.classification === "unclassified").length, 30);
+    assert.ok(events.every((e) => e.amount === null), "no historical valuation invented");
+    const inputs = buildGoldenInputs();
+    const salesBefore = buildMonthlyFinancialReport(inputs, "2026-10");
+    inputs.stockFinancialEvents = events;
+    const october = buildMonthlyFinancialReport(inputs, "2026-10");
+    assert.deepEqual(october.sales, salesBefore.sales);
+    assert.deepEqual(october.cogs, salesBefore.cogs);
+    assert.deepEqual(october.grossMargin, salesBefore.grossMargin);
+    assert.deepEqual(october.operatingResult, salesBefore.operatingResult);
+    assert.equal(october.stockAttribution.review.length, 0);
+    assert.equal(october.stockAttribution.unvaluedCountGains.length, 3);
+    const september = buildMonthlyFinancialReport(inputs, "2026-09");
+    assert.equal(september.operatingResult.withheld, "pre-start");
+    assert.equal(september.stockAttribution.review.length, 30);
+    assert.equal(september.stockAttribution.unvaluedCountGains.length, 29);
+    run(sql("tests/smoke/postgres/stock-count-gains.assertions.sql"));
   });
   const ownerSession = `set role authenticated;
     select set_config('request.jwt.claim.sub','99999999-9999-4999-8999-999999999999',false);

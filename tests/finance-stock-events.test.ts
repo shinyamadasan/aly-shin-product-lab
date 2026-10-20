@@ -155,3 +155,34 @@ test("known zero event cost is retained, but zero-valued unclassified events sti
   inputs.stockFinancialEvents[0].classification = "unclassified";
   assert.equal(buildMonthlyFinancialReport(inputs, "2026-10").operatingResult.withheld, "stock-events-review");
 });
+
+
+test("verified unvalued count gains warn about valuation without creating expense, income or a result blocker", () => {
+  const inputs = buildGoldenInputs();
+  const before = buildMonthlyFinancialReport(inputs, "2026-10");
+  inputs.stockFinancialEvents = [405, 18, 55].map((quantity, index) => event({ id: String(index), classification: "stock_count_gain", quantity: -quantity, amount: null }));
+  const snapshot = structuredClone(inputs.stockFinancialEvents);
+  const after = buildMonthlyFinancialReport(inputs, "2026-10");
+  assert.deepEqual(after.sales, before.sales);
+  assert.deepEqual(after.cogs, before.cogs);
+  assert.deepEqual(after.grossMargin, before.grossMargin);
+  assert.deepEqual(after.expenses, before.expenses);
+  assert.deepEqual(after.operatingResult, before.operatingResult);
+  assert.equal(after.stockAttribution.operatingCost, 0);
+  assert.equal(after.stockAttribution.review.length, 0);
+  assert.equal(after.stockAttribution.unvaluedCountGains.length, 3);
+  assert.equal(after.stockAttribution.byCategory.find((c) => c.classification === "stock_count_gain")?.total, null);
+  assert.ok(after.warnings.some((w) => w.code === "stock-count-valuation" && w.count === 3));
+  assert.deepEqual(inputs.stockFinancialEvents, snapshot);
+  inputs.stockFinancialEvents.push(event({ amount: null }));
+  const loss = buildMonthlyFinancialReport(inputs, "2026-10");
+  assert.equal(loss.operatingResult.withheld, "stock-events-review");
+  assert.equal(loss.stockAttribution.review.length, 1);
+  assert.ok(loss.warnings.some((w) => w.code === "stock-count-valuation"));
+  inputs.stockFinancialEvents.pop();
+  inputs.expenses = null;
+  assert.equal(buildMonthlyFinancialReport(inputs, "2026-10").operatingResult.withheld, "expenses-unavailable");
+  inputs.expenses = [];
+  inputs.stockEventsTruncated = true;
+  assert.equal(buildMonthlyFinancialReport(inputs, "2026-10").operatingResult.withheld, "stock-events-truncated");
+});

@@ -1179,6 +1179,12 @@ gross margin unchanged. Calculation uses full-precision event/lot costs, roundin
 once. Missing/capped sources or unresolved classification/cost withhold operating result; category
 totals never hide missing costs behind partial numbers. No `business_expenses` row is generated.
 
+**Stock-count hotfix (pending release).** A view-only additive migration derives `stock_count_gain`
+for original raw physical increases with matching structured count evidence. Explicit reviews retain
+precedence. Quantity and null valuation remain unchanged; Finance separates their valuation warnings
+from result-blocking loss/unexplained-event review. No inventory writer or boundary changes. See
+`FINANCIAL_STOCK_COUNT_HOTFIX.md` for the full historical audit and gated release procedure.
+
 **UI.** Inventory's existing Adjust Stock form shows the classified effect; Bake exposes a direct
 Finished stock → Record consumption/loss disclosure on desktop and mobile, alongside lot history and
 safe reversal. `stock-financial-preview.ts` supplies advisory conversion/FIFO estimates, withholding

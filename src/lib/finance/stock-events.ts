@@ -9,6 +9,7 @@ export const STOCK_FINANCIAL_CLASSIFICATIONS = [
   { id: "business_testing", label: "Business testing" },
   { id: "household", label: "Household withdrawal" },
   { id: "unclassified", label: "Unclassified correction" },
+  { id: "stock_count_gain", label: "Stock-count gain / reconciliation" },
 ] as const;
 
 export type StockFinancialClassification = (typeof STOCK_FINANCIAL_CLASSIFICATIONS)[number]["id"];
@@ -69,6 +70,7 @@ export type MonthlyStockAttribution = {
   // Full precision for result arithmetic; only displayed category totals are rounded here.
   operatingCost: number | null;
   review: StockFinancialEvent[];
+  unvaluedCountGains: StockFinancialEvent[];
 };
 
 export function summarizeStockFinancialEvents(events: StockFinancialEvent[] | null | undefined, truncated: boolean, month: string, timeZone: string): MonthlyStockAttribution {
@@ -86,10 +88,11 @@ export function summarizeStockFinancialEvents(events: StockFinancialEvent[] | nu
       estimatedCount: estimated.length,
     };
   });
-  const review = monthly.filter((event) => event.classification === "unclassified" || event.amount === null);
+  const review = monthly.filter((event) => event.classification !== "stock_count_gain" && (event.classification === "unclassified" || event.amount === null));
+  const unvaluedCountGains = monthly.filter((event) => event.classification === "stock_count_gain" && event.amount === null);
   const operating = monthly.filter((event) => ["operating_loss", "marketing", "business_testing"].includes(event.classification));
   return {
-    available, truncated, events: monthly, byCategory, review,
+    available, truncated, events: monthly, byCategory, review, unvaluedCountGains,
     operatingCost: !available || truncated || review.length > 0 ? null : operating.reduce((sum, event) => sum + (event.amount ?? 0), 0),
   };
 }

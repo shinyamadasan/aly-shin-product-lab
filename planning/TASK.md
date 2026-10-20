@@ -1,40 +1,42 @@
-# Financial Release 2 — automatic waste, samples and household consumption
+# Financial Release 2 — historical stock-count reporting hotfix
 
 ## Objective
 
-Implement the user's Financial Release 2 brief on current main through independent review and a scoped draft PR. Preserve existing inventory authority and financial treatment. No production migration, historical data modification, merge or deployment.
+Implement the user's direct hotfix request and deliver a scoped PR. Preserve stock, historical
+valuation, reversals, count boundaries and audited classification. No production migration, merge
+or deployment without separate approval. This is direct user work, not a new formal milestone.
+
+## Baseline
+
+Main/deployed source: 1f29e0140a8074f761643822f9930d816ee2b102, confirmed after fetch. Isolated branch
+fix/financial-stock-count-gains; initially clean. Root feat/financial-release-1 at4f4f76a has unrelated
+tracked/untracked work and is untouched. Clean release-evidence worktree3f1324a also untouched.
+Read PRODUCT_LAB_CONTEXT, workflow/review/QA, shipped Finance architecture and local Next docs.
+Before changes: focused finance81/81; disposable Release2 stock suite6/6 (all original assertions).
 
 ## Current Step
 
-2026-10-20: safeguard repaired, independently approved and isolated in commit `b368914` / draft PR #110.
-Release 2 is implemented on `feat/financial-release-2`, stacked on `fix/raw-inventory-count-reversal-boundary`.
-Full unit 4574 pass / zero fail / one platform skip; all disposable PostgreSQL 203/203; guarded real-app
-browser 119/119 at 1280/390/320; Finance 92/92 and final stock UI 111/111; build, TypeScript and source/
-touched-test lint pass. Independent final review APPROVED, no unresolved substantive findings. Isolated
-lockfile install resolved the dependency baseline; original checkout untouched.
-
-Completed delivery: feature commit `abc8a8d`, safety draft PR #110 and scoped Release 2 draft PR #111.
-Pre-PR scope checks confirmed only approved safety/Release 2 work; PR #111 targets the safety branch
-and excludes its commit from the review diff. Next action belongs to the owner: review the drafts;
-source merge, production migration and deployment require separate approval.
+Delivered draft PR #112: https://github.com/shinyamadasan/aly-shin-product-lab/pull/112
+Implementation b71cea9; self-review, independent review and QA complete;
+no production change is authorized. Full root cause,64-row raw history audit plus finished correction,
+exact32 affected gains, limitations and separate app-first/view-second release/recovery procedure:
+docs/FINANCIAL_STOCK_COUNT_HOTFIX.md. Merge gate approved because user requested separate review.
 
 ## Success Criteria
 
-- [x] Fetch current main including Release 1; isolate work without disturbing original changes.
-- [x] Audit raw adjustments, finished exceptions/allocations, Bake corrections, sales COGS, expenses and authority patterns.
-- [x] Resolve the reported approved-architecture mismatch before implementation.
-- [x] Explicit classifications and reliable event costs automatically feed Finance without duplicate expenses.
-- [x] Lot allocation, corrections, reversals, owner authorization, concurrency and audit safeguards remain intact.
-- [x] Unknown historical cost/classification remains visibly incomplete; Manila periods and existing sales/refund treatment remain correct.
-- [x] Inventory/Bake forms and Finance breakdown pass desktop/mobile acceptance.
-- [x] Requested disposable PostgreSQL and regression checks pass with production-write guard active.
-- [x] Self-review, QA, independent review and versioned release documentation complete.
-- [x] Scope-checked Financial Release 2 draft PR created; no merge/deploy/production migration.
+- [x] Audit complete historical raw/finished event sets and distinguish structured physical gains,
+      opening-style stock, decreases, ordinary increases, consumption and linked reversals.
+- [x] View-only additive migration; preserve all rows, quantities, null amounts, reviews and grants.
+- [x] Separate non-expense count-gain valuation warnings from unreliable-result blockers.
+- [x] Keep unknown-cost losses, unexplained increases, household/reversal treatment and September gates.
+- [x] Preserve sales/COGS/gross margin; invent no historical cost, income or duplicate expense.
+- [x] Unit4576pass/0fail/1existing platform skip; disposable PostgreSQL18/18; guarded built browser
+      64hotfix+119existing=183/183 at1280/390/320; production build, typecheck and touched lint pass.
+- [x] Independent final review approved; self-review and QA findings resolved; release instructions ready.
+- [x] Preserve production database and deployment; prepare only the scoped hotfix PR delivery.
 
 ## Definition of Done
 
-One physical loss/consumption entry updates stock and correct financial treatment, without invented costs or misleading profit figures; all requested tests and reviews pass and a scoped draft PR is available.
-
-## Blocker
-
-None for local draft delivery. Production migration/data changes, merges and deployments remain unauthorized.
+Correct narrow reporting implementation, complete historical audit, passing relevant checks,
+independent approval and scoped PR for human review. Applying the migration, merging and deploying
+are excluded until separately approved. Physical iOS/Android feel/polish remains human verification.

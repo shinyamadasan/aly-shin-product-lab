@@ -452,3 +452,9 @@ Raw manual adjustment/waste history is visible even without cost/classification.
 derive from allocated lots and effective frozen per-piece ingredient cost. Sales, purchases, Bake
 consumption, production receipts and Bake correction movements are excluded. This is a projection,
 not a second stock or expense ledger.
+
+Pending stock-count hotfix: the view may derive `classification = 'stock_count_gain'` only for an
+unreviewed original raw count increase with matching structured quantity evidence and no cost
+snapshot. The existing nine columns, signed quantity, null amount, review precedence and ACLs stay
+unchanged. This derived value is not added to stored classification CHECKs or the review RPC's
+writable options. See `FINANCIAL_STOCK_COUNT_HOTFIX.md`.

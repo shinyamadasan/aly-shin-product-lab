@@ -300,7 +300,7 @@ function StockEventReview({ event, onDone }: { event: StockFinancialEvent; onDon
     <div className="mt-3 grid gap-2">
       <label className="grid gap-1 text-sm font-medium">Financial classification
         <select className="h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-base" disabled={busy} onChange={(e) => setClassification(e.target.value as StockFinancialClassification)} style={INPUT_STYLE} value={classification}>
-          {STOCK_FINANCIAL_CLASSIFICATIONS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+          {STOCK_FINANCIAL_CLASSIFICATIONS.filter((entry) => entry.id !== "stock_count_gain").map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
         </select>
       </label>
       <label className="grid gap-1 text-sm font-medium">Evidence / reason
@@ -323,11 +323,11 @@ function StockEventDetails({ event, labState, onDone }: { event: StockFinancialE
   return (
     <details className="rounded-md border border-[#d8c7b7] bg-white p-3 text-sm">
       <summary className="cursor-pointer break-words font-semibold">{name ?? (event.sourceKind === "raw" ? "Raw ingredient" : "Finished stock")} · {resolveBusinessDay(Date.parse(event.occurredAt), BUSINESS_TIMEZONE)} · {category} · {event.amount === null ? "Cost unknown" : `${peso(event.amount)}${event.estimated ? " (estimate)" : ""}`}</summary>
-      <p className="mt-2 break-words text-xs text-[#6f5a4c]">Source: {event.sourceKind} movement {event.sourceId} · Quantity: {event.quantity}{unit ? ` ${unit}` : event.sourceKind === "finished" ? " pieces" : ""}. Negative amounts reverse a prior effect.</p>
+      <p className="mt-2 break-words text-xs text-[#6f5a4c]">Source: {event.sourceKind} movement {event.sourceId} · Quantity: {event.classification === "stock_count_gain" ? -event.quantity : event.quantity}{unit ? ` ${unit}` : event.sourceKind === "finished" ? " pieces" : ""}. {event.classification === "stock_count_gain" ? "Physical count increase; no operating expense or income. Historical inventory valuation remains unverified." : "Negative amounts reverse a prior effect."}</p>
       {raw?.note || finished?.note ? <p className="mt-1 break-words text-xs text-[#6f5a4c]">{raw?.note || finished?.note}</p> : null}
       {finished?.productionExecutionId ? <p className="mt-1 break-words text-xs text-[#6f5a4c]">Production lot: {finished.productionExecutionId}</p> : null}
       <a className="mt-2 inline-block font-semibold text-[#8f5632] underline" href={event.sourceKind === "raw" ? "/inventory?tab=ingredients" : "/bake"}>Open {event.sourceKind === "raw" ? "Inventory → Adjust Stock" : "Bake → Finished stock"}</a>
-      <StockEventReview event={event} key={event.reviewId ?? "unreviewed"} onDone={onDone} />
+      {event.classification !== "stock_count_gain" ? <StockEventReview event={event} key={event.reviewId ?? "unreviewed"} onDone={onDone} /> : null}
     </details>
   );
 }
@@ -505,7 +505,7 @@ export function FinancePage({ labState }: { labState: LabState }) {
             <SectionHeading hint="Recorded once in Inventory or Bake. Business losses are deducted automatically; do not add them to Operating expenses again. Gross margin remains sales-only.">Stock consumption and losses</SectionHeading>
             {stockEvents.status === "unavailable" ? <p className="mt-3 break-words text-sm text-[#b3441f]" role="status">{stockEvents.message} <button className="underline" onClick={reload} type="button">Try again</button></p> : null}
             <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
-              {report.stockAttribution.byCategory.filter((entry) => entry.classification !== "unclassified").map((entry) => (
+              {report.stockAttribution.byCategory.filter((entry) => entry.classification !== "unclassified" && entry.classification !== "stock_count_gain").map((entry) => (
                 <Tile
                   key={entry.classification}
                   label={STOCK_FINANCIAL_CLASSIFICATIONS.find((category) => category.id === entry.classification)?.label ?? entry.classification}
@@ -514,7 +514,8 @@ export function FinancePage({ labState }: { labState: LabState }) {
                   detail={!report.stockAttribution.available ? "Source unavailable" : report.stockAttribution.truncated ? "Source may be incomplete" : entry.unvaluedCount > 0 ? `${entry.unvaluedCount} rows have no trustworthy cost; total withheld` : `${entry.classification === "household" ? "Owner withdrawal; excluded from operating result" : "Deducted from operating result"}${entry.estimatedCount > 0 ? ` · ${peso(entry.estimatedAmount)} estimated` : ""}`}
                 />
               ))}
-              <Tile label="Needs stock review" value={!report.stockAttribution.available || report.stockAttribution.truncated ? "—" : String(report.stockAttribution.review.length)} detail="Unclassified or unvalued event rows. Missing costs stay unknown after classification." tone={report.stockAttribution.review.length > 0 || !report.stockAttribution.available || report.stockAttribution.truncated ? "warn" : "neutral"} />
+              <Tile label="Needs stock review" value={!report.stockAttribution.available || report.stockAttribution.truncated ? "—" : String(report.stockAttribution.review.length)} detail="Unclassified corrections and unvalued losses or withdrawals. Count-gain valuation warnings are separate." tone={report.stockAttribution.review.length > 0 || !report.stockAttribution.available || report.stockAttribution.truncated ? "warn" : "neutral"} />
+              {report.stockAttribution.unvaluedCountGains.length > 0 ? <Tile label="Stock-count gains" value={String(report.stockAttribution.unvaluedCountGains.length)} detail="No operating expense or income. Historical inventory valuation remains unverified." tone="warn" /> : null}
             </div>
             {report.stockAttribution.events.length > 0 ? (
               <details className="mt-3 rounded-md border border-[#d8c7b7] p-3">
