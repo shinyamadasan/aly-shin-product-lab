@@ -13,8 +13,10 @@ browser 119/119 at 1280/390/320; Finance 92/92 and final stock UI 111/111; build
 touched-test lint pass. Independent final review APPROVED, no unresolved substantive findings. Isolated
 lockfile install resolved the dependency baseline; original checkout untouched.
 
-Next: commit scoped Release 2 code/docs, run pre-PR scope check, push and open its dependent draft PR;
-then record its link and completed delivery. No merge, production migration or deployment.
+Completed delivery: feature commit `abc8a8d`, safety draft PR #110 and scoped Release 2 draft PR #111.
+Pre-PR scope checks confirmed only approved safety/Release 2 work; PR #111 targets the safety branch
+and excludes its commit from the review diff. Next action belongs to the owner: review the drafts;
+source merge, production migration and deployment require separate approval.
 
 ## Success Criteria
 
@@ -27,7 +29,7 @@ then record its link and completed delivery. No merge, production migration or d
 - [x] Inventory/Bake forms and Finance breakdown pass desktop/mobile acceptance.
 - [x] Requested disposable PostgreSQL and regression checks pass with production-write guard active.
 - [x] Self-review, QA, independent review and versioned release documentation complete.
-- [ ] Scope-checked Financial Release 2 draft PR created; no merge/deploy/production migration.
+- [x] Scope-checked Financial Release 2 draft PR created; no merge/deploy/production migration.
 
 ## Definition of Done
 

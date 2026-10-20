@@ -1,7 +1,7 @@
 # Financial Release 2 — automatic waste, samples and household consumption
 
-Status: review-ready; independent review approved and browser gate passed. Draft PR publication
-is the remaining delivery step. No production migration,
+Status: review-ready [draft PR #111](https://github.com/shinyamadasan/aly-shin-product-lab/pull/111).
+Independent review approved; browser and regression gates passed. No production migration,
 historical data correction, merge or deployment performed. Accounting contract: D-011.
 
 ## Baseline and separate safety repair

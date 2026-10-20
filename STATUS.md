@@ -1,5 +1,15 @@
 # STATUS
 
+## 2026-10-20 — Financial Release 2 delivered as review-ready drafts
+
+Safety draft PR #110 (`fix/raw-inventory-count-reversal-boundary`, b368914) is independent.
+Release 2 draft PR #111 (`feat/financial-release-2`, implementation abc8a8d) targets that safety branch;
+scope checks passed and the Release 2 review diff excludes the safety commit. Independent final review
+APPROVED. All local acceptance complete: 4574 unit passes/one platform skip; 203/203 disposable database;
+119/119 guarded browser at 1280/390/320; build, TypeScript and source/touched-test lint pass. No production
+migration/data correction, merge or Netlify deployment. Owner review and separate release approval are
+next. Full release/recovery procedure and human verification limits: docs/FINANCIAL_RELEASE_2.md.
+
 ## 2026-10-20 — Financial Release 2 verified; draft publication next
 
 Safety b368914 is isolated in draft PR #110. Release 2 reuses existing raw/finished authorities and

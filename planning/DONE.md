@@ -746,3 +746,15 @@ Existing Finance candidate integrates reviewed security PR #109. Runtime audit z
 4,547 pass, disposable PostgreSQL191/191, build/lint/typecheck/native packaging and guarded browser
 64+36+40 checks pass. Independent review approved; expense migration and accounting unchanged.
 No PR merge, production migration, upload or deployment. See final QA and exact deployment plan.
+
+## 2026-10-20 — Financial Release 2: review-ready draft delivery
+
+Restored the approved raw count-boundary safeguard independently (b368914, draft PR #110), then
+implemented automatic raw/finished consumption/loss attribution on existing inventory authorities
+(abc8a8d, draft PR #111, explicitly stacked on the safety branch). Owner records once; Finance uses
+raw event snapshots and actual allocated lot cost, keeps household outside operating result and
+preserves unknown historical costs. No duplicate expenses or historical backfill. Independent review
+APPROVED after privilege/rounding/cap/concurrency fixes. Full unit: 4574 pass/zero fail/one platform skip;
+all disposable PostgreSQL 203/203; guarded desktop/mobile browser 119/119; build/typecheck/lint pass.
+Delivery ends at draft review. No production migration, data correction, merge or deployment.
+Release procedure, evidence and exclusions: docs/FINANCIAL_RELEASE_2.md.
