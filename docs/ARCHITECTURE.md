@@ -1075,3 +1075,18 @@ eligibility rule; `src/lib/orders/refund-correction.ts` only decides whether to 
 makes the function the only path that can reverse a refund or edit its time or amount for a client session.
 Migration `20261019120000_order_refund_correction.sql` only adds objects. Apply it before deploying the app; the
 app degrades gracefully without it (no corrections are shown and the action reports it is unavailable).
+
+## Payment incident recovery history
+
+`order_payment_incident_events` is an append-only, owner-readable maintenance audit, owned by migration
+`20261020120000`. It records the second accidental refund recovery when the normal one-correction-per-order
+limit correctly refuses another correction. No application writer owns it. Client and service-role writes
+are revoked; update/delete/truncate are blocked. The reviewed one-off maintenance SQL validates and locks
+the exact order, records the event first and verifies all unrelated financial/stock facts remain unchanged.
+Both refund/recovery migrations are already recorded in production; the recovery is complete and must not
+run again. `scripts/sql/check-refund-release-state.sql` verifies that state read-only.
+
+The browser QA guard denies direct production mutations and non-read app/preview/function calls, whose
+server-side egress cannot be intercepted by Playwright. Its context factory disables service workers.
+Only explicitly named loopback Supabase endpoints may accept disposable-test writes. Deployment remains
+manual; see `docs/NETLIFY_DEPLOYMENT.md`.

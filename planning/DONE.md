@@ -711,3 +711,11 @@ ingredient COGS; it creates no payment. Safeguards: 7-day window, never for canc
 echo of the refund shown, typed order code and reason, and a trigger that blocks every other client reversal or
 edit of a refund. Decision D-010; evidence in `REVIEW.md`. No existing migration, RPC, order, inventory or data
 was changed. No migration was applied and no SQL was run against the live project.
+
+## 2026-10-20 -- Refund release source-control closeout
+
+Merged approved refund PR #106; integrated historical incident migration/recovery records, repaired and
+verified the mandatory write guard including preview functions, and committed the validated Linux Netlify
+configuration/procedure. Recovery versions are already recorded remotely and were not re-applied. Legacy
+Vercel session revoked via supported logout. Independent closeout review PASS; 20 focused tests, real local
+Playwright guard check and 19 disposable database tests pass. Finance remains separately held.

@@ -1,5 +1,20 @@
 # STATUS
 
+## 2026-10-20 -- Refund source-control closeout verified
+
+PR #106 is merged (`0489e3b`). The independent recovery/deployment closeout review passes with no
+remaining findings: repaired guard and RLS checks 20/20; real local Playwright interception passes;
+disposable recovery Postgres 19/19. Production is unchanged at Netlify `6ad77d3799debf1d75d48671`.
+Read-only production checks confirm both recovery migration versions recorded, all three recovered
+orders Paid/no refund, 3 correction records and 1 incident record. No migration/recovery was rerun.
+Validated Netlify configuration/procedure is included; Git integration/build hooks/GitHub deployment
+automation are absent. The legacy Vercel CLI session was revoked with supported `vercel logout`;
+the server reported success and the legacy access/refresh credential file was removed.
+
+Finance remains separately held for integration and verification, with no production migration/deploy
+authorized. Original uncommitted work is preserved at `safety/finance-pre-integration-20261020`
+(`d86b0a3`), and the original working tree is unchanged. Real-device rendering remains human verification.
+
 ## 2026-10-19 -- Refund hotfix prepared locally (hotfix/refund-correction, off origin/main 27bc899)
 
 Owner-only audited `correct_mistaken_refund` (migration `20261019120000_order_refund_correction.sql`), the
@@ -261,3 +276,20 @@ migrations, tests, and documentation together and pushing `feat/selling-wave-0a-
 Final migration status matches remote with no pending SQL. Physical inventory reconciliation
 must happen before Wave 0B. Wave 0B: **NOT STARTED**. Needs human verification: hosted frontend
 availability and real-device interaction/visual acceptance; this finalization does not claim deployment.
+
+## 2026-10-20 -- Refund hotfix Netlify asset repair released
+
+Production `https://app.alyandpon.com` now publishes verified deploy `6ad77d3799debf1d75d48671`, exact
+hotfix source `91811efbdb8f6630d971ed378e16bdc1d4f2747a`. Fixed the upload process: the failing draft
+uploaded repository-root files instead of adapter-prepared static assets. Isolated Linux build plus
+explicit `.next` publish configuration runs Netlify's adapter lifecycle correctly. No application code,
+Financial Release 1 change, migration, production environment setting or business record changed.
+
+Verification: 36/36 static files return 200 and match build hashes; draft read-only browser 32/32,
+disposable-data Refund/Cancel 35/35, production non-mutating smoke 32/32; desktop/390/320 px pass.
+No forbidden write request attempted; all test contexts block production data and preview-function
+mutations. Linux server routes/native dependencies packaged. Disposable QA processes stopped with
+fixture data retained. PR #106 remains OPEN and mergeable. Rollback: `6ad0e1855136bc0b75fe73bf`.
+
+Details: `docs/NETLIFY_REFUND_ASSET_REPAIR_2026-10-20.md`; incident recovery records remain intact.
+Needs human verification: real-device iOS Safari/Android Chrome appearance and touch feel.

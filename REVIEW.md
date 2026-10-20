@@ -1308,3 +1308,92 @@ script was rehearsed end to end (dry run, apply with five before/after checks, s
 on a disposable database. Production was only read.
 
 **Merge gate: `approved`** -- held for the owner's explicit authorization. Apply the migration first, then deploy.
+
+## 2026-10-20 -- Incident: QA smoke test recorded three real refunds on production; recovery and prevention
+
+**What happened:** a smoke test written for the build WITH the Refund confirmation was pointed at production (still the old build). Its
+"dismiss the dialog" clicks recorded real refunds on 60b69833 (just corrected), 21244d4e (PHP 200) and b10149a5 (PHP 320). No money
+moved; lines, stock, COGS and inventory were untouched (verified by whole-table fingerprints). This broke the rule of no destructive
+tests against production data.
+
+**Recovery (owner-authorized):** 21244d4e and b10149a5 through `correct_mistaken_refund` (audited); 60b69833 through a guarded atomic
+recovery (`scripts/sql/recover-qa-refund-60b69833.sql`) that records an immutable `order_payment_incident_events` row first. The
+event table (migration 20261020120000, additive) and the recovery file were tested on disposable Postgres (19 tests: the unmodified file
+against the production id and timestamps, nine wrong worlds that must abort with nothing written, and three late-guard cases), the guards
+were mutation-tested (all mutants caught after adding tests for the two that first survived), and independently reviewed. Note: the review's
+only HIGH finding was against a temporary mutant that was on disk while the reviewer read it; the real file was intact. Its other
+findings were applied (rollback/retry notes, an order-lines guard, more tests).
+A read-only check of production before the run also showed the line label is "Chocolate Walnut Cookies - 1 Cookie", which the first
+version of the lines guard would have rejected; it was corrected before anything ran.
+
+**Prevention:** `scripts/qa/production-write-guard.mjs` (fail-closed, decided on the Supabase host, unit-tested) now wraps every smoke
+context; the smoke script refuses to click Refund unless the served build contains the confirmation; payment/refund interaction tests
+run only on a disposable database. Rules are in `docs/REFUND_CORRECTION_RUNBOOK.md`.
+
+**Preview smoke failures investigated:** (1) "login form not shown": the form renders after hydration, a test timing issue, identical on
+production; (2) a 401 on GET supply_entries right after sign-in: seen on production, not reproducible on the draft, a pre-existing race
+unrelated to the hotfix; (3) /bake at 390px is 620px wide: identical on production (a long recipe option label widens the section), a
+pre-existing layout defect not touched by this hotfix -- to be fixed separately.
+
+
+## 2026-10-20 -- Netlify refund draft asset repair (source 91811ef, PR #106)
+
+**Scope:** deployment only, directly authorized by the owner. The dirty Financial Release 1 checkout and
+the separate incident-recovery records are preserved. A Git archive of `91811efbdb8f6630d971ed378e16bdc1d4f2747a`
+was built in Linux Node 24.19.0; all 899 source files still match the archive after building. No application
+code, migration, production environment setting or business record was changed.
+
+**Exact defect:** draft `6ad702fbb8a23e0bdf05e141` uploaded repository-root files and omitted every Next static
+asset. Browser/HTTP requests for `/_next/static/chunks/2nwqoerny79-z.js` returned 404 `Not Found`, although
+the matching Linux build and adapter static output both contained the identical file. The deployment-file
+API listed 884 source files and zero JS assets. No connected UI was available for visual File Explorer
+inspection; the authenticated file inventory is retained instead. Root cause, hashes and reproducible
+commands are in `docs/NETLIFY_REFUND_ASSET_REPAIR_2026-10-20.md`.
+
+**Repair:** isolated deployment-only `netlify.toml` specifies build command, `.next` publish input and the
+existing Next adapter. Standard `netlify deploy --build --context production --dir .next` runs the adapter's
+publish lifecycle. Manual secret overrides were rejected by automatic approval review and abandoned; the
+supported production-context build was approved and used without those overrides.
+
+**Self-review / QA:** minimum scoped repair, no source drift or redesign. Corrected draft
+`6ad77d3799debf1d75d48671`: all 36 static files return 200 and match Linux hashes; 3 redirects/1 header/1
+function processed; all 7 API routes plus Linux sharp/libvips/resvg packaged, no Windows binaries.
+Guarded live-data browser checks 32/32; disposable-data checks 35/35, including real Refund confirmation,
+Cancel making zero write requests, unchanged orders/audit/inventory/stock fingerprints, desktop/390/320 px
+navigation and Content Studio. Production writes and preview-function mutations blocked in every context;
+no forbidden request attempted. Existing guard tests 5/5. App unit/Postgres suites not rerun (unchanged code).
+Real-device iOS/Android checks remain human verification. Initial timing/modal/disposable-owner harness
+failures are retained in operational evidence and fixed without changing the app.
+
+**Gate: `done` for the deployment repair**, with the owner's explicit conditional production-release
+authorization satisfied by the draft gates. Publish the verified atomic draft, then run non-mutating
+production smoke checks. Rollback target `6ad0e1855136bc0b75fe73bf` remains available. PR #106 is open and
+mergeable; no merge or migration is performed by this task. Production outcome is appended after smoke QA.
+
+**Production outcome:** published the verified atomic deploy `6ad77d3799debf1d75d48671` at 2026-10-20
+07:48 America/Phoenix (14:48 UTC). Production smoke 32/32 passes at desktop/390/320 px; all 36 static
+files return 200 with matching hashes through `app.alyandpon.com`. No forbidden write attempted, no
+runtime error or JS/CSS 404. No rebuild, migration, Financial Release 1 code or production business-data
+write. Rollback `6ad0e1855136bc0b75fe73bf` ready. PR #106 remains open, source checkout remains exact 91811ef.
+
+## 2026-10-20 -- Refund source-control closeout and recovery integration
+
+**Independent review: PASS.** Separate cold review of the recovery/deployment candidate against latest main
+found a preview/server-function bypass in the existing direct-Supabase-only guard. It is fixed: non-read
+requests fail closed for app/preview/functions/Next actions; only explicit separate loopback Supabase paths
+may receive disposable writes. The context factory disables service workers. The reviewer re-read the final
+diff and found no substantive remaining issue. No application or Finance implementation changes.
+
+**Verification:** focused guard/RLS 20/20, real local Playwright interception PASS, disposable recovery
+Postgres 19/19. Recovery SQL executable statements are unchanged; its migration comment now records the
+verified already-applied state. Read-only remote history confirms versions `20261019120000` and
+`20261020120000`; recovered orders remain Paid with no refund, three correction audit rows and one incident
+event. No migration, repair SQL or historical transaction was executed/modified. Production deploy and
+all 36 static hashes remain healthy. Netlify Git/build hooks and GitHub workflows/webhooks are absent.
+
+**Security closeout:** supported Vercel CLI logout of the legacy `xdg.data/com.vercel.cli` session returned
+server success; its access/refresh credential file is removed. No credential value is logged or committed.
+**Self-review/QA:** minimal scoped changes; no unrelated code, source drift, Windows deployment dependencies
+or financial feature. Architecture/model/runbook/status and deployment instructions updated; diff clean.
+**Merge gate: `done`** -- owner authorized this integration; independently reviewed and ready for the separate
+closeout PR to merge. No automatic Netlify deploy, migration or Finance release is authorized by the merge.
