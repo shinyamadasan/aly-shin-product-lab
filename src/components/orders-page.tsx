@@ -38,7 +38,8 @@ import { getOrderTotals, getPaymentDivergence } from "@/lib/orders/totals";
 import { CLOSED_ORDER_STATUSES, getAllowedOrderTransitions, isOpenForHandover, isValidOrderTransition, orderStatusChangeMovesStock } from "@/lib/orders/transitions";
 import { findPossibleDuplicateCustomer } from "@/lib/orders/validation";
 import { isPaymentMethod, ORDER_SOURCES, PAYMENT_METHODS, type Customer, type FulfillmentMethod, type Order, type OrderLine, type OrderSource, type OrderStatus, type PaymentMethod } from "@/lib/orders/types";
-import { listCustomers, listOrderLines, listOrderRawCogs, listOrders, safeDeleteOrder, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction } from "@/lib/orders-repository";
+import { correctMistakenRefund, listCustomers, listOrderLines, listOrderRawCogs, listOrders, listRefundCorrections, safeDeleteOrder, submitNewOrder, updateOrderAttribution, updateOrderFulfillment, updateOrderStatus, updatePaymentStatus, type OrdersClient, type PaymentAction, type RefundCorrection } from "@/lib/orders-repository";
+import { appearsRefundCorrectable, buildRefundConfirmation, buildRefundCorrectionWarning, refundCorrectionConfirmationCode, validateRefundCorrectionReason } from "@/lib/orders/refund-correction";
 import type { OrderRawCogs } from "@/lib/product-lab-types";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import type { LabState } from "@/lib/lab-state";
@@ -114,6 +115,8 @@ export function OrdersPage({ initialIsCreating = false, labState, onDirtyChange,
   // Wave 3: derived raw-production COGS per order, keyed by order id. Supplementary -- see
   // listOrderRawCogs' own header for why a failure to read it never blocks the rest of this page.
   const [rawCogsByOrderId, setRawCogsByOrderId] = useState<Map<string, OrderRawCogs>>(new Map());
+  // Supplementary like rawCogsByOrderId: a database without the refund-correction migration reads as "none".
+  const [refundCorrections, setRefundCorrections] = useState<Map<string, RefundCorrection>>(new Map());
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -284,6 +287,11 @@ export function OrdersPage({ initialIsCreating = false, labState, onDirtyChange,
       const cogsResult = await listOrderRawCogs(client, orderResult.orders.filter((order) => order.status === "completed").map((order) => order.id));
       if (!cancelled && cogsResult.ok) {
         setRawCogsByOrderId(cogsResult.cogsByOrderId);
+      }
+
+      const correctionResult = await listRefundCorrections(client, orderResult.orders.filter((order) => order.paymentStatus !== "unpaid").map((order) => order.id));
+      if (!cancelled && correctionResult.ok) {
+        setRefundCorrections(correctionResult.corrections);
       }
     }
 
@@ -684,6 +692,19 @@ export function OrdersPage({ initialIsCreating = false, labState, onDirtyChange,
       }}
       onMarkPaid={(method) => runPaymentAction({ kind: "mark-paid", method, lines: selectedLines })}
       onRefund={() => runPaymentAction({ kind: "refund" })}
+      onCorrectRefund={async ({ reason, expectedRefundedAt, expectedPaidAmount, operationId }) => {
+        if (!client || !selectedOrder) return { ok: false as const, message: "Orders is not connected." };
+        const id = selectedOrder.id;
+        let outcome: { ok: true } | { ok: false; message: string } = { ok: false, message: "Nothing happened." };
+        await runOrderAction(id, async () => {
+          const result = await correctMistakenRefund(client, { orderId: id, reason, expectedRefundedAt, expectedPaidAmount, operationId });
+          outcome = result.ok ? { ok: true } : { ok: false, message: result.message };
+          return result;
+        });
+        return outcome;
+      }}
+      refundCorrection={selectedOrder ? refundCorrections.get(selectedOrder.id) ?? null : null}
+      nowMs={loadedAtMs}
       rawCogs={selectedOrder ? rawCogsByOrderId.get(selectedOrder.id) ?? null : null}
       onStatusChange={(to) => {
         if (!client || !selectedOrder) return;
@@ -1200,6 +1221,9 @@ function OrderDetailPanel({
   onEditFulfillment,
   onMarkPaid,
   onRefund,
+  onCorrectRefund,
+  refundCorrection,
+  nowMs,
   rawCogs,
   onStatusChange,
   order,
@@ -1221,6 +1245,12 @@ function OrderDetailPanel({
   onEditFulfillment: (fulfillment: { expectedUpdatedAt: string; fulfillmentMethod: FulfillmentMethod; fulfillmentAt: string | null; fulfillmentAddress: string }) => void;
   onMarkPaid: (method: PaymentMethod) => void;
   onRefund: () => void;
+  // Undo a refund that was clicked by mistake (no money returned). Offered only when it appears eligible; the
+  // database re-checks everything and has the final say. Resolves with the database's answer.
+  onCorrectRefund: (input: { reason: string; expectedRefundedAt: string; expectedPaidAmount: number; operationId: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
+  // Set once this order's refund has been corrected (kept as history, shown read-only).
+  refundCorrection: RefundCorrection | null;
+  nowMs: number;
   // Wave 3: derived raw-production COGS for a COMPLETED order, null for every other status (there
   // is nothing fulfilled to cost yet) and null when it simply has no fulfilled stock-tracked lines
   // (a 100% manual/hand-priced order). Ingredient cost only -- see its own render below for the
@@ -1230,6 +1260,7 @@ function OrderDetailPanel({
   order: Order | null;
 }) {
   const [isCorrecting, setIsCorrecting] = useState(false);
+  const [refundFormOrderId, setRefundFormOrderId] = useState<string | null>(null);
   const [isEditingFulfillment, setIsEditingFulfillment] = useState(false);
   const [isEditingAttribution, setIsEditingAttribution] = useState(false);
 
@@ -1381,8 +1412,18 @@ function OrderDetailPanel({
             </SecondaryButton>
           ))}
           {order.paymentStatus === "unpaid" ? <SecondaryButton disabled={actionBusy} onClick={() => onMarkPaid(promptForMethod())}>Mark paid</SecondaryButton> : null}
-          {order.paymentStatus === "paid" ? <SecondaryButton disabled={actionBusy} onClick={onRefund}>Refund</SecondaryButton> : null}
+          {order.paymentStatus === "paid" ? (
+            // A refund is terminal, so it asks first (the same window.confirm the permanent delete uses).
+            <SecondaryButton disabled={actionBusy} onClick={() => {
+              if (window.confirm(buildRefundConfirmation(customer?.name ?? null, formatPeso(order.paidAmount ?? totals.total)))) {
+                onRefund();
+              }
+            }}>Refund</SecondaryButton>
+          ) : null}
           {order.paymentStatus === "paid" ? <SecondaryButton disabled={actionBusy} onClick={() => setIsCorrecting((value) => !value)}>Correct payment record</SecondaryButton> : null}
+          {appearsRefundCorrectable(order, refundCorrection !== null, nowMs) ? (
+            <SecondaryButton disabled={actionBusy} onClick={() => setRefundFormOrderId((current) => (current === order.id ? null : order.id))}>Correct mistaken refund</SecondaryButton>
+          ) : null}
           {canCancel ? (
             <SecondaryButton
               disabled={actionBusy}
@@ -1398,7 +1439,7 @@ function OrderDetailPanel({
               Cancel order
             </SecondaryButton>
           ) : null}
-          {appearsSafeToDelete(order) ? (
+          {appearsSafeToDelete(order) && refundCorrection === null ? (
             // Deliberately quieter than Cancel and styled as destructive. Cancel keeps history; this
             // removes the order, so it is only for one created by mistake.
             <button
@@ -1416,6 +1457,22 @@ function OrderDetailPanel({
           ) : null}
         </div>
 
+        {refundCorrection ? (
+          <p className="rounded-md bg-[#f4efe8] p-3 text-xs leading-5">
+            An earlier refund on this order was corrected on {formatWhen(refundCorrection.correctedAt)}: “{refundCorrection.reason}”. It was recorded by mistake and no money was returned.
+          </p>
+        ) : null}
+
+        {refundFormOrderId === order.id && order.paymentStatus === "refunded" && order.refundedAt !== null && order.paidAmount !== null ? (
+          <RefundCorrectionForm
+            actionBusy={actionBusy}
+            key={`refund-correction-${order.id}-${order.refundedAt}-${order.paidAmount}`}
+            onClose={() => setRefundFormOrderId(null)}
+            onSubmit={onCorrectRefund}
+            order={order}
+          />
+        ) : null}
+
         {isCorrecting && order.paymentStatus === "paid" ? (
           <PaymentCorrectionForm
             actionBusy={actionBusy}
@@ -1432,6 +1489,68 @@ function OrderDetailPanel({
         ) : null}
       </div>
     </Panel>
+  );
+}
+
+// Captures the refund the owner is looking at (its exact refundedAt and amount) when the form opens, and sends
+// those back as the echo the database verifies -- so a stale screen can never undo a different refund. The
+// operation id is minted once per form, so a retry after a dropped response replays the same request.
+function RefundCorrectionForm({
+  actionBusy,
+  onClose,
+  onSubmit,
+  order,
+}: {
+  actionBusy: boolean;
+  onClose: () => void;
+  onSubmit: (input: { reason: string; expectedRefundedAt: string; expectedPaidAmount: number; operationId: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
+  order: Order;
+}) {
+  const [shown] = useState({ refundedAt: order.refundedAt ?? "", paidAmount: order.paidAmount ?? 0 });
+  const [operationId] = useState(() => crypto.randomUUID());
+  const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const code = refundCorrectionConfirmationCode(order.id);
+  const reasonProblem = reason.length > 0 ? validateRefundCorrectionReason(reason) : null;
+  const ready = validateRefundCorrectionReason(reason) === null && confirmation.trim().toLowerCase() === code;
+
+  return (
+    <form
+      aria-label="Correct mistaken refund"
+      className="grid gap-2 rounded-md border border-[#e2b8b0] p-3 text-xs"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (!ready || submitting) return;
+        setSubmitting(true);
+        setError(null);
+        const result = await onSubmit({ reason: reason.trim(), expectedRefundedAt: shown.refundedAt, expectedPaidAmount: shown.paidAmount, operationId });
+        if (result.ok) {
+          onClose();
+        } else {
+          setError(result.message);
+          setSubmitting(false);
+        }
+      }}
+    >
+      <p className="font-semibold">Correct mistaken refund</p>
+      <p className="leading-5">{buildRefundCorrectionWarning(formatPeso(shown.paidAmount))}</p>
+      <label className="grid gap-1 font-medium">
+        Why was this refund a mistake?
+        <textarea className="min-h-16 rounded-md border border-[#d8c7b7] bg-white px-2 py-1" maxLength={300} style={{ fontSize: 16 }} onChange={(event) => setReason(event.target.value)} value={reason} />
+      </label>
+      {reasonProblem ? <p className="text-[#a3392b]" role="status">{reasonProblem}</p> : null}
+      <label className="grid gap-1 font-medium">
+        Type {code} to confirm
+        <input autoCapitalize="none" autoComplete="off" className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2" onChange={(event) => setConfirmation(event.target.value)} style={{ fontSize: 16 }} value={confirmation} />
+      </label>
+      {error ? <p className="font-semibold text-[#a3392b]" role="alert">{error}</p> : null}
+      <div className="flex flex-wrap gap-2 pt-1">
+        <Button disabled={actionBusy || submitting || !ready}>Mark as paid again</Button>
+        <SecondaryButton disabled={submitting} onClick={onClose}>Keep refund</SecondaryButton>
+      </div>
+    </form>
   );
 }
 

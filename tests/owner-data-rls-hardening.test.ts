@@ -179,7 +179,26 @@ test("every table the application and workers touch is either hardened by S1 or 
     assert.match(media, new RegExp(`create policy[^;]*on public\\.product_media for ${operation} to authenticated[^;]*public\\.is_product_lab_owner\\(\\)`, "i"));
   }
   assert.doesNotMatch(media, /using\s*\(true\)|with check\s*\(true\)/i);
-  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS, "product_media"]);
+  // The refund-correction audit owns its RLS from creation; require that proof before listing it.
+  const refundAudit = statementsOf(readFileSync(new URL("supabase/migrations/20261019120000_order_refund_correction.sql", ROOT), "utf8"));
+  assert.match(refundAudit, /alter table public\.order_refund_corrections enable row level security;/);
+  assert.match(refundAudit, /revoke all on public\.order_refund_corrections from public, anon, authenticated;/);
+  assert.match(refundAudit, /revoke insert, update, delete, truncate, trigger, references on public\.order_refund_corrections from service_role;/);
+  assert.match(refundAudit, /grant select on public\.order_refund_corrections to authenticated;/);
+  assert.match(refundAudit, /create policy "owner reads order refund corrections" on public\.order_refund_corrections\s+for select to authenticated using \(public\.is_product_lab_owner\(\)\);/);
+  assert.doesNotMatch(refundAudit, /using\s*\(\s*true\s*\)/i);
+  assert.doesNotMatch(refundAudit, /grant\s+(insert|update|delete|truncate|all)\b[^;]*order_refund_corrections/i);
+  assert.doesNotMatch(refundAudit, /to\s+anon/i);
+  assert.match(refundAudit, /revoke all on function public\.correct_mistaken_refund\([^)]*\)\s+from public, anon, authenticated;/);
+  assert.match(refundAudit, /function inventory_private\.correct_mistaken_refund\([\s\S]*?auth\.uid\(\) is null or public\.is_product_lab_owner\(\) is not true/);
+  // order_stock_allocations (Wave 2) owns its RLS from creation; the owner correction script reads it to prove
+  // that a refund correction left a sale's stock untouched.
+  const wave2 = statementsOf(readFileSync(new URL("supabase/migrations/20260910181827_selling_wave_2_order_reservation.sql", ROOT), "utf8"));
+  assert.match(wave2, /alter table public\.order_stock_allocations enable row level security;/);
+  assert.match(wave2, /revoke all on public\.order_stock_allocations from public, anon, authenticated;/);
+  assert.match(wave2, /grant select on public\.order_stock_allocations to authenticated;/);
+  assert.match(wave2, /create policy "wave2 owner reads order stock allocations" on public\.order_stock_allocations\s+for select to authenticated using \(public\.is_product_lab_owner\(\)\);/);
+  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS, "product_media", "order_refund_corrections", "order_stock_allocations"]);
   const uncovered = [...tablesReferencedInCode()].filter((table) => !covered.has(table)).sort();
   assert.deepEqual(uncovered, [], `these tables are used by the code but hardened by nobody: ${uncovered.join(", ")}`);
 });

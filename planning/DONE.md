@@ -701,3 +701,13 @@ handoff prefills only product/format into the shared production flow; explicit P
 price mismatch warnings. Focused 151/151; full 4447 passed / 1 existing skip / 0 failures;
 typecheck, scoped lint, build and fixture browser acceptance PASS. Self-review/QA passed;
 merge gate `approved`, awaiting independent review. No push, deploy, migration or production write.
+
+## 2026-10-19 -- Refund hotfix: audited correction of a mistaken refund + Refund confirmation (local only)
+
+Added `correct_mistaken_refund` (owner-only, idempotent, audited in the append-only `order_refund_corrections`)
+and a confirmation on the normal Refund button. The correction restores Paid and clears the refund from active
+calculations while keeping the original payment facts, the completed order, stock allocations, order lines and
+ingredient COGS; it creates no payment. Safeguards: 7-day window, never for cancelled orders, once per order,
+echo of the refund shown, typed order code and reason, and a trigger that blocks every other client reversal or
+edit of a refund. Decision D-010; evidence in `REVIEW.md`. No existing migration, RPC, order, inventory or data
+was changed. No migration was applied and no SQL was run against the live project.

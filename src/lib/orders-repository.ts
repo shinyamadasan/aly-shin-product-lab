@@ -105,6 +105,8 @@ export type OrdersClient = {
   // table) -- read-only for the same reason order_lines is: there is no legitimate direct write,
   // it only ever changes as a side effect of complete_order_with_fulfillment.
   from(table: "order_raw_cogs"): ReadOnlyTable;
+  // Refund corrections: an append-only audit table, read-only from the client for the same reason.
+  from(table: "order_refund_corrections"): ReadOnlyTable;
   rpc(name: "save_order", args: SaveOrderArgs): PromiseLike<{ data: unknown; error: SupabaseErrorLike | null }>;
   rpc(name: "save_public_order_once", args: SavePublicOrderOnceArgs): PromiseLike<{ data: { created: boolean } | null; error: SupabaseErrorLike | null }>;
   // Wave 2: the three reservation-consequential transitions. Each returns the resulting `orders`
@@ -115,6 +117,8 @@ export type OrdersClient = {
   rpc(name: "complete_order_with_fulfillment", args: { p_operation_id: string; p_order_id: string }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
   // Safe Delete Order: the database decides eligibility. See safeDeleteOrder below.
   rpc(name: "safe_delete_order", args: { p_operation_id: string; p_order_id: string; p_expected_updated_at: string }): PromiseLike<{ data: { deleted: boolean } | null; error: SupabaseErrorLike | null }>;
+  // Correct Mistaken Refund: the database decides eligibility. See correctMistakenRefund below.
+  rpc(name: "correct_mistaken_refund", args: { p_operation_id: string; p_order_id: string; p_reason: string; p_expected_refunded_at: string; p_expected_paid_amount: number }): PromiseLike<{ data: OrderRow | null; error: SupabaseErrorLike | null }>;
 };
 
 export type SaveOrderArgs = {
@@ -487,6 +491,74 @@ export async function safeDeleteOrder(client: OrdersClient, { orderId, expectedU
   }
 
   return { ok: true };
+}
+
+export type RefundCorrection = { orderId: string; reason: string; correctedAt: string };
+export type RefundCorrectionsResult = { ok: true; corrections: Map<string, RefundCorrection> } | OrdersFailure;
+
+// Supplementary, like listOrderRawCogs: a database that predates the migration simply has no corrections.
+// The caller treats a failure as "none known"; the database still refuses a second correction on its own.
+export async function listRefundCorrections(client: OrdersClient, orderIds: string[]): Promise<RefundCorrectionsResult> {
+  if (orderIds.length === 0) {
+    return { ok: true, corrections: new Map() };
+  }
+  const result = await client.from("order_refund_corrections").select<{ order_id: string; reason: string; corrected_at: string }>("order_id,reason,corrected_at").in("order_id", orderIds);
+  if (result.error) {
+    return { ok: false, ...dbErrorResult(result.error) };
+  }
+  return { ok: true, corrections: new Map((result.data ?? []).map((row) => [row.order_id, { orderId: row.order_id, reason: row.reason, correctedAt: row.corrected_at }])) };
+}
+
+export type CorrectMistakenRefundResult =
+  | { ok: true; order: Order }
+  | { ok: false; reason: "not-allowed" | "not-correctable" | "invalid" | "not-found" | "unavailable" | "missing-table" | "failed"; message: string };
+
+// Undoes a refund that was clicked by mistake: no money was returned. The database is the authority
+// (correct_mistaken_refund). It requires the owner, a reason of 10-300 characters, and an echo of the exact
+// refunded_at and paid_amount the screen showed (so a stale screen cannot undo a different refund), refuses
+// cancelled orders, refunds older than 7 days and a second correction, and records an append-only audit row.
+// `expectedRefundedAt` must be the order's refundedAt AS LOADED, untouched -- never re-formatted.
+//
+// Error codes it raises: 42501 not the owner, 22023 bad input / no such order, 23514 a rule refused it (the
+// message says which), 55P03 the same operation is still running. PGRST202/42883 mean the migration has not
+// been applied to this database yet.
+export async function correctMistakenRefund(
+  client: OrdersClient,
+  { orderId, reason, expectedRefundedAt, expectedPaidAmount, operationId }: { orderId: string; reason: string; expectedRefundedAt: string; expectedPaidAmount: number; operationId: string },
+): Promise<CorrectMistakenRefundResult> {
+  const { data, error } = await client.rpc("correct_mistaken_refund", {
+    p_operation_id: operationId,
+    p_order_id: orderId,
+    p_reason: reason.trim(),
+    p_expected_refunded_at: expectedRefundedAt,
+    p_expected_paid_amount: expectedPaidAmount,
+  });
+  if (error) {
+    if (error.code === "42501") {
+      return { ok: false, reason: "not-allowed", message: "Only the owner can correct a refund." };
+    }
+    if (error.code === "23514") {
+      return { ok: false, reason: "not-correctable", message: error.message };
+    }
+    if (error.code === "55P03") {
+      return { ok: false, reason: "failed", message: "This is still being processed from a moment ago. Wait a moment and try again." };
+    }
+    if (error.code === "22023" && /not found/i.test(error.message)) {
+      return { ok: false, reason: "not-found", message: "That order no longer exists. Refresh and try again." };
+    }
+    if (error.code === "22023") {
+      return { ok: false, reason: "invalid", message: error.message };
+    }
+    if (error.code === "PGRST202" || error.code === "42883") {
+      return { ok: false, reason: "unavailable", message: "Correcting a refund is not available on this database yet." };
+    }
+    return { ok: false, ...dbErrorResult(error) };
+  }
+  if (!data) {
+    return { ok: false, reason: "failed", message: "The server did not confirm the correction. Refresh and check the order before trying again." };
+  }
+
+  return { ok: true, order: mapOrderRow(data) };
 }
 
 export type PaymentAction =
