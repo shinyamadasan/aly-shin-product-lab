@@ -16,7 +16,8 @@ Before changes: focused finance81/81; disposable Release2 stock suite6/6 (all or
 
 ## Current Step
 
-Implementation, self-review, independent review and QA complete. Scoped commit/PR publication next;
+Delivered draft PR #112: https://github.com/shinyamadasan/aly-shin-product-lab/pull/112
+Implementation b71cea9; self-review, independent review and QA complete;
 no production change is authorized. Full root cause,64-row raw history audit plus finished correction,
 exact32 affected gains, limitations and separate app-first/view-second release/recovery procedure:
 docs/FINANCIAL_STOCK_COUNT_HOTFIX.md. Merge gate approved because user requested separate review.

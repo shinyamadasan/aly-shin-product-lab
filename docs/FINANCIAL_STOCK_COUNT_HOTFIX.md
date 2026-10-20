@@ -1,6 +1,7 @@
 # Financial Release 2 — stock-count gains hotfix
 
-Status: implemented for a scoped PR; **not applied or deployed**. Base: `origin/main` at deployed
+Status: delivered as [draft PR #112](https://github.com/shinyamadasan/aly-shin-product-lab/pull/112);
+**not applied or deployed**. Implementation commit: `b71cea9`. Base: `origin/main` at deployed
 source `1f29e0140a8074f761643822f9930d816ee2b102`. The user's explicit hotfix request authorizes
 implementation and PR creation only. Production database changes, merge and deployment require
 separate approval. The root dirty Release 1 checkout and Release 2 release-evidence worktree are preserved.

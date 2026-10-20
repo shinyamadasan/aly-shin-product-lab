@@ -1,7 +1,8 @@
 # STATUS
 
-## 2026-10-20 — Financial stock-count hotfix ready for scoped PR
+## 2026-10-20 — Financial stock-count hotfix delivered as draft PR #112
 
+Draft PR: https://github.com/shinyamadasan/aly-shin-product-lab/pull/112 (implementation b71cea9).
 View-only migration and narrow Finance changes distinguish32 verified count gains, including the
 three October rows, while retaining unknown valuation warnings and genuine-loss result gates.
 Production remains unchanged. Full audit and separate approval release procedure:
