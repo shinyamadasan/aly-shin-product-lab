@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { Cookie } from "lucide-react";
 import type { LabState } from "@/lib/lab-state";
 import type { FinishedStockExceptionType, FinishedStockMovement, Product, ProductionExecution, ProductionExecutionCorrection } from "@/lib/product-lab-types";
@@ -95,15 +95,14 @@ export function BakePage({
     setBakeOperationId(crypto.randomUUID());
   }
 
-  useEffect(() => {
-    if (batchChoices.current.length === 0) {
-      return;
-    }
-    if (selectedBatchId && labState.batches.some((item) => item.id === selectedBatchId)) {
-      return;
-    }
-    setSelectedBatchId(batchChoices.current[0]?.batch.id ?? "");
-  }, [batchChoices, labState.batches, selectedBatchId]);
+  // Adjust a stale selection as batches arrive, using the same guarded render-state pattern above.
+  if (batchChoices.current.length > 0
+    && (!selectedBatchId || !labState.batches.some((item) => item.id === selectedBatchId))) {
+    const requested = !selectedBatchId && typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("batch") : null;
+    const resolvedId = resolveBakeBatchId(batchChoices, labState.batches, requested);
+    setSelectedBatchId(resolvedId);
+    if (requested && isOlderBakeBatch(batchChoices, resolvedId)) setIsOlderOpen(true);
+  }
 
   const selectedBatch = labState.batches.find((batch) => batch.id === selectedBatchId) ?? null;
   const multiplier = Number(multiplierText);
@@ -207,11 +206,11 @@ export function BakePage({
       ) : null}
 
       <FormPanel icon={<Cookie size={18} />} title="Bake a batch">
-        <label className="grid gap-1 text-sm font-medium">
+        <label className="grid min-w-0 gap-1 text-sm font-medium">
           Recipe to bake
           {batchChoices.current.length > 0 ? (
             <select
-              className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+              className="h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3"
               onChange={(event) => setSelectedBatchId(event.target.value)}
               value={selectedIsOlder ? "" : selectedBatchId}
             >
@@ -240,7 +239,7 @@ export function BakePage({
             <summary className="cursor-pointer text-xs font-semibold text-[#8f5632]">Use an older version</summary>
             <select
               aria-label="Older recipe version"
-              className="mt-2 h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3"
+              className="mt-2 h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3"
               onChange={(event) => { if (event.target.value) { setSelectedBatchId(event.target.value); } }}
               value={selectedIsOlder ? selectedBatchId : ""}
             >

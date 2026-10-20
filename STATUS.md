@@ -1,5 +1,16 @@
 # STATUS
 
+## 2026-10-20 -- Runtime dependency security repair verified; PR review only
+
+Production audit is zero after targeted Next16.3.8/Sharp0.35.5/Nanoid3.3.20/source-map-js1.2.2 updates.
+Matching eslint-config-next16.3.8; current Netlify adapter5.16.3 retained and verified on Linux.
+4471unit pass/4Windows-only skips,173disposablePostgres cases verified,TypeScript/ESLint/build/native
+packaging PASS. Guarded ContentStudio fixtures,35refundchecks and40appdesktop/mobile checks PASS.
+Independent security review APPROVED. Existing dev-only9high/1moderate advisories are documented.
+No production action taken; refund deploy6ad77d3799debf1d75d48671 remains published. No automaticdeploy.
+Next: security-only PR, integrate exact repair into preserved Finance PR108 and finish its QA.
+See docs/DEPENDENCY_SECURITY_2026-10-20.md. Real-device rendering remains human verification.
+
 ## 2026-10-20 -- Refund source-control closeout verified
 
 PR #106 is merged (`0489e3b`). The independent recovery/deployment closeout review passes with no

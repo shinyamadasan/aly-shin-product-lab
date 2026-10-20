@@ -164,7 +164,7 @@ test("an older selection is visibly identified and never snaps back: warning sho
 test("the initial selection comes from the shared resolver (deep link honored, else first current) and the disappeared-batch fallback still exists", () => {
   assert.match(bakeText, /resolveBakeBatchId\(batchChoices, labState\.batches, requested\)/);
   assert.match(bakeText, /new URLSearchParams\(window\.location\.search\)\.get\("batch"\)/);
-  assert.match(bakeText, /setSelectedBatchId\(batchChoices\.current\[0\]\?\.batch\.id \?\? ""\)/);
+  assert.match(bakeText, /const resolvedId = resolveBakeBatchId\(batchChoices, labState\.batches, requested\);\s*setSelectedBatchId\(resolvedId\);/);
   assert.match(bakeText, /labState\.batches\.some\(\(item\) => item\.id === selectedBatchId\)/);
 });
 
@@ -325,7 +325,9 @@ test("a deep-linked voided batch stays selected and visibly warned; selection lo
   assert.equal(isOlderBakeBatch(result, "bl-v3"), true);
   assert.match(bakeText, /selectedBatch && isVoidedBatch\(selectedBatch\) \?[^\n]*role="alert">This recipe version is voided and cannot be baked\./);
   // The disappeared-batch fallback only reacts to a batch that no longer exists -- never to a voided one.
-  assert.match(bakeText, /if \(selectedBatchId && labState\.batches\.some\(\(item\) => item\.id === selectedBatchId\)\) \{\s*return;\s*\}/);
+  assert.match(bakeText, /if \(batchChoices\.current\.length > 0\s*&& \(!selectedBatchId \|\| !labState\.batches\.some\(\(item\) => item\.id === selectedBatchId\)\)\) \{/);
+  assert.match(bakeText, /const requested = !selectedBatchId && typeof window !== "undefined" \? new URLSearchParams\(window\.location\.search\)\.get\("batch"\) : null;\s*const resolvedId = resolveBakeBatchId\(batchChoices, labState\.batches, requested\);\s*setSelectedBatchId\(resolvedId\);/);
+  assert.match(bakeText, /if \(requested && isOlderBakeBatch\(batchChoices, resolvedId\)\) setIsOlderOpen\(true\);/);
 });
 
 test("confirm_bake_v3 authority and the confirmBake call are untouched by the client guard", () => {
