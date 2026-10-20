@@ -1,5 +1,32 @@
 # STATUS
 
+## 2026-10-20 -- Finance final QA verified; production approval pending
+
+Security PR #109 (f201920) is integrated into the existing Finance PR #108 candidate. Independent
+code/security/safety review is approved. Technical readiness PASS: runtime audit zero; Linux unit
+4,547 pass / four Windows-only skips; full disposable PostgreSQL 191/191; TypeScript, ESLint and
+production-context Netlify build pass. Guarded browser: Finance 64/64, refund 36/36, navigation and
+server routes 40/40. Cancel sends zero write requests. Media fixture generation/upload gates pass.
+All packaged static assets and seven API routes verified; Linux native Sharp 0.35.5, no Windows files.
+
+No Finance accounting or expense migration changes. Expense SQL SHA-256 remains ddd837ee7b9d3a05e4b520e035358b712584bed33f8707d655f82869fe94e6b0.
+Production read-only October coverage 33/33, COGS PHP3,398.13, margin PHP4,981.87; September's 42
+uncosted orders remain withheld with historical warnings. Recovery state exactly matches the earlier
+verification; all three recovered orders untouched, expense ledger absent, no migration replay.
+Production remains refund deploy 6ad77d3799debf1d75d48671. Neither PR merged or any build uploaded.
+Development-only 9 high / 1 moderate findings are documented, including unpatched braces; production
+audit is clean. Original dirty Finance checkout and safety refs preserved.
+
+Next: owner source review of PRs #109 and #108, then separate production approval for the targeted
+expense migration and manual Netlify draft/promotion plan. Actual draft-edge smoke and physical
+iOS/Android verification remain release/human checks. See docs/FINANCIAL_RELEASE_1_FINAL_QA_2026-10-20.md.
+
+## 2026-10-20 -- Finance security integration in verification
+
+Security PR109 is reviewed/open and unmerged at f201920. Its exact repair is integrated into the
+existing Finance candidate; both review histories retained. Production remains unchanged.
+Full integrated Finance unit/database/build/browser verification is in progress; no production approval.
+
 ## 2026-10-20 -- Financial Release 1 integration checkpoint: SECURITY BLOCKED
 
 Refund PR #106 and recovery/configuration PR #107 are merged. Production remains Netlify

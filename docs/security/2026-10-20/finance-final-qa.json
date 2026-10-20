@@ -1,0 +1,833 @@
+{
+  "source": {
+    "financeBase": "7dcf5c088704e6cae4873519dbe3de39d66f0baa",
+    "security": "f201920f5ea012407df44bd129ccba47cf021fac"
+  },
+  "productionAudit": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "unit": {
+    "pass": 4547,
+    "fail": 0,
+    "windowsOnlySkipped": 4
+  },
+  "postgres": {
+    "pass": 191,
+    "fail": 0,
+    "skipped": 0
+  },
+  "browser": {
+    "finance": [
+      {
+        "name": "desktop: Finance reachable from the sidebar",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: Finance link marked current",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: opens on the current Manila month (October 2026)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: sales revenue 600.00 (recognized at completion)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: ingredient cost 37.50",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: gross margin 562.50 shown (coverage complete)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: no expenses yet -> 0.00 + 'None recorded' and a warning",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: cost coverage 100%",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: deposit 120 and receivable 120 shown separately",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: exclusions panel visible without interaction",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: never says 'profit' as a headline / 'net profit'",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: September gross margin withheld (em dash + reason)",
+        "ok": true,
+        "detail": "GROSS MARGIN BEFORE EXCLUDED COSTS — Not shown: some sales this month have no recorded ingredient cost."
+      },
+      {
+        "name": "desktop: September result withheld",
+        "ok": true,
+        "detail": "PROVISIONAL OPERATING RESULT — Not shown: expenses weren't tracked before 2026-10."
+      },
+      {
+        "name": "desktop: September coverage warning visible, coverage not 100%",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: September pre-start warning visible",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: September still shows the exclusions",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: next-month button returns to October",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: empty form shows field errors and saves nothing",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: no ingredient/packaging/inventory category offered",
+        "ok": true,
+        "detail": "Choose… | Rent / space | Utilities | Delivery & transport | Payment & platform fees | Marketing | Equipment & tools | Cleaning & other supplies | Software & subscriptions | Permits & business taxes | Paid labor | Other"
+      },
+      {
+        "name": "desktop: a double click on Save stores exactly one expense",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: totals update: expenses 1,500.00",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: operating result = 562.50 - 1,500 = -937.50",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: the 'no expenses' warning is gone",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: ledger row stored with centavo-exact amount and the owner as recorder",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: same date/amount/payee warns before saving",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: 'Record anyway' stores the second entry",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: void without a reason is refused",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: void keeps the row (history) and stops it counting",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: voided entry can be shown, marked void with its reason",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: correction without a reason is refused",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: correction voids the original and appends a linked replacement",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: only the corrected amount counts (1,450.50)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: category filter works",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: figures persist across reload (from the database)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: Dashboard still loads",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: Costing page still loads",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: no console errors",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: no uncaught page errors",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: no failed (4xx/5xx) requests except expected",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "desktop: no request left localhost (production never contacted)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 390: no horizontal overflow (October)",
+        "ok": true,
+        "detail": "390 vs 390"
+      },
+      {
+        "name": "mobile 390: no horizontal overflow (September, warnings + dashes)",
+        "ok": true,
+        "detail": "390 vs 390"
+      },
+      {
+        "name": "mobile 390: September result withheld",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 390: exclusions still visible",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 390: expense form has no horizontal overflow",
+        "ok": true,
+        "detail": "390 vs 390"
+      },
+      {
+        "name": "mobile 390: controls are at least 36px tall",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 390: form inputs are 16px+ (no iOS zoom)",
+        "ok": true,
+        "detail": "0 below 16px"
+      },
+      {
+        "name": "mobile 390: no money amount wraps or clips",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 390: expense saved by touch",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 390: no horizontal overflow with an expense list",
+        "ok": true,
+        "detail": "390 vs 390"
+      },
+      {
+        "name": "mobile 390: no console errors / page errors",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 390: nothing left localhost",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 320: no horizontal overflow (October)",
+        "ok": true,
+        "detail": "320 vs 320"
+      },
+      {
+        "name": "mobile 320: no horizontal overflow (September, warnings + dashes)",
+        "ok": true,
+        "detail": "320 vs 320"
+      },
+      {
+        "name": "mobile 320: September result withheld",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 320: exclusions still visible",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 320: expense form has no horizontal overflow",
+        "ok": true,
+        "detail": "320 vs 320"
+      },
+      {
+        "name": "mobile 320: controls are at least 36px tall",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 320: form inputs are 16px+ (no iOS zoom)",
+        "ok": true,
+        "detail": "0 below 16px"
+      },
+      {
+        "name": "mobile 320: no money amount wraps or clips",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 320: expense saved by touch",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 320: no horizontal overflow with an expense list",
+        "ok": true,
+        "detail": "320 vs 320"
+      },
+      {
+        "name": "mobile 320: no console errors / page errors",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "mobile 320: nothing left localhost",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "refund": [
+      {
+        "name": "incident order (completed, refunded 2 s after payment): action offered",
+        "ok": true
+      },
+      {
+        "name": "incident order: normal Refund and Mark paid are NOT offered (refund is terminal)",
+        "ok": true
+      },
+      {
+        "name": "cancelled order's genuine refund: action NOT offered",
+        "ok": true
+      },
+      {
+        "name": "10-day-old refund: action NOT offered",
+        "ok": true
+      },
+      {
+        "name": "open order refunded an hour ago: action offered",
+        "ok": true
+      },
+      {
+        "name": "a paid, never-refunded order does not offer it",
+        "ok": true
+      },
+      {
+        "name": "form shows the warning that no money may have been returned",
+        "ok": true
+      },
+      {
+        "name": "submit disabled with nothing entered",
+        "ok": true
+      },
+      {
+        "name": "a short reason is explained and keeps submit disabled",
+        "ok": true
+      },
+      {
+        "name": "wrong confirmation code keeps submit disabled",
+        "ok": true
+      },
+      {
+        "name": "valid reason + typed code enables submit",
+        "ok": true
+      },
+      {
+        "name": "database: order is Paid again, refund cleared, still completed, amount 200",
+        "ok": true
+      },
+      {
+        "name": "database: ingredient COGS unchanged",
+        "ok": true
+      },
+      {
+        "name": "database: stock allocation unchanged",
+        "ok": true
+      },
+      {
+        "name": "database: no new stock movement, no new order/payment row",
+        "ok": true
+      },
+      {
+        "name": "database: exactly one audit row with the reason and the original refund",
+        "ok": true
+      },
+      {
+        "name": "screen: shows 'Refund corrected' history with the reason; action not offered again",
+        "ok": true
+      },
+      {
+        "name": "after reload: history still shown, action not re-offered",
+        "ok": true
+      },
+      {
+        "name": "stale screen: refused with the database's reason, nothing changed",
+        "ok": true
+      },
+      {
+        "name": "stale screen: no audit row was written",
+        "ok": true
+      },
+      {
+        "name": "Cancel makes no write request",
+        "ok": true
+      },
+      {
+        "name": "Refund asks for confirmation and names the amount, the customer and 'actually been returned'",
+        "ok": true
+      },
+      {
+        "name": "choosing Cancel records NOTHING: order still paid, no refund, no audit row",
+        "ok": true
+      },
+      {
+        "name": "and the Refund button is still there",
+        "ok": true
+      },
+      {
+        "name": "confirming records the refund (paid -> refunded)",
+        "ok": true
+      },
+      {
+        "name": "a deliberate refund can still be undone within the window, only through the audited action",
+        "ok": true
+      },
+      {
+        "name": "refunded order has no Mark paid / Refund / Correct payment record buttons",
+        "ok": true
+      },
+      {
+        "name": "desktop: no unexpected console or page errors, no external requests",
+        "ok": true
+      },
+      {
+        "name": "390px: no horizontal page scroll with the form open",
+        "ok": true
+      },
+      {
+        "name": "390px: form inputs are at least 16px (no iOS zoom)",
+        "ok": true
+      },
+      {
+        "name": "390px: submit button is >=40px high and inside the viewport",
+        "ok": true
+      },
+      {
+        "name": "390px: no console or page errors",
+        "ok": true
+      },
+      {
+        "name": "320px: no horizontal page scroll with the form open",
+        "ok": true
+      },
+      {
+        "name": "320px: form inputs are at least 16px (no iOS zoom)",
+        "ok": true
+      },
+      {
+        "name": "320px: submit button is >=40px high and inside the viewport",
+        "ok": true
+      },
+      {
+        "name": "320px: no console or page errors",
+        "ok": true
+      }
+    ],
+    "navigation": [
+      {
+        "name": "1280 inventory loads",
+        "ok": true
+      },
+      {
+        "name": "1280 orders loads",
+        "ok": true
+      },
+      {
+        "name": "1280 content-studio loads",
+        "ok": true
+      },
+      {
+        "name": "1280 asynchronous batch arrival selects a recipe",
+        "ok": true
+      },
+      {
+        "name": "1280 missing batch deep link falls back",
+        "ok": true
+      },
+      {
+        "name": "1280 older/voided deep link is retained",
+        "ok": true
+      },
+      {
+        "name": "1280 older recipe disclosure is open",
+        "ok": true
+      },
+      {
+        "name": "1280 Bake navigation fits viewport",
+        "ok": true
+      },
+      {
+        "name": "1280 no runtime errors",
+        "ok": true
+      },
+      {
+        "name": "1280 no failed JavaScript/CSS",
+        "ok": true
+      },
+      {
+        "name": "1280 no forbidden writes",
+        "ok": true
+      },
+      {
+        "name": "390 inventory loads",
+        "ok": true
+      },
+      {
+        "name": "390 orders loads",
+        "ok": true
+      },
+      {
+        "name": "390 content-studio loads",
+        "ok": true
+      },
+      {
+        "name": "390 asynchronous batch arrival selects a recipe",
+        "ok": true
+      },
+      {
+        "name": "390 missing batch deep link falls back",
+        "ok": true
+      },
+      {
+        "name": "390 older/voided deep link is retained",
+        "ok": true
+      },
+      {
+        "name": "390 older recipe disclosure is open",
+        "ok": true
+      },
+      {
+        "name": "390 Bake navigation fits viewport",
+        "ok": true
+      },
+      {
+        "name": "390 no runtime errors",
+        "ok": true
+      },
+      {
+        "name": "390 no failed JavaScript/CSS",
+        "ok": true
+      },
+      {
+        "name": "390 no forbidden writes",
+        "ok": true
+      },
+      {
+        "name": "320 inventory loads",
+        "ok": true
+      },
+      {
+        "name": "320 orders loads",
+        "ok": true
+      },
+      {
+        "name": "320 content-studio loads",
+        "ok": true
+      },
+      {
+        "name": "320 asynchronous batch arrival selects a recipe",
+        "ok": true
+      },
+      {
+        "name": "320 missing batch deep link falls back",
+        "ok": true
+      },
+      {
+        "name": "320 older/voided deep link is retained",
+        "ok": true
+      },
+      {
+        "name": "320 older recipe disclosure is open",
+        "ok": true
+      },
+      {
+        "name": "320 Bake navigation fits viewport",
+        "ok": true
+      },
+      {
+        "name": "320 no runtime errors",
+        "ok": true
+      },
+      {
+        "name": "320 no failed JavaScript/CSS",
+        "ok": true
+      },
+      {
+        "name": "320 no forbidden writes",
+        "ok": true
+      },
+      {
+        "name": "server route owner is packaged and denies/handles unauthenticated GET",
+        "ok": true
+      },
+      {
+        "name": "server route content-studio/carousel is packaged and denies/handles unauthenticated GET",
+        "ok": true
+      },
+      {
+        "name": "server route content-studio/reel is packaged and denies/handles unauthenticated GET",
+        "ok": true
+      },
+      {
+        "name": "server route production is packaged and denies/handles unauthenticated GET",
+        "ok": true
+      },
+      {
+        "name": "server route production/manual is packaged and denies/handles unauthenticated GET",
+        "ok": true
+      },
+      {
+        "name": "server route public-orders is packaged and denies/handles unauthenticated GET",
+        "ok": true
+      },
+      {
+        "name": "server route mcp is packaged and denies/handles unauthenticated GET",
+        "ok": true
+      }
+    ]
+  },
+  "netlify": {
+    "adapter": "5.16.3",
+    "cli": "27.10.2",
+    "buildId": "oTRcUDwxySjXJIk2IDhfL",
+    "staticAssets": [
+      {
+        "path": "_next/static/chunks/00_6mo4_er9mq.js",
+        "status": 200,
+        "sha256": "3430bb76f6fa15fc9135c289addb1e0d23de184976ef3f93ec17359b5479dae3"
+      },
+      {
+        "path": "_next/static/chunks/033otl10fxwlx.js",
+        "status": 200,
+        "sha256": "755006313f354e14e4e4685036d9b0ba6adfcfd5a929c5fc0a620f997ecf7cdd"
+      },
+      {
+        "path": "_next/static/chunks/0cz1d0mv5g_q7.js",
+        "status": 200,
+        "sha256": "0973c1d64c88adc8e3c950410cb58b288f72118d5965b78049438deb8f2f9683"
+      },
+      {
+        "path": "_next/static/chunks/0wj1_j3zgckxg.js",
+        "status": 200,
+        "sha256": "8f98b6800bc456a859b43e3085b580ce65226203569286af02b9166f5d3010bb"
+      },
+      {
+        "path": "_next/static/chunks/11jq0c2_zavac.js",
+        "status": 200,
+        "sha256": "eb05096106ddf19901b7005fb42a3a8266f90c4a135206fb439a95a2a86deb1e"
+      },
+      {
+        "path": "_next/static/chunks/1ae6rsw_e2zkt.js",
+        "status": 200,
+        "sha256": "64342ed66df2c4ecc54b55a4a0381fc53efe1576f74f2138dbc524fed9f60734"
+      },
+      {
+        "path": "_next/static/chunks/1qle96i3dw9rg.js",
+        "status": 200,
+        "sha256": "128b6dd775996941f80eae993a6e2ffa7e77eadf10b7c98c84682f0f07157bd6"
+      },
+      {
+        "path": "_next/static/chunks/1zb54tsf546vb.js",
+        "status": 200,
+        "sha256": "bfb9d10ae3024e562f5eaad2011e26cb752b2ac555b65483867daf28463dcdf9"
+      },
+      {
+        "path": "_next/static/chunks/24w0semg9qvt8.css",
+        "status": 200,
+        "sha256": "063a63208a74a0a976d2ef32f64ec90799eb1e151ab7dd6bf5afd60ade9c9753"
+      },
+      {
+        "path": "_next/static/chunks/284th1x-n7lu7.js",
+        "status": 200,
+        "sha256": "79c4d683d32008924755d0675e70f7eb9087f0dba858580c7af90d081e164c61"
+      },
+      {
+        "path": "_next/static/chunks/2rjv-omrs_vm3.js",
+        "status": 200,
+        "sha256": "7d07770f7f0280c429c0b59d5bc5b582ae4170d1b1f8433681c97a882c564fe8"
+      },
+      {
+        "path": "_next/static/chunks/2t6ytz-t-_k-t.js",
+        "status": 200,
+        "sha256": "0d48bcfbc1f00c2f90c8e802b2f6d66c87a24b90af083d812a4fa7ad58b0874e"
+      },
+      {
+        "path": "_next/static/chunks/2uwmjffhgxlkv.js",
+        "status": 200,
+        "sha256": "7833a2437ef6449bddbe0e62a146c5231148d8ecca6dd89a0bebd291eeca6de2"
+      },
+      {
+        "path": "_next/static/chunks/3fntmmi971322.js",
+        "status": 200,
+        "sha256": "34ed6abf4c6d0d1bb3dc56d3f133d2a5dbc3a3c89c791deab314e27143ac14ce"
+      },
+      {
+        "path": "_next/static/chunks/3g4px251sg85e.js",
+        "status": 200,
+        "sha256": "30abc6b5ce026a4fad0a49733ddafe448c7bff24092f8d8663cce37cfab48317"
+      },
+      {
+        "path": "_next/static/chunks/3k7ec1gslpggm.js",
+        "status": 200,
+        "sha256": "7c90e8d94b7023f735ee3d788198cb83b866eebaf5eaa118be5c3cc39d2d9ad0"
+      },
+      {
+        "path": "_next/static/chunks/3ptok4s9jtalx.js",
+        "status": 200,
+        "sha256": "4a360f44c67027e84dc1e07222e14eb6e18775f0e7799e80097564de8746049d"
+      },
+      {
+        "path": "_next/static/chunks/3ukcgg_yfiahw.js",
+        "status": 200,
+        "sha256": "e935adb8afeb9b684b9cb72cb71903e57e7920e57efa5f0d23898216de724921"
+      },
+      {
+        "path": "_next/static/chunks/turbopack-0pvqmvf6_84p7.js",
+        "status": 200,
+        "sha256": "1dc6d70e5f39094abf8449330801398e9bad78bd9da09e8d0fd43316d026cdd8"
+      },
+      {
+        "path": "_next/static/media/favicon.2vob68tjqpejf.ico",
+        "status": 200,
+        "sha256": "2b8ad2d33455a8f736fc3a8ebf8f0bdea8848ad4c0db48a2833bd0f9cd775932"
+      },
+      {
+        "path": "_next/static/oTRcUDwxySjXJIk2IDhfL/_buildManifest.js",
+        "status": 200,
+        "sha256": "9476e0afd3f9da68a64e6ec58631191fd3eaca62c9f5a377e7517fe9a89e59ea"
+      },
+      {
+        "path": "_next/static/oTRcUDwxySjXJIk2IDhfL/_clientMiddlewareManifest.js",
+        "status": 200,
+        "sha256": "5483e3295dc35dfe29ea932efc85341c916f10ff78ff5b0e965e003710893a4a"
+      },
+      {
+        "path": "_next/static/oTRcUDwxySjXJIk2IDhfL/_ssgManifest.js",
+        "status": 200,
+        "sha256": "678f6ce2cb80b1fe72fc67e7412be6e2ab6ada083111b64f7c40d35e3cba5e00"
+      }
+    ],
+    "apiRoutes": [
+      ".next/server/app/api/content-studio/carousel/route.js",
+      ".next/server/app/api/content-studio/reel/route.js",
+      ".next/server/app/api/mcp/route.js",
+      ".next/server/app/api/owner/route.js",
+      ".next/server/app/api/production/manual/route.js",
+      ".next/server/app/api/production/route.js",
+      ".next/server/app/api/public-orders/route.js"
+    ],
+    "native": {
+      "packagedNativeLoad": true,
+      "versions": {
+        "aom": "3.15.1",
+        "archive": "3.8.9",
+        "cairo": "1.18.6",
+        "cgif": "0.5.4",
+        "exif": "0.6.26",
+        "expat": "2.8.5",
+        "ffi": "3.8.0",
+        "fontconfig": "2.18.3",
+        "freetype": "2.14.3",
+        "fribidi": "1.0.17",
+        "glib": "2.90.0",
+        "harfbuzz": "14.5.0",
+        "heif": "1.23.5",
+        "highway": "1.4.0",
+        "imagequant": "2.4.1",
+        "lcms": "2.19.1",
+        "mozjpeg": "0826579",
+        "pango": "1.58.2",
+        "pixman": "0.46.4",
+        "png": "1.6.58",
+        "proxy-libintl": "0.5",
+        "rsvg": "2.63.2",
+        "tiff": "4.7.2",
+        "uhdr": "2.0.2",
+        "vips": "8.18.7",
+        "webp": "1.6.0",
+        "xml2": "2.15.4",
+        "zlib-ng": "2.3.3",
+        "sharp": "0.35.5"
+      },
+      "decodedAndTransformed": [
+        "png",
+        "jpeg",
+        "webp",
+        "svg"
+      ]
+    },
+    "uploaded": false
+  },
+  "expenseMigrationSHA256": "ddd837ee7b9d3a05e4b520e035358b712584bed33f8707d655f82869fe94e6b0",
+  "productionBusinessRecordsUnchanged": true,
+  "productionFinanceMigrationApplied": false,
+  "productionDeployChanged": false,
+  "independentReview": "approved"
+}

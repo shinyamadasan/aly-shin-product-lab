@@ -732,3 +732,17 @@ order, inventory, production or fulfilment behavior or data was changed.
 
 No migration was applied and no SQL of any kind was run against the live project; all database tests ran
 in disposable Postgres containers.
+
+## 2026-10-20 -- Targeted runtime dependency security repair (repository only)
+
+Runtime audit zero; Next/eslint16.3.8,Sharp0.35.5,Nanoid3.3.20,source-map-js1.2.2. Linux unit,
+disposable database, lint/typecheck, Netlify packaging and guarded media/refund/navigation gates pass;
+independent review approved. Existing development-only advisories documented separately. No merge,
+migration, upload or production deploy. See docs/DEPENDENCY_SECURITY_2026-10-20.md.
+
+## 2026-10-20 -- Finance security integration and final QA (repository only)
+
+Existing Finance candidate integrates reviewed security PR #109. Runtime audit zero, Linux unit
+4,547 pass, disposable PostgreSQL191/191, build/lint/typecheck/native packaging and guarded browser
+64+36+40 checks pass. Independent review approved; expense migration and accounting unchanged.
+No PR merge, production migration, upload or deployment. See final QA and exact deployment plan.

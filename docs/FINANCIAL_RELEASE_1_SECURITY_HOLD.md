@@ -1,5 +1,11 @@
 # Financial Release 1 security hold — 2026-10-20
 
+**Resolved in the reviewed Finance candidate, 2026-10-20.** Runtime audit is zero and final QA passes.
+See [current readiness and evidence](FINANCIAL_RELEASE_1_FINAL_QA_2026-10-20.md). Production remains
+unchanged; no migration or deployment approval is implied.
+
+## Historical hold record (preserved)
+
 **Production readiness: BLOCKED.** Finance code and deployment-plan independent reviews pass;
 the dependency security gate does not. This is a WIP checkpoint, not merge or release approval.
 
