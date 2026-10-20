@@ -269,5 +269,5 @@ export function buildGoldenInputs(): FinanceInputs {
     move("lotC", "brownie", "production_receipt", 10),
   ];
 
-  return { orders, linesByOrderId, cogsByOrderId, expenses, supplies, ingredients, productionExecutions, finishedStockMovements, truncated: false, stockTruncated: false };
+  return { orders, linesByOrderId, cogsByOrderId, expenses, stockFinancialEvents: [], stockEventsTruncated: false, supplies, ingredients, productionExecutions, finishedStockMovements, truncated: false, stockTruncated: false };
 }

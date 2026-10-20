@@ -139,6 +139,9 @@ test("Financial Release 1 against the real database machinery", { skip: process.
       linesByOrderId,
       cogsByOrderId: new Map(dump.cogs.map((row: Parameters<typeof mapOrderRawCogsRow>[0]) => [row.order_id, mapOrderRawCogsRow(row)])),
       expenses: ledgerApplied ? dump.expenses.map((row: BusinessExpenseRow) => mapExpenseRow(row)) : null,
+      // Release 1 baseline: no attribution migration or stock-loss events in this fixture.
+      stockFinancialEvents: [],
+      stockEventsTruncated: false,
       supplies: dump.supplies.map((row: Record<string, unknown>) => ({ id: row.id, ingredientId: row.ingredient_id ?? "", ingredientName: row.ingredient_name, brandName: row.brand_name ?? "", supplierName: row.supplier_name, purchaseDate: row.purchase_date, createdAt: row.created_at, packQuantity: Number(row.pack_quantity), unit: row.unit ?? "", totalCost: Number(row.total_cost), qualityRating: Number(row.quality_rating), notes: row.notes ?? "" })),
       ingredients: dump.ingredients.map((row: Parameters<typeof mapIngredientRow>[0] & { cost_reconciled_at: string | null }) => ({ ...mapIngredientRow(row), costReconciledAt: row.cost_reconciled_at })),
       productionExecutions: dump.lots.map(mapProductionExecutionRow),

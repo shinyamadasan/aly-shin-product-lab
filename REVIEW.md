@@ -1610,3 +1610,31 @@ Self-review/code health clear; would ship this bounded repair after production a
 Merge gate:approved (independent exact-function/permissions review requested and completed).
 No production writes, migration execution, history backfill, merge or deployment authorized.
 See docs/RAW_INVENTORY_REVERSAL_BOUNDARY_REPAIR.md for verification and release/recovery procedure.
+
+## 2026-10-20 — Financial Release 2: approved for draft review
+
+Scope: existing stock authorities extended with raw event-cost snapshots, explicit finished household/
+marketing/loss classification, exact-lot reversal, durable physical-count boundaries, append-only owner
+classification evidence and derived Finance attribution. No duplicate business expense writes or
+historical backfill. Sales COGS and household withdrawal remain separate. Safety repair b368914 is
+independently releasable in draft PR #110; Release 2 uses that branch as its explicit dependency.
+
+Independent exact-diff review: APPROVED, no unresolved substantive accounting/security/data-integrity
+findings. Resolved findings: Supabase default service-role INSERT bypass on new audits (explicit DML
+revokes plus realistic-grant tests); premature rounding (combine full-precision costs then round result).
+Additional review requests completed: original raw safeguard rerun after final FR2 replacement, capped
+preview withholding, reversal/review/cancel browser flows. Mobile long-select overflow caught and fixed.
+
+Verification: isolated lockfile install, no package/lockfile changes; full unit4574 pass/zero fail/one
+platform skip; full disposable PostgreSQL203/203; real built Next/PostgREST/PostgreSQL guarded browser
+119/119 at1280/390/320, zero runtime errors or forbidden writes; Finance92/92 and final stock UI111/111;
+production build, standalone TypeScript and source/touched-test ESLint pass. Disposable security advisors:
+zero new-object findings;24 old-bootstrap warnings explicitly disclosed, not a production-wide claim.
+SELF_REVIEW code-health checklist: existing systems reused, no duplicated expense/stock ledger, pure
+calculations, scoped changes, no orphaned symbols, debug application code or speculative abstractions.
+Would I ship this implementation after release approval:yes. QA Functional/Visual/Regression/Data Integrity/
+Documentation/Git Hygiene checks pass for draft readiness; real-device feel/polish remains human pending.
+
+Merge gate:approved, because separate independent reviewers were explicitly requested and completed.
+No production migration, data correction, merge, upload or deployment performed or authorized.
+Exact release/recovery procedure, exclusions and examples: docs/FINANCIAL_RELEASE_2.md.

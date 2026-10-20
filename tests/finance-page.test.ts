@@ -77,7 +77,7 @@ test("the result is provisional and never called profit; exclusions and the memo
 test("the page writes only through the expense repository, with a synchronous guard and a stable operation id", () => {
   assert.ok(!/\.from\(/.test(visibleText) && !/\.rpc\(/.test(visibleText), "no direct client calls in the component");
   for (const fn of ["recordBusinessExpense", "correctBusinessExpense", "voidBusinessExpense"]) assert.ok(PAGE.includes(`await ${fn}(client`), fn);
-  assert.equal((PAGE.match(/busyRef\.current = true/g) ?? []).length, 2, "both the form and the void prompt guard against a double click synchronously");
+  assert.equal((PAGE.match(/busyRef\.current = true/g) ?? []).length, 3, "expense entry, void and stock classification guard against a double click synchronously");
   assert.ok(PAGE.includes("operationRef.current = { id: crypto.randomUUID(), key }"), "an operation id is minted per distinct entry");
   assert.ok(PAGE.includes("operationRef.current = null;"), "and cleared after success");
   // Void and correct require a reason before anything is sent.
@@ -132,4 +132,27 @@ test("phone layout: two-column tiles that can shrink, wrapped text, tap-sized co
   assert.equal((PAGE.match(/className=\{input\} style=\{INPUT_STYLE\}/g) ?? []).length, sharedClass, "every one of them carries the 16px inline size");
   assert.ok(/aria-label="Reason for voiding"[^>]*style=\{INPUT_STYLE\}/.test(PAGE), "and so does the void reason input");
   assert.ok(PAGE.includes("h-10"), "controls are at least 40px tall");
+});
+
+test("stock events load independently and never silently default to an empty live source", () => {
+  assert.ok(PAGE.includes("Promise.allSettled([loadFinanceSalesData(client), listBusinessExpenses(client), listStockFinancialEvents(client)])"));
+  assert.ok(PAGE.includes('stockFinancialEvents: stockEvents.status === "ready" ? stockEvents.events : null'));
+  assert.ok(PAGE.includes('stockEventsTruncated: stockEvents.status === "ready" && stockEvents.truncated'));
+  for (const code of ["stock-events-unavailable", "stock-events-truncated", "stock-events-review"]) assert.ok(PAGE.includes(`"${code}":`));
+  assert.ok(PAGE.includes('value={entry.total === null ? "—" : peso(entry.total)}'));
+  assert.ok(PAGE.includes("Gross margin remains sales-only"));
+  assert.ok(PAGE.includes("Owner withdrawal; excluded from operating result"));
+});
+
+test("stock review exposes source evidence and classification only; it cannot supply a guessed cost", () => {
+  assert.ok(PAGE.includes("Stock event history and review"));
+  assert.ok(PAGE.includes("event.sourceId") && PAGE.includes("Production lot:"));
+  assert.ok(PAGE.includes('"Cost unknown"'));
+  assert.ok(PAGE.includes("Financial classification") && PAGE.includes("Evidence / reason"));
+  assert.ok(PAGE.includes("Explain the evidence for this classification."));
+  assert.ok(PAGE.includes("await classifyStockFinancialEvent(client"));
+  assert.ok(PAGE.includes("event.sourceKind, event.sourceId, event.reviewId, classification, note.trim()"), "retry key includes optimistic review version and exact evidence");
+  const review = PAGE.slice(PAGE.indexOf("function StockEventReview("), PAGE.indexOf("function StockEventDetails("));
+  assert.ok(!/type="number"|setAmount|amount:/.test(review), "classification review has no manual cost input");
+  assert.ok(review.includes("It does not change quantity, supply a missing cost, or create an expense-ledger entry"));
 });

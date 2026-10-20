@@ -17,6 +17,7 @@ import { Button, FormPanel, Input, Select, SecondaryButton, Tag, Textarea } from
 import { useEditNavigation } from "@/hooks/use-edit-navigation";
 import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard";
 import { areIngredientFormSnapshotsEqual, buildIngredientFormSnapshot, type IngredientFormSnapshot } from "@/lib/ingredient-form-snapshot";
+import { previewRawStockLoss, rawStockEffectLabel } from "@/lib/stock-financial-preview";
 
 // Every ingredient's own base unit is canonical -- kg/L stay valid purchase/recipe input units,
 // converted before ever reaching this list. Derived from CANONICAL_UNITS so there's exactly one
@@ -127,6 +128,11 @@ function AdjustStockForm({
   onClose: () => void;
 }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [quantityText, setQuantityText] = useState("");
+  const [unitText, setUnitText] = useState<string>(ingredient.baseUnit);
+  const [direction, setDirection] = useState<"increase" | "decrease">("decrease");
+  const [reason, setReason] = useState<StockAdjustmentReason>("household_use");
+  const preview = previewRawStockLoss(ingredient, Number(quantityText), unitText, direction);
   // A ref, not just isSubmitting state, guards re-entrancy -- the same reason Bake/Purchase
   // Import guard with a useRef, not just useState (see bake-page.tsx's isConfirmingRef): a fast
   // double-click can invoke handleSubmit twice before setIsSubmitting's effect on this closure
@@ -155,24 +161,25 @@ function AdjustStockForm({
 
   return (
     <form action={handleSubmit} className="grid gap-2 rounded-md border border-[#d8c7b7] bg-[#f7f2ea] p-3 sm:grid-cols-2">
-      <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" defaultValue="decrease" name="direction">
+      <select aria-label="Stock direction" style={{ fontSize: 16 }} className="h-9 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" value={direction} onChange={(event) => setDirection(event.target.value as "increase" | "decrease")} name="direction">
         <option value="decrease">Decrease stock</option>
         <option value="increase">Increase stock</option>
       </select>
-      <select className="h-9 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" defaultValue="household_use" name="reason">
+      <select aria-label="Adjustment reason" style={{ fontSize: 16 }} className="h-9 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-2 text-sm" value={reason} onChange={(event) => setReason(event.target.value as StockAdjustmentReason)} name="reason">
         {stockAdjustmentReasonOptions.filter((option) => option !== "stock_count_correction").map((option) => (
           <option key={option} value={option}>
             {stockAdjustmentReasonLabel[option]}
           </option>
         ))}
       </select>
-      <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="quantity" placeholder={`Quantity (${ingredient.baseUnit})`} step="0.01" type="number" />
-      <input className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" defaultValue={ingredient.baseUnit} name="unit" placeholder="Unit" />
-      <input className="col-span-full h-11 rounded-md border border-[#d8c7b7] bg-white px-3 text-base" name="note" placeholder="Reason note (required)" required />
+      <input aria-label="Adjustment quantity" style={{ fontSize: 16 }} className="h-9 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" name="quantity" value={quantityText} onChange={(event) => setQuantityText(event.target.value)} placeholder={`Quantity (${ingredient.baseUnit})`} min="0.01" required step="0.01" type="number" />
+      <input aria-label="Adjustment unit" style={{ fontSize: 16 }} className="h-9 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm" value={unitText} onChange={(event) => setUnitText(event.target.value)} name="unit" placeholder="Unit" />
+      <input className="col-span-full h-11 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-base" name="note" placeholder="Reason note (required)" required />
       <p className="col-span-full text-sm">For a physical count, use “Verify physical stock / correct a count” above. Negative balances are not allowed.</p>
+      <p className="col-span-full text-sm" role="status">{rawStockEffectLabel(reason, direction)}: {preview === null ? "Cost unavailable — Finance will flag this for review." : `Estimated financial effect ${formatPesos(preview)}`}. Record this once; no separate expense entry is needed.</p>
       <div className="col-span-full flex flex-wrap gap-2">
         <button className="h-9 rounded-md bg-[#8f5632] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60" disabled={isSubmitting} type="submit">{isSubmitting ? "Saving..." : "Save adjustment"}</button>
-        <button className="h-9 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onClose} type="button">Cancel</button>
+        <button className="h-9 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold text-[#5f4a3d]" onClick={onClose} type="button">Cancel</button>
       </div>
     </form>
   );

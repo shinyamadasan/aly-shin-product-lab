@@ -4,22 +4,28 @@
 //
 // WHAT THIS FILE READS AND WRITES
 //   Reads  orders, order_lines, order_raw_cogs (through the orders repository's own readers) and
-//          business_expenses. Every one is owner-only under RLS.
-//   Writes ONLY business_expenses, ONLY through its three RPCs. The narrow client type below does not
-//          even expose insert/update/delete on that table, so a direct write is a type error rather
-//          than a convention someone can forget. It writes no order, no stock, no purchase.
+//          business_expenses and stock_financial_events. Every one is owner-only under RLS.
+//   Writes business_expenses through its three RPCs, or an append-only stock classification review
+//          through its RPC. The narrow client exposes no insert/update/delete. No order, stock
+//          quantity, inventory cost or purchase is changed here.
 
 import { listOrderLines, listOrderRawCogs, listOrders, type OrdersClient } from "./orders-repository.ts";
 import type { Order, OrderLine } from "./orders/types.ts";
 import type { OrderRawCogs } from "./product-lab-types.ts";
 import { EXPENSE_COLUMNS, mapExpenseRow, type BusinessExpense, type BusinessExpenseRow, type ValidExpense } from "./finance/expenses.ts";
 import { POSTGREST_ROW_CAP } from "./finance/report.ts";
+import { STOCK_FINANCIAL_EVENT_COLUMNS, isStockFinancialClassification, mapStockFinancialEventRow, type StockFinancialEvent, type StockFinancialEventRow, type StockFinancialClassification } from "./finance/stock-events.ts";
 
 type SupabaseErrorLike = { code?: string; message: string; details?: string | null };
 
 type ExpenseSelect = PromiseLike<{ data: BusinessExpenseRow[] | null; error: SupabaseErrorLike | null }> & {
   order(column: string, options: { ascending: boolean }): ExpenseSelect;
   limit(count: number): ExpenseSelect;
+};
+
+type StockEventSelect = PromiseLike<{ data: StockFinancialEventRow[] | null; error: SupabaseErrorLike | null }> & {
+  order(column: string, options: { ascending: boolean }): StockEventSelect;
+  limit(count: number): StockEventSelect;
 };
 
 type RecordExpenseArgs = {
@@ -41,6 +47,11 @@ type ExpenseRpcResult = PromiseLike<{ data: BusinessExpenseRow | null; error: Su
 // Reads of business_expenses are select-only; the absence of a write method is the enforcement.
 export type FinanceClient = OrdersClient & {
   from(table: "business_expenses"): { select(columns: string): ExpenseSelect };
+  from(table: "stock_financial_events"): { select(columns: string): StockEventSelect };
+  rpc(name: "classify_stock_financial_event", args: {
+    p_operation_id: string; p_source_kind: "raw" | "finished"; p_source_id: string;
+    p_classification: StockFinancialClassification; p_expected_review_id: string | null; p_note: string;
+  }): PromiseLike<{ data: Record<string, unknown> | null; error: SupabaseErrorLike | null }>;
   rpc(name: "record_business_expense", args: RecordExpenseArgs): ExpenseRpcResult;
   rpc(name: "void_business_expense", args: { p_operation_id: string; p_expense_id: string; p_reason: string }): ExpenseRpcResult;
   rpc(name: "correct_business_expense", args: CorrectExpenseArgs): ExpenseRpcResult;
@@ -119,6 +130,41 @@ export async function listBusinessExpenses(client: FinanceClient): Promise<Expen
   }
   const rows = result.data ?? [];
   return { ok: true, expenses: rows.map(mapExpenseRow), truncated: rows.length >= POSTGREST_ROW_CAP };
+}
+
+// A separate source: failure must never turn stock losses into zero or hide otherwise valid sales.
+export type StockEventListResult = { ok: true; events: StockFinancialEvent[]; truncated: boolean } | FinanceFailure;
+
+export async function listStockFinancialEvents(client: FinanceClient): Promise<StockEventListResult> {
+  try {
+    const result = await client.from("stock_financial_events").select(STOCK_FINANCIAL_EVENT_COLUMNS)
+      .order("occurred_at", { ascending: false }).order("id", { ascending: false }).limit(POSTGREST_ROW_CAP);
+    if (result.error) return {
+      ok: false, reason: isMissingTable(result.error) ? "missing-table" : "failed",
+      message: isMissingTable(result.error) ? "Stock financial attribution is not set up yet. Apply the Financial Release 2 migration, then reload." : result.error.message,
+    };
+    if (result.data === null) return { ok: false, reason: "failed", message: "Stock financial attribution returned no data. Reload before relying on the operating result." };
+    return { ok: true, events: result.data.map(mapStockFinancialEventRow), truncated: result.data.length >= POSTGREST_ROW_CAP };
+  } catch (error) {
+    return { ok: false, reason: "failed", message: error instanceof Error ? error.message : "Stock financial attribution could not be loaded." };
+  }
+}
+
+export async function classifyStockFinancialEvent(client: FinanceClient, input: {
+  operationId: string; event: StockFinancialEvent; classification: StockFinancialClassification; note: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (!isStockFinancialClassification(input.classification) || input.note.trim() === "") return { ok: false, message: "Choose a classification and explain the evidence for it." };
+  try {
+    const result = await client.rpc("classify_stock_financial_event", {
+      p_operation_id: input.operationId, p_source_kind: input.event.sourceKind, p_source_id: input.event.sourceId,
+      p_classification: input.classification, p_expected_review_id: input.event.reviewId, p_note: input.note.trim(),
+    });
+    if (result.error) return { ok: false, message: result.error.code === "PT409" ? "This event was reviewed elsewhere. Reload Finance before changing its classification." : result.error.message };
+    return typeof result.data?.review_id === "string" && result.data.classification === input.classification
+      ? { ok: true } : { ok: false, message: "The server did not confirm the classification. Reload and check the event before retrying." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Classification could not be saved. Retry this same entry or reload to check it." };
+  }
 }
 
 export type ExpenseWriteFailureReason =

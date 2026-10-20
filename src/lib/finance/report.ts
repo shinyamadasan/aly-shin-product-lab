@@ -1,4 +1,4 @@
-// Financial Release 1 (T2): the monthly financial report, computed from records the app already has.
+// Monthly financial report, computed from sales, expense records and automatic stock attribution.
 //
 // PURE. No React, no Supabase, no clock: `timeZone` and every date arrive as parameters, so the same
 // inputs always give the same report and a test can pin any month. It composes the existing owners
@@ -6,7 +6,7 @@
 // from orders/totals.ts, COGS from the order_raw_cogs view (Wave 3), stock from the finished-stock
 // ledger. If a number here disagrees with one of those, this file is wrong.
 //
-// THE ACCOUNTING RULES (Release 1 defaults; see docs/DECISIONS.md D-FIN-1..):
+// THE ACCOUNTING RULES (Release 1 sales basis plus Release 2 stock attribution):
 //   * ACCRUAL AT FULFILMENT. An order is revenue in the Manila month it was COMPLETED, not the month
 //     it was paid. Its ingredient COGS lands in that same month, so revenue and cost always meet.
 //   * A paid order that is not yet completed is a customer DEPOSIT, not revenue. A completed order
@@ -19,6 +19,8 @@
 //     reach profit only as COGS when an order is fulfilled. Baking moves cost into finished goods
 //     without touching profit. COGS is read ONLY from fulfilled allocations (order_raw_cogs), never
 //     from Bake consumption, so a Bake cannot be counted twice.
+//   * Non-sale stock events arrive already valued/classified by the stock_financial_events view.
+//     Business losses, samples and testing reduce operating result; household withdrawals do not.
 //   * Owner's unpaid labor is not an expense. Product-costing ESTIMATES (labor, utilities, overhead)
 //     are never substituted for real expenses; only recorded business_expenses count.
 //
@@ -30,7 +32,7 @@
 //   * Before FINANCIAL_REPORTING_START_MONTH no operating result exists (expenses were not tracked).
 //   * If a result needs data that failed to load or was cut off by the row cap, it is withheld.
 //
-// Every report carries a fixed list of EXCLUSIONS (packaging, waste, labor, ...) so a reader cannot
+// Every report carries a fixed list of EXCLUSIONS (packaging, labor, ...) so a reader cannot
 // mistake an ingredient-only margin for a complete profit.
 
 import type { Ingredient, FinishedStockMovement, OrderRawCogs, ProductionExecution, SupplyEntry } from "../product-lab-types.ts";
@@ -40,6 +42,7 @@ import type { Order, OrderLine } from "../orders/types.ts";
 import { isLiveExpense, type BusinessExpense, type ExpenseCategory } from "./expenses.ts";
 import { daysBetweenDays, FINANCIAL_REPORTING_START_MONTH, monthKeyOfDay, monthKeyOfTimestamp, monthRange } from "./period.ts";
 import { fromCentavos, roundToCentavo, toCentavos } from "./peso.ts";
+import { summarizeStockFinancialEvents, type MonthlyStockAttribution, type StockFinancialEvent } from "./stock-events.ts";
 
 // A completed order unpaid for longer than this is flagged for the owner to validate.
 export const STALE_RECEIVABLE_DAYS = 14;
@@ -55,6 +58,9 @@ export type FinanceInputs = {
   cogsByOrderId: Map<string, OrderRawCogs>;
   // null = the expense ledger could not be read (table not applied yet, or the read failed).
   expenses: BusinessExpense[] | null;
+  // Independent read: null means unavailable, not an empty ledger. Bake/orders/opening are excluded.
+  stockFinancialEvents: StockFinancialEvent[] | null;
+  stockEventsTruncated: boolean;
   supplies: SupplyEntry[];
   ingredients: Ingredient[];
   productionExecutions: ProductionExecution[];
@@ -89,14 +95,18 @@ export type FinancialWarning = {
     | "no-completed-orders"
     | "untrusted-inventory-cost"
     | "negative-inventory"
-    | "estimated-finished-goods-cost";
+    | "estimated-finished-goods-cost"
+    | "stock-events-unavailable"
+    | "stock-events-truncated"
+    | "stock-events-review"
+    | "estimated-stock-event-cost";
   severity: WarningSeverity;
   message: string;
   count?: number;
   amount?: number;
 };
 
-export type WithheldReason = "cost-coverage" | "needs-review" | "pre-start" | "expenses-unavailable" | "data-truncated";
+export type WithheldReason = "cost-coverage" | "needs-review" | "pre-start" | "expenses-unavailable" | "data-truncated" | "stock-events-unavailable" | "stock-events-truncated" | "stock-events-review";
 
 // A reported figure is either a number or an explicit reason it is not shown. Never both.
 export type Figure = { value: number; withheld: null } | { value: null; withheld: WithheldReason };
@@ -139,6 +149,7 @@ export type MonthlyFinancialReport = {
     costedSalesMargin: number;
   };
   expenses: { available: boolean; total: number; count: number; voidedCount: number; byCategory: ExpenseCategoryTotal[] };
+  stockAttribution: MonthlyStockAttribution;
   grossMargin: Figure;
   operatingResult: Figure;
   // Memo lines. NOT part of profit.
@@ -153,7 +164,8 @@ export const FINANCIAL_EXCLUSIONS: readonly string[] = [
   "Packaging cost is not in COGS yet. Packaging is bought as stock but never deducted when an order is fulfilled, so margin is overstated by that amount.",
   "COGS is ingredients only, at the cost frozen when each batch was baked. If a batch's actual yield is corrected later, its cost per piece is restated, and so are the months that sold from it.",
   "Collected and unpaid amounts show payment status as of today, even for past months. Revenue uses the amount actually paid.",
-  "Waste, spoilage, damaged or given-away stock, and stock adjustments are not valued in profit yet.",
+  "Recorded stock spoilage/waste, marketing samples and business testing reduce the operating result automatically. Household withdrawals are separate. Unclassified or unvalued events withhold the result until classification and trustworthy cost are available; no historical amount is invented.",
+  "Finished-stock event cost uses allocated lots and is restated when Bake yield or cost is corrected, including past months. Raw events use their recorded cost-at-event snapshot, never today's average cost.",
   "Your own unpaid labor is not counted as an expense. Product-costing estimates (labor, utilities, overhead) are never used as real expenses.",
   "Equipment bought is expensed in full when recorded; there is no depreciation yet. Income tax and financing costs are not tracked.",
   "Delivery, fees, rent and the like appear only if you recorded them as expenses.",
@@ -362,6 +374,7 @@ export function buildMonthlyFinancialReport(inputs: FinanceInputs, month: string
   const monthExpenses = (inputs.expenses ?? []).filter((expense) => monthKeyOfDay(expense.expenseDate) === month);
   const live = monthExpenses.filter(isLiveExpense);
   const expenseCentavos = live.reduce((total, expense) => total + toCentavos(expense.amount), 0);
+  const stockAttribution = summarizeStockFinancialEvents(inputs.stockFinancialEvents, inputs.stockEventsTruncated, month, timeZone);
 
   // --- Memo lines (not profit) -----------------------------------------------------------------
   const purchases = inputs.supplies.filter((supply) => monthKeyOfDay(supply.purchaseDate) === month);
@@ -389,11 +402,29 @@ export function buildMonthlyFinancialReport(inputs: FinanceInputs, month: string
     operatingResult = { value: null, withheld: grossMargin.withheld };
   } else if (!expensesAvailable) {
     operatingResult = { value: null, withheld: "expenses-unavailable" };
+  } else if (!stockAttribution.available) {
+    operatingResult = { value: null, withheld: "stock-events-unavailable" };
+  } else if (stockAttribution.truncated) {
+    operatingResult = { value: null, withheld: "stock-events-truncated" };
+  } else if (stockAttribution.operatingCost === null) {
+    operatingResult = { value: null, withheld: "stock-events-review" };
   } else {
-    operatingResult = { value: roundToCentavo(grossMargin.value - fromCentavos(expenseCentavos)), withheld: null };
+    // Use full-precision lot costs, not the rounded display margin or category figures.
+    operatingResult = { value: roundToCentavo(fromCentavos(netCentavos) - ingredientCogs - fromCentavos(expenseCentavos) - stockAttribution.operatingCost), withheld: null };
   }
 
   // --- Warnings --------------------------------------------------------------------------------
+  if (!stockAttribution.available) {
+    warnings.push({ code: "stock-events-unavailable", severity: "high", message: "Stock losses and withdrawals could not be loaded. The operating result is withheld; sales gross margin does not include these events." });
+  } else if (stockAttribution.truncated) {
+    warnings.push({ code: "stock-events-truncated", severity: "high", message: `Stock financial events reached the ${POSTGREST_ROW_CAP}-row limit. Category totals and the operating result are withheld; the review list may be incomplete.` });
+  }
+  if (stockAttribution.review.length > 0) {
+    warnings.push({ code: "stock-events-review", severity: "high", message: `${stockAttribution.review.length} stock event rows are unclassified or have no trustworthy cost. Review their source below. Classifying an event cannot invent its missing cost. The operating result is withheld.`, count: stockAttribution.review.length });
+  }
+  if (stockAttribution.byCategory.some((category) => category.estimatedCount > 0)) {
+    warnings.push({ code: "estimated-stock-event-cost", severity: "medium", message: "Some stock event costs are estimates from historical opening lots. The category breakdown labels these estimates; the operating result is provisional." });
+  }
   if (inputs.truncated) {
     warnings.push({ code: "data-truncated", severity: "high", message: `A source returned ${POSTGREST_ROW_CAP} rows, the most one request returns, so figures may be incomplete. No result is shown.` });
   }
@@ -488,6 +519,7 @@ export function buildMonthlyFinancialReport(inputs: FinanceInputs, month: string
       voidedCount: monthExpenses.length - live.length,
       byCategory: groupExpensesByCategory(live),
     },
+    stockAttribution,
     grossMargin,
     operatingResult,
     cash: { received: roundToCentavo(grossRevenue(inputs.orders, range)), refunded: roundToCentavo(refunds(inputs.orders, range)) },
@@ -628,8 +660,8 @@ export function buildFinancialBalances(inputs: FinanceInputs, nowMs: number, tim
 }
 
 // The earliest month any record could belong to, for the month selector. Never earlier than the
-// first order or expense actually present; never later than `current`.
-export function earliestRecordedMonth(inputs: Pick<FinanceInputs, "orders" | "expenses">, current: string, timeZone: string = BUSINESS_TIMEZONE): string {
+// first order, expense or stock event actually present; never later than `current`.
+export function earliestRecordedMonth(inputs: Pick<FinanceInputs, "orders" | "expenses"> & Partial<Pick<FinanceInputs, "stockFinancialEvents">>, current: string, timeZone: string = BUSINESS_TIMEZONE): string {
   let earliest = current;
   for (const order of inputs.orders) {
     for (const timestamp of [order.completedAt, order.paidAt, order.placedAt]) {
@@ -639,6 +671,10 @@ export function earliestRecordedMonth(inputs: Pick<FinanceInputs, "orders" | "ex
   }
   for (const expense of inputs.expenses ?? []) {
     const key = monthKeyOfDay(expense.expenseDate);
+    if (key !== null && key < earliest) earliest = key;
+  }
+  for (const event of inputs.stockFinancialEvents ?? []) {
+    const key = monthKeyOfTimestamp(event.occurredAt, timeZone);
     if (key !== null && key < earliest) earliest = key;
   }
   return earliest;

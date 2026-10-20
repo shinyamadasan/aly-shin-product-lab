@@ -411,16 +411,18 @@ export type ProductionExecutionCorrection = {
 // TASK-072: 'bake_correction' -- a signed on-hand adjustment of ONE production execution's produced
 // quantity, written only by correct_bake_actual_pieces. Deliberately not one of the Wave 3 exception
 // types (damage/giveaway/correction are physical losses and stay negative-only).
-export type FinishedStockMovementType = "production_receipt" | "reserve" | "release" | "fulfill" | "damage" | "giveaway" | "correction" | "bake_correction";
+export type FinishedStockMovementType = "production_receipt" | "reserve" | "release" | "fulfill" | "damage" | "giveaway" | "household" | "exception_reversal" | "correction" | "bake_correction";
 
 // Wave 3: the three exception types an operator can record against physical finished stock.
-export type FinishedStockExceptionType = "damage" | "giveaway" | "correction";
+export type FinishedStockExceptionType = "damage" | "giveaway" | "household" | "correction";
 
 export type FinishedStockMovement = {
   id: string;
   productId: string;
   productionExecutionId: string | null;
   movementType: FinishedStockMovementType;
+  financialClassification?: string | null;
+  reversesMovementId?: string | null;
   onHandDelta: number;
   reservedDelta: number;
   operationId: string;

@@ -102,7 +102,7 @@ test("FinishedStockPanel's mobile branch (isMobileWidth true) never renders 'Bak
   assert.ok(mobileBranchAt > -1 && mobileBranchEnd > mobileBranchAt, "precondition: the mobile early-return branch exists and precedes the desktop return");
   const mobileBranch = panel.slice(mobileBranchAt, mobileBranchEnd);
   assert.equal(mobileBranch.includes("Baked pieces on hand"), false);
-  assert.equal(mobileBranch.includes("Finished stock"), false);
+  assert.equal(mobileBranch.includes("Finished stock · Record consumption/loss"), true, "the consumption action remains reachable without restoring the stock table");
   assert.equal(mobileBranch.includes("<table"), false, "mobile must not render any table, including a Finished Stock one");
 });
 
@@ -143,7 +143,7 @@ test("MobileProductionHistory's initial reveal is MOBILE_PRODUCTION_HISTORY_PAGE
 
 // --- Part 6/6A: one Advanced tools disclosure, exceptions nested inside, not permanent -------------
 
-test("mobile Advanced tools is exactly one top-level <details>, containing three nested disclosures for Stock correction, Physical count / reconcile, and Finished-stock exceptions", () => {
+test("mobile consumption/loss is directly available; count reconciliation and history remain under Advanced tools", () => {
   const page = code(BAKE_TSX);
   const panel = sliceFunction(page, "FinishedStockPanel");
   const mobileBranchAt = panel.indexOf("if (isMobileWidth) {");
@@ -156,7 +156,7 @@ test("mobile Advanced tools is exactly one top-level <details>, containing three
   const advancedTag = mobileBranch.slice(advancedDetailsOpenAt, mobileBranch.indexOf(">", advancedDetailsOpenAt) + 1);
   assert.equal(/\bopen\b/.test(advancedTag), false, "Advanced tools must be collapsed by default");
 
-  assert.match(mobileBranch, /<summary className="cursor-pointer text-sm font-semibold text-\[#8f5632\]">Stock correction<\/summary>/);
+  assert.ok(mobileBranch.indexOf("Finished stock · Record consumption/loss") < advancedAt, "common consumption/loss action is available before Advanced tools");
   assert.match(mobileBranch, /<summary className="cursor-pointer text-sm font-semibold text-\[#8f5632\]">Physical count \/ reconcile<\/summary>/);
   assert.match(mobileBranch, /<summary className="cursor-pointer text-sm font-semibold text-\[#8f5632\]">Finished-stock exceptions \(\{exceptionHistory\.length\}\)<\/summary>/);
 

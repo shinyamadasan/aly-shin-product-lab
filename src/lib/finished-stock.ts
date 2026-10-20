@@ -122,7 +122,7 @@ export function previewBakeCorrection(
 // audit view -- section 28's "no charts, no warehouse dashboard" scope.
 export function sortFinishedStockExceptionHistory(movements: FinishedStockMovement[]): FinishedStockMovement[] {
   return movements
-    .filter((movement) => movement.movementType === "damage" || movement.movementType === "giveaway" || movement.movementType === "correction")
+    .filter((movement) => movement.movementType === "damage" || movement.movementType === "giveaway" || movement.movementType === "household" || movement.movementType === "exception_reversal" || movement.movementType === "correction")
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 

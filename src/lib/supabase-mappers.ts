@@ -436,6 +436,8 @@ export type FinishedStockMovementRow = {
   product_id: string;
   production_execution_id: string | null;
   movement_type: string;
+  financial_classification?: string | null;
+  reverses_movement_id?: string | null;
   on_hand_delta: number | string;
   reserved_delta: number | string;
   operation_id: string;
@@ -449,6 +451,8 @@ export function mapFinishedStockMovementRow(row: FinishedStockMovementRow): Fini
     productId: row.product_id,
     productionExecutionId: row.production_execution_id ?? null,
     movementType: row.movement_type as FinishedStockMovementType,
+    financialClassification: row.financial_classification ?? null,
+    reversesMovementId: row.reverses_movement_id ?? null,
     onHandDelta: Number(row.on_hand_delta ?? 0),
     reservedDelta: Number(row.reserved_delta ?? 0),
     operationId: row.operation_id,

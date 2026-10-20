@@ -2784,10 +2784,26 @@ export default function ProductLab({
 
     const productName = labState.products.find((product) => product.id === productId)?.name ?? "this product";
     const pieces = Math.abs(quantityDelta);
-    const verb = exceptionType === "damage" ? "recorded as damaged" : exceptionType === "giveaway" ? "recorded as given away" : "removed after a count correction";
+    const verb = exceptionType === "damage" ? "recorded as spoiled/damaged" : exceptionType === "giveaway" ? "recorded as a marketing sample" : exceptionType === "household" ? "recorded as household consumption" : "removed after a count correction";
     setMessage(`${pieces} ${productName} ${pieces === 1 ? "piece" : "pieces"} ${verb}.`);
     setMessageTone("good");
     void data;
+    await loadSupabaseData();
+    return true;
+  }
+
+  async function reverseFinishedStockException(movementId: string, note: string, operationId: string): Promise<boolean> {
+    if (!supabase || !session) return false;
+    const { error } = await supabase.rpc("reverse_finished_stock_exception", {
+      p_operation_id: operationId, p_movement_id: movementId, p_note: note,
+    });
+    if (error) {
+      setMessage(`Entry not reversed: ${describeIngredientConstraintError(error)}`);
+      setMessageTone("bad");
+      return false;
+    }
+    setMessage("Entry reversed. Finished stock and Finance updated without a second expense entry.");
+    setMessageTone("good");
     await loadSupabaseData();
     return true;
   }
@@ -3591,7 +3607,7 @@ export default function ProductLab({
             />
             </>
           ) : null}
-          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} applyFinishedStockReconciliation={applyFinishedStockReconciliation} confirmBake={confirmBake} correctBakeActual={correctBakeActual} isInventoryTableMissing={isInventoryTableMissing} labState={labState} recordFinishedStockException={recordFinishedStockException} saveIngredientAlias={saveIngredientAlias} /> : null}
+          {view === "bake" ? <BakePage remotePosting={Boolean(supabase && session)} applyFinishedStockReconciliation={applyFinishedStockReconciliation} confirmBake={confirmBake} correctBakeActual={correctBakeActual} isInventoryTableMissing={isInventoryTableMissing} labState={labState} recordFinishedStockException={recordFinishedStockException} reverseFinishedStockException={reverseFinishedStockException} saveIngredientAlias={saveIngredientAlias} /> : null}
 
           {view === "journal" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_380px]" id="journal">
