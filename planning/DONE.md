@@ -719,3 +719,10 @@ verified the mandatory write guard including preview functions, and committed th
 configuration/procedure. Recovery versions are already recorded remotely and were not re-applied. Legacy
 Vercel session revoked via supported logout. Independent closeout review PASS; 20 focused tests, real local
 Playwright guard check and 19 disposable database tests pass. Finance remains separately held.
+
+## 2026-10-20 -- Targeted runtime dependency security repair (repository only)
+
+Runtime audit zero; Next/eslint16.3.8,Sharp0.35.5,Nanoid3.3.20,source-map-js1.2.2. Linux unit,
+disposable database, lint/typecheck, Netlify packaging and guarded media/refund/navigation gates pass;
+independent review approved. Existing development-only advisories documented separately. No merge,
+migration, upload or production deploy. See docs/DEPENDENCY_SECURITY_2026-10-20.md.
