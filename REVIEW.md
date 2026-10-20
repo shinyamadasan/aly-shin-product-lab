@@ -1638,3 +1638,31 @@ Documentation/Git Hygiene checks pass for draft readiness; real-device feel/poli
 Merge gate:approved, because separate independent reviewers were explicitly requested and completed.
 No production migration, data correction, merge, upload or deployment performed or authorized.
 Exact release/recovery procedure, exclusions and examples: docs/FINANCIAL_RELEASE_2.md.
+
+## 2026-10-20 — Financial Release 2 stock-count gains hotfix
+
+Merge gate: approved, because the user explicitly requested independent review. Separate reviewer
+approved final code, migration, historical audit, browser isolation and recovery procedure; no open
+correctness/security findings. Independently executed 83/83 finance tests and checked final evidence.
+Resolved review findings: qualify the old blanket withholding disclosure; replay original authority
+and Release 2 security/accounting assertions with the hotfix view installed.
+
+SELF_REVIEW: existing view/report/UI ownership reused; four application files changed; no writer,
+parallel ledger, historical repair, speculative abstraction, duplicate expense or unused code.
+Would I ship this implementation after separate release approval: yes. QA Functional/Visual/Regression/
+Data Integrity/Documentation/Git Hygiene pass for this scoped PR. Physical-device feel/polish remains
+human pending. The exact original dirty root checkout and release-evidence worktree are preserved.
+
+Validation: exact lockfile install (Next16.3.8); unit4576 pass/zero fail/one existing platform skip;
+disposable PostgreSQL18/18, including complete 64-row raw history replay, fingerprints before/after
+view replacement, malformed evidence, explicit-review precedence, losses/reversals/count boundaries
+and concurrent retries; local production build, standalone TypeScript and touched-source/test ESLint
+pass. Guarded built-app hotfix browser64/64 plus existing Release2 browser119/119 at1280/390/320;
+zero runtime/asset failures or forbidden production writes. Hotfix browsing changes zero business
+rows; synthetic scenarios exist only in disposable containers. Screenshot visually reviewed at320px.
+Browser fixture replays raw history (30 September unresolved); production's additional finished
+correction makes31 unresolved. Both preserve September withholding.
+
+No production database record or schema was changed, no migration applied there, no historical
+backfill, merge, upload or deployment performed. Approval boundaries and app-first/view-second
+release/recovery procedure: docs/FINANCIAL_STOCK_COUNT_HOTFIX.md.

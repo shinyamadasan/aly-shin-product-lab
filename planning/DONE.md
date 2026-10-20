@@ -758,3 +758,11 @@ APPROVED after privilege/rounding/cap/concurrency fixes. Full unit: 4574 pass/ze
 all disposable PostgreSQL 203/203; guarded desktop/mobile browser 119/119; build/typecheck/lint pass.
 Delivery ends at draft review. No production migration, data correction, merge or deployment.
 Release procedure, evidence and exclusions: docs/FINANCIAL_RELEASE_2.md.
+
+## 2026-10-20 — Financial Release 2 stock-count gains hotfix (PR delivery)
+
+Verified original raw count increases are separated from operating losses by a view-only migration
+and narrow Finance changes; unknown valuation remains visible. Complete historical audit32 gains
+(29September/3October);31 other unresolved events preserved. Unit4576pass/1platform skip,
+PostgreSQL18/18, guarded built-browser183/183, build/typecheck/lint pass; independent review approved.
+No production application, merge or deployment. See docs/FINANCIAL_STOCK_COUNT_HOTFIX.md.

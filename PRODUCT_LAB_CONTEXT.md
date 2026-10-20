@@ -106,6 +106,9 @@ operating result, plus the expense ledger. Owner-only. See D-009.
   Finance. Unknown costs, unclassified events or an unavailable/capped attribution source withhold
   operating result. Sales gross margin remains based on sales alone. Finished loss costs, like
   sales COGS, restate when a Bake's actual yield is corrected.
+- Stock-count hotfix (pending release): verified original raw count increases create no expense or
+  income. Their unknown historical valuation stays visible separately and does not alone withhold
+  operating result. Unexplained increases, losses and existing owner reviews keep their safeguards.
 
 Avoid: showing an incomplete month as a result; counting a purchase or a Bake as a cost; letting cost
 estimates from the Costing page stand in for real expenses.

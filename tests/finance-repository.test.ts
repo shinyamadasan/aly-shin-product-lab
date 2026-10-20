@@ -243,3 +243,13 @@ test("stock review refuses stale writes, missing RPCs, unconfirmed responses and
   assert.equal((await classifyStockFinancialEvent(fakeClient({ rpc: () => ({ data: null, error: { code: "PGRST202", message: "not set up" } }) }).client, input)).ok, false);
   assert.equal((await classifyStockFinancialEvent({ rpc() { throw new Error("Disconnected"); } } as unknown as FinanceClient, input)).ok, false);
 });
+
+
+test("derived count gains cannot be submitted as expense classifications", async () => {
+  const { mapStockFinancialEventRow } = await import("../src/lib/finance/stock-events.ts");
+  const { client, rpcCalls } = fakeClient({});
+  const event = mapStockFinancialEventRow({ ...EVENT_ROW, classification: "stock_count_gain", source_kind: "raw" });
+  assert.equal((await classifyStockFinancialEvent(client, { operationId: "op", event, classification: "household", note: "wrong expense" })).ok, false);
+  assert.equal((await classifyStockFinancialEvent(client, { operationId: "op", event: { ...event, classification: "unclassified" }, classification: "stock_count_gain", note: "unsupported manual gain" })).ok, false);
+  assert.equal(rpcCalls.length, 0);
+});

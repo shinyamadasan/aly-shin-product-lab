@@ -153,7 +153,7 @@ export async function listStockFinancialEvents(client: FinanceClient): Promise<S
 export async function classifyStockFinancialEvent(client: FinanceClient, input: {
   operationId: string; event: StockFinancialEvent; classification: StockFinancialClassification; note: string;
 }): Promise<{ ok: true } | { ok: false; message: string }> {
-  if (!isStockFinancialClassification(input.classification) || input.note.trim() === "") return { ok: false, message: "Choose a classification and explain the evidence for it." };
+  if (input.event.classification === "stock_count_gain" || input.classification === "stock_count_gain" || !isStockFinancialClassification(input.classification) || input.note.trim() === "") return { ok: false, message: "Choose a classification and explain the evidence for it. Stock-count gains are derived from verified count evidence." };
   try {
     const result = await client.rpc("classify_stock_financial_event", {
       p_operation_id: input.operationId, p_source_kind: input.event.sourceKind, p_source_id: input.event.sourceId,

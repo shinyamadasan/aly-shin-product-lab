@@ -99,6 +99,7 @@ export type FinancialWarning = {
     | "stock-events-unavailable"
     | "stock-events-truncated"
     | "stock-events-review"
+    | "stock-count-valuation"
     | "estimated-stock-event-cost";
   severity: WarningSeverity;
   message: string;
@@ -164,7 +165,7 @@ export const FINANCIAL_EXCLUSIONS: readonly string[] = [
   "Packaging cost is not in COGS yet. Packaging is bought as stock but never deducted when an order is fulfilled, so margin is overstated by that amount.",
   "COGS is ingredients only, at the cost frozen when each batch was baked. If a batch's actual yield is corrected later, its cost per piece is restated, and so are the months that sold from it.",
   "Collected and unpaid amounts show payment status as of today, even for past months. Revenue uses the amount actually paid.",
-  "Recorded stock spoilage/waste, marketing samples and business testing reduce the operating result automatically. Household withdrawals are separate. Unclassified or unvalued events withhold the result until classification and trustworthy cost are available; no historical amount is invented.",
+  "Recorded stock spoilage/waste, marketing samples and business testing reduce the operating result automatically. Household withdrawals are separate. Unclassified corrections and unvalued losses or withdrawals withhold the result. Verified count gains create no expense or income and retain an unverified inventory valuation warning; no historical amount is invented.",
   "Finished-stock event cost uses allocated lots and is restated when Bake yield or cost is corrected, including past months. Raw events use their recorded cost-at-event snapshot, never today's average cost.",
   "Your own unpaid labor is not counted as an expense. Product-costing estimates (labor, utilities, overhead) are never used as real expenses.",
   "Equipment bought is expensed in full when recorded; there is no depreciation yet. Income tax and financing costs are not tracked.",
@@ -424,6 +425,9 @@ export function buildMonthlyFinancialReport(inputs: FinanceInputs, month: string
   }
   if (stockAttribution.byCategory.some((category) => category.estimatedCount > 0)) {
     warnings.push({ code: "estimated-stock-event-cost", severity: "medium", message: "Some stock event costs are estimates from historical opening lots. The category breakdown labels these estimates; the operating result is provisional." });
+  }
+  if (stockAttribution.unvaluedCountGains.length > 0) {
+    warnings.push({ code: "stock-count-valuation", severity: "medium", message: `${stockAttribution.unvaluedCountGains.length} verified stock-count increases have no trustworthy historical valuation. They create no operating expense or income and do not alone withhold the operating result. Inventory valuation remains unverified.`, count: stockAttribution.unvaluedCountGains.length });
   }
   if (inputs.truncated) {
     warnings.push({ code: "data-truncated", severity: "high", message: `A source returned ${POSTGREST_ROW_CAP} rows, the most one request returns, so figures may be incomplete. No result is shown.` });

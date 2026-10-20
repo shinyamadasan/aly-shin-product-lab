@@ -1,5 +1,16 @@
 # STATUS
 
+## 2026-10-20 — Financial stock-count hotfix ready for scoped PR
+
+View-only migration and narrow Finance changes distinguish32 verified count gains, including the
+three October rows, while retaining unknown valuation warnings and genuine-loss result gates.
+Production remains unchanged. Full audit and separate approval release procedure:
+`docs/FINANCIAL_STOCK_COUNT_HOTFIX.md`. Independent final review APPROVED. Unit4576pass/0fail/1
+platform skip; disposable PostgreSQL18/18; guarded built-browser64hotfix+119Release2=183/183;
+production build, TypeScript and touched-file lint pass. No production schema/data writes, merge or
+deployment. Needs human verification: physical iOS Safari/Android Chrome, feel/polish/animation.
+
+
 ## 2026-10-20 — Financial Release 2 delivered as review-ready drafts
 
 Safety draft PR #110 (`fix/raw-inventory-count-reversal-boundary`, b368914) is independent.
