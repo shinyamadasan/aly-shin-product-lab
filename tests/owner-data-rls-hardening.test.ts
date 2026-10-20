@@ -211,7 +211,14 @@ test("every table the application and workers touch is either hardened by S1 or 
   assert.match(wave2, /revoke all on public\.order_stock_allocations from public, anon, authenticated;/);
   assert.match(wave2, /grant select on public\.order_stock_allocations to authenticated;/);
   assert.match(wave2, /create policy "wave2 owner reads order stock allocations" on public\.order_stock_allocations\s+for select to authenticated using \(public\.is_product_lab_owner\(\)\);/);
-  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS, ...FINANCE_TABLES, "product_media", "order_refund_corrections", "order_payment_incident_events", "order_stock_allocations"]);
+  const stockFinance = statementsOf(readFileSync(new URL("supabase/migrations/20261020203106_financial_release_2_stock_attribution.sql", ROOT), "utf8"));
+  assert.match(stockFinance, /create view public\.stock_financial_events with \(security_invoker = true\)/);
+  for (const table of ["finished_stock_count_boundaries", "stock_financial_event_reviews"]) {
+    assert.ok(stockFinance.includes(`alter table public.${table} enable row level security;`));
+    assert.match(stockFinance, new RegExp(`create policy[^;]*on public\\.${table} for select to authenticated using \\(public\\.is_product_lab_owner\\(\\)\\)`));
+  }
+  assert.match(stockFinance, /revoke insert, update, delete, truncate, trigger, references\s+on public\.finished_stock_count_boundaries, public\.stock_financial_event_reviews from service_role;/);
+  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS, ...FINANCE_TABLES, "product_media", "order_refund_corrections", "order_payment_incident_events", "order_stock_allocations", "stock_financial_events"]);
   const uncovered = [...tablesReferencedInCode()].filter((table) => !covered.has(table)).sort();
   assert.deepEqual(uncovered, [], `these tables are used by the code but hardened by nobody: ${uncovered.join(", ")}`);
 });

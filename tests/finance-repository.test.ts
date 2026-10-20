@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { correctBusinessExpense, FINANCE_ID_CHUNK, listBusinessExpenses, loadFinanceSalesData, recordBusinessExpense, voidBusinessExpense, type FinanceClient } from "../src/lib/finance-repository.ts";
+import { classifyStockFinancialEvent, correctBusinessExpense, FINANCE_ID_CHUNK, listBusinessExpenses, listStockFinancialEvents, loadFinanceSalesData, recordBusinessExpense, voidBusinessExpense, type FinanceClient } from "../src/lib/finance-repository.ts";
 import { buildOrderLinePayload, buildOrderPayload } from "../src/lib/orders/mappers.ts";
 import type { ValidExpense } from "../src/lib/finance/expenses.ts";
 import { POSTGREST_ROW_CAP } from "../src/lib/finance/report.ts";
@@ -24,10 +24,10 @@ function expenseRow(overrides: Row = {}): Row {
 
 // A minimal stand-in for the Supabase client: a thenable select builder per table, recorded calls,
 // and a scripted RPC.
-function fakeClient(options: { orders?: Row[]; lines?: Row[]; cogs?: Row[]; expenses?: Row[]; tableError?: { code: string; message: string }; rpc?: (name: string, args: Record<string, unknown>) => { data: unknown; error: { code?: string; message: string } | null } }) {
+function fakeClient(options: { orders?: Row[]; lines?: Row[]; cogs?: Row[]; expenses?: Row[]; events?: Row[]; tableError?: { code: string; message: string }; rpc?: (name: string, args: Record<string, unknown>) => { data: unknown; error: { code?: string; message: string } | null } }) {
   const calls: Call[] = [];
   const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
-  const rowsFor: Record<string, Row[]> = { orders: options.orders ?? [], order_lines: options.lines ?? [], order_raw_cogs: options.cogs ?? [], business_expenses: options.expenses ?? [] };
+  const rowsFor: Record<string, Row[]> = { orders: options.orders ?? [], order_lines: options.lines ?? [], order_raw_cogs: options.cogs ?? [], business_expenses: options.expenses ?? [], stock_financial_events: options.events ?? [] };
   const client = {
     from(table: string) {
       const call: Call = { table };
@@ -176,9 +176,70 @@ test("void and correct call their own functions, with the reason and the new det
 
 // --- Structure -----------------------------------------------------------------------------------------
 
-test("the repository exposes no way to write the ledger directly, and nothing but the ledger is written", () => {
+test("Finance has no direct table writes: only expense RPCs and append-only stock classification", () => {
   const source = readFileSync(path.join(import.meta.dirname, "../src/lib/finance-repository.ts"), "utf8");
   assert.ok(!/\.(insert|update|upsert|delete)\(/.test(source), "no direct table writes");
   const rpcNames = [...source.matchAll(/client\.rpc\("([a-z_]+)"/g)].map((match) => match[1]).sort();
-  assert.deepEqual(rpcNames, ["correct_business_expense", "record_business_expense", "void_business_expense"], "the only writes are the three expense functions");
+  assert.deepEqual(rpcNames, ["classify_stock_financial_event", "correct_business_expense", "record_business_expense", "void_business_expense"], "stock classification never writes expenses or changes quantities");
+});
+
+const EVENT_ROW = { id: "raw:1", occurred_at: "2026-10-15T10:00:00+08:00", source_kind: "raw", source_id: "movement-1", classification: "unclassified", quantity: "10", amount: null, estimated: false, review_id: null };
+
+test("stock attribution reads the independent view, retaining unknown costs and flagging caps", async () => {
+  const { client, calls } = fakeClient({ events: [EVENT_ROW] });
+  const result = await listStockFinancialEvents(client);
+  assert.ok(result.ok);
+  assert.equal(result.events[0].quantity, 10);
+  assert.equal(result.events[0].amount, null);
+  assert.equal(result.events[0].reviewId, null);
+  assert.deepEqual(calls, [{ table: "stock_financial_events" }], "no inventory or expense writes are needed for attribution");
+  assert.equal(result.truncated, false);
+  const capped = await listStockFinancialEvents(fakeClient({ events: Array.from({ length: POSTGREST_ROW_CAP }, (_, i) => ({ ...EVENT_ROW, id: String(i) })) }).client);
+  assert.ok(capped.ok && capped.truncated);
+});
+
+test("missing, malformed and disconnected attribution sources fail explicitly instead of becoming empty", async () => {
+  for (const code of ["PGRST205", "42P01", "42501"]) {
+    const result = await listStockFinancialEvents(fakeClient({ tableError: { code, message: "unavailable" } }).client);
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.reason, code === "42501" ? "failed" : "missing-table");
+  }
+  const malformed = await listStockFinancialEvents(fakeClient({ events: [{ ...EVENT_ROW, quantity: "NaN" }] }).client);
+  assert.equal(malformed.ok, false);
+  const disconnected = await listStockFinancialEvents({ from() { throw new Error("Disconnected"); } } as unknown as FinanceClient);
+  assert.equal(disconnected.ok, false);
+  assert.equal(!disconnected.ok && disconnected.message, "Disconnected");
+  const absent = await listStockFinancialEvents({ from() { return { select() { return this; }, order() { return this; }, limit() { return Promise.resolve({ data: null, error: null }); } }; } } as unknown as FinanceClient);
+  assert.equal(absent.ok, false);
+});
+
+test("stock review sends only classification evidence with stale guard, and keeps operation ID on retry", async () => {
+  const { mapStockFinancialEventRow } = await import("../src/lib/finance/stock-events.ts");
+  const event = mapStockFinancialEventRow({ ...EVENT_ROW, source_kind: "raw", review_id: "previous-review" });
+  const { client, rpcCalls } = fakeClient({ rpc: () => ({ data: { review_id: "new-review", source_kind: "raw", source_id: event.sourceId, classification: "household" }, error: null }) });
+  const input = { operationId: "same-operation", event, classification: "household" as const, note: "  Used for family breakfast  " };
+  assert.deepEqual(await classifyStockFinancialEvent(client, input), { ok: true });
+  assert.deepEqual(await classifyStockFinancialEvent(client, input), { ok: true });
+  assert.deepEqual(rpcCalls[0], { name: "classify_stock_financial_event", args: {
+    p_operation_id: "same-operation", p_source_kind: "raw", p_source_id: event.sourceId,
+    p_classification: "household", p_expected_review_id: "previous-review", p_note: "Used for family breakfast",
+  } });
+  assert.deepEqual(rpcCalls[1], rpcCalls[0]);
+  assert.equal(event.amount, null, "review never fabricates a missing amount");
+  const noEvidence = await classifyStockFinancialEvent(client, { ...input, note: " " });
+  assert.equal(noEvidence.ok, false);
+  assert.equal(rpcCalls.length, 2, "invalid input makes no RPC");
+});
+
+test("stock review refuses stale writes, missing RPCs, unconfirmed responses and network failures", async () => {
+  const { mapStockFinancialEventRow } = await import("../src/lib/finance/stock-events.ts");
+  const input = { operationId: "op", event: mapStockFinancialEventRow({ ...EVENT_ROW, source_kind: "raw" }), classification: "marketing" as const, note: "Tasting samples at market" };
+  const stale = await classifyStockFinancialEvent(fakeClient({ rpc: () => ({ data: null, error: { code: "PT409", message: "stale" } }) }).client, input);
+  assert.equal(stale.ok, false);
+  assert.match(!stale.ok ? stale.message : "", /reviewed elsewhere.*Reload/);
+  for (const data of [null, {}, { review_id: "review", classification: "household" }]) {
+    assert.equal((await classifyStockFinancialEvent(fakeClient({ rpc: () => ({ data, error: null }) }).client, input)).ok, false);
+  }
+  assert.equal((await classifyStockFinancialEvent(fakeClient({ rpc: () => ({ data: null, error: { code: "PGRST202", message: "not set up" } }) }).client, input)).ok, false);
+  assert.equal((await classifyStockFinancialEvent({ rpc() { throw new Error("Disconnected"); } } as unknown as FinanceClient, input)).ok, false);
 });

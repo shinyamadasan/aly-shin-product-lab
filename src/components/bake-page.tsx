@@ -19,6 +19,8 @@ import { buildOpeningBalanceCostEstimate, buildReconciliationPreview, type Recon
 import type { RuleEngineContext } from "@/lib/rule-engine/types";
 import { IngredientPicker } from "@/components/ingredient-picker";
 import { FormPanel, Tag, useIsMobileViewport } from "@/components/ui";
+import { finishedStockEffectLabel, previewFinishedStockLoss } from "@/lib/stock-financial-preview";
+import { formatPesos } from "@/lib/inventory-display";
 
 export function BakePage({
   remotePosting = false,
@@ -28,6 +30,7 @@ export function BakePage({
   isInventoryTableMissing,
   labState,
   recordFinishedStockException,
+  reverseFinishedStockException,
   saveIngredientAlias,
 }: {
   // True whenever a Supabase session is present -- Wave 0B's database-authoritative confirm_bake_v2
@@ -47,6 +50,7 @@ export function BakePage({
   isInventoryTableMissing: boolean;
   labState: LabState;
   recordFinishedStockException: (productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>;
+  reverseFinishedStockException?: (movementId: string, note: string, operationId: string) => Promise<boolean>;
   saveIngredientAlias: (rawText: string, ingredientId: string, source: string) => void;
 }) {
   // One current batch per product for the normal picker; every other batch stays reachable under
@@ -487,6 +491,7 @@ export function BakePage({
         correctBakeActual={remotePosting ? correctBakeActual : null}
         labState={labState}
         recordFinishedStockException={remotePosting ? recordFinishedStockException : null}
+        reverseFinishedStockException={remotePosting ? reverseFinishedStockException : undefined}
       />
     </section>
   );
@@ -503,11 +508,13 @@ function FinishedStockPanel({
   correctBakeActual,
   labState,
   recordFinishedStockException,
+  reverseFinishedStockException,
 }: {
   applyFinishedStockReconciliation: ((items: ReconciliationBatchItemInput[], operationId: string) => Promise<{ ok: boolean; verified: boolean }>) | null;
   correctBakeActual: ((productionExecutionId: string, expectedCurrentActual: number, correctedActual: number, reason: string, operationId: string) => Promise<boolean>) | null;
   labState: LabState;
   recordFinishedStockException: ((productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>) | null;
+  reverseFinishedStockException?: (movementId: string, note: string, operationId: string) => Promise<boolean>;
 }) {
   const balances = deriveFinishedStockBalances(labState.products, labState.finishedStockMovements)
     .filter((balance) => balance.onHandPieces !== 0 || labState.productionExecutions.some((execution) => execution.productId === balance.productId));
@@ -528,6 +535,12 @@ function FinishedStockPanel({
     // "Baked pieces on hand" display is skipped.
     return (
       <div className="rounded-lg border border-[#e1d4c4] bg-white p-5">
+        {recordFinishedStockException ? (
+          <details>
+            <summary className="cursor-pointer text-lg font-semibold">Finished stock · Record consumption/loss</summary>
+            <FinishedStockExceptionForm balances={balances} labState={labState} recordFinishedStockException={recordFinishedStockException} />
+          </details>
+        ) : null}
         {history.length > 0 ? (
           <details>
             <summary className="cursor-pointer text-lg font-semibold">Production history</summary>
@@ -547,15 +560,6 @@ function FinishedStockPanel({
           <details className="mt-6">
             <summary className="cursor-pointer text-lg font-semibold">Advanced tools</summary>
             <div className="mt-3 space-y-4">
-              {recordFinishedStockException ? (
-                <details>
-                  <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">Stock correction</summary>
-                  <FinishedStockExceptionForm
-                    balances={balances}
-                    recordFinishedStockException={recordFinishedStockException}
-                  />
-                </details>
-              ) : null}
 
               {applyFinishedStockReconciliation ? (
                 <details>
@@ -572,7 +576,7 @@ function FinishedStockPanel({
                   <summary className="cursor-pointer text-sm font-semibold text-[#8f5632]">Finished-stock exceptions ({exceptionHistory.length})</summary>
                   <div className="mt-2">
                     <p className="text-xs text-[#6f5a4c]">Damage and giveaways always come from currently unreserved stock; a customer&apos;s reservation is never touched. A correction reconciles a physical count either direction.</p>
-                    <MobileFinishedStockExceptions exceptionHistory={exceptionHistory} productName={productName} />
+                    <MobileFinishedStockExceptions exceptionHistory={exceptionHistory} productName={productName} reverseFinishedStockException={reverseFinishedStockException} />
                   </div>
                 </details>
               ) : null}
@@ -676,9 +680,10 @@ function FinishedStockPanel({
 
       {recordFinishedStockException ? (
         <details className="mt-6">
-          <summary className="cursor-pointer text-lg font-semibold">Advanced: Stock correction</summary>
+          <summary className="cursor-pointer text-lg font-semibold">Finished stock · Record consumption/loss</summary>
           <FinishedStockExceptionForm
             balances={balances}
+            labState={labState}
             recordFinishedStockException={recordFinishedStockException}
           />
         </details>
@@ -697,7 +702,7 @@ function FinishedStockPanel({
       {exceptionHistory.length > 0 ? (
         <>
           <h3 className="mt-6 text-lg font-semibold">Finished-stock exceptions</h3>
-          <p className="mt-1 text-xs text-[#6f5a4c]">Damage and giveaways always come from currently unreserved stock; a customer&apos;s reservation is never touched. A correction reconciles a physical count either direction.</p>
+          <p className="mt-1 text-xs text-[#6f5a4c]">Consumption and losses use unreserved stock. Finance values the allocated lots automatically. Count corrections require review.</p>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -716,7 +721,7 @@ function FinishedStockPanel({
                     <td className="py-2 pr-4 font-semibold">{productName(movement.productId)}</td>
                     <td className="py-2 pr-4"><Tag tone={movement.movementType === "damage" ? "danger" : movement.movementType === "giveaway" ? "warm" : "green"}>{movement.movementType}</Tag></td>
                     <td className="py-2 pr-4 text-right font-semibold">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta}</td>
-                    <td className="py-2 text-[#6f5a4c]">{movement.note}</td>
+                    <td className="py-2 text-[#6f5a4c]">{movement.note}<ReverseFinishedStockLoss movement={movement} history={exceptionHistory} reverse={reverseFinishedStockException} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -742,7 +747,7 @@ function HistoricalCostNotes() {
   return (
     <>
       <p className="mt-1 text-xs text-[#6f5a4c]"><span className="font-semibold">Actual</span> is the usable pieces the operator counted for that run; <span className="font-semibold">Expected</span> is what the recipe projected. Per-piece cost divides the raw cost by the actual count.</p>
-      <p className="mt-1 text-xs text-[#8a3827]">Raw cost was recorded from the ingredient costs used when this bake was posted; later cost corrections do not rewrite historical production cost. Verify ingredient costs before relying on this for financial decisions -- costs recorded before verification may be unreliable.</p>
+      <p className="mt-1 text-xs text-[#8a3827]">Raw cost was recorded from the ingredient costs used when this bake was posted. Later ingredient prices do not change that batch total. Correct Bake recalculates cost per piece and restates both sales COGS and stock losses. Costs recorded before reliable cost tracking may be incomplete.</p>
       <p className="mt-1 text-xs text-[#6f5a4c]">Rows marked <span className="font-semibold">Opening balance</span> are not a real Bake -- they are pre-tracking physical stock recorded once, with an estimated (not exact) cost.</p>
     </>
   );
@@ -821,7 +826,7 @@ function MobileProductionHistory({
 // Finished-stock Exceptions keeps the original 5-record page size (Amendment 2) -- it now lives
 // one level deeper, nested under Advanced tools, so it stays less aggressively collapsed than
 // Production History above.
-function MobileFinishedStockExceptions({ exceptionHistory, productName }: { exceptionHistory: FinishedStockMovement[]; productName: (id: string) => string }) {
+function MobileFinishedStockExceptions({ exceptionHistory, productName, reverseFinishedStockException }: { exceptionHistory: FinishedStockMovement[]; productName: (id: string) => string; reverseFinishedStockException?: (movementId: string, note: string, operationId: string) => Promise<boolean> }) {
   const [visibleCount, setVisibleCount] = useState(MOBILE_HISTORY_PAGE_SIZE);
   const { visible, hasMore, canCollapse } = getMobileHistoryPage(exceptionHistory, visibleCount, MOBILE_HISTORY_PAGE_SIZE);
   return (
@@ -834,6 +839,7 @@ function MobileFinishedStockExceptions({ exceptionHistory, productName }: { exce
           </div>
           <p className="mt-0.5 text-xs text-[#6f5a4c]">{movement.createdAt ? new Date(movement.createdAt).toLocaleString() : "--"}</p>
           <p className="mt-1 text-[#6f5a4c]">{movement.onHandDelta > 0 ? "+" : ""}{movement.onHandDelta} pieces{movement.note ? ` · ${movement.note}` : ""}</p>
+          <ReverseFinishedStockLoss movement={movement} history={exceptionHistory} reverse={reverseFinishedStockException} />
         </li>
       ))}
       {hasMore || canCollapse ? (
@@ -982,9 +988,11 @@ function CorrectBakePanel({
 // form simply never lets the operator ask for it.
 function FinishedStockExceptionForm({
   balances,
+  labState,
   recordFinishedStockException,
 }: {
   balances: ReturnType<typeof deriveFinishedStockBalances>;
+  labState: LabState;
   recordFinishedStockException: (productId: string, exceptionType: FinishedStockExceptionType, quantityDelta: number, note: string, operationId: string) => Promise<boolean>;
 }) {
   const [productId, setProductId] = useState(() => balances[0]?.productId ?? "");
@@ -1006,6 +1014,7 @@ function FinishedStockExceptionForm({
   const quantity = Number(quantityText);
   const isQuantityValid = quantityText.trim() !== "" && Number.isInteger(quantity) && quantity >= 1;
   const readyToSubmit = Boolean(productId) && isQuantityValid;
+  const preview = previewFinishedStockLoss(productId, quantity, labState.productionExecutions, labState.finishedStockMovements);
 
   async function handleSubmit() {
     if (isSubmittingRef.current || !readyToSubmit) {
@@ -1028,14 +1037,14 @@ function FinishedStockExceptionForm({
   }
 
   return (
-    <div className="mt-6 rounded-md border border-[#eaded2] p-4">
-      <h3 className="text-lg font-semibold">Record a finished-stock exception</h3>
-      <p className="mt-1 text-xs text-[#6f5a4c]">Damage, giveaways, and count corrections only ever remove currently unreserved pieces -- a customer&apos;s active reservation is never touched. A count correction reduces finished stock to reflect pieces the physical count no longer shows; it does not adjust the historical Bake.</p>
+    <div className="mt-6 min-w-0 rounded-md border border-[#eaded2] p-4">
+      <h3 className="text-lg font-semibold">Record consumption/loss</h3>
+      <p className="mt-1 text-xs text-[#6f5a4c]">Record this once. Available stock decreases and Finance includes the cost automatically. Reserved pieces are protected.</p>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="grid gap-1 text-sm font-medium">
+      <div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">
+        <label className="grid min-w-0 gap-1 text-sm font-medium">
           Product
-          <select className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setProductId(event.target.value)} value={productId}>
+          <select style={{ fontSize: 16 }} className="h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setProductId(event.target.value)} value={productId}>
             {balances.map((balance) => (
               <option key={balance.productId} value={balance.productId}>
                 {balance.productName} (available {balance.availablePieces})
@@ -1043,24 +1052,27 @@ function FinishedStockExceptionForm({
             ))}
           </select>
         </label>
-        <label className="grid gap-1 text-sm font-medium">
-          Type
+        <label className="grid min-w-0 gap-1 text-sm font-medium">
+          Reason
           <select
-            className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+            className="h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3"
+            style={{ fontSize: 16 }}
             onChange={(event) => setExceptionType(event.target.value as FinishedStockExceptionType)}
             value={exceptionType}
           >
-            <option value="damage">Damage</option>
-            <option value="giveaway">Giveaway / sample</option>
+            <option value="damage">Spoilage / damage</option>
+            <option value="giveaway">Marketing giveaway / sample</option>
+            <option value="household">Personal / household consumption</option>
             <option value="correction">Count correction (found fewer than recorded)</option>
           </select>
         </label>
       </div>
 
-      <label className="mt-3 grid gap-1 text-sm font-medium">
+      <label className="mt-3 grid min-w-0 gap-1 text-sm font-medium">
         Pieces
         <input
-          className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3"
+          className="h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3"
+          style={{ fontSize: 16 }}
           inputMode="numeric"
           min="1"
           onChange={(event) => setQuantityText(event.target.value)}
@@ -1071,10 +1083,15 @@ function FinishedStockExceptionForm({
         {quantityText.trim() !== "" && !isQuantityValid ? <span className="text-xs font-normal text-[#8a3827]">Enter a whole number of at least 1.</span> : null}
       </label>
 
-      <label className="mt-3 grid gap-1 text-sm font-medium">
+      <label className="mt-3 grid min-w-0 gap-1 text-sm font-medium">
         Note (optional)
-        <input className="h-10 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setNote(event.target.value)} type="text" value={note} />
+        <input style={{ fontSize: 16 }} className="h-10 w-full min-w-0 rounded-md border border-[#d8c7b7] bg-white px-3" onChange={(event) => setNote(event.target.value)} type="text" value={note} />
       </label>
+
+      <p className="mt-3 text-sm" role="status">
+        {finishedStockEffectLabel(exceptionType)}: {preview.amount === null ? "Cost unavailable — Finance will flag this for review." : `${preview.estimated ? "Estimated " : "Estimated financial effect "}${formatPesos(preview.amount)}`}
+        {preview.estimated ? " (Historical opening-stock estimate.)" : ""} The database confirms the allocated cost when saving.
+      </p>
 
       <button
         className="mt-4 h-10 w-fit rounded-md bg-[#8a3827] px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
@@ -1082,9 +1099,37 @@ function FinishedStockExceptionForm({
         onClick={handleSubmit}
         type="button"
       >
-        {isSubmitting ? "Recording..." : "Record exception"}
+        {isSubmitting ? "Recording..." : "Record consumption/loss"}
       </button>
     </div>
+  );
+}
+
+function ReverseFinishedStockLoss({ movement, history, reverse }: {
+  movement: FinishedStockMovement;
+  history: FinishedStockMovement[];
+  reverse?: (movementId: string, note: string, operationId: string) => Promise<boolean>;
+}) {
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const active = useRef(false);
+  const [operationId] = useState(() => crypto.randomUUID());
+  if (!reverse || !movement.financialClassification || !["damage", "giveaway", "household"].includes(movement.movementType)
+      || history.some((row) => row.reversesMovementId === movement.id)) return null;
+  async function submit() {
+    if (active.current || !note.trim()) return;
+    active.current = true;
+    setSaving(true);
+    try { await reverse!(movement.id, note.trim(), operationId); }
+    finally { active.current = false; setSaving(false); }
+  }
+  return (
+    <details className="mt-2">
+      <summary className="cursor-pointer text-sm font-semibold">Reverse this lot entry</summary>
+      <p className="my-2 text-xs">Use only for a recording mistake. Restores these pieces and reverses their cost. A later physical count prevents reversal.</p>
+      <label className="grid gap-1">Reason for reversal<input style={{ fontSize: 16 }} className="h-10 w-full min-w-0 rounded-md border px-2" value={note} onChange={(event) => setNote(event.target.value)} /></label>
+      <button className="mt-2 min-h-10 rounded-md border px-3 text-sm font-semibold disabled:opacity-60" disabled={saving || !note.trim()} onClick={submit} type="button">{saving ? "Reversing..." : "Confirm reversal"}</button>
+    </details>
   );
 }
 

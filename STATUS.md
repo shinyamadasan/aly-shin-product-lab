@@ -1,5 +1,43 @@
 # STATUS
 
+## 2026-10-20 — Financial Release 2 delivered as review-ready drafts
+
+Safety draft PR #110 (`fix/raw-inventory-count-reversal-boundary`, b368914) is independent.
+Release 2 draft PR #111 (`feat/financial-release-2`, implementation abc8a8d) targets that safety branch;
+scope checks passed and the Release 2 review diff excludes the safety commit. Independent final review
+APPROVED. All local acceptance complete: 4574 unit passes/one platform skip; 203/203 disposable database;
+119/119 guarded browser at 1280/390/320; build, TypeScript and source/touched-test lint pass. No production
+migration/data correction, merge or Netlify deployment. Owner review and separate release approval are
+next. Full release/recovery procedure and human verification limits: docs/FINANCIAL_RELEASE_2.md.
+
+## 2026-10-20 — Financial Release 2 verified; draft publication next
+
+Safety b368914 is isolated in draft PR #110. Release 2 reuses existing raw/finished authorities and
+derives Finance costs without duplicate expenses; household stays outside operating result. Unknown
+historical costs remain unknown. Independent final review APPROVED; service-role audit write and
+rounding findings resolved. Unit 4574 pass / zero fail / one platform skip; disposable PostgreSQL
+203/203; real-app guarded browser 119/119 at 1280/390/320, including reversal/review/cancel and unknown
+cost. Mobile sizing corrected; stock UI 111/111. Build, TypeScript and source/touched-test lint pass.
+Isolated lockfile install resolved Geist; original dirty checkout untouched. Next: scoped commit and
+dependent draft PR. No production migration, data correction, merge or deployment. Release procedure
+and exclusions: docs/FINANCIAL_RELEASE_2.md. Historical audit retained.
+
+Needs human verification after separate release approval: physical iOS Safari/Android Chrome feel,
+tap/scroll smoothness, spacing/polish, microcopy and workflow intuition. No real-device claim.
+
+## 2026-10-20 — Financial Release 2 audit stopped at architecture mismatch
+
+Isolated `feat/financial-release-2` from fetched main `771997f`; original dirty checkout untouched.
+Disposable PostgreSQL confirms the effective V4 adjustment RPC accepts reversal of an adjustment
+superseded by a later physical count: 2700 → −50 → verified 2600 → old reversal incorrectly 2650.
+Independent audit confirms the approved Wave 0A database boundary is missing, with no later enforcement.
+`AGENTS.md` Architecture Protection requires stopping implementation and reporting this mismatch.
+No application/SQL change, production access, commit, push, PR, migration or deployment performed.
+Baseline unit suite: 4531 pass / 1 fail / 1 skip; renderer failure is missing `geist/font/sans` in
+shared local dependencies. No clean baseline claimed. Next: explicit direction on the bounded forward
+repair, then full-chain regression and Release 2 implementation. See `docs/FINANCIAL_RELEASE_2_AUDIT.md`
+and `planning/TASK.md` for evidence, proposed repair and resume point. Not complete or review-ready.
+
 ## 2026-10-20 -- Finance final QA verified; production approval pending
 
 Security PR #109 (f201920) is integrated into the existing Finance PR #108 candidate. Independent

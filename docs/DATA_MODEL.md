@@ -418,3 +418,37 @@ type BusinessExpense = {
 No other table or column was added. Revenue, COGS, inventory value and purchases are all derived from
 existing tables (`orders`, `order_lines`, `order_raw_cogs`, `ingredients`, `production_executions`,
 `finished_stock_movements`, `supply_entries`) and are never stored.
+
+## Financial Release 2 stock-event attribution
+
+Migration: `20261020203106_financial_release_2_stock_attribution.sql`; prerequisite safeguard:
+`20261020202509_raw_inventory_reversal_boundary_restore.sql`. No existing business rows are backfilled.
+
+- `inventory_transactions`: nullable `financial_classification` and `financial_unit_cost_snapshot`.
+  Snapshot is null or a finite positive numeric in the ingredient's canonical unit. Its authority
+  captures reconciled cost under the same lock as quantity; reversal inherits the original value.
+- `finished_stock_movements`: nullable `financial_classification`, nullable self-FK
+  `reverses_movement_id` with a unique index. New verbs `household` (negative, allocated lot) and
+  `exception_reversal` (positive, exact original lot, no order/reservation delta). Existing Bake,
+  order, receipt and correction movement constraints retain their meaning.
+- `finished_stock_count_boundaries`: `id`, product FK, operation UUID, `reconciled_at`; unique
+  product/operation pair. Written by the locked existing reconciliation batch, including no-change
+  counts. No legacy backfill; legacy losses cannot be reversed through the new writer.
+- `stock_financial_event_reviews`: `id`, unique operation UUID, `source_kind` (`raw|finished`),
+  source UUID, CHECK-constrained classification, required evidence note, owner actor UUID and
+  `reviewed_at`. RPC validates the existing source and normalizes reversal to origin. Latest
+  annotation is read by `(source_kind, source_id, reviewed_at, id)`; immutable history is retained.
+
+Both new tables have owner-only SELECT RLS and no client write grant. Supabase default service-role
+writes are explicitly revoked. Triggers reject update, delete and truncate. Writes are only through
+owner-checked private-definer/public-invoker RPCs with fixed search paths; review and finished reversal
+use the established mutation receipts. Raw adjustments retain their existing stale fingerprint and
+single-reversal index rather than adding another retry mechanism.
+
+`stock_financial_events` is a SELECT-only security-invoker view: `id`, `occurred_at`, `source_kind`,
+`source_id`, effective `classification`, signed `quantity`, nullable signed `amount`, `estimated`,
+latest `review_id`. Positive amounts are costs/withdrawals; reversals are negative in their own month.
+Raw manual adjustment/waste history is visible even without cost/classification. Finished costs
+derive from allocated lots and effective frozen per-piece ingredient cost. Sales, purchases, Bake
+consumption, production receipts and Bake correction movements are excluded. This is a projection,
+not a second stock or expense ledger.

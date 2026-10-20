@@ -261,3 +261,30 @@ Verify: src/lib/finance/report.ts contains "WHAT IS WITHHELD, NOT GUESSED"
 Verify: src/lib/finance/period.ts contains "FINANCIAL_REPORTING_START_MONTH"
 Verify: supabase/migrations/20261016120000_business_expenses.sql contains "Expenses cannot be deleted"
 Verify: src/lib/costing.ts contains "NOT accounting"
+
+## D-011 — Stock movements own loss costs; household withdrawals stay outside operating result
+
+**Decision (2026-10-20):** Financial Release 2 derives costs from existing physical movements rather
+than writing duplicate business expenses. Raw reductions capture trustworthy unit cost atomically;
+historical unknowns remain unknown. Finished losses follow actual FIFO allocated lots and effective
+frozen ingredient cost, with the same live yield-correction restatement as sales COGS. Explicit
+classification separates operating loss, marketing, business testing and household withdrawal.
+Unexplained corrections stay unclassified until an owner records evidence; review does not supply
+missing costs. Sales gross margin remains sales-only; business stock costs reduce operating result,
+household does not. Full-precision costs are combined before final-result rounding.
+
+**Why:** Current average cost cannot establish a historical raw loss. Selling price does not establish
+a finished loss. Bake consumption is a transfer and must not be expensed again alongside sales/losses.
+An incomplete plausible total would overstate the result, so unavailable/capped/unvalued/unclassified
+events withhold it. Opening-stock estimates remain labelled. Packaging COGS, depreciation, tax
+accounting and unpaid owner labor remain outside this release.
+
+**Correction safety:** Restore the approved raw physical-count reversal guard independently first.
+Finished reversal appends the exact lot negation, once, and cannot cross a later verified count,
+including an exact count with no quantity movement. Existing reconciliation writes the durable
+boundary; no parallel quantity ledger or automatic historical repair is introduced. New audit tables
+retain immutable owner evidence and explicitly deny service-role writes under Supabase defaults.
+
+Verify: src/lib/finance/report.ts contains "stockAttribution.operatingCost"
+Verify: supabase/migrations/20261020203106_financial_release_2_stock_attribution.sql contains "financial_unit_cost_snapshot"
+Verify: supabase/migrations/20261020203106_financial_release_2_stock_attribution.sql contains "finished_stock_count_boundaries"

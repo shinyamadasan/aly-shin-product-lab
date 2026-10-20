@@ -106,6 +106,21 @@ quantity/cost reconciliation facts are database-authoritative. See `docs/ARCHITE
 
 ## Finance
 
+Financial Release 2 extends the Release 1 baseline below; implementation is local and production
+migration/deployment remain separately approval-gated.
+
+- Inventory → Manage Items → Adjust Stock: explicit waste/spoilage, spillage, business testing and
+  household reasons, with a trusted cost preview and an atomic cost-at-event snapshot.
+- Bake → Finished stock → Record consumption/loss: product, pieces, reason and optional note;
+  automatic FIFO lot cost, protected reservations, household consumption, and append-only per-lot
+  reversal of recording mistakes. A later verified count (including an exact count) prevents reversal.
+- Finance: separate spoilage/waste, marketing samples, testing and household totals; household stays
+  outside operating result. Event history supports owner classification review with evidence and
+  stale-screen protection. Unknown costs remain unknown after review. Missing/capped sources or
+  unresolved events withhold operating result; completed sales remain solely Sales COGS.
+- No duplicate expense rows, historical backfill, packaging COGS automation, depreciation or tax
+  accounting. See `FINANCIAL_RELEASE_2.md` for examples, verification and the release procedure.
+
 | Feature | Status | What it adds |
 | --- | --- | --- |
 | Financial Release 1 (`/finance`) | Final QA verified; ready for review; migration NOT applied to production | Owner-only monthly financial read. Sales revenue is recognized when an order is completed (Manila months); ingredient COGS comes from the frozen fulfilled-allocation cost (`order_raw_cogs`); gross margin before excluded costs, recorded operating expenses and a **provisional operating result** are shown with a cost-coverage percentage. Any figure that cannot be trusted (some sales with no recorded cost, a month before expense tracking began, data cut off or unreadable) is shown as an em dash with the reason, never as a smaller number; September 2026 is the standing example. Every month discloses what it excludes (packaging, waste, owner labor, depreciation). Cash received, inventory purchases, customer deposits, receivables, verified raw-stock value and finished-goods value are shown separately and never mixed into profit. Expense entry is append-only and owner-only: quick add, per-category filter and totals, voided entries on request, and Void or Correct instead of delete, each with a mandatory reason; a same-date/amount/payee entry, or one matching a same-day purchase, asks for confirmation. Ingredient and packaging purchases are not an expense category. See D-009 and `docs/ARCHITECTURE.md`'s "Financial Release 1" section. |

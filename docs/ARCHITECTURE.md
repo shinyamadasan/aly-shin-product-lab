@@ -1141,3 +1141,48 @@ historical backfill. The expense ledger is the only new write surface.
 **Deployment order.** Apply the migration first, then deploy the app. The page degrades gracefully
 before that: with no ledger it still shows sales and margin and says the result is unavailable, instead
 of showing an expense total of zero.
+
+## Financial Release 2 — stock-event attribution
+
+Extends the existing inventory authorities and the Release 1 report. Migration
+`20261020203106_financial_release_2_stock_attribution.sql` follows the separately releasable
+`20261020202509_raw_inventory_reversal_boundary_restore.sql`. Neither is applied by development.
+
+**Raw cost ownership.** The locked `apply_raw_inventory_adjustment` writes explicit
+`financial_classification` and nullable `financial_unit_cost_snapshot` on its existing movement.
+Only a reduction with a finite positive, reconciled cost captures a price. An increase has unknown
+cost; a physical discrepancy remains unclassified. Reversal copies the original snapshot (including
+null), never today's price, and retains the restored physical-count boundary. Existing stale-state,
+negative-balance and cost-trust rules are unchanged. Historical rows are not backfilled.
+
+**Finished cost ownership.** `record_finished_stock_exception` keeps its signature, receipt replay,
+product/lot lock order and FIFO unreserved allocation. The new household verb and explicit new-row
+classification distinguish withdrawals, marketing and operating loss. `reverse_finished_stock_exception`
+appends a positive `exception_reversal` for one exact original lot, once; it cannot reverse a reversal,
+legacy movement or count correction. `apply_finished_stock_reconciliation_batch` appends a durable
+count-boundary marker even for an exact count. That marker and later direct correction movements
+prevent reversing an older loss across a verified physical count. Produced-piece arithmetic remains
+receipt plus Bake corrections; loss reversals never create production cost.
+
+**Reporting and review.** The owner-readable `stock_financial_events` security-invoker view derives
+signed quantity/cost from these movements; it never reads Bake consumption or fulfilled sales as a
+loss. Finished costs join allocated lots' effective frozen cost, restating after Correct Bake like
+`order_raw_cogs`; opening-stock estimates stay explicitly estimated. Legacy classifications and raw
+costs remain unknown. An append-only owner annotation RPC, `classify_stock_financial_event`, changes
+only effective classification, with receipts, evidence and a latest-review stale guard. Origin and
+reversal use the same effective classification. It cannot invent missing cost or change stock.
+
+`finance/stock-events.ts` maps and groups the view by Manila month. `finance-repository.ts` loads it
+independently of sales/expenses and owns review RPC I/O. `finance/report.ts` subtracts business loss,
+marketing and testing from the operating result, excludes household withdrawals, and leaves sales
+gross margin unchanged. Calculation uses full-precision event/lot costs, rounding the reported result
+once. Missing/capped sources or unresolved classification/cost withhold operating result; category
+totals never hide missing costs behind partial numbers. No `business_expenses` row is generated.
+
+**UI.** Inventory's existing Adjust Stock form shows the classified effect; Bake exposes a direct
+Finished stock → Record consumption/loss disclosure on desktop and mobile, alongside lot history and
+safe reversal. `stock-financial-preview.ts` supplies advisory conversion/FIFO estimates, withholding
+unknown, insufficient or capped source data; the database remains the allocation authority. Finance
+shows four compact category totals and a collapsed history/review section. Existing paid/completed,
+refund, purchases and manual expense workflows retain their ownership. See D-011 and
+`FINANCIAL_RELEASE_2.md` for accounting examples, exclusions and release procedure.

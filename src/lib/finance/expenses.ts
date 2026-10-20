@@ -19,7 +19,7 @@ export const EXPENSE_CATEGORIES = [
   { id: "utilities", label: "Utilities", hint: "Electric, gas, water, internet, load" },
   { id: "delivery", label: "Delivery & transport", hint: "Riders, couriers, fuel, parking" },
   { id: "fees", label: "Payment & platform fees", hint: "GCash / bank / marketplace fees" },
-  { id: "marketing", label: "Marketing", hint: "Ads, boosts, samples given away, printing" },
+  { id: "marketing", label: "Marketing", hint: "Ads, boosts, printing. Stock samples are counted automatically from Bake; do not enter them again here" },
   { id: "equipment", label: "Equipment & tools", hint: "Expensed when bought (no depreciation yet)" },
   { id: "supplies_non_inventory", label: "Cleaning & other supplies", hint: "Things you do not track as stock" },
   { id: "software", label: "Software & subscriptions", hint: "Apps, hosting, domains" },

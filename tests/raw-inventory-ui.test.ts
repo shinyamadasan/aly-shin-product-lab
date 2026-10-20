@@ -231,7 +231,7 @@ test("Wave 1: finished stock comes from an operator-entered observed count, dist
   assert.match(bake.text, /confirmBake\(selectedBatch\.id, selectedBatch\.productId, batchLabel, multiplier, actualPieces,/);
   assert.match(bake.text, /setActualPiecesText\(""\)/);
   // The cost disclosure is self-contained -- no pointer to a repo file the operator cannot open.
-  assert.match(bake.text, /Verify ingredient costs before relying on this/);
+  assert.match(bake.text, /Costs recorded before reliable cost tracking may be incomplete/);
   assert.doesNotMatch(bake.text, /Wave 1 plan/);
 });
 
@@ -560,10 +560,10 @@ test("Bake: Actual usable pieces is never auto-filled from Expected -- both rema
   assert.match(bake.text, /const \[actualPiecesText, setActualPiecesText\] = useState\(""\)/);
 });
 
-test("Bake: Stock correction stays available but collapsed behind Advanced, not competing with the primary Bake action", () => {
+test("Bake: consumption/loss is clearly named and collapsed below the primary Bake action", () => {
   const finishedStockPanel = component(bake, "FinishedStockPanel");
   const text = finishedStockPanel.getText();
-  assert.match(text, /<summary className="cursor-pointer text-lg font-semibold">Advanced: Stock correction<\/summary>/);
+  assert.match(text, /<summary className="cursor-pointer text-lg font-semibold">Finished stock · Record consumption\/loss<\/summary>/);
   // Closed by default: the <details> wrapping it carries no `open` attribute.
   assert.doesNotMatch(text, /<details className="mt-6" open/);
   // Finished stock and Production history remain outside that disclosure -- still visible by
@@ -1090,8 +1090,9 @@ test("Bake: the deductions live in the main flow as a disclosure, not in a perma
 
 test("Bake: historical production cost is described as frozen at posting, not recomputed from current costs", () => {
   assert.doesNotMatch(bake.text, /uses the ingredient costs currently stored in the app/);
-  assert.match(bake.text, /Raw cost was recorded from the ingredient costs used when this bake was posted; later cost corrections do not rewrite historical production cost\./);
-  assert.match(bake.text, /Verify ingredient costs before relying on this/);
+  assert.match(bake.text, /Later ingredient prices do not change that batch total/);
+  assert.match(bake.text, /Correct Bake recalculates cost per piece and restates both sales COGS and stock losses/);
+  assert.match(bake.text, /Costs recorded before reliable cost tracking may be incomplete/);
   assert.match(bake.text, /frozenIngredientCostTotal/);
 });
 

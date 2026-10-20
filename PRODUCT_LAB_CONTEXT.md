@@ -92,12 +92,20 @@ operating result, plus the expense ledger. Owner-only. See D-009.
   order that is not yet handed over is a deposit; a completed unpaid order is owed money.
 - Ingredient cost is the cost frozen when each batch was baked. If any of a month's sales has no recorded
   cost, margin and result show an em dash and say why -- never a smaller number.
-- It is **provisional** and never called profit: packaging, waste, your own labor and depreciation are
+- It is **provisional** and never called profit: packaging, your own labor and depreciation are
   not included, and the page lists that on every month.
 - Cash received, inventory purchases, deposits and stock value are shown separately and are not profit.
 - Expenses are running costs only (rent, utilities, delivery, fees, marketing...). Ingredient and
   packaging purchases are recorded under Inventory -> Purchases and are never an expense. Mistakes are
   voided or corrected, never deleted.
+- Financial Release 2 derives waste/spoilage, marketing samples and business testing costs directly
+  from Inventory adjustments and allocated finished-stock lots. Household withdrawals are separate
+  and do not reduce operating result. Record the physical event once; do not enter its cost again
+  as an expense. Raw costs are captured at the event; missing historical costs stay unknown.
+- Unexplained corrections remain unclassified until an owner records classification evidence in
+  Finance. Unknown costs, unclassified events or an unavailable/capped attribution source withhold
+  operating result. Sales gross margin remains based on sales alone. Finished loss costs, like
+  sales COGS, restate when a Bake's actual yield is corrected.
 
 Avoid: showing an incomplete month as a result; counting a purchase or a Bake as a cost; letting cost
 estimates from the Costing page stand in for real expenses.

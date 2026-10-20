@@ -1,6 +1,6 @@
 "use client";
 
-// Finance (Financial Release 1) -- a monthly read of sales, ingredient cost, expenses and a
+// Finance -- a monthly read of sales, ingredient cost, stock attribution, expenses and a
 // PROVISIONAL operating result, plus the expense ledger.
 //
 // What this page is careful about, because a finance page that is quietly wrong is worse than none:
@@ -9,18 +9,18 @@
 //   * A figure that cannot be trusted is shown as an em dash WITH THE REASON, never as a smaller
 //     number that looks complete. September's partial cost data is the standing example.
 //   * It never calls its result "profit". The result tile says "Provisional operating result", and
-//     the list of what it leaves out (packaging, waste, ...) sits right beside it.
+//     the list of what it leaves out (packaging, owner labor, ...) sits right beside it.
 //   * Revenue, cash received, inventory purchases and earnings are four different things and are kept
 //     in four different places on the page.
 //
-// Writes go only to the expense ledger, only through its three RPCs, each with a client-minted
-// operation id so a double click or a retry can never record the same entry twice.
+// Writes use expense RPCs or append-only stock classification, with a client-minted operation id
+// so a double click or a retry cannot duplicate an entry. Stock quantity and cost are never edited here.
 
 import { AlertTriangle, ChevronLeft, ChevronRight, Info, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageBox, SectionCard, SectionHeading } from "@/components/ui";
 import type { LabState } from "@/lib/lab-state";
-import { correctBusinessExpense, listBusinessExpenses, loadFinanceSalesData, recordBusinessExpense, voidBusinessExpense, type FinanceClient, type FinanceSalesData } from "@/lib/finance-repository";
+import { classifyStockFinancialEvent, correctBusinessExpense, listBusinessExpenses, listStockFinancialEvents, loadFinanceSalesData, recordBusinessExpense, voidBusinessExpense, type FinanceClient, type FinanceSalesData } from "@/lib/finance-repository";
 import {
   EXPENSE_CATEGORIES, expenseCategoryLabel, findExpenseLookalikes, findPurchaseLookalikes, isLiveExpense, validateExpenseForm,
   type BusinessExpense, type ExpenseCategory, type ExpenseFormInput, type ValidExpense,
@@ -31,6 +31,7 @@ import { BUSINESS_TIMEZONE, resolveBusinessDay } from "@/lib/business-day";
 import { toDisplayPrice } from "@/lib/orders/money";
 import { PAYMENT_METHODS } from "@/lib/orders/types";
 import { supabase } from "@/lib/supabase";
+import { STOCK_FINANCIAL_CLASSIFICATIONS, type StockFinancialClassification, type StockFinancialEvent } from "@/lib/finance/stock-events";
 
 const client = supabase as unknown as FinanceClient | null;
 
@@ -50,6 +51,10 @@ type LedgerState =
   | { status: "loading" }
   | { status: "ready"; expenses: BusinessExpense[]; truncated: boolean }
   | { status: "unavailable"; reason: "missing-table" | "failed" | "not-configured"; message: string };
+type StockEventsState =
+  | { status: "loading" }
+  | { status: "ready"; events: StockFinancialEvent[]; truncated: boolean }
+  | { status: "unavailable"; message: string };
 
 function peso(value: number): string {
   return `${value < 0 ? "-" : ""}₱${toDisplayPrice(Math.abs(value))}`;
@@ -66,6 +71,9 @@ const WITHHELD_TEXT: Record<WithheldReason, string> = {
   "pre-start": `Not shown: expenses weren't tracked before ${FINANCIAL_REPORTING_START_MONTH}.`,
   "expenses-unavailable": "Not shown: the expense ledger isn't available.",
   "data-truncated": "Not shown: the data may be incomplete.",
+  "stock-events-unavailable": "Not shown: stock losses and withdrawals could not be loaded.",
+  "stock-events-truncated": "Not shown: stock financial events may be incomplete.",
+  "stock-events-review": "Not shown: stock events need classification or trustworthy cost. Review the breakdown below.",
 };
 
 function figureText(figure: Figure): string {
@@ -259,11 +267,77 @@ function VoidPrompt({ expense, onCancel, onDone }: { expense: BusinessExpense; o
   );
 }
 
+// Classification is an audited annotation, never a cost entry. The original stock movement remains.
+function StockEventReview({ event, onDone }: { event: StockFinancialEvent; onDone: (message: string) => void }) {
+  const [classification, setClassification] = useState<StockFinancialClassification>(event.classification);
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const operationRef = useRef<{ id: string; key: string } | null>(null);
+
+  async function save() {
+    if (!client || busyRef.current) return;
+    if (!note.trim()) { setError("Explain the evidence for this classification."); return; }
+    const key = JSON.stringify([event.sourceKind, event.sourceId, event.reviewId, classification, note.trim()]);
+    if (operationRef.current?.key !== key) operationRef.current = { id: crypto.randomUUID(), key };
+    busyRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await classifyStockFinancialEvent(client, { operationId: operationRef.current.id, event, classification, note });
+      if (result.ok) {
+        operationRef.current = null;
+        onDone("Stock classification recorded. Inventory quantity and recorded cost are unchanged.");
+      } else setError(result.message);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 grid gap-2">
+      <label className="grid gap-1 text-sm font-medium">Financial classification
+        <select className="h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-base" disabled={busy} onChange={(e) => setClassification(e.target.value as StockFinancialClassification)} style={INPUT_STYLE} value={classification}>
+          {STOCK_FINANCIAL_CLASSIFICATIONS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+        </select>
+      </label>
+      <label className="grid gap-1 text-sm font-medium">Evidence / reason
+        <input className="h-10 w-full rounded-md border border-[#d8c7b7] bg-white px-3 text-base" disabled={busy} onChange={(e) => setNote(e.target.value)} placeholder="Why this stock left the business" style={INPUT_STYLE} value={note} />
+      </label>
+      <p className="text-xs text-[#6f5a4c]">This adds an audit record. It does not change quantity, supply a missing cost, or create an expense-ledger entry. A reversal shares the original event&apos;s classification.</p>
+      {error ? <p className="text-sm text-[#b3441f]" role="alert">{error}</p> : null}
+      <button className="h-10 justify-self-start rounded-md border border-[#d8c7b7] bg-white px-3 text-sm font-semibold disabled:opacity-40" disabled={busy} onClick={() => void save()} type="button">{busy ? "Saving..." : "Save classification"}</button>
+    </div>
+  );
+}
+
+function StockEventDetails({ event, labState, onDone }: { event: StockFinancialEvent; labState: LabState; onDone: (message: string) => void }) {
+  const raw = event.sourceKind === "raw" ? labState.inventoryTransactions.find((row) => row.id === event.sourceId) : undefined;
+  const finished = event.sourceKind === "finished" ? labState.finishedStockMovements.find((row) => row.id === event.sourceId) : undefined;
+  const ingredient = raw ? labState.ingredients.find((row) => row.id === raw.ingredientId) : undefined;
+  const name = ingredient?.name ?? (finished ? labState.products.find((row) => row.id === finished.productId)?.name : undefined);
+  const unit = raw?.reconciliationSnapshot?.base_unit;
+  const category = STOCK_FINANCIAL_CLASSIFICATIONS.find((entry) => entry.id === event.classification)?.label;
+  return (
+    <details className="rounded-md border border-[#d8c7b7] bg-white p-3 text-sm">
+      <summary className="cursor-pointer break-words font-semibold">{name ?? (event.sourceKind === "raw" ? "Raw ingredient" : "Finished stock")} · {resolveBusinessDay(Date.parse(event.occurredAt), BUSINESS_TIMEZONE)} · {category} · {event.amount === null ? "Cost unknown" : `${peso(event.amount)}${event.estimated ? " (estimate)" : ""}`}</summary>
+      <p className="mt-2 break-words text-xs text-[#6f5a4c]">Source: {event.sourceKind} movement {event.sourceId} · Quantity: {event.quantity}{unit ? ` ${unit}` : event.sourceKind === "finished" ? " pieces" : ""}. Negative amounts reverse a prior effect.</p>
+      {raw?.note || finished?.note ? <p className="mt-1 break-words text-xs text-[#6f5a4c]">{raw?.note || finished?.note}</p> : null}
+      {finished?.productionExecutionId ? <p className="mt-1 break-words text-xs text-[#6f5a4c]">Production lot: {finished.productionExecutionId}</p> : null}
+      <a className="mt-2 inline-block font-semibold text-[#8f5632] underline" href={event.sourceKind === "raw" ? "/inventory?tab=ingredients" : "/bake"}>Open {event.sourceKind === "raw" ? "Inventory → Adjust Stock" : "Bake → Finished stock"}</a>
+      <StockEventReview event={event} key={event.reviewId ?? "unreviewed"} onDone={onDone} />
+    </details>
+  );
+}
+
 // --- Page ---------------------------------------------------------------------------------------------
 
 export function FinancePage({ labState }: { labState: LabState }) {
   const [sales, setSales] = useState<SalesState>({ status: "loading" });
   const [ledger, setLedger] = useState<LedgerState>({ status: "loading" });
+  const [stockEvents, setStockEvents] = useState<StockEventsState>({ status: "loading" });
   const [reloadToken, setReloadToken] = useState(0);
   const [month, setMonth] = useState<string | null>(null);
   // When the data was read. Set on EVERY outcome (success or failure), so "today" and the month are
@@ -282,19 +356,25 @@ export function FinancePage({ labState }: { labState: LabState }) {
       if (!client) {
         setSales({ status: "unavailable", message: "Finance needs a connected database." });
         setLedger({ status: "unavailable", reason: "not-configured", message: "Expenses need a connected database." });
+        setStockEvents({ status: "unavailable", message: "Stock financial attribution needs a connected database." });
         setLoadedAtMs(Date.now());
         return;
       }
       try {
-        const [salesResult, ledgerResult] = await Promise.all([loadFinanceSalesData(client), listBusinessExpenses(client)]);
+        const [salesLoad, ledgerLoad, stockLoad] = await Promise.allSettled([loadFinanceSalesData(client), listBusinessExpenses(client), listStockFinancialEvents(client)]);
         if (cancelled) return;
+        const salesResult = salesLoad.status === "fulfilled" ? salesLoad.value : { ok: false as const, message: "Couldn't load sales. Reload Finance." };
+        const ledgerResult = ledgerLoad.status === "fulfilled" ? ledgerLoad.value : { ok: false as const, reason: "failed" as const, message: "Couldn't load expenses. Reload Finance." };
+        const stockResult = stockLoad.status === "fulfilled" ? stockLoad.value : { ok: false as const, message: "Couldn't load stock financial attribution. Reload Finance." };
         setSales(salesResult.ok ? { status: "ready", orders: salesResult.orders, linesByOrderId: salesResult.linesByOrderId, cogsByOrderId: salesResult.cogsByOrderId, truncated: salesResult.truncated } : { status: "unavailable", message: salesResult.message });
         setLedger(ledgerResult.ok ? { status: "ready", expenses: ledgerResult.expenses, truncated: ledgerResult.truncated } : { status: "unavailable", reason: ledgerResult.reason, message: ledgerResult.message });
+        setStockEvents(stockResult.ok ? { status: "ready", events: stockResult.events, truncated: stockResult.truncated } : { status: "unavailable", message: stockResult.message });
       } catch (error) {
         if (cancelled) return;
         const message = error instanceof Error ? error.message : "Something went wrong loading Finance.";
         setSales({ status: "unavailable", message });
         setLedger({ status: "unavailable", reason: "failed", message });
+        setStockEvents({ status: "unavailable", message });
       }
       if (cancelled) return;
       const now = Date.now();
@@ -315,6 +395,8 @@ export function FinancePage({ labState }: { labState: LabState }) {
       linesByOrderId: sales.linesByOrderId,
       cogsByOrderId: sales.cogsByOrderId,
       expenses: ledgerExpenses,
+      stockFinancialEvents: stockEvents.status === "ready" ? stockEvents.events : null,
+      stockEventsTruncated: stockEvents.status === "ready" && stockEvents.truncated,
       supplies: labState.supplies,
       ingredients: labState.ingredients,
       productionExecutions: labState.productionExecutions,
@@ -322,7 +404,7 @@ export function FinancePage({ labState }: { labState: LabState }) {
       truncated: sales.truncated || (ledger.status === "ready" && ledger.truncated),
       stockTruncated: [labState.supplies, labState.ingredients, labState.productionExecutions, labState.finishedStockMovements].some((rows) => rows.length >= POSTGREST_ROW_CAP),
     };
-  }, [sales, ledger, labState.supplies, labState.ingredients, labState.productionExecutions, labState.finishedStockMovements]);
+  }, [sales, ledger, stockEvents, labState.supplies, labState.ingredients, labState.productionExecutions, labState.finishedStockMovements]);
 
   const report = useMemo(() => (inputs && month ? buildMonthlyFinancialReport(inputs, month) : null), [inputs, month]);
   const balances = useMemo(() => (inputs && sales.status === "ready" ? buildFinancialBalances(inputs, loadedAtMs ?? 0) : null), [inputs, sales.status, loadedAtMs]);
@@ -388,7 +470,7 @@ export function FinancePage({ labState }: { labState: LabState }) {
       ) : (
         <>
           <SectionCard label={`${monthLabel(report.month)} results`}>
-            <SectionHeading hint="Revenue minus ingredient cost minus recorded expenses. Read the list of what is not included before relying on it.">{monthLabel(report.month)}</SectionHeading>
+            <SectionHeading hint="Revenue minus sold ingredient cost, recorded expenses and business stock losses. Household withdrawals stay separate. Read the exclusions before relying on it.">{monthLabel(report.month)}</SectionHeading>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
               <Tile detail={`${report.sales.completedOrders} completed · ${peso(report.sales.collected)} collected${report.sales.receivable > 0 ? ` · ${peso(report.sales.receivable)} unpaid` : ""}${report.sales.refunds > 0 ? ` · ${peso(report.sales.refunds)} refunded` : ""}`} label="Sales revenue" value={peso(report.sales.netRevenue)} />
               <Tile
@@ -417,6 +499,30 @@ export function FinancePage({ labState }: { labState: LabState }) {
             {report.grossMargin.value === null && report.cogs.costedProductSales > 0 ? (
               <p className="mt-3 text-sm text-[#5f4a3d]">On the {peso(report.cogs.costedProductSales)} of sales that do have a recorded cost, the margin is {peso(report.cogs.costedSalesMargin)}. That is only part of the month, so it is not the month&apos;s margin.</p>
             ) : null}
+          </SectionCard>
+
+          <SectionCard label="Stock consumption and losses">
+            <SectionHeading hint="Recorded once in Inventory or Bake. Business losses are deducted automatically; do not add them to Operating expenses again. Gross margin remains sales-only.">Stock consumption and losses</SectionHeading>
+            {stockEvents.status === "unavailable" ? <p className="mt-3 break-words text-sm text-[#b3441f]" role="status">{stockEvents.message} <button className="underline" onClick={reload} type="button">Try again</button></p> : null}
+            <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
+              {report.stockAttribution.byCategory.filter((entry) => entry.classification !== "unclassified").map((entry) => (
+                <Tile
+                  key={entry.classification}
+                  label={STOCK_FINANCIAL_CLASSIFICATIONS.find((category) => category.id === entry.classification)?.label ?? entry.classification}
+                  value={entry.total === null ? "—" : peso(entry.total)}
+                  tone={entry.total === null || entry.estimatedCount > 0 ? "warn" : "neutral"}
+                  detail={!report.stockAttribution.available ? "Source unavailable" : report.stockAttribution.truncated ? "Source may be incomplete" : entry.unvaluedCount > 0 ? `${entry.unvaluedCount} rows have no trustworthy cost; total withheld` : `${entry.classification === "household" ? "Owner withdrawal; excluded from operating result" : "Deducted from operating result"}${entry.estimatedCount > 0 ? ` · ${peso(entry.estimatedAmount)} estimated` : ""}`}
+                />
+              ))}
+              <Tile label="Needs stock review" value={!report.stockAttribution.available || report.stockAttribution.truncated ? "—" : String(report.stockAttribution.review.length)} detail="Unclassified or unvalued event rows. Missing costs stay unknown after classification." tone={report.stockAttribution.review.length > 0 || !report.stockAttribution.available || report.stockAttribution.truncated ? "warn" : "neutral"} />
+            </div>
+            {report.stockAttribution.events.length > 0 ? (
+              <details className="mt-3 rounded-md border border-[#d8c7b7] p-3">
+                <summary className="cursor-pointer text-sm font-semibold">Stock event history and review ({report.stockAttribution.events.length}{report.stockAttribution.truncated ? "; may be incomplete" : ""})</summary>
+                <div className="mt-3 grid gap-2">{report.stockAttribution.events.map((event) => <StockEventDetails event={event} key={event.id} labState={labState} onDone={expenseSaved} />)}</div>
+              </details>
+            ) : null}
+            <p className="mt-3 text-xs text-[#6f5a4c]">Finished-stock costs follow the actual production lots and restate after Bake corrections. Raw costs use their event snapshot. Negative values reverse earlier costs.</p>
           </SectionCard>
 
           <SectionCard label="Warnings and exclusions">
