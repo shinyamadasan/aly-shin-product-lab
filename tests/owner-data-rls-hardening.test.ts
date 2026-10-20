@@ -58,6 +58,13 @@ const TASK_072_TABLES = ["production_execution_corrections"];
 // already owner-SELECT-only, so the view grants no authority beyond what those already enforce.
 const WAVE_3_VIEWS = ["order_raw_cogs"];
 
+// Financial Release 1 (supabase/migrations/20261016120000_business_expenses.sql) adds
+// public.business_expenses, owned by its own migration exactly as Wave 1's tables are: RLS on, every
+// grant revoked from public/anon/authenticated, SELECT re-granted to authenticated, and one policy
+// `using (public.is_product_lab_owner())`. The last test in this file reads that migration and fails
+// if any of that stops being true, so listing the table here is a checked claim, not an exemption.
+const FINANCE_TABLES = ["business_expenses", "order_refund_corrections"];
+
 // --- the claim is the same one the application reads --------------------------------------------
 
 test("S1 reuses Wave B's claim readers rather than restating the claim path", () => {
@@ -204,7 +211,7 @@ test("every table the application and workers touch is either hardened by S1 or 
   assert.match(wave2, /revoke all on public\.order_stock_allocations from public, anon, authenticated;/);
   assert.match(wave2, /grant select on public\.order_stock_allocations to authenticated;/);
   assert.match(wave2, /create policy "wave2 owner reads order stock allocations" on public\.order_stock_allocations\s+for select to authenticated using \(public\.is_product_lab_owner\(\)\);/);
-  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS, "product_media", "order_refund_corrections", "order_payment_incident_events", "order_stock_allocations"]);
+  const covered = new Set([...hardenedTables(), ...WAVE_B_TABLES, ...WAVE_1_TABLES, ...TASK_072_TABLES, ...WAVE_3_VIEWS, ...FINANCE_TABLES, "product_media", "order_refund_corrections", "order_payment_incident_events", "order_stock_allocations"]);
   const uncovered = [...tablesReferencedInCode()].filter((table) => !covered.has(table)).sort();
   assert.deepEqual(uncovered, [], `these tables are used by the code but hardened by nobody: ${uncovered.join(", ")}`);
 });
@@ -264,4 +271,34 @@ test("the public-order principal gets no DELETE anywhere", () => {
   assert.ok(publicOrderPolicies.length > 0, "expected policies for the public-order principal");
   assert.doesNotMatch(publicOrderPolicies, /for delete/i);
   assert.doesNotMatch(publicOrderPolicies, /for all/i);
+});
+
+test("the refund-correction audit is owner-read-only by its own migration, with no client or service_role write path", () => {
+  const migration = statementsOf(readFileSync(path.join(import.meta.dirname, "..", "supabase/migrations/20261019120000_order_refund_correction.sql"), "utf8"));
+  assert.match(migration, /alter table public\.order_refund_corrections enable row level security;/);
+  assert.match(migration, /revoke all on public\.order_refund_corrections from public, anon, authenticated;/);
+  assert.match(migration, /revoke insert, update, delete, truncate, trigger, references on public\.order_refund_corrections from service_role;/);
+  assert.match(migration, /grant select on public\.order_refund_corrections to authenticated;/);
+  assert.match(migration, /create policy "owner reads order refund corrections" on public\.order_refund_corrections\s+for select to authenticated using \(public\.is_product_lab_owner\(\)\);/);
+  assert.doesNotMatch(migration, /using\s*\(\s*true\s*\)/i, "no permissive policy");
+  assert.doesNotMatch(migration, /grant\s+(insert|update|delete|truncate|all)[^;]*order_refund_corrections/i, "no client write grant");
+  assert.doesNotMatch(migration, /to\s+anon/i, "anon is never granted anything");
+  assert.match(migration, /revoke all on function public\.correct_mistaken_refund\([^)]*\)\s+from public, anon, authenticated;/, "not callable by anon");
+  assert.match(migration, /function inventory_private\.correct_mistaken_refund\([\s\S]*?auth\.uid\(\) is null or public\.is_product_lab_owner\(\) is not true/, "checks the owner itself");
+});
+
+test("the expense ledger is owner-only by its own migration, never by the older permissive template", () => {
+  const migration = statementsOf(readFileSync(path.join(import.meta.dirname, "..", "supabase/migrations/20261016120000_business_expenses.sql"), "utf8"));
+  assert.match(migration, /alter table public\.business_expenses enable row level security;/);
+  assert.match(migration, /revoke all on public\.business_expenses from public, anon, authenticated;/);
+  assert.match(migration, /grant select on public\.business_expenses to authenticated;/);
+  assert.match(migration, /create policy "financial owner reads business expenses" on public\.business_expenses\s+for select to authenticated using \(public\.is_product_lab_owner\(\)\);/);
+  assert.doesNotMatch(migration, /using\s*\(\s*true\s*\)/i, "no permissive policy");
+  assert.doesNotMatch(migration, /grant\s+(insert|update|delete|truncate|all)\b[^;]*business_expenses/i, "no client write grant");
+  assert.doesNotMatch(migration, /to\s+anon/i, "anon is never granted anything");
+  for (const fn of ["record_business_expense", "void_business_expense", "correct_business_expense"]) {
+    assert.match(migration, new RegExp(`revoke all on function public\\.${fn}\\([^)]*\\)\\s+from public, anon, authenticated;`), `${fn} must not be callable by anon`);
+    assert.match(migration, new RegExp(`revoke all on function inventory_private\\.${fn}\\([^)]*\\)\\s+from public, anon, authenticated;`), `${fn} (private) must not be callable by anon`);
+    assert.match(migration, new RegExp(`function inventory_private\\.${fn}\\([\\s\\S]*?auth\\.uid\\(\\) is null or public\\.is_product_lab_owner\\(\\) is not true`), `${fn} must check the owner itself`);
+  }
 });

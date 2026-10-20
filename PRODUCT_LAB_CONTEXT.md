@@ -83,6 +83,25 @@ Avoid:
 - Vanity metrics, full tables, and anything that turns it into a second editing surface.
 - Inventing a formula that an existing helper already owns.
 
+### Finance (`/finance`)
+
+Purpose: a monthly, provisional read of sales, ingredient cost, recorded operating expenses and the
+operating result, plus the expense ledger. Owner-only. See D-009.
+
+- Revenue is counted when an order is **completed**, not when it is paid (Manila months). A prepaid
+  order that is not yet handed over is a deposit; a completed unpaid order is owed money.
+- Ingredient cost is the cost frozen when each batch was baked. If any of a month's sales has no recorded
+  cost, margin and result show an em dash and say why -- never a smaller number.
+- It is **provisional** and never called profit: packaging, waste, your own labor and depreciation are
+  not included, and the page lists that on every month.
+- Cash received, inventory purchases, deposits and stock value are shown separately and are not profit.
+- Expenses are running costs only (rent, utilities, delivery, fees, marketing...). Ingredient and
+  packaging purchases are recorded under Inventory -> Purchases and are never an expense. Mistakes are
+  voided or corrected, never deleted.
+
+Avoid: showing an incomplete month as a result; counting a purchase or a Bake as a cost; letting cost
+estimates from the Costing page stand in for real expenses.
+
 ### Today (`/today`)
 
 The content-creation workflow (Create Now / recommended opportunity). It lived at `/` until the

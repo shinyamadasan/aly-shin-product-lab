@@ -14,6 +14,7 @@ const titles = {
   batches: "Product proof batches",
   costing: "Costing and pricing",
   orders: "Orders",
+  finance: "Finance",
   equipment: "Equipment and depreciation",
   inventory: "Inventory",
   bake: "Bake and deduct inventory",

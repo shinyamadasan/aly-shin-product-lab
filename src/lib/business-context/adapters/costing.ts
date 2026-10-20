@@ -337,7 +337,9 @@ function buildSnapshot(row: CostingSummaryRow, entries: CostingEntryRow[]): Cost
         },
 
     costPerPiece: publish(totals.costPerPiece, "costPerPiece", "Cost per piece"),
-    grossProfit: publish(totals.grossProfit, "grossProfit", "Gross profit"),
+    // The key "grossProfit" is a published Business Context schema name (golden fixtures, dependency map),
+    // so it stays; the VALUE is operating profit per piece, and the label says so.
+    grossProfit: publish(totals.operatingProfitPerPiece, "grossProfit", "Operating profit per piece"),
     margin: publish(totals.margin, "margin", "Margin"),
     foodCostPercent: publish(totals.foodCostPercent, "foodCostPercent", "Food cost percentage"),
     markup: publish(totals.markup, "markup", "Markup"),

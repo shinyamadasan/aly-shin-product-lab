@@ -19,6 +19,7 @@ export type LabView =
   | "content-studio"
   | "guide"
   | "brand"
+  | "finance"
   // Registered so AppShell can type and title the /context route. Listed in navItems below since
   // Runtime v1 passed live validation -- it is a normal internal surface now, not an experiment.
   | "context";
@@ -40,6 +41,7 @@ export const navItems: Array<{ label: string; href: string; view: LabView; group
   { label: "Inventory", href: "/inventory", view: "inventory", group: "operations" },
   { label: "Bake", href: "/bake", view: "bake", group: "operations" },
   { label: "Products", href: "/products", view: "products", group: "operations" },
+  { label: "Finance", href: "/finance", view: "finance", group: "operations" },
   { label: "Today", href: "/today", view: "today", group: "marketing" },
   { label: "Content Studio", href: "/content-studio", view: "content-studio", group: "marketing" },
   { label: "Journey", href: "/journal", view: "journal", group: "marketing" },

@@ -1398,6 +1398,137 @@ or financial feature. Architecture/model/runbook/status and deployment instructi
 **Merge gate: `done`** -- owner authorized this integration; independently reviewed and ready for the separate
 closeout PR to merge. No automatic Netlify deploy, migration or Finance release is authorized by the merge.
 
+## 2026-10-16 — Financial Release 1 (T2 reporting, T3 expense ledger, T4 Finance page)
+
+**Scope:** new `supabase/migrations/20261016120000_business_expenses.sql` (one table, three
+owner-checked idempotent function pairs, immutability triggers, owner-only RLS -- additive, **NOT
+applied to production**); new `src/lib/finance/` (pure: peso, period, expenses, report),
+`src/lib/finance-repository.ts`, `src/components/finance-page.tsx`, `src/app/finance/page.tsx`; a
+three-line wiring change in `product-lab.tsx`, `lab-state.ts`, `app-shell.tsx`; and the Costing
+terminology fix (`grossProfit` -> `operatingProfitPerPiece` in `costing.ts` and its consumers; the
+Business Context key `grossProfit` is a published schema name and was kept, with its label corrected).
+No existing migration, RPC, order/inventory/production/fulfilment behavior or data was changed.
+
+**Accounting rules (D-009):** revenue and ingredient COGS are recognized at order **completion** in
+Manila months; prepaid-open orders are deposits; completed-unpaid are receivables; purchases are an
+asset and a memo line only; COGS is read solely from `order_raw_cogs`, so a purchase or a Bake cannot be
+counted twice; a refund of a completed order is contra-revenue in the refund month. When any product
+sale in a month has no recorded cost, gross margin and operating result are **withheld** (an em dash
+with the reason). No result exists before 2026-10. Packaging, waste, owner labor and depreciation are
+disclosed as excluded on every report.
+
+**Verified (all against a disposable Postgres container; production was never touched):**
+- Full unit suite 4432 tests, 0 failures (1 pre-existing skip); `tsc --noEmit` clean; ESLint clean on
+  every new and touched file including `product-lab.tsx`; production build passes with `/finance`
+  prerendered as a static shell (no financial data in the HTML).
+- Full Postgres smoke suite (every prior wave, cost-trust, owner-RLS, plus the three new files) 0
+  failures. The new files prove: owner-only (anon and non-owner refused, direct writes refused),
+  append-only (superuser UPDATE/DELETE/TRUNCATE refused), idempotent (same id replays; two overlapping
+  sessions store one row; a refused duplicate leaves its operation id reusable), void/correct audit
+  trail, the migration refuses a second application, its documented rollback script runs and restores
+  the exact original object set, and applying it leaves a checksum of every existing financial table
+  byte-identical.
+- Golden dataset: every expected figure hand-calculated before the code ran (October revenue 1,200.00,
+  COGS 633.33, margin 566.67, expenses 1,484.43, result -917.76; September's partial cost data withholds
+  the margin and result; a 00:30-Manila 1 Nov completion stays in November though it is 31 Oct in UTC).
+- End to end through the real RPCs (Bake, purchase, order confirm/complete, expense functions) with the
+  database's own output fed through the same TypeScript report: a PHP 500 purchase and a Bake leave
+  profit unchanged; fulfilment recognizes exactly the cost the database froze (8.00 for 4 x 2.00);
+  a refund is contra-revenue and does not return the ingredients; an uncosted legacy sale withholds the
+  margin.
+- Mutation testing, restoring each file after: 10 deliberate accounting bugs in the report and 6 in the
+  SQL were each caught by at least one test. Two initial survivors exposed weak tests (the open-order
+  status rule and float-drift exactness); both were strengthened and re-run to zero survivors.
+
+**Changed guard tests, deliberately and visibly:** `dashboard-navigation` (Operations now lists
+Finance), `business-context-page` (20 nav entries, was 19), and `owner-data-rls-hardening` (the table
+is registered next to Wave 1's, with a NEW test that reads the migration and fails if owner-only RLS,
+the revoked grants, the owner check in every function, or the closed category list ever weakens).
+
+**Not verified / honest limits:** no browser or real-device render was possible (no component-render
+tooling, no connected backend in this session) -- the page is verified by types, lint, build and
+structural tests only; mobile layout and feel are **`ship-pending-human-review`**. The migration has not
+been applied to production, so nothing here has run against live data. PostgREST-level behavior was
+checked only by calling the functions with named arguments in SQL.
+
+**Merge gate: `approved`** -- held for independent review and explicit owner authorization before the
+migration is applied or anything is deployed. Apply the migration first, then deploy the app (the page
+degrades safely without the ledger: it shows sales and margin and says the result is unavailable).
+
+## 2026-10-19 -- Financial Release 1: independent review and acceptance round (fixes)
+
+**Reviewers:** three independent reviewers (accounting logic; migration/database security; branch
+integration/regression) read the code cold and probed it. Their findings were verified by reproduction
+before any change, not accepted on authority. Production was read ONLY, with SELECT statements through the
+owner session (no writes, no RPC beyond the pure `is_product_lab_owner()`); browser tests ran against a
+disposable Postgres, a real PostgREST and a local auth shim, with all non-local traffic blocked.
+
+**Fixed (each with a test that failed first):**
+- HIGH: cost drawn from an ESTIMATED lot (opening-balance stock) counted as fully costed. It is now
+  counted, disclosed with its amount (`estimated-cost-in-cogs`), and a zero-cost or unseen lot is NOT
+  evidence of cost (the month is withheld). Real data: 5 September orders (PHP 542.59) draw on such lots.
+- HIGH (found in real data by me, before review): a PHP 0 product order with no recorded cost counted as
+  "costed" because completeness was measured in pesos. Completeness is now decided by uncosted product
+  units; the coverage tile never reads 100% while incomplete.
+- MEDIUM: a completed order with no loaded lines passed as cost-free; now withholds the month.
+- MEDIUM: refund ordering. An order refunded BEFORE it was completed no longer books contra-revenue; the
+  month is withheld for review (`needs-review`). Real data: order 60b69833 was paid, refunded 2 s later and
+  completed 24 s later on 19 Oct (almost certainly a button test) and now correctly blocks October until the
+  owner reviews it.
+- MEDIUM: stock tiles read PHP 0 when the app-level stock state had not loaded; now a high warning.
+- LOW: fractional unit prices rounded per unit (now per line total); manual-line revenue is a medium
+  warning at 10% or more of the month; the Ingredient cost tile says when it is partial or estimated.
+- SECURITY (reproduced by the reviewer): the documented rollback was unguarded and left idempotency
+  receipts that could answer a retry with a phantom success. It now ABORTS if the ledger has rows and
+  deletes its receipts, and a test proves both. The idempotency hash was delimiter-joined (ambiguous);
+  it is now a JSON array, scale-insensitive (10 = 10.00). Look-alike entries from two simultaneous
+  requests are serialized by an advisory lock. The function validates payment method, date floor and text
+  length itself (wrong error class otherwise). service_role's write grants are revoked (Supabase grants it
+  ALL by default); the test environment now mirrors Supabase's default privileges so the revokes are
+  actually exercised. Corrections are intentionally not duplicate-checked.
+- Browser findings: inputs rendered 14px (iOS would zoom) because `font: inherit` in globals.css beats the
+  Tailwind class; amounts wrapped mid-number at 320px.
+- Decision id D-007 collided with origin/main's D-007; renumbered to D-009 in all eight files.
+
+**Disclosed, not changed:** a Bake yield correction (TASK-072 on origin/main) restates fulfilled COGS live,
+so a closed month can change later -- now a permanent on-screen disclosure, as is "collected/unpaid is as of
+today". service_role and the table owner remain trusted principals (a trigger can be disabled by its owner).
+Multiple owners can void each other's entries (attribution is recorded_by/voided_by).
+
+**Integration:** HEAD (4f4f76a) is an ancestor of origin/main (27bc899), 12 commits behind. The change was
+rebased in a throwaway worktree: 4 textual conflicts (REVIEW, DECISIONS, DONE, and the RLS coverage test,
+resolved as a UNION of FINANCE_TABLES, TASK_072_TABLES and product_media); tsc, 4523 unit tests, 162 Postgres
+tests and the production build pass on the merged tree. Nothing was committed or pushed.
+
+**Merge gate: `approved`** -- still held for the owner's explicit authorization. Apply the migration first,
+then deploy.
+
+## 2026-10-20 -- Finance integration independent review and security checkpoint
+
+Scope: preserved existing Financial Release 1 implementation from e71ddbb onto main44d0bb1.
+Retained main's current refund confirmation/correction, Content Studio, Bake correction, incident
+history and testing guard. No Finance feature redesign, dependencies changed, transaction edits,
+migrations executed, recovery replay, or Finance upload/deployment.
+
+Self-review: code health and surgical scope PASS; pure report/repository ownership preserved.
+QA evidence: clean Linux locked install;4547unit pass/0fail/4explicit Windows-only skips;
+191disposable PostgreSQL pass/0fail/0skip, including real refund-correction RPC to report regressions
+and unchanged COGS/business facts. Typecheck and local Linux Netlify adapter build PASS.
+Desktop browser reached35passing assertions but was interrupted; remaining desktop/mobile acceptance
+is not claimed complete. Existing refund production verification is reused for unchanged hotfix code.
+Production reporting checks SELECT-only: October33/33costed,COGS3398.13,margin4981.87; September
+cost-coverage/pre-start warnings preserved. No business writes made to production or shared-backend previews.
+
+Independent reviewer: integrated code/security design and exact deployment plan PASS, no blocking
+implementation findings; stale feature status and EOL-only churn corrected. Separate dependency
+audit gate FAIL: existing lockfile has1critical/3high affected packages, confirmed against maintainer
+advisories. Exploit reachability is not proven; affected versions alone leave the security gate unresolved.
+Independent reviewer confirms release HOLD. See docs/FINANCIAL_RELEASE_1_SECURITY_HOLD.md.
+
+Merge gate: **neither done nor approved for merge/release**. This is a reviewed WIP checkpoint/draft PR
+under WORKFLOW.md Checkpoint; would I ship this? **No**, until dependency security and remaining
+browser QA pass. No production commit/merge/migration/deploy is authorized. Preserve incident records.
+
 ## 2026-10-20 -- Targeted runtime dependency security repair
 
 Scope: Next/eslint-config-next16.3.8,Sharp0.35.5,Nanoid3.3.20,source-map-js1.2.2 and their required
@@ -1425,3 +1556,31 @@ Mergegate: **approved** for reviewed security PR preparation because independent
 checks pass. Would I ship this repair? Yes, after the user's established merge/release approval.
 This verdict does not merge either PR or authorize Finance migration, draftupload or productiondeployment.
 Finance integration and its finalQA remain separate. Real-device Safari/Android QA remains human verification.
+
+## 2026-10-20 -- Finance dependency integration and final QA approval
+
+Integrated exact reviewed security commit f201920 from PR #109 into Finance candidate 7dcf5c0 from
+PR #108. Only review/status/done logs conflicted; both histories retained. Finance calculation,
+repository, page, refunds and expense migration unchanged. Expense SHA-256 matches the reviewed
+deployment plan. No financial feature rebuild, unrelated refactor or production business write.
+
+Self-review against SELF_REVIEW.md and QA.md: PASS. Existing architecture and accounting decisions
+preserved; dependency pins and bounded Bake compatibility fixes match the security review. Clean
+Linux tree (exact package/lock hashes reused from fresh security npm ci) verifies 4,547 unit pass,
+zero fail, four Windows-only skips; 191 disposable PostgreSQL pass, zero fail/skip; TypeScript,
+ESLint and production-context Netlify build pass. All 23 static assets return 200 locally with
+hash identity; seven API routes and Finance page packaged, patched native image libraries load.
+Browser app's 286 source files match the merged index. Guarded disposable acceptance: Finance64/64,
+refund36/36, navigation/server routes40/40; Cancel makes zero write requests. Safe media upload,
+carousel and Reel acceptance reused from byte-identical Content Studio/security source.
+
+Independent integration/security/safety reviewers: APPROVED, no unresolved blocking findings.
+Production audit is zero. Existing development-only audit residuals (9 high/1 moderate) are clearly
+documented non-runtime tooling risk; no full-development-audit clean claim. Read-only production
+coverage and recovery checks pass with unchanged business records and no expense migration applied.
+Current hold resolution and feature status synchronized while retaining historical incident records.
+
+Merge gate: **approved** for PR review/readiness; would I ship this candidate? Yes, after separate
+owner source-control and production approval. This does not merge Finance or the security PR,
+apply production SQL, upload a Finance draft, or publish a production build. Exact plan remains
+docs/FINANCIAL_RELEASE_1_DEPLOYMENT.md; future draft-edge checks and real-device checks are explicit.

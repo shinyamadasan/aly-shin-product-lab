@@ -57,6 +57,7 @@ import { BakePage } from "@/components/bake-page";
 import { OpportunitiesPage } from "@/components/opportunities-page";
 import { OrdersPage, UNSAVED_ORDER_MESSAGE } from "@/components/orders-page";
 import { DashboardPage } from "@/components/dashboard-page";
+import { FinancePage } from "@/components/finance-page";
 import { TodayPage } from "@/components/today-page";
 import { CreateNow } from "@/components/create-now";
 import { CREATE_NOW_JOB_SEARCH_PARAM } from "@/lib/create-now";
@@ -3493,6 +3494,7 @@ export default function ProductLab({
               product selector reads the real catalog and never opens a second source for it. */}
           {view === "today" ? <TodayPage initialCreativeJobId={initialCreativeJobId} products={labState.products} /> : null}
           {view === "dashboard" ? <DashboardPage labState={labState} message={message} messageTone={messageTone} /> : null}
+          {view === "finance" ? <FinancePage labState={labState} /> : null}
 
           {view === "products" ? (
             <section className="grid gap-5 xl:grid-cols-[1fr_360px]" id="products">
@@ -7414,7 +7416,7 @@ function CostingForm({
   // scale per piece, so only indirectCost is "fixed" at the batch level here.
   const {
     costPerPiece,
-    grossProfit,
+    operatingProfitPerPiece,
     margin,
     foodCostPercent,
     markup,
@@ -7673,7 +7675,7 @@ function CostingForm({
         ["Summary", "Yield", costingYield, "pieces/units", "", ""],
         ["Summary", "Cost per piece", "", "", formatCostingMetric(costPerPiece, (value) => value.toFixed(2)), ""],
         ["Summary", "Selling price", "", "", suggestedPrice, ""],
-        ["Summary", "Operating profit per unit", "", "", formatCostingMetric(grossProfit, (value) => value.toFixed(2)), ""],
+        ["Summary", "Operating profit per unit", "", "", formatCostingMetric(operatingProfitPerPiece, (value) => value.toFixed(2)), ""],
         ["Summary", "Operating margin %", "", "", formatCostingMetric(margin, (value) => value.toFixed(1)), ""],
         ...formatsWithMetrics.flatMap(({ format, lines, packagingCost: formatPackagingCost, totalCost, profit, margin: formatMargin }) => [
           ["Selling Format", format.name, format.piecesPerUnit, format.isActive ? "active" : "archived", format.sellingPrice, `Cost ${formatCostingMetric(totalCost, (value) => value.toFixed(2))} / Profit ${formatCostingMetric(profit, (value) => value.toFixed(2))} / Margin ${formatCostingMetric(formatMargin, (value) => `${value.toFixed(1)}%`)}`],
@@ -8000,7 +8002,7 @@ function CostingForm({
         <div className="grid gap-3 rounded-md border border-[#ead9c8] bg-[#231813] p-4 text-[#fff8ef] sm:grid-cols-4">
           <CostingMetric featured label="Batch cost" value={`PHP ${totalBatchCost.toFixed(2)}`} />
           <CostingMetric featured label="Cost per piece" value={formatCostingMetric(costPerPiece, (value) => `PHP ${value.toFixed(2)}`)} />
-          <CostingMetric label="Operating profit/unit" value={formatCostingMetric(grossProfit, (value) => `PHP ${value.toFixed(2)}`)} />
+          <CostingMetric label="Operating profit/unit" value={formatCostingMetric(operatingProfitPerPiece, (value) => `PHP ${value.toFixed(2)}`)} />
           <CostingMetric label="Food cost" value={formatCostingMetric(foodCostPercent, (value) => `${value.toFixed(1)}%`)} />
           <CostingMetric featured label="Operating margin" value={formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)} />
           <CostingMetric label="Markup" value={formatCostingMetric(markup, (value) => `${value.toFixed(1)}%`)} />
@@ -8127,7 +8129,7 @@ function CostingForm({
         gasCost={gasCost}
         gasCostDetail={gasCostDetail}
         gasDetail={gasDetail}
-        grossProfit={grossProfit}
+        operatingProfitPerPiece={operatingProfitPerPiece}
         indirectCost={indirectCost}
         ingredientRows={ingredientRows}
         ingredientTotal={ingredientTotal}
@@ -8442,7 +8444,7 @@ function CostingPrintReport({
   gasCost,
   gasCostDetail,
   gasDetail,
-  grossProfit,
+  operatingProfitPerPiece,
   indirectCost,
   ingredientRows,
   ingredientTotal,
@@ -8487,7 +8489,7 @@ function CostingPrintReport({
   gasCost: number;
   gasCostDetail: { cost: number; costPerMinute: number; pricePerKg: number };
   gasDetail: CostingGasDetail;
-  grossProfit: number | null;
+  operatingProfitPerPiece: number | null;
   indirectCost: number;
   ingredientRows: CostingIngredientRow[];
   ingredientTotal: number;
@@ -8528,7 +8530,7 @@ function CostingPrintReport({
         <tbody>
           <tr><th>Batch cost</th><td>PHP {totalBatchCost.toFixed(2)}</td><th>Yield</th><td>{costingYield || 0} pieces/units</td></tr>
           <tr><th>Cost per piece</th><td>{formatCostingMetric(costPerPiece, (value) => `PHP ${value.toFixed(2)}`)}</td><th>Selling price</th><td>PHP {suggestedPrice.toFixed(2)}</td></tr>
-          <tr><th>Operating profit/unit</th><td>{formatCostingMetric(grossProfit, (value) => `PHP ${value.toFixed(2)}`)}</td><th>Operating margin</th><td>{formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)}</td></tr>
+          <tr><th>Operating profit/unit</th><td>{formatCostingMetric(operatingProfitPerPiece, (value) => `PHP ${value.toFixed(2)}`)}</td><th>Operating margin</th><td>{formatCostingMetric(margin, (value) => `${value.toFixed(1)}%`)}</td></tr>
           <tr><th>Food cost</th><td>{formatCostingMetric(foodCostPercent, (value) => `${value.toFixed(1)}%`)}</td><th>Markup</th><td>{formatCostingMetric(markup, (value) => `${value.toFixed(1)}%`)}</td></tr>
           <tr><th>Target food cost</th><td>{(targetFoodCost * 100).toFixed(1)}%</td><th>Target price</th><td>{formatCostingMetric(suggestedTargetPrice, (value) => `PHP ${value.toFixed(2)}`)}</td></tr>
           <tr><th>Break-even</th><td>{formatCostingMetric(breakEvenUnits, (value) => (contributionMarginPerPiece && contributionMarginPerPiece > 0 ? `${value} pieces to cover overhead + equipment` : "Not achievable at this price"))}</td><th>Contribution margin/unit</th><td>{formatCostingMetric(contributionMarginPerPiece, (value) => `PHP ${value.toFixed(2)}`)}</td></tr>

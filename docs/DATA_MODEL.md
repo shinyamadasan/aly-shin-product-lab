@@ -390,3 +390,31 @@ and completion-status facts, order update timestamp and optional prior refund-co
 order/event/refund-timestamp key prevents duplicate incident records. Owner SELECT is allowed; no client
 or service-role insert/update/delete is granted. Triggers prevent update/delete/truncate. Normal refund
 corrections remain in their own immutable `order_refund_corrections` table. Neither history is rewritten.
+
+### `business_expenses` (Supabase table, `supabase/migrations/20261016120000_business_expenses.sql`)
+
+Append-only operating-expense ledger. `id`, `operation_id` (unique idempotency key), `expense_date`
+(a calendar date, read as a Manila business day), `category` (CHECK-constrained closed list:
+`rent`, `utilities`, `delivery`, `fees`, `marketing`, `equipment`, `supplies_non_inventory`, `software`,
+`permits_taxes`, `labor`, `other` -- deliberately no ingredient/packaging/inventory category),
+`amount` (exact numeric, whole centavos by CHECK), `payee`, `description`, `payment_method`
+(`cash|gcash|bank_transfer|other`, optional), `payment_reference`, `corrects_expense_id` (set on a
+correction's replacement row), `recorded_at`, `recorded_by`, and `voided_at`/`voided_by`/`void_reason`
+(all present or all absent). Never deleted: a trigger refuses DELETE and TRUNCATE for every caller and
+lets only the void columns change, once, inside the void/correct functions. The API roles have SELECT
+only (owner-only policy); writes go through `record_business_expense`, `void_business_expense` and
+`correct_business_expense`, each owner-checked and claimed through `inventory_private.claim_mutation`.
+
+```ts
+type BusinessExpense = {
+  id: string; operationId: string; expenseDate: string; // YYYY-MM-DD
+  category: ExpenseCategory; amount: number; payee: string; description: string;
+  paymentMethod: PaymentMethod | null; paymentReference: string;
+  correctsExpenseId: string | null; recordedAt: string;
+  voidedAt: string | null; voidReason: string;
+};
+```
+
+No other table or column was added. Revenue, COGS, inventory value and purchases are all derived from
+existing tables (`orders`, `order_lines`, `order_raw_cogs`, `ingredients`, `production_executions`,
+`finished_stock_movements`, `supply_entries`) and are never stored.

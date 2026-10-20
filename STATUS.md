@@ -1,15 +1,55 @@
 # STATUS
 
-## 2026-10-20 -- Runtime dependency security repair verified; PR review only
+## 2026-10-20 -- Finance final QA verified; production approval pending
 
-Production audit is zero after targeted Next16.3.8/Sharp0.35.5/Nanoid3.3.20/source-map-js1.2.2 updates.
-Matching eslint-config-next16.3.8; current Netlify adapter5.16.3 retained and verified on Linux.
-4471unit pass/4Windows-only skips,173disposablePostgres cases verified,TypeScript/ESLint/build/native
-packaging PASS. Guarded ContentStudio fixtures,35refundchecks and40appdesktop/mobile checks PASS.
-Independent security review APPROVED. Existing dev-only9high/1moderate advisories are documented.
-No production action taken; refund deploy6ad77d3799debf1d75d48671 remains published. No automaticdeploy.
-Next: security-only PR, integrate exact repair into preserved Finance PR108 and finish its QA.
-See docs/DEPENDENCY_SECURITY_2026-10-20.md. Real-device rendering remains human verification.
+Security PR #109 (f201920) is integrated into the existing Finance PR #108 candidate. Independent
+code/security/safety review is approved. Technical readiness PASS: runtime audit zero; Linux unit
+4,547 pass / four Windows-only skips; full disposable PostgreSQL 191/191; TypeScript, ESLint and
+production-context Netlify build pass. Guarded browser: Finance 64/64, refund 36/36, navigation and
+server routes 40/40. Cancel sends zero write requests. Media fixture generation/upload gates pass.
+All packaged static assets and seven API routes verified; Linux native Sharp 0.35.5, no Windows files.
+
+No Finance accounting or expense migration changes. Expense SQL SHA-256 remains ddd837ee7b9d3a05e4b520e035358b712584bed33f8707d655f82869fe94e6b0.
+Production read-only October coverage 33/33, COGS PHP3,398.13, margin PHP4,981.87; September's 42
+uncosted orders remain withheld with historical warnings. Recovery state exactly matches the earlier
+verification; all three recovered orders untouched, expense ledger absent, no migration replay.
+Production remains refund deploy 6ad77d3799debf1d75d48671. Neither PR merged or any build uploaded.
+Development-only 9 high / 1 moderate findings are documented, including unpatched braces; production
+audit is clean. Original dirty Finance checkout and safety refs preserved.
+
+Next: owner source review of PRs #109 and #108, then separate production approval for the targeted
+expense migration and manual Netlify draft/promotion plan. Actual draft-edge smoke and physical
+iOS/Android verification remain release/human checks. See docs/FINANCIAL_RELEASE_1_FINAL_QA_2026-10-20.md.
+
+## 2026-10-20 -- Finance security integration in verification
+
+Security PR109 is reviewed/open and unmerged at f201920. Its exact repair is integrated into the
+existing Finance candidate; both review histories retained. Production remains unchanged.
+Full integrated Finance unit/database/build/browser verification is in progress; no production approval.
+
+## 2026-10-20 -- Financial Release 1 integration checkpoint: SECURITY BLOCKED
+
+Refund PR #106 and recovery/configuration PR #107 are merged. Production remains Netlify
+6ad77d3799debf1d75d48671; merges have no deployment automation. Both recovery migrations are
+already recorded in production. The three recovered orders remain unchanged; no recovery rerun.
+Legacy Vercel CLI logout succeeded and removed its access/refresh session file.
+
+Finance is integrated on feat/financial-release-1-ready off main44d0bb1, retaining current
+Refund, Bake, Content Studio, incident history, testing guard and validated Netlify configuration.
+Original dirty Finance work remains untouched; clean preservation ref
+safety/finance-pre-integration-clean-20261020 (e71ddbb). Existing older status entries below are historical.
+
+Linux unit tests:4547pass/0fail/4Windows-only skips. Disposable PostgreSQL:191pass/0fail/0skip.
+Type checking and local Linux Netlify build pass (CLI27.10.2,adapter5.16.3,Node24.19.0).
+Independent Finance code/plan review PASS. Desktop disposable browser35assertions passed before
+the run was interrupted; full desktop/mobile acceptance remains outstanding. Do not call browser QA complete.
+Production read-only October:33/33costed, COGS3398.13, margin4981.87; September's42uncosted
+orders and pre-start warning preserved. Expense ledger remains absent in production.
+
+Release gate BLOCKED: unchanged production lockfile npm audit reports1critical/3high affected packages.
+See docs/FINANCIAL_RELEASE_1_SECURITY_HOLD.md. No Finance merge, upload, migration or deploy.
+Next: separate dependency security repair and renewed security/remaining browser gates, then separate
+production approval and docs/FINANCIAL_RELEASE_1_DEPLOYMENT.md. Real-device QA remains human verification.
 
 ## 2026-10-20 -- Refund source-control closeout verified
 
@@ -108,6 +148,26 @@ physical-phone checks also remain under "Needs human verification" below.
 
 ## Last shipped
 
+- **2026-10-19 -- Correct Mistaken Refund built and reviewed locally, NOT committed, NOT applied:** owner-only,
+  audited undo for the mistaken refund on order 60b69833 (the only refunded order; it alone holds October's
+  margin back). New migration `20261019120000_order_refund_correction.sql` plus an Orders-page action. Awaiting
+  the owner's explicit go-ahead to apply the migration and deploy; the exact steps are in the hand-off. See
+  D-010 and `REVIEW.md` 2026-10-19.
+- **2026-10-19 -- Financial Release 1 independent review + browser acceptance complete (fixes applied, still
+  uncommitted, migration still NOT applied):** three independent reviews, 64 Playwright checks on desktop
+  and 390/320px against a disposable DB, and read-only production reconciliation. September stays withheld
+  (14 of 56 costed); October is 33/33 costed but held for review of one test-like order refunded before
+  completion. See `REVIEW.md` 2026-10-19. **Needs the owner:** review order 60b69833, authorize the
+  migration, decide the rebase onto origin/main.
+- **2026-10-16 -- Financial Release 1 implemented locally, not committed, not applied:** `/finance`
+  (monthly provisional operating result on an accrual-at-fulfilment basis, with cost coverage and
+  withheld figures), an append-only owner-only expense ledger (`business_expenses`, migration
+  `20261016120000_business_expenses.sql`, NOT applied to production), Costing's `grossProfit` renamed
+  `operatingProfitPerPiece`. 4432 unit tests and the full Postgres smoke suite pass; tsc, ESLint and
+  the production build pass. No production read or write occurred. See D-009, `REVIEW.md`, and
+  `docs/ARCHITECTURE.md`'s "Financial Release 1". **Needs human verification:** the Finance page on a
+  real phone (layout, tap targets, copy), and the migration's application order (migration first, then
+  deploy). Ready for independent review.
 - **2026-09-13 — Product Lab MCP Slice 2 reviewer fixes implemented locally, not committed:**
   verification now reports `cost_reconciled_at` from authoritative ingredient read-back and a
   regression proves a tampered local apply artifact cannot falsify it. Unit/static test names now

@@ -720,9 +720,29 @@ configuration/procedure. Recovery versions are already recorded remotely and wer
 Vercel session revoked via supported logout. Independent closeout review PASS; 20 focused tests, real local
 Playwright guard check and 19 disposable database tests pass. Finance remains separately held.
 
+## 2026-10-16 -- Financial Release 1: monthly financial view and expense ledger (repository only -- NOT applied live)
+
+Built `/finance`: sales revenue and frozen ingredient COGS recognized at order completion (Manila
+months), recorded operating expenses, and a provisional operating result with cost coverage and an
+always-visible list of what it excludes; a figure that cannot be trusted is shown as an em dash with the
+reason (September 2026's partial cost data is withheld). Added the append-only, owner-only, idempotent
+`business_expenses` ledger with void/correct instead of delete. Renamed Costing's `grossProfit` to
+`operatingProfitPerPiece`. Decisions in D-009; evidence in `REVIEW.md`. No existing migration, RPC,
+order, inventory, production or fulfilment behavior or data was changed.
+
+No migration was applied and no SQL of any kind was run against the live project; all database tests ran
+in disposable Postgres containers.
+
 ## 2026-10-20 -- Targeted runtime dependency security repair (repository only)
 
 Runtime audit zero; Next/eslint16.3.8,Sharp0.35.5,Nanoid3.3.20,source-map-js1.2.2. Linux unit,
 disposable database, lint/typecheck, Netlify packaging and guarded media/refund/navigation gates pass;
 independent review approved. Existing development-only advisories documented separately. No merge,
 migration, upload or production deploy. See docs/DEPENDENCY_SECURITY_2026-10-20.md.
+
+## 2026-10-20 -- Finance security integration and final QA (repository only)
+
+Existing Finance candidate integrates reviewed security PR #109. Runtime audit zero, Linux unit
+4,547 pass, disposable PostgreSQL191/191, build/lint/typecheck/native packaging and guarded browser
+64+36+40 checks pass. Independent review approved; expense migration and accounting unchanged.
+No PR merge, production migration, upload or deployment. See final QA and exact deployment plan.
