@@ -1308,3 +1308,30 @@ script was rehearsed end to end (dry run, apply with five before/after checks, s
 on a disposable database. Production was only read.
 
 **Merge gate: `approved`** -- held for the owner's explicit authorization. Apply the migration first, then deploy.
+
+## 2026-10-20 -- Incident: QA smoke test recorded three real refunds on production; recovery and prevention
+
+**What happened:** a smoke test written for the build WITH the Refund confirmation was pointed at production (still the old build). Its
+"dismiss the dialog" clicks recorded real refunds on 60b69833 (just corrected), 21244d4e (PHP 200) and b10149a5 (PHP 320). No money
+moved; lines, stock, COGS and inventory were untouched (verified by whole-table fingerprints). This broke the rule of no destructive
+tests against production data.
+
+**Recovery (owner-authorized):** 21244d4e and b10149a5 through `correct_mistaken_refund` (audited); 60b69833 through a guarded atomic
+recovery (`scripts/sql/recover-qa-refund-60b69833.sql`) that records an immutable `order_payment_incident_events` row first. The
+event table (migration 20261020120000, additive) and the recovery file were tested on disposable Postgres (19 tests: the unmodified file
+against the production id and timestamps, nine wrong worlds that must abort with nothing written, and three late-guard cases), the guards
+were mutation-tested (all mutants caught after adding tests for the two that first survived), and independently reviewed. Note: the review's
+only HIGH finding was against a temporary mutant that was on disk while the reviewer read it; the real file was intact. Its other
+findings were applied (rollback/retry notes, an order-lines guard, more tests).
+A read-only check of production before the run also showed the line label is "Chocolate Walnut Cookies - 1 Cookie", which the first
+version of the lines guard would have rejected; it was corrected before anything ran.
+
+**Prevention:** `scripts/qa/production-write-guard.mjs` (fail-closed, decided on the Supabase host, unit-tested) now wraps every smoke
+context; the smoke script refuses to click Refund unless the served build contains the confirmation; payment/refund interaction tests
+run only on a disposable database. Rules are in `docs/REFUND_CORRECTION_RUNBOOK.md`.
+
+**Preview smoke failures investigated:** (1) "login form not shown": the form renders after hydration, a test timing issue, identical on
+production; (2) a 401 on GET supply_entries right after sign-in: seen on production, not reproducible on the draft, a pre-existing race
+unrelated to the hotfix; (3) /bake at 390px is 620px wide: identical on production (a long recipe option label widens the section), a
+pre-existing layout defect not touched by this hotfix -- to be fixed separately.
+

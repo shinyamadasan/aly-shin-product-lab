@@ -105,3 +105,36 @@ commit;
 
 Financial Release 1 (Finance page, expense ledger) is separate. Once it ships, October's gross margin is no longer
 withheld because of this order (verified read-only against production data: 4,981.87 with 33/33 orders costed).
+
+## Incident 2026-10-20: QA clicked Refund on production (and what prevents a repeat)
+
+A browser smoke test written for a build WITH the refund confirmation was run against production, which did not have it yet.
+Each "dismiss the dialog" click recorded a real refund on three paid orders (`60b69833`, `21244d4e`, `b10149a5`; no money moved).
+Recovery:
+
+- `21244d4e` and `b10149a5`: corrected with `correct_mistaken_refund` (one audit row each in `order_refund_corrections`).
+- `60b69833` (already corrected once, so the function refuses): restored by `scripts/sql/recover-qa-refund-60b69833.sql`, one atomic
+  guarded DO block that first writes an immutable `order_payment_incident_events` row (migration
+  `20261020120000_order_payment_incident_events.sql`), changes exactly three columns of exactly one row, and aborts and rolls back
+  on any mismatch. The first-correction audit row is only read. Verification SELECTs to run afterwards (a Management API call may
+  not return the success notice):
+
+```
+select payment_status, refunded_at, updated_at from public.orders where id = '60b69833-5b47-4b86-b970-1477d7f1a1eb';
+select event_type, incident_refunded_at, payment_status_before, paid_amount_before from public.order_payment_incident_events;
+select count(*) from public.order_refund_corrections;           -- the first-correction row must still be there
+select count(*) from public.orders where payment_status = 'refunded';
+```
+
+### QA rules that follow (mandatory)
+
+1. **Never drive a UI that can write against the production Supabase project without the guard.** Every browser context must be
+   wrapped with `installProductionWriteGuard` from `scripts/qa/production-write-guard.mjs`. It blocks every non-read request to
+   the production project (only sign-in/out and the pure owner check pass) and fails closed, whatever app URL is being driven
+   (production, a Netlify draft, or a local server configured with production keys). Any blocked request fails the run.
+2. **A script must never click Refund (or Mark paid, Cancel, Complete, Delete...) against anything connected to production.**
+   Payment, refund and order-action interaction tests run only against a disposable database (the local rig:
+   Postgres + PostgREST + auth shim, see the Release 1 acceptance notes in `REVIEW.md`).
+3. **Production verification is read-only**: load pages, read text, read the served JavaScript. To prove a build has the Refund
+   confirmation, grep its JS for "actually been returned"; do not click.
+4. A Netlify draft built with the production-context environment IS connected to production data. Treat it like production.
