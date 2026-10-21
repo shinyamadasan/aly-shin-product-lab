@@ -31,6 +31,18 @@ newly enabled or claimed: the existing contract accepts this Supabase project's 
 and verifies them with Supabase Auth `getUser`, owner app metadata and database RLS. Introducing a
 different audience requirement would change that contract and is outside this input-security repair.
 
+Related maintainer advisories were also checked: HTTP body/batch
+[GHSA-f897-62hf-6gxq](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-f897-62hf-6gxq)
+is covered by the patched server and explicit limits; client redirect
+[GHSA-6prh-2h8m-c8cw](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6prh-2h8m-c8cw)
+is patched in client 2.3.0. Client issuer
+[GHSA-6qxp-vccf-f47h](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-6qxp-vccf-f47h)
+is patched from 2.2.0; this repository's client use is development/test-only, with fixture tokens,
+no bundled OAuth credential provider or persisted OAuth credentials. Experimental task-store
+[GHSA-22jm-h49p-29qw](https://github.com/modelcontextprotocol/typescript-sdk/security/advisories/GHSA-22jm-h49p-29qw)
+does not affect the 2.x packages; this registry enables no task store. No old monolithic SDK or
+separate Node/Express MCP transport package is installed.
+
 ## Enabled limits
 
 `scripts/product-lab-mcp/input-limits.ts` defines the shared bounds:
