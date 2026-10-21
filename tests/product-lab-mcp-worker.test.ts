@@ -5,6 +5,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import worker from "../workers/product-lab-mcp/index.ts";
+import { verifyMcpInputSecurity } from "./helpers/mcp-input-security.ts";
+import { inventoryCountPreviewInputSchema } from "../scripts/product-lab-mcp/mcp-server.ts";
 
 // TASK-073 -- the Cloudflare Worker is a transport/hosting move only. These tests drive the Worker's
 // real `fetch` handler (the same function workerd runs) against a fake Supabase project, and read the
@@ -144,6 +146,16 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     await client.connect(transport);
     return client;
   }
+
+  await t.test("Worker input limits reject without preview persistence or a count RPC", async (subtest) => {
+    await verifyMcpInputSecurity(subtest, mcpUrl, call);
+    assert.equal(supabase.previewWrites.length, 0);
+    assert.equal(supabase.applyRpcCalls(), 0);
+    assert.equal(inventoryCountPreviewInputSchema.safeParse({
+      kind: "physical_count", source: { name: "bounded-fixture", fingerprint: "f".repeat(64), occurrence_id: "max-500" },
+      rows: Array.from({ length: 500 }, () => ({ raw_name: "salt", match_name: "salt", quantity: 1, unit: "g", pack_count: 1, pack_size: 1, pack_unit: "g" })),
+    }).success, true);
+  });
 
   await t.test("an unknown route is 404", async () => {
     for (const pathname of ["/", "/nope", "/api/mcp/extra", "/api/mcp/", "/.well-known/other", "/.well-known/oauth-protected-resource"]) {
@@ -337,6 +349,10 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     await client.connect(transport);
     subtest.after(() => client.close());
     assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), FIVE_TOOLS);
+    const before = supabase.previewWrites.length;
+    await verifyMcpInputSecurity(subtest, "http://localhost/api/mcp", nextRoute.POST);
+    assert.equal(supabase.previewWrites.length, before);
+    assert.equal(supabase.applyRpcCalls(), 0);
   });
 });
 

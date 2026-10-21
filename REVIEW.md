@@ -1666,3 +1666,25 @@ correction makes31 unresolved. Both preserve September withholding.
 No production database record or schema was changed, no migration applied there, no historical
 backfill, merge, upload or deployment performed. Approval boundaries and app-first/view-second
 release/recovery procedure: docs/FINANCIAL_STOCK_COUNT_HOTFIX.md.
+
+## 2026-10-20 — MCP input security hotfix
+
+Merge gate: approved. User explicitly requested independent security review and integration after
+approval. Separate reviewer APPROVED the final runtime diff with no blockers; independently ran
+86/86 MCP tests and verified the SDK guard implementation, lock-only three-package upgrade,
+production audit0, real disposable approval/replay evidence and unchanged Finance migration hash.
+
+SELF_REVIEW: shared SDK protections configured at existing handler/registry ownership points;
+three named constants, no duplicate parser, no auth/approval redesign, no database changes,
+no unrelated upgrades or unused application code. Would I ship the implementation after final
+production approval: yes. QA Functional/Regression/Data Integrity/Documentation/Git Hygiene pass;
+no UI changed. TypeScript, source/touched-test lint, production build and Worker dry-run pass.
+Full units4587pass/0fail/1existing platform skip; focused MCP/inventory110/110; disposable MCP/Finance
+22/22 and existing inventory authority11/11. The new real workflow uses actual local workerd as
+well as both adapters. Root lint includes generated Wrangler bundles; source lint is clean.
+
+Bounded malicious fixtures are local only. Production/live Worker unchanged. New draft required;
+old draft must not promote. Live Worker repair awaits separately approved deployment. Resource-specific
+audience isolation is not newly enabled or claimed; Supabase project-owner authorization is preserved.
+Nine unrelated development advisory findings remain, with no MCP finding. Release/recovery and
+scope evidence: docs/MCP_SECURITY_HOTFIX.md and ignored outputs/mcp-security/.

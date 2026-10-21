@@ -33,7 +33,7 @@
     "remotion:worker": "node scripts/asset-workers/remotion-worker.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/server": "2.3.0",
     "@resvg/resvg-js": "^2.6.2",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.110.8",
@@ -47,7 +47,7 @@
     "zod": "^4.6.4"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/client": "2.3.0",
     "@remotion/bundler": "4.0.515",
     "@remotion/renderer": "4.0.515",
     "@tailwindcss/postcss": "^4",

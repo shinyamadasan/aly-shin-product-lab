@@ -1,5 +1,15 @@
 # STATUS
 
+## 2026-10-20 — MCP security repair approved; release candidate preparation
+
+Security-only SDK 2.3.0 pins and shared HTTP/tool/count limits independently APPROVED; no blockers.
+Units 4587 pass/one existing platform skip; security/Finance PostgreSQL22/22 plus V1A11/11;
+actual local workerd approval/replay flow, build, TypeScript and source lint pass. Production audit0;
+nine unrelated development audit findings retained. Finance source and exact view migration unchanged.
+Source integration and new Netlify draft authorized; production publication, Worker deployment and SQL
+remain gated. Live Worker remains unpatched until deployment. See docs/MCP_SECURITY_HOTFIX.md.
+Needs human verification: physical iOS Safari/Android Chrome, feel, polish and animation after release.
+
 ## 2026-10-20 — Financial stock-count hotfix delivered as draft PR #112
 
 Draft PR: https://github.com/shinyamadasan/aly-shin-product-lab/pull/112 (implementation b71cea9).

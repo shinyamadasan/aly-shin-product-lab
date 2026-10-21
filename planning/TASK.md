@@ -1,42 +1,38 @@
-# Financial Release 2 — historical stock-count reporting hotfix
+# MCP security hotfix — direct user request
 
 ## Objective
 
-Implement the user's direct hotfix request and deliver a scoped PR. Preserve stock, historical
-valuation, reversals, count boundaries and audited classification. No production migration, merge
-or deployment without separate approval. This is direct user work, not a new formal milestone.
+Resolve GHSA-46jr-4wx8-v453 with the smallest dependency/input-limit repair, obtain independent
+security approval, integrate a security-only PR and prepare a new production-context Netlify draft.
+Production publish, Worker deploy and Finance view migration remain separately gated.
 
 ## Baseline
 
-Main/deployed source: 1f29e0140a8074f761643822f9930d816ee2b102, confirmed after fetch. Isolated branch
-fix/financial-stock-count-gains; initially clean. Root feat/financial-release-1 at4f4f76a has unrelated
-tracked/untracked work and is untouched. Clean release-evidence worktree3f1324a also untouched.
-Read PRODUCT_LAB_CONTEXT, workflow/review/QA, shipped Finance architecture and local Next docs.
-Before changes: focused finance81/81; disposable Release2 stock suite6/6 (all original assertions).
+Isolated fix/mcp-input-security starts clean at approved main508ff02ec99602ca9a559b7e970703a4f52f5cbf.
+Unrelated dirty root preserved. Existing MCP/inventory baseline99/99; Finance hotfix already merged.
+Product context, MCP architecture, workflow/review/QA, installed Next/SDK and Workers guidance read.
+This is direct work, not a new formal milestone or architecture review.
 
 ## Current Step
 
-Delivered draft PR #112: https://github.com/shinyamadasan/aly-shin-product-lab/pull/112
-Implementation b71cea9; self-review, independent review and QA complete;
-no production change is authorized. Full root cause,64-row raw history audit plus finished correction,
-exact32 affected gains, limitations and separate app-first/view-second release/recovery procedure:
-docs/FINANCIAL_STOCK_COUNT_HOTFIX.md. Merge gate approved because user requested separate review.
+Security implementation and independent review APPROVED; source-control scope gate and new Linux
+production-context draft preparation next. Production and live Worker remain unchanged.
 
 ## Success Criteria
 
-- [x] Audit complete historical raw/finished event sets and distinguish structured physical gains,
-      opening-style stock, decreases, ordinary increases, consumption and linked reversals.
-- [x] View-only additive migration; preserve all rows, quantities, null amounts, reviews and grants.
-- [x] Separate non-expense count-gain valuation warnings from unreliable-result blockers.
-- [x] Keep unknown-cost losses, unexplained increases, household/reversal treatment and September gates.
-- [x] Preserve sales/COGS/gross margin; invent no historical cost, income or duplicate expense.
-- [x] Unit4576pass/0fail/1existing platform skip; disposable PostgreSQL18/18; guarded built browser
-      64hotfix+119existing=183/183 at1280/390/320; production build, typecheck and touched lint pass.
-- [x] Independent final review approved; self-review and QA findings resolved; release instructions ready.
-- [x] Preserve production database and deployment; prepare only the scoped hotfix PR delivery.
+- [x] Exact SDK tree audited; only server/client/core2.0.0→2.3.0, reproducible lockfile.
+- [x] Shared HTTP256KiB, tool5000elements, count500rows; SDK batch boundary verified.
+- [x] Owner authorization, request isolation, RLS, approvals and sole count authority preserved.
+- [x] Unit4587pass/0fail/1existing skip; focused110/110; real disposable security/Finance22/22,
+      V1A11/11; actual local workerd approval/replay; production build, TypeScript, source lint pass.
+- [x] Independent security approval; production audit0; unrelated dev advisory residuals disclosed.
+- [x] Finance source unchanged and exact migration hash preserved; no production data/schema writes.
+- [ ] Scope gate, separate security PR and expected-head merge; merged tree matches candidate.
+- [ ] New Linux/Netlify production-context draft with assets/routes/guarded owner checks verified.
+- [ ] Read-only production comparison and exact app/Worker/view release/recovery checkpoint recorded.
 
 ## Definition of Done
 
-Correct narrow reporting implementation, complete historical audit, passing relevant checks,
-independent approval and scoped PR for human review. Applying the migration, merging and deploying
-are excluded until separately approved. Physical iOS/Android feel/polish remains human verification.
+Independently approved security-only integration and newly verified compatible draft, with production
+publication, Worker deployment and Finance migration still awaiting final approval. Details and
+release sequence: docs/MCP_SECURITY_HOTFIX.md. Never promote the superseded stock-count draft.
