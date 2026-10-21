@@ -442,6 +442,11 @@ hosting and does not decide that question.
 
 ## Production boundary
 
+The MCP input security hotfix pins SDK server/client/core to 2.3.0 and enables shared limits of
+256 KiB per HTTP body, 5,000 tool-input elements and 500 physical-count rows. Both Netlify and Worker
+use those limits; stdio shares the tool/row limits. Authorization and approval contracts are unchanged.
+Candidate verification and separate production/Worker release gates: [security hotfix](MCP_SECURITY_HOTFIX.md).
+
 Automated tests use loopback fixtures and disposable/local database smoke tests only. Building or
 reviewing Slice 2 / 2.1A does not authorize a live physical count, production read/write, a Supabase
 production setting change, applying the Slice 2.1A migration, deployment, commit, push, PR, or merge.

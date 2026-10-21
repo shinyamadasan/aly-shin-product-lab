@@ -54,6 +54,7 @@ import { createProductLabMcpServer } from "./mcp-server.ts";
 import { allowedMcpHostnames, canonicalMcpResourceUrl } from "./origin-policy.ts";
 import { createProductLabOAuthTokenVerifier, ownerContextFromAuthInfo } from "./remote-auth.ts";
 import { createProductLabReadServiceForClient } from "../product-lab/read-service.ts";
+import { MAX_MCP_REQUEST_BODY_BYTES } from "./input-limits.ts";
 
 const factory: McpServerFactory = (ctx) => {
   const context = ownerContextFromAuthInfo(ctx.authInfo);
@@ -68,7 +69,7 @@ const factory: McpServerFactory = (ctx) => {
 // factory. `legacy: "reject"` (modern-only strict) was tried first and rejected real client traffic
 // that still negotiates the 2025-11-25 protocol revision by default -- this endpoint is meant to be
 // usable by today's MCP clients, not only ones already fully upgraded.
-const handler = createMcpHandler(factory);
+const handler = createMcpHandler(factory, { maxRequestBodySize: MAX_MCP_REQUEST_BODY_BYTES });
 
 function configurationErrorResponse(): Response {
   return Response.json(

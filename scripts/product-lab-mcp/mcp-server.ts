@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 import { ProductLabError } from "../product-lab/auth.ts";
 import type { InventoryCountService } from "../product-lab/inventory-count-service.ts";
 import type { ProductLabReadService } from "../product-lab/read-service.ts";
+import { MAX_MCP_PHYSICAL_COUNT_ROWS, MAX_MCP_TOOL_INPUT_ELEMENTS } from "./input-limits.ts";
 
 const nullableText = z.string().nullable();
 const inventoryItemSchema = z.object({
@@ -92,7 +93,7 @@ export const inventoryCountPreviewInputSchema = z.object({
     fingerprint: z.string(),
     occurrence_id: z.string(),
   }).strict(),
-  rows: z.array(physicalCountRowInputSchema).min(1),
+  rows: z.array(physicalCountRowInputSchema).min(1).max(MAX_MCP_PHYSICAL_COUNT_ROWS),
 }).strict();
 
 const countPreviewRowSchema = z.object({
@@ -234,6 +235,7 @@ export function createProductLabMcpServer(
   const server = new McpServer(
     { name: "product-lab", version: "2.0.0" },
     {
+      maxToolInputElements: MAX_MCP_TOOL_INPUT_ELEMENTS,
       instructions: "Product Lab facts plus owner-approved physical counts. Never infer a match from suggestions or ambiguities. After inventory_count_preview, show the exact preview and stop. Call inventory_count_apply only after a new owner message contains the matching approval code, then call inventory_count_verify before reporting verified success.",
     },
   );
