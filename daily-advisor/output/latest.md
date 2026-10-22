@@ -1,11 +1,11 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-10-19 (Asia/Manila)
+Date: 2026-10-22 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
 ## Portfolio summary
-66 active findings across the portfolio. 0 product(s) need no action today.
+65 active findings across the portfolio. 0 product(s) need no action today.
 
 ## Highest-priority product
 **Blondies** -- QUAL-005: V3 contains Milk powder (time/temperature-sensitive) with no stated cold-chain or time-limit plan.
@@ -21,11 +21,13 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 - **Brownies**: Food cost is 42.0% against a 35.0% target -- 7.0 points over.
 - **Chocolate Chip Cookies**: Food cost is 51.4% against a 35.0% target -- 16.4 points over.
 - **Chocolate Walnut Cookies**: Food cost is 57.4% against a 35.0% target -- 22.4 points over.
+- **Red velvet cookies**: Food cost is 51.0% against a 35.0% target -- 16.0 points over.
 - **Revel Bars**: Food cost is 39.2% against a 35.0% target -- 4.2 points over.
 - **Blondies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
 - **Brownies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
 - **Chocolate Chip Cookies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
 - **Chocolate Walnut Cookies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
+- **Red velvet cookies**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
 - **Revel Bars**: Overhead is PHP 0 -- confirm this is intentional (e.g. home-based, no rent yet), not just unfilled.
 - **Brownies**: Only one tasting checkpoint logged -- no later-timepoint check yet.
 
@@ -40,9 +42,4 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 ## Products needing no action
 None -- every product has at least one open finding.
 
-## AI note (optional, Claude-generated -- does not change the ranking above)
-Blondies V3 includes milk powder, an ingredient that can spoil or become unsafe if it sits too long at the wrong temperature. Without a written cold-chain or time-limit plan, nobody knows how long a batch can safely be held, displayed, or given to tasters. That gap needs to close before any real customer is involved.
-
-All three actions share the same issue, so draft one plan for Blondies first, test it, and then adapt it for Brownies and Chocolate Chip Cookies.
-
-AI suggestion: When you run the hold-time tests, record tasting notes for each product's latest batch in the same session. That would also fill the missing tasting feedback flagged under active experiments.
+_Deterministic fallback: this briefing was generated entirely from the Rule Engine, with no AI enrichment this run._
