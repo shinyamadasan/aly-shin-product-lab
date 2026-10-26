@@ -1,14 +1,14 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-10-25 (Asia/Manila)
+Date: 2026-10-26 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
 ## Portfolio summary
-65 active findings across the portfolio. 0 product(s) need no action today.
+64 active findings across the portfolio. 0 product(s) need no action today.
 
 ## Highest-priority product
-**Blondies** -- QUAL-005: V3 contains Milk powder (time/temperature-sensitive) with no stated cold-chain or time-limit plan.
+**Blondies** -- QUAL-005: V4 contains Salted butter (time/temperature-sensitive) with no stated cold-chain or time-limit plan.
 Recommendation: State and test an explicit cold-chain or time-limit plan before this product goes anywhere near a real customer.
 
 ## Up to 3 actions for today
@@ -17,7 +17,7 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 3. **Chocolate Chip Cookies** (QUAL-005): State and test an explicit cold-chain or time-limit plan before this product goes anywhere near a real customer.
 
 ## Important warnings
-- **Blondies**: Food cost is 51.1% against a 35.0% target -- 16.1 points over.
+- **Blondies**: Food cost is 48.5% against a 35.0% target -- 13.5 points over.
 - **Brownies**: Food cost is 42.0% against a 35.0% target -- 7.0 points over.
 - **Chocolate Chip Cookies**: Food cost is 51.4% against a 35.0% target -- 16.4 points over.
 - **Chocolate Walnut Cookies**: Food cost is 57.4% against a 35.0% target -- 22.4 points over.
@@ -32,7 +32,7 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 - **Brownies**: Only one tasting checkpoint logged -- no later-timepoint check yet.
 
 ## Active experiments
-- **Blondies** (lacks recent observations): Latest batch V3 (made 2026-09-10) has no tasting feedback recorded yet.
+- **Blondies** (lacks recent observations): Latest batch V4 (made 2026-10-25) has no tasting feedback recorded yet.
 - **Brownies** (lacks recent observations): Latest batch V12 (made 2026-09-24) has no tasting feedback recorded yet.
 - **Chocolate Chip Cookies** (lacks recent observations): Latest batch V2 (made 2026-10-02) has no tasting feedback recorded yet.
 - **Chocolate Walnut Cookies** (lacks recent observations): Latest batch Choc chip walnut v2 (made 2026-09-22) has no tasting feedback recorded yet.
