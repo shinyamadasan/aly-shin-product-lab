@@ -586,7 +586,7 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
     const orderService = await readFile(path.join(root, "scripts", "product-lab", "order-completion-service.ts"), "utf8");
     const orderRpcNames = [...orderService.matchAll(/\.rpc\(\s*"([^"]+)"/g)].map((match) => match[1]);
     assert.ok(orderRpcNames.length > 0);
-    assert.deepEqual([...new Set(orderRpcNames)], ["complete_order_with_fulfillment"]);
+    assert.deepEqual([...new Set(orderRpcNames)], ["complete_order_with_fulfillment_checked"]);
     assert.equal((orderService.match(/\.rpc\(/g) ?? []).length, orderRpcNames.length);
     assert.doesNotMatch(orderService, /\.insert\(|\.update\(|\.delete\(|\.upsert\(|execute_sql/);
     assert.match(adapter, /product-lab\/inventory-count-service/);
@@ -616,7 +616,14 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
     assert.match(codexConfig, /approvals_reviewer\s*=\s*"user"/);
     assert.match(codexConfig, /\[mcp_servers\.product_lab\.tools\.inventory_count_apply\][\s\S]*approval_mode\s*=\s*"prompt"/);
     assert.match(codexConfig, /\[mcp_servers\.product_lab\.tools\.order_complete_apply\][\s\S]*approval_mode\s*=\s*"prompt"/);
-    assert.deepEqual(JSON.parse(claudeConfig).permissions.ask, ["mcp__product_lab__inventory_count_apply", "mcp__product_lab__order_complete_apply"]);
+    // Both spellings: the project stdio server is "product_lab"; the user-global remote server is
+    // "product-lab", and Claude Code keeps hyphens in MCP tool names.
+    assert.deepEqual(JSON.parse(claudeConfig).permissions.ask, [
+      "mcp__product_lab__inventory_count_apply",
+      "mcp__product_lab__order_complete_apply",
+      "mcp__product-lab__inventory_count_apply",
+      "mcp__product-lab__order_complete_apply",
+    ]);
     assert.doesNotMatch(claudeConfig, /"allow"\s*:\s*\[[\s\S]*(inventory_count_apply|order_complete_apply)/);
     assert.doesNotMatch(mcpConfig, /allowedTools|inventory_count_apply/);
   });

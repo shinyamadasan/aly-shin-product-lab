@@ -298,13 +298,22 @@ valuation warnings visible, without inventing expense or income or withholding s
 category. Ordinary positive deltas, losses and reversals keep existing rules. This changes reporting
 only; acquisition cost and opening-stock value remain unverified. See FINANCIAL_STOCK_COUNT_HOTFIX.md.
 
-## D-012 — MCP order completion: stateless state-bound previews over the existing RPC (2026-10-27)
+## D-012 — MCP order completion: state-bound previews, database-enforced expected state (2026-10-27)
 
-Order completion over MCP calls only `public.complete_order_with_fulfillment`; no new RPC, table,
-migration or RLS change. Previews are not stored: `preview_id` hashes the order state completion
-depends on, Apply re-reads and refuses on any difference, and the operation id and approval code derive
-from `preview_id`, so two owners or a lost response converge on one database receipt. Chosen over a
-durable preview table because the state check is stricter than a time-based expiry and needs no schema.
-The mutation receipt is read by replaying the operation id only once the order is completed (terminal,
-so the call can only replay or refuse). Residual: the RPC has no expected-state parameter, so a payment
-edit or lot loss in the brief window before its lock is not refused; verify reports negative lots.
+Previews are not stored: `preview_id` hashes the order state completion depends on, Apply re-reads and
+refuses on any difference, and the operation id and approval code derive from `preview_id`, so two
+owners or a lost response converge on one database receipt. Chosen over a durable preview table because
+the state check is stricter than a time-based expiry and needs no table.
+
+The application check alone left a window before the RPC's lock in which a payment edit or lot loss was
+not refused, and Wave 2's fulfilment never locked products/lots or re-checked lot balances. So the
+decision belongs to the database: `complete_order_with_fulfillment_checked(op, order,
+expected updated_at and payment columns)` (migration 20261027120000) takes the canonical stock lock
+order, refuses a changed order (40001) and a short lot (23514) before writing, and keeps Wave 2's
+receipt identity. Payment columns are compared directly, not inferred from `updated_at`, because no
+trigger maintains `updated_at` (found by independent review). The legacy
+two-argument function delegates without an expected version, so web callers are unchanged except that
+a negative-lot fulfilment is now refused. MCP calls only the checked function and fails closed without
+it. Rejected: an expected-state overload with the same name (PostgREST overload ambiguity), and a
+lines-vs-reservation equality check in SQL (would block legacy pre-Wave-2 confirmed orders the web app
+can still complete today; the MCP preview enforces it instead).

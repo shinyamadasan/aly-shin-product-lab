@@ -6,11 +6,12 @@ import worker from "../workers/product-lab-mcp/index.ts";
 import { orderCompletionApprovalCode } from "../scripts/product-lab/order-completion-service.ts";
 
 // Order completion through the production remote transport (the Worker entry), authenticated as
-// either owner. The fake Supabase models public.complete_order_with_fulfillment's documented
-// contract (supabase/migrations/20260910181827_selling_wave_2_order_reservation.sql): owner check,
-// claim_mutation receipt keyed by operation id with md5(order_id) payload hash, confirmed/ready status
-// gate, fulfil exactly the active allocations, status-only order write, failed calls leave no
-// receipt. The real SQL behavior is covered by tests/smoke/postgres/selling-wave-2-order-reservation.
+// either owner. The fake Supabase models public.complete_order_with_fulfillment_checked's contract
+// (supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql over Wave 2): owner
+// check, claim_mutation receipt keyed by operation id with md5(order_id) payload hash, confirmed/ready
+// status gate, expected updated_at + payment columns (40001), lot balance (23514), fulfil exactly the active
+// allocations, status-only order write, failed calls leave no receipt. The real SQL behavior,
+// including concurrency, is covered by tests/smoke/postgres/selling-wave-2-order-reservation.
 
 const WORKER_HOSTNAME = "alyandpon-product-lab-mcp.example.workers.dev";
 const SHIN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -127,14 +128,24 @@ function parseFilters(url: URL): Array<{ column: string; values: string[] }> {
 async function startFakeSupabase() {
   let state = seed();
   const receipts = new Map<string, { hash: string; result: Row | null }>();
-  const log = { rpcCalls: 0, directWrites: 0, nextRpcError: null as null | { code: string; message: string } };
+  const log = {
+    rpcCalls: 0,
+    tableReads: 0,
+    legacyRpcCalls: 0,
+    directWrites: 0,
+    nextRpcError: null as null | { status?: number; code: string; message: string },
+    // Runs inside the RPC before its checks -- models a write that lands between Apply's re-read and
+    // the database's order-row lock.
+    beforeRpc: null as null | (() => void),
+  };
 
   function authFor(req: IncomingMessage) {
     const token = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
     return TOKENS[token] ?? null;
   }
 
-  function completeOrder(user: { role: string }, operationId: string, orderId: string): { status: number; body: unknown } {
+  type Expected = { updated_at: string; payment_status: string; payment_method: unknown; paid_at: unknown; paid_amount: unknown; refunded_at: unknown };
+  function completeOrder(user: { role: string }, operationId: string, orderId: string, expected: Expected | null = null): { status: number; body: unknown } {
     const fail = (code: string, message: string) => ({ status: 400, body: { code, message } });
     if (user.role !== "owner") return fail("42501", "Only the product lab owner may complete an order");
     const hash = `md5:${orderId}`;
@@ -144,11 +155,31 @@ async function startFakeSupabase() {
       if (prior.result === null) return fail("55P03", "This operation is still being processed.");
       return { status: 200, body: prior.result };
     }
-    const order = state.orders.find((row) => row.id === orderId);
+    // uuid comparison is case-insensitive in Postgres; the fake mirrors that.
+    const order = state.orders.find((row) => String(row.id) === orderId.toLowerCase());
     if (!order) return fail("22023", "Order not found");
     if (order.status !== "confirmed" && order.status !== "ready") {
       // The raise rolls back the claim: no receipt is left behind.
       return fail("23514", `This ${order.status} order has no active reservation to fulfill.`);
+    }
+    if (expected !== null && (
+      order.updated_at !== expected.updated_at
+      || order.payment_status !== expected.payment_status
+      || (order.payment_method ?? null) !== (expected.payment_method ?? null)
+      || (order.paid_at ?? null) !== (expected.paid_at ?? null)
+      || (order.paid_amount === null || order.paid_amount === undefined ? null : Number(order.paid_amount)) !== (expected.paid_amount === null || expected.paid_amount === undefined ? null : Number(expected.paid_amount))
+      || (order.refunded_at ?? null) !== (expected.refunded_at ?? null)
+    )) {
+      return fail("40001", "This order changed since it was reviewed.");
+    }
+    orderId = String(order.id);
+    const active = state.order_stock_allocations.filter((row) => row.order_id === orderId && row.status === "active");
+    for (const lot of new Set(active.map((row) => row.production_execution_id))) {
+      const need = active.filter((row) => row.production_execution_id === lot).reduce((sum, row) => sum + Number(row.reserved_pieces), 0);
+      const moves = state.finished_stock_movements.filter((row) => row.production_execution_id === lot);
+      const onHand = moves.reduce((sum, row) => sum + Number(row.on_hand_delta), 0);
+      const reserved = moves.reduce((sum, row) => sum + Number(row.reserved_delta), 0);
+      if (onHand < need || reserved < need) return fail("23514", "Cannot complete this order without making finished stock negative.");
     }
     const now = new Date(Date.parse(String(order.updated_at)) + 60_000).toISOString();
     for (const allocation of state.order_stock_allocations.filter((row) => row.order_id === orderId && row.status === "active")) {
@@ -176,20 +207,35 @@ async function startFakeSupabase() {
     const user = authFor(req);
     if (!user) return json(res, 401, { message: "JWT invalid" });
     if (url.pathname === "/rest/v1/rpc/complete_order_with_fulfillment") {
+      log.legacyRpcCalls += 1;
+      return json(res, 400, { code: "XX000", message: "MCP must never call the unchecked function" });
+    }
+    if (url.pathname === "/rest/v1/rpc/complete_order_with_fulfillment_checked") {
       log.rpcCalls += 1;
       let body = "";
       for await (const chunk of req) body += chunk;
-      const args = JSON.parse(body) as { p_operation_id: string; p_order_id: string };
+      const args = JSON.parse(body) as {
+        p_operation_id: string; p_order_id: string; p_expected_updated_at: string | null; p_expected_payment_status: string | null;
+        p_expected_payment_method: unknown; p_expected_paid_at: unknown; p_expected_paid_amount: unknown; p_expected_refunded_at: unknown;
+      };
       if (log.nextRpcError) {
         const error = log.nextRpcError;
         log.nextRpcError = null;
-        return json(res, 400, error);
+        return json(res, error.status ?? 400, { code: error.code, message: error.message });
       }
-      const result = completeOrder(user, args.p_operation_id, args.p_order_id);
+      if (args.p_expected_updated_at === null || args.p_expected_payment_status === null) return json(res, 400, { code: "22023", message: "The reviewed order version and payment state are required" });
+      const hook = log.beforeRpc;
+      log.beforeRpc = null;
+      hook?.();
+      const result = completeOrder(user, args.p_operation_id, args.p_order_id, {
+        updated_at: args.p_expected_updated_at, payment_status: args.p_expected_payment_status, payment_method: args.p_expected_payment_method,
+        paid_at: args.p_expected_paid_at, paid_amount: args.p_expected_paid_amount, refunded_at: args.p_expected_refunded_at,
+      });
       return json(res, result.status, result.body);
     }
     const table = url.pathname.replace(/^\/rest\/v1\//, "") as keyof ReturnType<typeof seed>;
     if (!(table in state)) return json(res, 404, { message: `unexpected path ${url.pathname}` });
+    if (req.method === "GET") log.tableReads += 1;
     if (req.method !== "GET") {
       log.directWrites += 1;
       return json(res, 405, { message: "direct table writes are not part of this contract" });
@@ -207,7 +253,7 @@ async function startFakeSupabase() {
     log,
     receipts,
     get state() { return state; },
-    reset() { state = seed(); receipts.clear(); log.rpcCalls = 0; log.directWrites = 0; log.nextRpcError = null; },
+    reset() { state = seed(); receipts.clear(); log.rpcCalls = 0; log.tableReads = 0; log.directWrites = 0; log.nextRpcError = null; log.beforeRpc = null; },
     // Simulates the other owner completing the order from the web app with its own operation id.
     completeElsewhere(orderId: string) { return completeOrder({ role: "owner" }, "11111111-2222-4333-8444-555555555555", orderId); },
     close: () => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
@@ -272,6 +318,11 @@ test("Product Lab MCP order completion (inspect -> preview -> approve -> apply -
     const apply = tools.find((entry) => entry.name === "order_complete_apply");
     assert.equal(apply?.annotations?.destructiveHint, true);
     assert.equal(apply?.annotations?.idempotentHint, true);
+    // Claude Code: prompt on every call in every mode; allow rules cannot skip it.
+    assert.deepEqual(apply?._meta, { "anthropic/requiresUserInteraction": true });
+    for (const name of ["order_inspect", "order_complete_preview", "order_complete_verify"]) {
+      assert.equal(tools.find((entry) => entry.name === name)?._meta?.["anthropic/requiresUserInteraction"], undefined, name);
+    }
     const properties = (apply?.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
     assert.deepEqual(Object.keys(properties).sort(), ["approval_code", "order_id", "preview_id"]);
     for (const forbidden of ["status", "payment_status", "paid_amount", "operation_id", "sql", "rpc"]) {
@@ -491,12 +542,74 @@ test("Product Lab MCP order completion (inspect -> preview -> approve -> apply -
     assert.doesNotMatch(error.message, /product lab owner may/);
   });
 
+  await t.test("a payment recorded between Apply's re-read and the database lock is refused by the database, with no fulfilment", async () => {
+    supabase.reset();
+    const preview = await ok(shin, "order_complete_preview", { order_id: ORDER.confirmedUnpaid });
+    supabase.log.beforeRpc = () => Object.assign(supabase.state.orders.find((row) => row.id === ORDER.confirmedUnpaid)!, {
+      payment_status: "paid", paid_amount: 450, paid_at: "2026-10-21T08:00:00.000Z", updated_at: "2026-10-21T08:00:00.000Z",
+    });
+    const error = await errorCode(shin, "order_complete_apply", { order_id: ORDER.confirmedUnpaid, preview_id: preview.preview_id, approval_code: preview.approval_code });
+    assert.equal(error.code, "order_preview_stale_or_invalid");
+    assert.equal(supabase.log.rpcCalls, 1, "the database, not the screen, refused it");
+    assert.equal(fulfills(ORDER.confirmedUnpaid).length, 0);
+    assert.equal(supabase.state.orders.find((row) => row.id === ORDER.confirmedUnpaid)?.status, "confirmed");
+  });
+
+  await t.test("a payment written WITHOUT bumping updated_at between the re-read and the lock is still refused by the database", async () => {
+    supabase.reset();
+    const preview = await ok(shin, "order_complete_preview", { order_id: ORDER.confirmedUnpaid });
+    supabase.log.beforeRpc = () => Object.assign(supabase.state.orders.find((row) => row.id === ORDER.confirmedUnpaid)!, {
+      payment_status: "paid", paid_amount: 450, paid_at: "2026-10-21T08:00:00.000Z",
+    });
+    const error = await errorCode(shin, "order_complete_apply", { order_id: ORDER.confirmedUnpaid, preview_id: preview.preview_id, approval_code: preview.approval_code });
+    assert.equal(error.code, "order_preview_stale_or_invalid");
+    assert.equal(fulfills(ORDER.confirmedUnpaid).length, 0);
+  });
+
+  await t.test("an upper-case order id completes, reports success and verifies", async () => {
+    supabase.reset();
+    const upper = ORDER.confirmedUnpaid.toUpperCase();
+    const preview = await ok(shin, "order_complete_preview", { order_id: upper });
+    assert.equal(preview.order_id, ORDER.confirmedUnpaid);
+    const applied = await ok(shin, "order_complete_apply", { order_id: upper, preview_id: preview.preview_id, approval_code: preview.approval_code });
+    assert.equal(applied.order_id, ORDER.confirmedUnpaid);
+    const verified = await ok(shin, "order_complete_verify", { order_id: upper, preview_id: preview.preview_id });
+    assert.equal(verified.status, "verified", JSON.stringify(verified.failures));
+    assert.equal(fulfills(ORDER.confirmedUnpaid).length, 1);
+  });
+
+  await t.test("a lot that loses stock between Apply's re-read and the database lock is refused by the database", async () => {
+    supabase.reset();
+    const preview = await ok(shin, "order_complete_preview", { order_id: ORDER.confirmedUnpaid });
+    supabase.log.beforeRpc = () => supabase.state.finished_stock_movements.push({
+      id: "late-loss", product_id: "cookie-box", production_execution_id: LOT.a, movement_type: "fulfill", on_hand_delta: -5, reserved_delta: -5,
+      operation_id: id(902), order_id: ORDER.confirmedUnpaid, order_stock_allocation_id: id(401),
+    });
+    const error = await errorCode(shin, "order_complete_apply", { order_id: ORDER.confirmedUnpaid, preview_id: preview.preview_id, approval_code: preview.approval_code });
+    assert.equal(error.code, "order_not_completable");
+    assert.equal(fulfills(ORDER.confirmedUnpaid).length, 1, "only the injected movement; no fulfilment by this operation");
+  });
+
+  await t.test("without the guard migration, Apply fails closed and never falls back to the unchecked function", async () => {
+    supabase.reset();
+    const preview = await ok(shin, "order_complete_preview", { order_id: ORDER.confirmedUnpaid });
+    supabase.log.nextRpcError = { status: 404, code: "PGRST202", message: "Could not find the function" };
+    const error = await errorCode(shin, "order_complete_apply", { order_id: ORDER.confirmedUnpaid, preview_id: preview.preview_id, approval_code: preview.approval_code });
+    assert.equal(error.code, "order_apply_unavailable");
+    assert.equal(supabase.log.legacyRpcCalls, 0);
+    assert.equal(fulfills(ORDER.confirmedUnpaid).length, 0);
+  });
+
   await t.test("malformed ids are rejected by the input schema before any read", async () => {
+    supabase.reset();
     for (const args of [{ order_id: "1; drop table orders" }, { order_id: ORDER.confirmedUnpaid, extra: true }]) {
       const result = await tool(shin, "order_complete_preview", args);
       assert.equal(result.isError, true);
     }
     const bad = await tool(shin, "order_complete_apply", { order_id: ORDER.confirmedUnpaid, preview_id: "pc_0123456789abcdef0123", approval_code: "X" });
     assert.equal(bad.isError, true);
+    assert.equal(supabase.log.tableReads, 0, "rejected before any Supabase read");
+    assert.equal(supabase.log.rpcCalls, 0);
+    assert.equal(supabase.log.legacyRpcCalls, 0, "MCP never called the unchecked function in this suite");
   });
 });

@@ -776,3 +776,12 @@ Direct, user-instructed work (not a formal TASK.md milestone). Added `order_insp
 (D-012). No migration, RLS, grant, deployment, Supabase setting or client connection change. Read-only
 live check: Worker discovery and 401 challenge correct; no DCR/CIMD; live Worker serves the pre-#113
 five-tool build. Evidence and ChatGPT prerequisites: docs/PRODUCT_LAB_MCP.md "Order completion tools".
+
+## 2026-10-27 — MCP order completion hardening (draft PR #114, not released)
+
+Database-enforced expected state and lot-stock guard (source-only migration 20261027120000,
+supabase-check-order-fulfillment-guard.sql preflight), apply-tool approval marker and both Claude
+server-name spellings, ChatGPT path validated against official sources (write MCP: Business, Enterprise,
+Edu; Pro read/fetch only; Plus undocumented). #113 confirmed live by deployed-module hash; no security
+redeploy needed. Correction: the earlier entry's "live Worker serves the pre-#113" was wrong.
+Evidence and open items: REVIEW.md 2026-10-27 hardening entry; docs/PRODUCT_LAB_MCP.md.

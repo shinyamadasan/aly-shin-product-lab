@@ -344,7 +344,9 @@ function failure(error: unknown) {
                     ? { code: "order_apply_in_progress", message: "This completion is still being processed. Retry order_complete_apply with the same preview_id and approval_code." }
                     : internalCode === "order_apply_failed"
                       ? { code: "order_apply_failed", message: "Order completion was not confirmed. Run order_complete_verify before retrying." }
-                      : { code: "read_failed", message: "Product Lab read failed" };
+                      : internalCode === "order_apply_unavailable"
+                        ? { code: "order_apply_unavailable", message: "Order completion is not available on this database yet. Nothing was changed." }
+                        : { code: "read_failed", message: "Product Lab read failed" };
   return {
     isError: true,
     content: [{ type: "text" as const, text: JSON.stringify({ error: detail }) }],
@@ -497,7 +499,7 @@ export function createProductLabMcpServer(
     "order_complete_apply",
     {
       title: "Complete an approved Product Lab order",
-      description: "Completes an order through Product Lab's existing fulfillment function, only if the order is unchanged since the preview. Call only after a NEW owner message explicitly confirms that exact approval code. Does not record payment. Returns applied_unverified; verify separately.",
+      description: "Completes an order through Product Lab's checked fulfillment function, which refuses if the order changed since the preview or reserved stock is short. Call only after a NEW owner message explicitly confirms that exact approval code. Does not record payment. Returns applied_unverified; verify separately.",
       inputSchema: z.object({
         order_id: orderIdSchema,
         preview_id: orderPreviewIdSchema,
@@ -505,6 +507,10 @@ export function createProductLabMcpServer(
       }).strict(),
       outputSchema: orderCompleteApplyOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      // Claude Code prompts on every call of a tool carrying this marker, in every permission mode
+      // including auto and bypassPermissions, and no allow rule skips it. It travels with the server,
+      // so it holds on any owner's machine regardless of local settings.
+      _meta: { "anthropic/requiresUserInteraction": true },
     },
     async ({ order_id, preview_id, approval_code }) => {
       try {

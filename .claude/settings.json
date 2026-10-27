@@ -2,7 +2,9 @@
   "permissions": {
     "ask": [
       "mcp__product_lab__inventory_count_apply",
-      "mcp__product_lab__order_complete_apply"
+      "mcp__product_lab__order_complete_apply",
+      "mcp__product-lab__inventory_count_apply",
+      "mcp__product-lab__order_complete_apply"
     ]
   }
 }

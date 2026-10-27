@@ -214,8 +214,14 @@ type OrderSnapshot = {
   orderMovements: MovementRow[];
 };
 
-async function loadSnapshot(client: SupabaseClient, orderId: string): Promise<OrderSnapshot> {
+// Postgres prints uuids in lower case; normalizing at the boundary keeps every later equality check
+// (receipt id, response id) in agreement with the database for an upper-case caller.
+function canonicalOrderId(orderId: string): string {
   if (!ORDER_ID_PATTERN.test(orderId)) throw new ProductLabError("order_not_found", "Invalid order id");
+  return orderId.toLowerCase();
+}
+
+async function loadSnapshot(client: SupabaseClient, orderId: string): Promise<OrderSnapshot> {
   const orderResult = await client.from("orders").select(ORDER_COLUMNS).eq("id", orderId).limit(1);
   if (orderResult.error) throw new ProductLabError("read_failed", `Order read failed: ${orderResult.error.message}`);
   const order = (orderResult.data ?? [])[0] as OrderRow | undefined;
@@ -418,7 +424,7 @@ export class OrderCompletionService {
     const client = await this.authenticatedClient();
     if (!orderId) return this.listOpenOrders(client);
 
-    const snapshot = await loadSnapshot(client, orderId);
+    const snapshot = await loadSnapshot(client, canonicalOrderId(orderId));
     const reservations = reservationRows(snapshot);
     const required = requiredPiecesByProduct(summarizeLines(snapshot.lines));
     const statuses = new Set(reservations.map((row) => row.status));
@@ -459,27 +465,28 @@ export class OrderCompletionService {
 
   async preview(orderId: string): Promise<OrderCompletionPreview> {
     const client = await this.authenticatedClient();
-    return buildOrderCompletionPreview(await loadSnapshot(client, orderId), new Date().toISOString());
+    return buildOrderCompletionPreview(await loadSnapshot(client, canonicalOrderId(orderId)), new Date().toISOString());
   }
 
-  async apply(orderId: string, previewId: string, approvalCode: string): Promise<OrderCompletionApplied> {
+  async apply(rawOrderId: string, previewId: string, approvalCode: string): Promise<OrderCompletionApplied> {
+    const orderId = canonicalOrderId(rawOrderId);
     if (!ORDER_PREVIEW_ID_PATTERN.test(previewId)) throw new ProductLabError("order_preview_invalid", "Invalid preview id");
     if (approvalCode.trim().toUpperCase() !== orderCompletionApprovalCode(previewId)) {
       throw new ProductLabError("order_preview_invalid", "Approval code does not match this preview");
     }
     const operationId = orderCompletionOperationId(previewId);
     const client = await this.authenticatedClient();
-    const current = buildOrderCompletionPreview(await loadSnapshot(client, orderId), new Date().toISOString());
+    const snapshot = await loadSnapshot(client, orderId);
+    const current = buildOrderCompletionPreview(snapshot, new Date().toISOString());
 
-    // Between this re-read and the RPC's own order-row lock there is a short window. The RPC re-checks
-    // status under the lock and fulfils only the frozen reservation (order lines are immutable once
-    // confirmed), so a concurrent cancel/complete is refused and a concurrent duplicate replays. It
-    // does not accept an expected updated_at or re-check lot balances, so a payment edit or a stock
-    // loss landing inside that window is not refused here; verify reports a negative lot. Closing the
-    // window fully needs an expected-state parameter on the RPC, which is a database change.
+    // The re-read above only screens. The database decides, under its own locks: the checked RPC
+    // refuses (40001) if updated_at or any payment column is no longer what was reviewed -- passed
+    // from this same snapshot, whose hash just matched the preview -- which closes the window between
+    // this read and its order-row lock, and refuses (23514) if a reserved lot no longer holds the
+    // pieces (supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql).
     if (current.preview_id === previewId) {
       if (!current.can_apply) throw new ProductLabError("order_not_completable", current.blockers.join(" "));
-      return this.callFulfillment(client, orderId, previewId, operationId);
+      return this.callFulfillment(client, orderId, previewId, operationId, snapshot.order);
     }
 
     // The order changed since this preview. The only legitimate reason to continue is a retry of an
@@ -487,7 +494,7 @@ export class OrderCompletionService {
     // only replay this exact operation's stored receipt or refuse -- it cannot fulfil anything.
     if (current.order.status === "completed") {
       try {
-        return await this.callFulfillment(client, orderId, previewId, operationId);
+        return await this.callFulfillment(client, orderId, previewId, operationId, snapshot.order);
       } catch (error) {
         if (error instanceof ProductLabError && error.code === "order_not_completable") {
           throw new ProductLabError("order_preview_invalid", "This order was completed by a different operation; nothing was changed");
@@ -503,8 +510,9 @@ export class OrderCompletionService {
     orderId: string,
     previewId: string,
     operationId: string,
+    expected: OrderRow,
   ): Promise<OrderCompletionApplied> {
-    const { data, error } = await client.rpc("complete_order_with_fulfillment", { p_operation_id: operationId, p_order_id: orderId }) as { data: OrderRow | null; error: RpcError | null };
+    const { data, error } = await fulfillChecked(client, operationId, orderId, expected);
     if (error) throw rpcError(error);
     if (!data || data.id !== orderId) throw new ProductLabError("order_apply_failed", "The server did not confirm the completion");
     return {
@@ -518,7 +526,8 @@ export class OrderCompletionService {
     };
   }
 
-  async verify(orderId: string, previewId: string): Promise<OrderCompletionVerification> {
+  async verify(rawOrderId: string, previewId: string): Promise<OrderCompletionVerification> {
+    const orderId = canonicalOrderId(rawOrderId);
     if (!ORDER_PREVIEW_ID_PATTERN.test(previewId)) throw new ProductLabError("order_preview_invalid", "Invalid preview id");
     const operationId = orderCompletionOperationId(previewId);
     const client = await this.authenticatedClient();
@@ -555,11 +564,13 @@ export class OrderCompletionService {
     // Mutation receipt. inventory_private.mutation_receipts is not readable by the owner; the only
     // owner-reachable read is an exact replay of the same operation id through the same RPC. That is
     // done ONLY once the order is completed: completed is terminal, so the RPC can then return this
-    // operation's stored result or refuse -- it cannot fulfil, and a refusal rolls back its claim.
+    // operation's stored result or refuse -- it cannot fulfil, and a refusal rolls back its claim. This
+    // is why the tool is annotated readOnlyHint; the guard rail is the smoke test "on a completed order,
+    // the completion RPC only replays its own receipt or refuses, and never writes".
     let receipt: OrderCompletionVerification["mutation_receipt"] = "not_checked";
     let paymentAtCompletion: OrderPayment | null = null;
     if (status === "completed") {
-      const { data, error } = await client.rpc("complete_order_with_fulfillment", { p_operation_id: operationId, p_order_id: orderId }) as { data: OrderRow | null; error: RpcError | null };
+      const { data, error } = await fulfillChecked(client, operationId, orderId, snapshot.order);
       if (error && error.code !== "23514") throw rpcError(error);
       if (error) {
         receipt = "missing";
@@ -592,10 +603,31 @@ export class OrderCompletionService {
   }
 }
 
-// SQLSTATEs raised by complete_order_with_fulfillment / claim_mutation (see orders-repository.ts
-// runReservationRpc): 42501 not the owner, 22023 bad input / not found, 23514 business rule (wrong
-// status, or this operation id was used for a different order), 55P03 same operation in flight.
+// The only RPC this service calls. There is deliberately no fallback to the unchecked two-argument
+// function: if the guard migration is not installed, completion fails closed.
+// The expected values are the raw columns exactly as read, so the database compares like with like.
+function fulfillChecked(client: SupabaseClient, operationId: string, orderId: string, expected: OrderRow) {
+  if (!expected.updated_at || !expected.payment_status) throw new ProductLabError("order_apply_failed", "The order has no version to check");
+  return client.rpc("complete_order_with_fulfillment_checked", {
+    p_operation_id: operationId,
+    p_order_id: orderId,
+    p_expected_updated_at: expected.updated_at,
+    p_expected_payment_status: expected.payment_status,
+    p_expected_payment_method: expected.payment_method,
+    p_expected_paid_at: expected.paid_at,
+    p_expected_paid_amount: expected.paid_amount,
+    p_expected_refunded_at: expected.refunded_at,
+  }) as unknown as PromiseLike<{ data: OrderRow | null; error: RpcError | null }>;
+}
+
+// SQLSTATEs raised by complete_order_with_fulfillment_checked / claim_mutation (see
+// orders-repository.ts runReservationRpc): 42501 not the owner, 22023 bad input / not found, 23514
+// business rule (wrong status, short lot, or this operation id was used for a different order),
+// 40001 the order changed since review, 55P03 same operation in flight. PGRST202 / 42883 mean the
+// guard migration is not installed.
 function rpcError(error: RpcError): ProductLabError {
+  if (error.code === "PGRST202" || error.code === "42883") return new ProductLabError("order_apply_unavailable", "The order completion guard is not installed");
+  if (error.code === "40001") return new ProductLabError("order_preview_invalid", "The order changed since this preview");
   if (error.code === "42501") return new ProductLabError("authorization_failed", "Not authorized to complete orders");
   if (error.code === "22023") return new ProductLabError("order_not_found", "Order not found");
   if (error.code === "23514") return new ProductLabError("order_not_completable", "The database refused to complete this order");

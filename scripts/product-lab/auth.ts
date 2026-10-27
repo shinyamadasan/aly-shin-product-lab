@@ -16,7 +16,8 @@ export type ProductLabErrorCode =
   | "order_preview_invalid"
   | "order_not_completable"
   | "order_apply_in_progress"
-  | "order_apply_failed";
+  | "order_apply_failed"
+  | "order_apply_unavailable";
 
 export class ProductLabError extends Error {
   readonly code: ProductLabErrorCode;

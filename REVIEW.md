@@ -1713,3 +1713,42 @@ completed elsewhere, completed/cancelled/new, short lot, mismatched reservation,
 independence); disposable PostgreSQL Wave 2 13/13 incl. new completed-order replay/refusal case; local
 workerd runtime smoke; TypeScript, touched-source/test ESLint, Worker dry-run pass. Production, live
 Worker, Supabase settings and ChatGPT unchanged.
+
+## 2026-10-27 — MCP order completion: release-blocker hardening pass
+
+Merge gate: approved, and still HELD. PR #114 stays draft. It now carries a source-only migration that
+changes the web app's completion function; applying it and deploying are separate owner approvals.
+
+Correction to the earlier 2026-10-27 entry: it said the live Worker ran the pre-#113 build. Wrong.
+Version c4750fda (100% traffic, deployed 2026-10-20) was downloaded via the Cloudflare API and is
+byte-identical (SHA-256 9f7059c2...87b6) to a clean rebuild of bbd679d. The release record exists only on
+the unpushed local branch docs/mcp-security-release-checkpoint, which is why main still says unpatched.
+
+Changes: migration 20261027120000 adds complete_order_with_fulfillment_checked, which takes the
+canonical lock order (order row, products, lots), refuses a changed order (updated_at AND every payment
+column, 40001) and a short lot (23514) before writing, with Wave 2's receipt identity. The legacy
+two-argument function delegates without expected state; its only behavior change is refusing a
+negative-lot fulfilment. MCP calls only the checked function and fails closed without it.
+order_complete_apply carries anthropic/requiresUserInteraction; project ask rules now cover both
+product_lab and product-lab names. Upper-case order ids normalized.
+
+Independent security review (separate read-only agent): no blockers. Fixed from its findings: payment
+state compared directly (no trigger maintains updated_at, so a payment write that skips it would have
+passed); upper-case uuid completed but reported failure; the stock-race test did not isolate the
+product lock (rewritten to write through another order's allocation; negative control re-run); vacuous
+malformed-input and anon assertions tightened. Accepted and documented, not fixed: the approval code is
+binding, not consent (consent rests on client gates; elicitation and preview TTL are follow-ups);
+user-global ask rules are each owner's to add; shared-lot hash staleness (fails safe); raw lot ids in
+the web message; verify is readOnlyHint while calling the RPC (guarded by a smoke test).
+
+SELF_REVIEW: no new table or parallel ledger; one new function reusing Wave 2's body and receipt; MCP
+reuses its service. My own process faults caught by tests: a script turned "$$" into "$" in one
+smoke block, and a teardown order hung one run; both fixed. Would I ship after the approvals below: yes.
+
+QA: unit 4609 (4608 pass, 0 fail, 1 existing skip); MCP-focused 107/107; PostgreSQL all suites
+228 -> 212 pass, 16 fail all in order-incident-recovery (pre-existing: its 2026-10-19 refund fixture
+is now past correct_mistaken_refund's 7-day window; test file unchanged and untouched by this work);
+Wave 2 + guard 25/25 including races, isolated stock race with negative control, payment without
+updated_at, per-column payment changes; MCP -> Worker -> PostgREST -> PostgreSQL 7/7; guard on the full
+current chain with COGS/FR2 8/8; local workerd smoke; TypeScript, lint, Worker dry-run pass.
+Nothing merged, applied, deployed or changed in production.

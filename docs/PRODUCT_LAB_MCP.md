@@ -406,21 +406,33 @@ write production data.
 
 Four tools let an owner complete a confirmed or ready order from an MCP client. They are registered in
 the same `createProductLabMcpServer(...)` registry, so stdio, the Next.js route and the Worker all
-serve them. Implementation: `scripts/product-lab/order-completion-service.ts`. No migration, new RPC,
-RLS or grant change.
+serve them. Implementation: `scripts/product-lab/order-completion-service.ts`. Apply requires the
+source-only migration `supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql`
+(**not applied to any database**); without it Apply fails closed with `order_apply_unavailable`. No
+RLS policy, table, or existing grant changes.
 
 | Tool | Writes? | Input |
 | --- | --- | --- |
 | `order_inspect` | no | `{}` lists up to 50 open orders; `{ "order_id" }` returns one order, lines, payment and reservation status |
 | `order_complete_preview` | no | `{ "order_id" }` |
-| `order_complete_apply` | yes, via `public.complete_order_with_fulfillment` only | `{ "order_id", "preview_id", "approval_code" }` |
+| `order_complete_apply` | yes, via `public.complete_order_with_fulfillment_checked` only | `{ "order_id", "preview_id", "approval_code" }` |
 | `order_complete_verify` | no | `{ "order_id", "preview_id" }` |
 
-**The database stays the authority.** Apply calls the existing Selling Wave 2 RPC with the
-request-scoped owner client. The RPC owns the owner check, order-row lock, confirmed/ready gate,
-fulfilling exactly the reservation made at confirm time, and the mutation receipt. MCP never writes
-`orders`, `order_lines`, `order_stock_allocations` or `finished_stock_movements`, and never touches a
-payment field. A test asserts the service source names only that one RPC and has no table writes.
+**The database stays the authority.** Apply calls `public.complete_order_with_fulfillment_checked`
+with the request-scoped owner client, passing the reviewed `orders.updated_at` and every payment column
+(`payment_status`, `payment_method`, `paid_at`, `paid_amount`, `refunded_at`). That function keeps
+Selling Wave 2's owner check, confirmed/ready gate, frozen-reservation fulfilment and mutation receipt
+(same identity: `order_fulfill`, `md5(order_id)`), and adds, under the canonical stock lock order
+(order row, then `products`, then `production_executions` -- the order every other finished-stock
+writer uses): refuse with 40001 if `updated_at` or any payment column differs from what was reviewed
+(payment is compared directly because no trigger maintains `updated_at`, so a payment write that does
+not bump it would otherwise pass), and refuse with
+23514 before any write if a reserved lot lacks the on-hand or reserved pieces. The web app's
+two-argument `complete_order_with_fulfillment` keeps its signature and grants and delegates with no
+expected version, so it gains only the negative-lot refusal. MCP never calls the unchecked function,
+never writes `orders`, `order_lines`, `order_stock_allocations` or `finished_stock_movements`, and never
+touches a payment field; a test asserts the service source names only the checked RPC and has no
+table writes. Run `supabase-check-order-fulfillment-guard.sql` (read only) before applying.
 
 **State-bound previews, no stored artifact.** `preview_id` is `oc_` plus a hash of the authoritative
 state that matters to completion: order status, `updated_at`, payment fields, lines, allocations, and
@@ -433,12 +445,16 @@ are derived from `preview_id`. Consequences:
 - A lost Apply response is retried with the same arguments and replays the receipt.
 - If the order was completed some other way (web app, other preview), Apply refuses and changes nothing.
 - There is no time-based expiry; a preview is valid exactly as long as the order state is unchanged.
+- The hash includes the balances of shared lots, so confirming or completing another order from the same
+  lot makes this preview stale (fails safe; re-preview). The database guard enforces sufficiency, not
+  identical lot balances, so the preview's `lot_*_after` figures are as of the preview.
+- Order ids are normalized to lower case at the boundary, matching Postgres' uuid text form.
 
 **Preview blockers** (`can_apply: false`): already completed, cancelled, not confirmed (no
 reservation), part of the reservation already released/fulfilled, reserved pieces not equal to the
 lines' `quantity x pieces_per_unit_snapshot` per product (the database's own reservation rule), or a
-reserved lot holding fewer on-hand or reserved pieces than this order would fulfil. The RPC does not
-re-check lot balances, so this preview check is what catches a lot that lost stock after confirmation.
+reserved lot holding fewer on-hand or reserved pieces than this order would fulfil. The guard
+re-checks the lot condition under its locks, so the preview is an early explanation, not the control.
 
 **Payment is independent.** Preview always reports `payment_change: "none"` and warns when the order is
 not paid. Apply and Verify report payment as read; nothing marks an order paid.
@@ -447,46 +463,104 @@ not paid. Apply and Verify report payment as read; nothing marks an order paid.
 fulfilled by exactly one `fulfill` movement equal to its reserved pieces under this preview's operation
 id, no release movement exists, no reserved lot is negative, and the mutation receipt matches.
 `inventory_private.mutation_receipts` is not owner-readable, so the receipt is read by replaying the
-same operation id through the same RPC, and only once the order is already completed. Completed is
-terminal, so the RPC can then only return this operation's stored result or refuse, and a refusal
-leaves no receipt (proven against real PostgreSQL in
-`tests/smoke/postgres/selling-wave-2-order-reservation.smoke.test.ts`).
+same operation id through the checked RPC, and only once the order is already completed. Completed is
+terminal, and the receipt replay happens before the version check, so the call can only return this
+operation's stored result or refuse; a refusal leaves no receipt.
 
-**Known residual window.** Between Apply's re-read and the RPC's row lock, a payment edit or a stock
-loss could land. The RPC re-checks status under its lock (so cancel/complete races are safe) but has
-no expected-`updated_at` parameter and does not re-check lot balances. Verify reports a negative lot.
-Closing the window fully needs an RPC change and is not in this slice.
+**Real-PostgreSQL evidence** (`tests/smoke/postgres/selling-wave-2-order-reservation.smoke.test.ts`,
+which runs all Wave 2 cases on top of the guard, and
+`tests/smoke/postgres/mcp-order-completion.smoke.test.ts`, MCP -> Worker -> supabase-js -> real
+PostgREST -> real PostgreSQL): payment written after review and payment racing the completion (both
+refused, nothing written); a payment changed without touching `updated_at`, and each payment column
+changed alone (all refused); lot short through either entry point; a concurrent stock writer holding the
+product lock and writing through a different order's allocation, so only the product/lot locks can
+serialize it (the completion waits, then refuses -- the unpatched Wave 2 function was run as a negative
+control and fulfilled into a negative lot); two owners with different operation ids at once (one
+fulfilment); the same operation id at once (one fulfilment); replay/retry and shared legacy receipts;
+non-owner and anonymous callers refused by permission; the reviewed `updated_at` and payment values
+round-trip through PostgREST.
 
 **Approval boundary** is the same as physical counts: show the preview, ask `Approve <code>?`, stop.
-Apply only after a new owner message contains that code. Claude project settings ask before
-`order_complete_apply`; Codex prompts for it. ChatGPT asks for manual confirmation before any
-write-capable tool runs; that confirmation is in addition to the approval code, not a replacement.
+Apply only after a new owner message contains that code. **The code binds, it does not prove consent.**
+It is derived from `preview_id` and shown in the preview, so it stops a stale or mismatched preview and
+makes the model name the exact preview it means; it cannot stop a model that calls preview and then
+apply in one turn. Preview output includes customer-typed text (customer and item names from public
+orders), which is a prompt-injection surface. Consent therefore rests on the client gates below, and
+completed is terminal (no undo; only a stock correction can offset a wrong completion):
+
+- `order_complete_apply` carries `_meta["anthropic/requiresUserInteraction"]: true`. Claude Code
+  prompts on every call in every permission mode, including `auto` and `bypassPermissions`, and no
+  allow rule skips it. It travels with the server, so it holds on either owner's machine.
+- Claude Code keeps hyphens in MCP tool names: the user-global remote server `product-lab` exposes
+  `mcp__product-lab__*`, the project stdio server `product_lab` exposes `mcp__product_lab__*`. The
+  project `.claude/settings.json` asks before both apply tools under both names (explicit ask rules
+  also prompt in every mode). Before this fix only the stdio spelling was listed. Project rules apply
+  only inside this repository; the remote server is user-global, so each owner should also add the
+  same ask rules to their own `~/.claude/settings.json`. If the server is ever added as a claude.ai
+  connector instead, its tools are named `mcp__claude_ai_<name>__*` and need their own rule (the
+  server-side marker still applies).
+- Codex prompts for `order_complete_apply`.
+- ChatGPT treats tools without `readOnlyHint` as write actions and asks for confirmation by default;
+  a user can turn that off per tool, so it is not a guarantee.
+- Not built: server-initiated MCP elicitation (a confirmation the model cannot answer itself) and a
+  preview expiry. Both are candidate follow-ups; client support for elicitation varies.
 
 **Audit attribution.** Both owner accounts hold the same `app_role = owner` claim; neither the RPC nor
 the receipt records which owner completed an order. This is unchanged from the web app.
 
+### Release sequence (each step is a separate owner approval)
+
+1. Merge PR #114. Merging alone changes nothing live, but **any later Netlify deploy of main also serves
+   these tools on `app.alyandpon.com/api/mcp`**, not only on the Worker. Without step 3, Apply there and
+   on the Worker fails closed (`order_apply_unavailable`); inspect/preview/verify are read-only.
+2. Owner runs `supabase-check-order-fulfillment-guard.sql` (read only) in the SQL editor. Proceed only if
+   the Wave 2 body md5 matches (or a mismatch is explained) and queries 3 and 4 return no rows.
+3. Apply migration `20261027120000_order_fulfillment_expected_state_guard.sql` (creates two functions,
+   replaces the legacy body; no data written). Effect on the web app: completing an order whose reserved
+   lot is short is refused instead of driving the lot negative. The web app shows the database message
+   as-is (it names lot ids; owner-only, but not friendly). Rollback steps are in the file header.
+4. Deploy the Worker from merged main (`npm run product-lab:mcp:worker:deploy`, existing bindings).
+   Read-only postflight: tools/list shows 9 tools and `order_complete_apply` carries
+   `anthropic/requiresUserInteraction`. #113 is already live, so this deploy is not a security gate.
+5. Only after a write-capable ChatGPT plan is confirmed: register the Supabase OAuth client and connect
+   (see below). Claude Code needs no new client; it re-reads the tool list.
+
 ## ChatGPT connection (not connected yet)
 
-Verified read-only on 2026-10-27 against the live Worker
-(`alyandpon-product-lab-mcp.shinyamadasan.workers.dev`): protected-resource metadata and the mirrored
-Supabase authorization-server metadata are served, and an unauthenticated `POST /api/mcp` gets 401 with
-an RFC 9728 `resource_metadata` challenge. The live metadata has no `registration_endpoint` (DCR off),
-no `client_id_metadata_document_supported`, and no `authorization_response_iss_parameter_supported`.
-The live Worker still runs the pre-#113 build and serves only the five inventory tools.
+**Live endpoint (verified read-only 2026-10-27).** `alyandpon-product-lab-mcp.shinyamadasan.workers.dev`
+serves protected-resource metadata and mirrored Supabase authorization-server metadata; an
+unauthenticated `POST /api/mcp` gets 401 with an RFC 9728 challenge. Supabase metadata has no
+`registration_endpoint` (DCR off), no `client_id_metadata_document_supported` and no
+`authorization_response_iss_parameter_supported`. The Worker serves the **#113 security build**: the
+module on 100% of traffic (version `c4750fda-3386-45db-923c-343a7f142703`, deployed 2026-10-20) was
+downloaded through the Cloudflare API and is byte-identical (SHA-256 `9f7059c2...87b6`) to a clean
+rebuild of `bbd679d`. It does not have the order tools.
 
-What ChatGPT needs, per OpenAI's Apps SDK auth documentation: authorization code + PKCE `S256` (served),
-and one of CIMD, DCR, or a predefined OAuth client. With DCR and CIMD both unavailable on Supabase as
-configured, the supported path is a **predefined (manually registered) Supabase OAuth client** whose
-credentials are entered in ChatGPT's connector OAuth settings. Because `iss` is not returned in
-authorization responses, ChatGPT uses a connection-specific callback
-(`https://chatgpt.com/connector/oauth/{callback_id}`), so each owner's connector shows its own redirect
-URI, and each must be added to that Supabase OAuth client's redirect URIs. ChatGPT also sends a
-`resource` parameter; whether Supabase's OAuth server accepts it without error is unverified.
+**Plans (official OpenAI sources, October 2026).** Full MCP including write actions: Business,
+Enterprise and Edu. Pro: developer mode with read/fetch MCP only. Plus: no official statement found;
+an OpenAI staff forum reply says write actions are "available to everyone", which is not documentation.
+Business: only workspace admins/owners can create and publish custom MCP apps; Enterprise/Edu can grant
+members that via RBAC. Creation is web only. Do not assume Plus or Pro can run `order_complete_apply`.
 
-Plan availability is a hard prerequisite. OpenAI's help center documents developer mode / custom MCP
-apps with write actions for Business, Enterprise and Edu (admin-enabled). Plus/Pro availability is
-reported by third-party guides but not confirmed by an official source. Each owner's ChatGPT plan must
-be confirmed before connecting.
+**Owners' separate accounts.** Each owner connects with their own Product Lab login, so audit and
+revocation are per person. In one Business/Enterprise workspace, an admin creates and publishes one app;
+OpenAI's docs say workspace users "get an OAuth flow to your service" individually. Two separate
+personal accounts would each need a plan with write MCP and their own app.
+
+**OAuth registration.** OpenAI: "if static credentials are provided, then they will be used"; otherwise
+CIMD or DCR. Supabase supports neither CIMD nor (as configured) DCR, so register a client manually in
+Supabase (Authentication > OAuth Apps; public or confidential; one or more redirect URIs, exact match,
+no wildcards; a confidential secret is shown once) and enter it in ChatGPT. Redirect URI: without `iss`
+in authorization responses, ChatGPT uses a callback-specific `https://chatgpt.com/connector/oauth/{id}`
+shown on the app's management page; copy it exactly into the Supabase client. One app has one callback;
+separate apps need each callback added.
+
+**Unverified until a real connection attempt:** whether Supabase accepts ChatGPT's `resource`
+parameter; which token-endpoint auth method ChatGPT uses with static credentials (Supabase confidential
+clients default to `client_secret_basic`, `client_secret_post` is available, public clients use
+`none`); and forum reports of write calls being blocked by OpenAI "safety checks" on Business and Plus.
+The Worker does not validate token audience (`aud`), which OpenAI recommends; it relies on Supabase
+`auth.getUser` plus the owner claim, as today.
 
 ## Production configuration required before deployment
 
