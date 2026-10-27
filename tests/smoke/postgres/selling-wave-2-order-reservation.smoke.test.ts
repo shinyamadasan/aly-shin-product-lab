@@ -477,6 +477,11 @@ test("Wave 2 connects orders to finished stock: reserve at confirm, release at c
     assert.equal(wave2FulfillmentBodyMd5, "f11078872e13ecc80cb6c0b571fdc11d");
     // The read-only preflight file runs cleanly (and now reports the guard as installed).
     assert.match(run(sql("supabase-check-order-fulfillment-guard.sql")), /^t\|/m);
+    // Postflight: every check passes on the migrated database (after the Wave 2 cases, before any guard
+    // test deliberately corrupts a lot).
+    const postflight = run(sql("supabase-check-order-fulfillment-guard-postflight.sql")).trim().split("\n");
+    assert.equal(postflight.length, 9, postflight.join("\n"));
+    for (const row of postflight) assert.match(row, /\|t$/, row);
     assert.equal(q1(`select has_function_privilege('authenticated', 'public.complete_order_with_fulfillment(uuid,uuid)', 'execute')`), "t");
     assert.equal(q1(`select has_function_privilege('anon', 'public.complete_order_with_fulfillment_checked(uuid,uuid,timestamptz,text,text,timestamptz,numeric,timestamptz)', 'execute')`), "f");
     assert.equal(q1(`select has_function_privilege('authenticated', 'public.complete_order_with_fulfillment_checked(uuid,uuid,timestamptz,text,text,timestamptz,numeric,timestamptz)', 'execute')`), "t");
@@ -673,5 +678,31 @@ test("Wave 2 connects orders to finished stock: reserve at confirm, release at c
     assert.equal(q1(`select status from public.orders where id = '${order}'`), "new");
     assert.equal(q1(`select count(*) from public.order_stock_allocations where order_id = '${order}'`), "0");
     assert.equal(available(f.product), "10", "a public/new order must not move available stock at all");
+  });
+
+  // Executes the guard migration's documented ROLLBACK exactly as written in its header, then re-applies it.
+  // Runs last because it removes the guard the earlier subtests rely on.
+  await t.test("guard rollback: the documented steps restore Wave 2's exact fulfillment body and grants, and the guard re-applies cleanly", () => {
+    const wave2 = sql("supabase/migrations/20260910181827_selling_wave_2_order_reservation.sql");
+    const start = wave2.indexOf("-- 7. complete_order_with_fulfillment");
+    const end = wave2.indexOf("notify pgrst, 'reload schema';", start);
+    assert.ok(start > 0 && end > start, "section 7 located");
+    const section7 = wave2.slice(start, end);
+    const guard = sql("supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql");
+    const dropPattern = /^--\s+(?:\d+\.\s+)?(drop function .*complete_order_with_fulfillment_checked.*)$/;
+    const dropLines = guard.split("\n").map((line) => dropPattern.exec(line)?.[1]).filter((line): line is string => Boolean(line));
+    assert.equal(dropLines.length, 2, "header names both drops");
+
+    run(section7);
+    run(`${dropLines.join("\n")}\nnotify pgrst, 'reload schema';`);
+    assert.equal(q1(`select md5(prosrc) from pg_proc where oid = 'inventory_private.complete_order_with_fulfillment(uuid,uuid)'::regprocedure`), wave2FulfillmentBodyMd5, "exact Wave 2 body restored");
+    assert.equal(q1(`select count(*) from pg_proc where proname = 'complete_order_with_fulfillment_checked'`), "0");
+    assert.equal(q1(`select has_function_privilege('authenticated', 'public.complete_order_with_fulfillment(uuid,uuid)', 'execute')`), "t");
+    const f = confirmed(10, 6, 1);
+    assert.match(run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${crypto.randomUUID()}', '${f.order}')->>'status'; reset role;`), /completed/, "web completion works after rollback");
+
+    run(guard);
+    const g = confirmed(10, 6, 1);
+    assert.match(run(`${OWNER_SESSION} select ${checkedCall(crypto.randomUUID(), g.order, g.expected)}->>'status'; reset role;`), /completed/, "re-applied guard works");
   });
 });

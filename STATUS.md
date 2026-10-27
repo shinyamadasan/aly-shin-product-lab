@@ -1,5 +1,12 @@
 # STATUS
 
+## 2026-10-27 — MCP order completion: release prepared, awaiting owner gates
+
+Production preflight passed (owner). Release runbook with identities, commands, postflight and rollback:
+docs/ORDER_COMPLETION_RELEASE.md. All PostgreSQL suites 229/229 (time-dependent incident fixture fixed
+without changing the refund rule); rollback proven; unit 4608 pass/1 existing skip. Not merged, not
+applied, not deployed.
+
 ## 2026-10-27 — MCP order completion tools (draft PR)
 
 Four order tools (inspect, preview, apply, verify) in the shared MCP registry. Hardening pass: Apply

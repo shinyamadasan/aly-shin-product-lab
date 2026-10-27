@@ -510,6 +510,8 @@ the receipt records which owner completed an order. This is unchanged from the w
 
 ### Release sequence (each step is a separate owner approval)
 
+Exact commands, expected hashes, postflight and rollback: [ORDER_COMPLETION_RELEASE.md](ORDER_COMPLETION_RELEASE.md).
+
 1. Merge PR #114. Merging alone changes nothing live, but **any later Netlify deploy of main also serves
    these tools on `app.alyandpon.com/api/mcp`**, not only on the Worker. Without step 3, Apply there and
    on the Worker fails closed (`order_apply_unavailable`); inspect/preview/verify are read-only.

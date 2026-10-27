@@ -1752,3 +1752,26 @@ Wave 2 + guard 25/25 including races, isolated stock race with negative control,
 updated_at, per-column payment changes; MCP -> Worker -> PostgREST -> PostgreSQL 7/7; guard on the full
 current chain with COGS/FR2 8/8; local workerd smoke; TypeScript, lint, Worker dry-run pass.
 Nothing merged, applied, deployed or changed in production.
+
+## 2026-10-27 — MCP order completion: release preparation
+
+Merge gate: approved, HELD for owner execution of docs/ORDER_COMPLETION_RELEASE.md, gate by gate.
+
+Readiness: origin/main still bbd679d (no drift); tree clean; PR mergeable/clean, no reviews, no CI
+configured, main unprotected. Merging deploys nothing: Netlify site has no linked repository, no
+GitHub Actions, no status/deployment on any of nine main merges since 2026-10-16 (Vercel app last
+deployed 2026-10-15; its project connection not inspected). Worker secrets are secret_text, so a deploy
+keeps them; runbook uses --keep-vars as the previous release did.
+
+Time-dependent failures reconciled without touching the refund rule or the recovery script: the
+incident fixture now corrects the first refund through the real correct_mistaken_refund while recent,
+then rebases that audit row's and the order's timestamps to production values (disposable database,
+replica mode for the one append-only rebase). 19/19.
+
+New proof: the migration header's rollback executed against PostgreSQL restores Wave 2's exact body
+(md5 pin) and grants, completion still works, and the guard re-applies. New read-only postflight file;
+all nine checks pass on a migrated database, with the post-apply legacy body md5 pinned.
+
+QA: unit 4609 (4608 pass, 1 existing skip); all PostgreSQL suites 229/229; TypeScript, lint pass;
+Worker bundle SHA-256 f731a3fb...d15d, no runtime source change since 9edaac9. Nothing merged, applied
+or deployed.

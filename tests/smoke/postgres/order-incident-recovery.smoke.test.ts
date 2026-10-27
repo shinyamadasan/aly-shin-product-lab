@@ -132,11 +132,21 @@ test("Recovery of a second mistaken refund: guarded, atomic, audited, and it lea
     ownerIn(db, `update public.orders set payment_status = 'refunded', refunded_at = clock_timestamp(), updated_at = clock_timestamp() where id = '${ORDER}';`);
     ownerIn(db, `select public.confirm_order_with_reservation('${uuid()}', '${ORDER}');`);
     ownerIn(db, `select public.complete_order_with_fulfillment('${uuid()}', '${ORDER}');`);
-    // production timestamps (a maintenance session has no JWT, so this ordinary write is allowed)
-    inDb(db, `update public.orders set paid_at = '${PAID_AT}', refunded_at = '${FIRST_REFUND}', completed_at = '${COMPLETED}', updated_at = '${COMPLETED}' where id = '${ORDER}';`);
     if (opts.firstCorrection !== false) {
-      ownerIn(db, `select public.correct_mistaken_refund('${uuid()}', '${ORDER}', 'Refund button clicked by mistake; no money was returned. Legitimate sale.', '${FIRST_REFUND}'::timestamptz, 200);`);
+      // The first correction goes through the real correct_mistaken_refund, so its audit row has exactly the
+      // shape that function writes. That function only corrects a refund recorded in the last 7 days (a business
+      // rule, unchanged), and production's first refund dates from 2026-10-19, so it is corrected here while
+      // still recent and the row's timestamps are then rebased to production's. The rebase is a maintenance
+      // write in this disposable database only; replica mode skips the append-only trigger for that statement.
+      const recentRefund = inDb(db, `select refunded_at from public.orders where id = '${ORDER}';`).trim();
+      ownerIn(db, `select public.correct_mistaken_refund('${uuid()}', '${ORDER}', 'Refund button clicked by mistake; no money was returned. Legitimate sale.', '${recentRefund}'::timestamptz, 200);`);
+      inDb(db, `set session_replication_role = replica;
+        update public.order_refund_corrections set original_paid_at = '${PAID_AT}', original_refunded_at = '${FIRST_REFUND}', original_order_updated_at = '${COMPLETED}' where order_id = '${ORDER}';
+        set session_replication_role = origin;`);
+      // production timestamps (a maintenance session has no JWT, so this ordinary write is allowed)
+      inDb(db, `update public.orders set paid_at = '${PAID_AT}', completed_at = '${COMPLETED}' where id = '${ORDER}';`);
     } else {
+      inDb(db, `update public.orders set paid_at = '${PAID_AT}', refunded_at = '${FIRST_REFUND}', completed_at = '${COMPLETED}', updated_at = '${COMPLETED}' where id = '${ORDER}';`);
       inDb(db, `update public.orders set payment_status = 'paid', refunded_at = null where id = '${ORDER}';`);
     }
     const at = opts.secondRefundAt ?? SECOND_REFUND;
