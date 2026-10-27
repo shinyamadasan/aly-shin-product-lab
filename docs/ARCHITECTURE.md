@@ -925,6 +925,19 @@ not use `--approve-for-me` or override `approvals_reviewer` for Product Lab Appl
 credential handoff, schemas, batch behavior, approval boundary, and client instructions are
 documented in [Product Lab MCP Slices 1–2](PRODUCT_LAB_MCP.md).
 
+Order completion (2026-10-27) adds a second mutation category to the same registry:
+`order_inspect`, `order_complete_preview`, `order_complete_apply` and `order_complete_verify`
+(`scripts/product-lab/order-completion-service.ts`). Apply delegates solely to
+`public.complete_order_with_fulfillment_checked` (migration 20261027120000, source only) with the
+request's owner client and the reviewed `orders.updated_at` and payment columns; the database refuses a changed order or a
+short lot under the same products-then-lots locks every finished-stock writer takes. The web app's
+`complete_order_with_fulfillment` delegates to the same function without an expected version. Previews
+are stateless and bound to a hash of the authoritative order, reservation and lot state; the operation
+id and approval code derive from it (D-012). The apply tool is marked
+`anthropic/requiresUserInteraction`; Claude asks (both `product_lab` and `product-lab` names) and Codex
+prompts before `order_complete_apply`. See
+"Order completion tools" in [PRODUCT_LAB_MCP.md](PRODUCT_LAB_MCP.md).
+
 ## Template Reel Authoring (Wave D1)
 
 Wave D1 broadens the existing Content Generation pipeline only at the authoring contract: a Reel may

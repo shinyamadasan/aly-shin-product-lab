@@ -80,6 +80,12 @@ test("Wave 2 connects orders to finished stock: reserve at confirm, release at c
     alter table public.selling_formats enable row level security;`);
   run(sql("supabase-add-orders.sql"));
   run(sql("supabase/migrations/20260910181827_selling_wave_2_order_reservation.sql"));
+  // Wave 2's original fulfillment body, pinned so supabase-check-order-fulfillment-guard.sql can show
+  // the live database still runs exactly this definition before the guard migration is applied.
+  const wave2FulfillmentBodyMd5 = run(`select md5(prosrc) from pg_proc where oid = 'inventory_private.complete_order_with_fulfillment(uuid,uuid)'::regprocedure`).trim();
+  // Every test below runs against the expected-state / lot-stock guard, so the Wave 2 cases double as
+  // regression tests that the legacy two-argument entry point behaves as before.
+  run(sql("supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql"));
 
   await t.test("single-shot invariants: FIFO reservation, release, fulfillment, Follow-One-Brownie, multi-product atomicity, release-then-re-reserve, idempotency, authority, constraint shapes", () => {
     const result = run(sql("tests/smoke/postgres/selling-wave-2-order-reservation.assertions.sql"));
@@ -400,6 +406,271 @@ test("Wave 2 connects orders to finished stock: reserve at confirm, release at c
     assert.equal(available(f.product), "4");
   });
 
+  // Product Lab MCP order_complete_apply/verify (scripts/product-lab/order-completion-service.ts) call
+  // this RPC on an already-completed order: verify to read the receipt back, apply to replay a lost
+  // response. That is only safe if, on a completed order, the RPC can replay its own receipt or
+  // refuse -- never write -- for any operation id.
+  await t.test("on a completed order, the completion RPC only replays its own receipt or refuses, and never writes", () => {
+    const f = makeProduct(10);
+    const customer = makeCustomer();
+    const order = makeOrder(customer, f.product, 6, 1);
+    run(`${OWNER_SESSION} select public.confirm_order_with_reservation('${crypto.randomUUID()}', '${order}'); reset role;`);
+    const op = crypto.randomUUID();
+    run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${op}', '${order}'); reset role;`);
+    const movements = () => q1(`select count(*) from public.finished_stock_movements where order_id = '${order}'`);
+    const before = { movements: movements(), updated: q1(`select updated_at from public.orders where id = '${order}'`) };
+
+    const replay = run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${op}', '${order}')->>'status'; reset role;`);
+    assert.match(replay, /completed/);
+
+    const unused = crypto.randomUUID();
+    // Acceptance raises (failing run() via ON_ERROR_STOP); the expected refusal returns quietly.
+    const refused = run(`${OWNER_SESSION} do $$ begin
+      begin
+        perform public.complete_order_with_fulfillment('${unused}', '${order}');
+      exception when check_violation then return; end;
+      raise exception 'unused_op_unexpectedly_accepted';
+    end $$; select 'refused_ok'; reset role;`);
+    assert.match(refused, /refused_ok/);
+    assert.equal(q1(`select count(*) from inventory_private.mutation_receipts where operation_id = '${unused}'`), "0", "a refused call leaves no receipt");
+    assert.equal(movements(), before.movements, "no extra stock movement");
+    assert.equal(q1(`select updated_at from public.orders where id = '${order}'`), before.updated, "the order row is not rewritten");
+    assert.equal(q1(`select coalesce(sum(on_hand_delta),0) from public.finished_stock_movements where product_id = '${f.product}'`), "4");
+  });
+
+  // ------------------------------------------------------------------------------------------------
+  // Order fulfillment expected-state / lot-stock guard (20261027120000).
+  // ------------------------------------------------------------------------------------------------
+  // The reviewed state the checked entry point compares under its lock: updated_at plus every payment
+  // column, rendered as typed SQL literals (NULL where the column is NULL).
+  const expectedOf = (order: string) => q1(`select concat_ws(', ',
+      quote_nullable(updated_at) || '::timestamptz', quote_nullable(payment_status) || '::text',
+      quote_nullable(payment_method) || '::text', quote_nullable(paid_at) || '::timestamptz',
+      quote_nullable(paid_amount) || '::numeric', quote_nullable(refunded_at) || '::timestamptz')
+    from public.orders where id = '${order}'`);
+  const confirmed = (pieces: number, perUnit: number, quantity: number) => {
+    const f = makeProduct(pieces);
+    const order = makeOrder(makeCustomer(), f.product, perUnit, quantity);
+    run(`${OWNER_SESSION} select public.confirm_order_with_reservation('${crypto.randomUUID()}', '${order}'); reset role;`);
+    return { ...f, order, expected: expectedOf(order) };
+  };
+  const lotTotals = (execution: string) => q1(`select coalesce(sum(on_hand_delta),0) || '/' || coalesce(sum(reserved_delta),0) from public.finished_stock_movements where production_execution_id = '${execution}'`);
+  const fulfillCount = (order: string) => q1(`select count(*) from public.finished_stock_movements where order_id = '${order}' and movement_type = 'fulfill'`);
+  const receiptCount = (op: string) => q1(`select count(*) from inventory_private.mutation_receipts where operation_id = '${op}'`);
+  // Out-of-band corruption of a lot: a stray partial deduction against the order's own allocation,
+  // as legacy or hand-edited data could leave behind. Written as the table owner.
+  const corruptLot = (f: { order: string; product: string; execution: string }, pieces: number) =>
+    `insert into public.finished_stock_movements (product_id, production_execution_id, movement_type, on_hand_delta, reserved_delta, operation_id, order_id, order_stock_allocation_id, note)
+      select '${f.product}', '${f.execution}', 'fulfill', -${pieces}, -${pieces}, gen_random_uuid(), '${f.order}', a.id, 'stray'
+      from public.order_stock_allocations a where a.order_id = '${f.order}';`;
+  const checkedCall = (op: string, order: string, expected: string) =>
+    `public.complete_order_with_fulfillment_checked('${op}', '${order}', ${expected})`;
+  const expectRefusal = (body: string, sqlstate: string, marker: string) =>
+    `${OWNER_SESSION} do $$ begin
+      begin
+        perform ${body};
+      exception when sqlstate '${sqlstate}' then return; end;
+      raise exception '${marker}';
+    end $$; select 'refused_ok'; reset role;`;
+
+  await t.test("guard: the live-check pin matches Wave 2's fulfillment body and the legacy entry point keeps its signature and grants", () => {
+    assert.equal(wave2FulfillmentBodyMd5, "f11078872e13ecc80cb6c0b571fdc11d");
+    // The read-only preflight file runs cleanly (and now reports the guard as installed).
+    assert.match(run(sql("supabase-check-order-fulfillment-guard.sql")), /^t\|/m);
+    // Postflight: every check passes on the migrated database (after the Wave 2 cases, before any guard
+    // test deliberately corrupts a lot).
+    const postflight = run(sql("supabase-check-order-fulfillment-guard-postflight.sql")).trim().split("\n");
+    assert.equal(postflight.length, 9, postflight.join("\n"));
+    for (const row of postflight) assert.match(row, /\|t$/, row);
+    assert.equal(q1(`select has_function_privilege('authenticated', 'public.complete_order_with_fulfillment(uuid,uuid)', 'execute')`), "t");
+    assert.equal(q1(`select has_function_privilege('anon', 'public.complete_order_with_fulfillment_checked(uuid,uuid,timestamptz,text,text,timestamptz,numeric,timestamptz)', 'execute')`), "f");
+    assert.equal(q1(`select has_function_privilege('authenticated', 'public.complete_order_with_fulfillment_checked(uuid,uuid,timestamptz,text,text,timestamptz,numeric,timestamptz)', 'execute')`), "t");
+    assert.equal(q1(`select prosecdef from pg_proc where oid = 'public.complete_order_with_fulfillment_checked(uuid,uuid,timestamptz,text,text,timestamptz,numeric,timestamptz)'::regprocedure`), "f", "public wrapper stays security invoker");
+  });
+
+  await t.test("guard: a non-owner and an anonymous caller cannot use the checked entry point", () => {
+    const f = confirmed(10, 6, 1);
+    const asStaff = run(`set role authenticated;
+      select set_config('request.jwt.claim.sub','88888888-8888-4888-8888-888888888888',false);
+      select set_config('request.jwt.claim.app_role','staff',false);
+      do $$ begin
+        begin perform ${checkedCall(crypto.randomUUID(), f.order, f.expected)}; exception when insufficient_privilege then return; end;
+        raise exception 'staff_unexpectedly_completed';
+      end $$; select 'refused_ok'; reset role;`);
+    assert.match(asStaff, /refused_ok/);
+    assert.throws(() => run(`set role anon; select ${checkedCall(crypto.randomUUID(), f.order, f.expected)}; reset role;`), /permission denied/);
+    assert.equal(fulfillCount(f.order), "0");
+  });
+
+  await t.test("guard: a missing expected version is refused rather than treated as unchecked", () => {
+    const f = confirmed(10, 6, 1);
+    const op = crypto.randomUUID();
+    const unchecked = "null::timestamptz, null::text, null::text, null::timestamptz, null::numeric, null::timestamptz";
+    assert.match(run(expectRefusal(`public.complete_order_with_fulfillment_checked('${op}', '${f.order}', ${unchecked})`, "22023", "null_expected_accepted")), /refused_ok/);
+    assert.equal(fulfillCount(f.order), "0");
+    assert.equal(receiptCount(op), "0");
+  });
+
+  await t.test("guard: a payment recorded after review makes the reviewed completion refuse with no write, and the re-reviewed one keeps the payment", () => {
+    const f = confirmed(10, 6, 1);
+    run(`${OWNER_SESSION} update public.orders set payment_status = 'paid', payment_method = 'cash', paid_at = now(), paid_amount = 100, updated_at = clock_timestamp() where id = '${f.order}'; reset role;`);
+    const op = crypto.randomUUID();
+    assert.match(run(expectRefusal(checkedCall(op, f.order, f.expected), "40001", "stale_review_accepted")), /refused_ok/);
+    assert.equal(fulfillCount(f.order), "0");
+    assert.equal(receiptCount(op), "0", "the refusal leaves the operation id unused");
+    assert.equal(lotTotals(f.execution), "10/6");
+
+    run(`${OWNER_SESSION} select ${checkedCall(crypto.randomUUID(), f.order, expectedOf(f.order))}; reset role;`);
+    assert.equal(q1(`select status || '/' || payment_status || '/' || paid_amount from public.orders where id = '${f.order}'`), "completed/paid/100");
+    assert.equal(lotTotals(f.execution), "4/0");
+  });
+
+  await t.test("guard: a payment written WITHOUT touching updated_at (e.g. a direct PATCH) is still a changed order", () => {
+    const f = confirmed(10, 6, 1);
+    const before = q1(`select updated_at from public.orders where id = '${f.order}'`);
+    run(`${OWNER_SESSION} update public.orders set payment_status = 'paid', payment_method = 'gcash', paid_at = now(), paid_amount = 100 where id = '${f.order}'; reset role;`);
+    assert.equal(q1(`select updated_at from public.orders where id = '${f.order}'`), before, "precondition: updated_at did not move");
+    const op = crypto.randomUUID();
+    assert.match(run(expectRefusal(checkedCall(op, f.order, f.expected), "40001", "unbumped_payment_accepted")), /refused_ok/);
+    assert.equal(fulfillCount(f.order), "0");
+    assert.equal(receiptCount(op), "0");
+    // Each payment column on its own is enough to refuse. Start from a paid order (reviewed in that
+    // state) so every single-column edit below is a real change that also satisfies the order checks.
+    for (const column of ["payment_status = 'unpaid'", "payment_method = 'cash'", "paid_at = now() + interval '1 minute'", "paid_amount = 101", "refunded_at = now()"]) {
+      const g = confirmed(10, 6, 1);
+      run(`${OWNER_SESSION} update public.orders set payment_status = 'paid', payment_method = 'gcash', paid_at = now(), paid_amount = 100, updated_at = clock_timestamp() where id = '${g.order}'; reset role;`);
+      g.expected = expectedOf(g.order);
+      run(`${OWNER_SESSION} update public.orders set ${column} where id = '${g.order}'; reset role;`);
+      assert.notEqual(expectedOf(g.order), g.expected, `precondition: ${column} changed the reviewed state`);
+      assert.match(run(expectRefusal(checkedCall(crypto.randomUUID(), g.order, g.expected), "40001", `column_change_accepted_${column.split(" ")[0]}`)), /refused_ok/, column);
+      assert.equal(fulfillCount(g.order), "0", column);
+    }
+  });
+
+  await t.test("guard: a payment write racing the completion serializes on the order row; the completion sees the change and refuses", async () => {
+    const f = confirmed(10, 6, 1);
+    const payment = spawnPsqlAsync(`${owner()} update public.orders set payment_status = 'paid', paid_amount = 100, paid_at = now(), updated_at = clock_timestamp() where id = '${f.order}'; select pg_sleep(1.0); commit;`);
+    await sleep(300);
+    const op = crypto.randomUUID();
+    const completion = spawnPsqlAsync(`${owner()} do $$ begin
+      begin perform ${checkedCall(op, f.order, f.expected)}; exception when sqlstate '40001' then raise notice 'completion_refused_stale'; return; end;
+      raise notice 'completion_unexpectedly_applied';
+    end $$; commit;`);
+    const [rp, rc] = await Promise.all([payment, completion]);
+    assert.doesNotMatch(rp.stdout, /ERROR/);
+    assert.match(rc.stdout, /completion_refused_stale/);
+    assert.equal(q1(`select status || '/' || payment_status from public.orders where id = '${f.order}'`), "confirmed/paid");
+    assert.equal(fulfillCount(f.order), "0");
+    assert.equal(receiptCount(op), "0");
+  });
+
+  await t.test("guard: a lot that lost reserved pieces is refused through BOTH entry points, before any negative balance is written", () => {
+    const f = confirmed(10, 6, 1);
+    run(corruptLot(f, 3)); // lot now 7 on hand / 3 reserved; the order still holds a 6-piece reservation
+    for (const body of [
+      `public.complete_order_with_fulfillment('${crypto.randomUUID()}', '${f.order}')`,
+      checkedCall(crypto.randomUUID(), f.order, f.expected),
+    ]) {
+      assert.match(run(expectRefusal(body, "23514", "negative_lot_accepted")), /refused_ok/);
+    }
+    assert.equal(lotTotals(f.execution), "7/3", "no fulfil movement was written");
+    assert.equal(q1(`select status from public.orders where id = '${f.order}'`), "confirmed");
+    assert.equal(q1(`select status from public.order_stock_allocations where order_id = '${f.order}'`), "active");
+  });
+
+  await t.test("guard: an out-of-band stock write racing the completion is serialized by the product lock alone, and the completion refuses instead of going negative", async () => {
+    const f = makeProduct(10);
+    const customer = makeCustomer();
+    const target = makeOrder(customer, f.product, 6, 1);
+    const other = makeOrder(customer, f.product, 4, 1);
+    for (const order of [target, other]) run(`${OWNER_SESSION} select public.confirm_order_with_reservation('${crypto.randomUUID()}', '${order}'); reset role;`);
+    assert.equal(lotTotals(f.execution), "10/10");
+    const expected = expectedOf(target);
+    // The writer holds products then lots (the order every stock writer takes) and corrupts the lot via
+    // the OTHER order's allocation: 7 more pieces than that reservation, leaving 3/3 for a 6-piece need.
+    // Its FK checks lock the other order's row, so only the product/lot locks can make the completion wait.
+    const writer = spawnPsqlAsync(`begin; select id from public.products where id = '${f.product}' for update;
+      select id from public.production_executions where product_id = '${f.product}' for update;
+      ${corruptLot({ order: other, product: f.product, execution: f.execution }, 7)} select pg_sleep(1.0); commit;`);
+    await sleep(300);
+    const op = crypto.randomUUID();
+    const completion = spawnPsqlAsync(`${owner()} do $$ begin
+      begin perform ${checkedCall(op, target, expected)}; exception when check_violation then raise notice 'completion_refused_short'; return; end;
+      raise notice 'completion_unexpectedly_applied';
+    end $$; commit;`);
+    const [rw, rc] = await Promise.all([writer, completion]);
+    assert.doesNotMatch(rw.stdout, /ERROR/);
+    assert.match(rc.stdout, /completion_refused_short/);
+    assert.equal(lotTotals(f.execution), "3/3");
+    assert.equal(fulfillCount(target), "0");
+    assert.equal(receiptCount(op), "0");
+  });
+
+  await t.test("guard: two owners completing the same order with different operation ids concurrently fulfil exactly once", async () => {
+    const f = confirmed(10, 6, 1);
+    const opA = crypto.randomUUID(); const opB = crypto.randomUUID();
+    const body = (op: string) => `${owner()} do $$ begin
+      begin perform ${checkedCall(op, f.order, f.expected)}; exception when check_violation or serialization_failure then raise notice 'lost_${op.slice(0, 8)}'; return; end;
+      raise notice 'won_${op.slice(0, 8)}';
+    end $$; commit;`;
+    const [ra, rb] = await Promise.all([spawnPsqlAsync(body(opA)), spawnPsqlAsync(body(opB))]);
+    const won = [ra.stdout, rb.stdout].filter((out) => /won_/.test(out)).length;
+    assert.equal(won, 1, `exactly one completion must win: ${ra.stdout} | ${rb.stdout}`);
+    assert.equal(fulfillCount(f.order), "1");
+    assert.equal(lotTotals(f.execution), "4/0");
+    assert.equal(Number(receiptCount(opA)) + Number(receiptCount(opB)), 1, "only the winner keeps a receipt");
+  });
+
+  // The second call normally waits on the first's receipt row and then replays; in_flight is accepted
+  // only as the documented 55P03 outcome. The ledger assertions are what this test proves.
+  await t.test("guard: the same operation id submitted twice concurrently fulfils once; the other call replays or is told it is in flight", async () => {
+    const f = confirmed(10, 6, 1);
+    const op = crypto.randomUUID();
+    const body = `${owner()} do $$ begin
+      begin perform ${checkedCall(op, f.order, f.expected)}; exception when sqlstate '55P03' then raise notice 'in_flight'; return; end;
+      raise notice 'returned_result';
+    end $$; commit;`;
+    const [ra, rb] = await Promise.all([spawnPsqlAsync(body), spawnPsqlAsync(body)]);
+    for (const out of [ra.stdout, rb.stdout]) assert.match(out, /returned_result|in_flight/);
+    assert.doesNotMatch(`${ra.stdout}${rb.stdout}`, /ERROR/);
+    assert.equal(fulfillCount(f.order), "1");
+    assert.equal(lotTotals(f.execution), "4/0");
+  });
+
+  await t.test("guard: retries -- exact replay with a stale version returns the receipt; a new operation id is refused; receipts are shared with the legacy entry point", () => {
+    const f = confirmed(10, 6, 1);
+    const op = crypto.randomUUID();
+    run(`${OWNER_SESSION} select ${checkedCall(op, f.order, f.expected)}; reset role;`);
+    // The order's updated_at moved with completion, so f.expected is now stale; a replay ignores it.
+    assert.match(run(`${OWNER_SESSION} select ${checkedCall(op, f.order, f.expected)}->>'status'; reset role;`), /completed/);
+    assert.match(run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${op}', '${f.order}')->>'status'; reset role;`), /completed/);
+    const fresh = crypto.randomUUID();
+    assert.match(run(expectRefusal(checkedCall(fresh, f.order, expectedOf(f.order)), "23514", "second_completion_accepted")), /refused_ok/);
+    assert.equal(receiptCount(fresh), "0");
+    assert.equal(fulfillCount(f.order), "1");
+    assert.equal(lotTotals(f.execution), "4/0");
+
+    // A legacy-entry receipt replays through the checked entry point too.
+    const g = confirmed(10, 6, 1);
+    const legacyOp = crypto.randomUUID();
+    run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${legacyOp}', '${g.order}'); reset role;`);
+    assert.match(run(`${OWNER_SESSION} select ${checkedCall(legacyOp, g.order, g.expected)}->>'status'; reset role;`), /completed/);
+    assert.equal(fulfillCount(g.order), "1");
+  });
+
+  await t.test("guard: completing an order that shares a lot with another reservation leaves the other reservation intact", () => {
+    const f = makeProduct(10);
+    const customer = makeCustomer();
+    const first = makeOrder(customer, f.product, 6, 1);
+    const second = makeOrder(customer, f.product, 4, 1);
+    for (const order of [first, second]) run(`${OWNER_SESSION} select public.confirm_order_with_reservation('${crypto.randomUUID()}', '${order}'); reset role;`);
+    assert.equal(lotTotals(f.execution), "10/10");
+    run(`${OWNER_SESSION} select ${checkedCall(crypto.randomUUID(), first, expectedOf(first))}; reset role;`);
+    assert.equal(lotTotals(f.execution), "4/4");
+    run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${crypto.randomUUID()}', '${second}'); reset role;`);
+    assert.equal(lotTotals(f.execution), "0/0");
+  });
+
   await t.test("public order submission never reserves stock: a freshly inserted 'new' order has zero allocations and zero effect on availability", () => {
     const f = makeProduct(10);
     const customer = makeCustomer();
@@ -407,5 +678,31 @@ test("Wave 2 connects orders to finished stock: reserve at confirm, release at c
     assert.equal(q1(`select status from public.orders where id = '${order}'`), "new");
     assert.equal(q1(`select count(*) from public.order_stock_allocations where order_id = '${order}'`), "0");
     assert.equal(available(f.product), "10", "a public/new order must not move available stock at all");
+  });
+
+  // Executes the guard migration's documented ROLLBACK exactly as written in its header, then re-applies it.
+  // Runs last because it removes the guard the earlier subtests rely on.
+  await t.test("guard rollback: the documented steps restore Wave 2's exact fulfillment body and grants, and the guard re-applies cleanly", () => {
+    const wave2 = sql("supabase/migrations/20260910181827_selling_wave_2_order_reservation.sql");
+    const start = wave2.indexOf("-- 7. complete_order_with_fulfillment");
+    const end = wave2.indexOf("notify pgrst, 'reload schema';", start);
+    assert.ok(start > 0 && end > start, "section 7 located");
+    const section7 = wave2.slice(start, end);
+    const guard = sql("supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql");
+    const dropPattern = /^--\s+(?:\d+\.\s+)?(drop function .*complete_order_with_fulfillment_checked.*)$/;
+    const dropLines = guard.split("\n").map((line) => dropPattern.exec(line)?.[1]).filter((line): line is string => Boolean(line));
+    assert.equal(dropLines.length, 2, "header names both drops");
+
+    run(section7);
+    run(`${dropLines.join("\n")}\nnotify pgrst, 'reload schema';`);
+    assert.equal(q1(`select md5(prosrc) from pg_proc where oid = 'inventory_private.complete_order_with_fulfillment(uuid,uuid)'::regprocedure`), wave2FulfillmentBodyMd5, "exact Wave 2 body restored");
+    assert.equal(q1(`select count(*) from pg_proc where proname = 'complete_order_with_fulfillment_checked'`), "0");
+    assert.equal(q1(`select has_function_privilege('authenticated', 'public.complete_order_with_fulfillment(uuid,uuid)', 'execute')`), "t");
+    const f = confirmed(10, 6, 1);
+    assert.match(run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${crypto.randomUUID()}', '${f.order}')->>'status'; reset role;`), /completed/, "web completion works after rollback");
+
+    run(guard);
+    const g = confirmed(10, 6, 1);
+    assert.match(run(`${OWNER_SESSION} select ${checkedCall(crypto.randomUUID(), g.order, g.expected)}->>'status'; reset role;`), /completed/, "re-applied guard works");
   });
 });

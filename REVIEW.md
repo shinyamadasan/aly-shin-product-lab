@@ -1688,3 +1688,90 @@ old draft must not promote. Live Worker repair awaits separately approved deploy
 audience isolation is not newly enabled or claimed; Supabase project-owner authorization is preserved.
 Nine unrelated development advisory findings remain, with no MCP finding. Release/recovery and
 scope evidence: docs/MCP_SECURITY_HOTFIX.md and ignored outputs/mcp-security/.
+
+## 2026-10-27 — MCP order completion tools
+
+Merge gate: approved. Write-capable tool over a stock-moving RPC on two owner identities; held for
+human merge and a separate deploy approval.
+
+SELF_REVIEW: one new service reusing the existing RPC, `readAll`, `stableJson`/`sha256Hex`/
+`approvalCodeForHash`, order mappers and totals; no new table, RPC or parallel state. Not
+rubber-stamped -- two real findings fixed during review: (1) a `replayed` flag on Apply was false for
+both callers under true concurrency (the database correctly fulfilled once but its replay is
+indistinguishable from a first call), so the flag was removed and Verify stays the authority;
+(2) Node strip-only TypeScript rejected a constructor parameter property, crashing stdio, caught by the
+existing stdio suite. Accepted duplication: `ORDER_COLUMNS` mirrors orders-repository.ts (not exported;
+exporting it would collide with uncommitted finance work in the root checkout) and the 6-line UUID
+helper mirrors `operationIdForOccurrence` under its own namespace. Documented residual: RPC has no
+expected-state parameter, so a payment edit or lot loss inside the pre-lock window is not refused;
+verify reports negative lots. Would I ship this after deploy approval: yes.
+
+QA: Functional/Regression/Data Integrity/Documentation/Git Hygiene pass; no UI changed. Unit 4604
+(4603 pass, 0 fail, 1 existing platform skip); MCP-focused 126/126 incl. new 16-case order suite
+(both owners, unauthenticated/invalid/expired/non-owner, stale, duplicate, concurrent, in-flight,
+completed elsewhere, completed/cancelled/new, short lot, mismatched reservation, manual-only, payment
+independence); disposable PostgreSQL Wave 2 13/13 incl. new completed-order replay/refusal case; local
+workerd runtime smoke; TypeScript, touched-source/test ESLint, Worker dry-run pass. Production, live
+Worker, Supabase settings and ChatGPT unchanged.
+
+## 2026-10-27 — MCP order completion: release-blocker hardening pass
+
+Merge gate: approved, and still HELD. PR #114 stays draft. It now carries a source-only migration that
+changes the web app's completion function; applying it and deploying are separate owner approvals.
+
+Correction to the earlier 2026-10-27 entry: it said the live Worker ran the pre-#113 build. Wrong.
+Version c4750fda (100% traffic, deployed 2026-10-20) was downloaded via the Cloudflare API and is
+byte-identical (SHA-256 9f7059c2...87b6) to a clean rebuild of bbd679d. The release record exists only on
+the unpushed local branch docs/mcp-security-release-checkpoint, which is why main still says unpatched.
+
+Changes: migration 20261027120000 adds complete_order_with_fulfillment_checked, which takes the
+canonical lock order (order row, products, lots), refuses a changed order (updated_at AND every payment
+column, 40001) and a short lot (23514) before writing, with Wave 2's receipt identity. The legacy
+two-argument function delegates without expected state; its only behavior change is refusing a
+negative-lot fulfilment. MCP calls only the checked function and fails closed without it.
+order_complete_apply carries anthropic/requiresUserInteraction; project ask rules now cover both
+product_lab and product-lab names. Upper-case order ids normalized.
+
+Independent security review (separate read-only agent): no blockers. Fixed from its findings: payment
+state compared directly (no trigger maintains updated_at, so a payment write that skips it would have
+passed); upper-case uuid completed but reported failure; the stock-race test did not isolate the
+product lock (rewritten to write through another order's allocation; negative control re-run); vacuous
+malformed-input and anon assertions tightened. Accepted and documented, not fixed: the approval code is
+binding, not consent (consent rests on client gates; elicitation and preview TTL are follow-ups);
+user-global ask rules are each owner's to add; shared-lot hash staleness (fails safe); raw lot ids in
+the web message; verify is readOnlyHint while calling the RPC (guarded by a smoke test).
+
+SELF_REVIEW: no new table or parallel ledger; one new function reusing Wave 2's body and receipt; MCP
+reuses its service. My own process faults caught by tests: a script turned "$$" into "$" in one
+smoke block, and a teardown order hung one run; both fixed. Would I ship after the approvals below: yes.
+
+QA: unit 4609 (4608 pass, 0 fail, 1 existing skip); MCP-focused 107/107; PostgreSQL all suites
+228 -> 212 pass, 16 fail all in order-incident-recovery (pre-existing: its 2026-10-19 refund fixture
+is now past correct_mistaken_refund's 7-day window; test file unchanged and untouched by this work);
+Wave 2 + guard 25/25 including races, isolated stock race with negative control, payment without
+updated_at, per-column payment changes; MCP -> Worker -> PostgREST -> PostgreSQL 7/7; guard on the full
+current chain with COGS/FR2 8/8; local workerd smoke; TypeScript, lint, Worker dry-run pass.
+Nothing merged, applied, deployed or changed in production.
+
+## 2026-10-27 — MCP order completion: release preparation
+
+Merge gate: approved, HELD for owner execution of docs/ORDER_COMPLETION_RELEASE.md, gate by gate.
+
+Readiness: origin/main still bbd679d (no drift); tree clean; PR mergeable/clean, no reviews, no CI
+configured, main unprotected. Merging deploys nothing: Netlify site has no linked repository, no
+GitHub Actions, no status/deployment on any of nine main merges since 2026-10-16 (Vercel app last
+deployed 2026-10-15; its project connection not inspected). Worker secrets are secret_text, so a deploy
+keeps them; runbook uses --keep-vars as the previous release did.
+
+Time-dependent failures reconciled without touching the refund rule or the recovery script: the
+incident fixture now corrects the first refund through the real correct_mistaken_refund while recent,
+then rebases that audit row's and the order's timestamps to production values (disposable database,
+replica mode for the one append-only rebase). 19/19.
+
+New proof: the migration header's rollback executed against PostgreSQL restores Wave 2's exact body
+(md5 pin) and grants, completion still works, and the guard re-applies. New read-only postflight file;
+all nine checks pass on a migrated database, with the post-apply legacy body md5 pinned.
+
+QA: unit 4609 (4608 pass, 1 existing skip); all PostgreSQL suites 229/229; TypeScript, lint pass;
+Worker bundle SHA-256 f731a3fb...d15d, no runtime source change since 9edaac9. Nothing merged, applied
+or deployed.

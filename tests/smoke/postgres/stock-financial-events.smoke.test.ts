@@ -243,4 +243,34 @@ test("Financial Release 2: authoritative stock financial attribution", { skip: p
     assert.equal(event.amount,12);
     assert.equal(event.quantity,1);
   });
+  // The order fulfillment guard (20261027120000) on top of the full chain production runs today:
+  // it changes no data, and completion (including sales COGS) and FR2 attribution still pass.
+  await t.test("order fulfillment guard applies on the full current chain without changing data, and completion/COGS invariants still hold", () => {
+    const tables = JSON.parse(run("select json_agg(tablename order by tablename) from pg_tables where schemaname='public'").trim()) as string[];
+    const data = () => tables.map((table) => run(`select coalesce(jsonb_agg(to_jsonb(t) order by to_jsonb(t)::text),'[]') from public.${table} t`).trim());
+    const before = data();
+    run(sql("supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql"));
+    assert.deepEqual(data(), before, "the guard migration writes no business data");
+    assert.match(run(sql("tests/smoke/postgres/raw-inventory-authority.assertions.sql")), /wave_0a_assertions_passed/);
+    assert.throws(() => run(sql("supabase/migrations/20261027120000_order_fulfillment_expected_state_guard.sql")), /must not be re-applied/);
+
+    // A sale through each entry point on a lot that also carries a FR2-attributed loss: sales COGS is
+    // recorded, the sale never becomes a stock financial event, and the lot ends exactly where expected.
+    for (const entry of ["legacy", "checked"] as const) {
+      const f = fixture(); // 10 received, 1 damaged -> 9 on hand
+      const customer = uuid(); const order = uuid();
+      run(`insert into public.customers(id,name) values('${customer}','guard buyer');
+        insert into public.orders(id,customer_id,status) values('${order}','${customer}','new');
+        insert into public.order_lines(id,order_id,product_id,item_name,unit_price,pieces_per_unit_snapshot,quantity)
+        values('${uuid()}','${order}','${f.product}','brownies',100,6,1);`);
+      asOwner(`select public.confirm_order_with_reservation('${uuid()}','${order}');`);
+      const call = entry === "legacy"
+        ? `select public.complete_order_with_fulfillment('${uuid()}','${order}')->>'status';`
+        : `select public.complete_order_with_fulfillment_checked('${uuid()}',o.id,o.updated_at,o.payment_status,o.payment_method,o.paid_at,o.paid_amount,o.refunded_at)->>'status' from public.orders o where o.id='${order}';`;
+      assert.equal(asOwner(call), "completed", entry);
+      assert.equal(q1(`select count(*) from public.order_raw_cogs where order_id='${order}'`), "1", `${entry}: sales COGS recorded`);
+      assert.equal(q1(`select count(*) from public.stock_financial_events e join public.finished_stock_movements m on e.source_id=m.id where m.order_id='${order}'`), "0", `${entry}: a sale is not a loss`);
+      assert.equal(q1(`select sum(on_hand_delta)||'/'||sum(reserved_delta) from public.finished_stock_movements where product_id='${f.product}'`), "3/0", entry);
+    }
+  });
 });

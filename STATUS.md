@@ -1,5 +1,24 @@
 # STATUS
 
+## 2026-10-27 — MCP order completion: release prepared, awaiting owner gates
+
+Production preflight passed (owner). Release runbook with identities, commands, postflight and rollback:
+docs/ORDER_COMPLETION_RELEASE.md. All PostgreSQL suites 229/229 (time-dependent incident fixture fixed
+without changing the refund rule); rollback proven; unit 4608 pass/1 existing skip. Not merged, not
+applied, not deployed.
+
+## 2026-10-27 — MCP order completion tools (draft PR)
+
+Four order tools (inspect, preview, apply, verify) in the shared MCP registry. Hardening pass: Apply
+now calls only `complete_order_with_fulfillment_checked` (source-only migration 20261027120000, NOT
+applied), which refuses a changed order or a short lot under stock locks; the web app's function keeps
+its signature. Apply always prompts in Claude Code (server marker + both server-name spellings).
+Evidence: see REVIEW.md 2026-10-27 hardening entry. Draft PR #114 stays draft; nothing merged, applied or
+deployed. Correction: the live Worker already runs #113 (deployed 2026-10-20, module hash verified
+2026-10-27); the 2026-10-20 "unpatched" line below predates that release, whose record is on the
+unpushed local branch docs/mcp-security-release-checkpoint. ChatGPT not connected; official write
+support is Business/Enterprise/Edu. See PRODUCT_LAB_MCP.md.
+
 ## 2026-10-20 — MCP security repair approved; release candidate preparation
 
 Security-only SDK 2.3.0 pins and shared HTTP/tool/count limits independently APPROVED; no blockers.

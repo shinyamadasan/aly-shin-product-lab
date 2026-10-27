@@ -50,6 +50,7 @@ import {
 } from "@modelcontextprotocol/server";
 import { ProductLabError, readProductLabProjectConfig } from "../product-lab/auth.ts";
 import { createInventoryCountServiceForClient } from "../product-lab/inventory-count-service.ts";
+import { createOrderCompletionServiceForClient } from "../product-lab/order-completion-service.ts";
 import { createProductLabMcpServer } from "./mcp-server.ts";
 import { allowedMcpHostnames, canonicalMcpResourceUrl } from "./origin-policy.ts";
 import { createProductLabOAuthTokenVerifier, ownerContextFromAuthInfo } from "./remote-auth.ts";
@@ -61,6 +62,7 @@ const factory: McpServerFactory = (ctx) => {
   return createProductLabMcpServer(
     createProductLabReadServiceForClient(context.client),
     createInventoryCountServiceForClient(context.client),
+    createOrderCompletionServiceForClient(context.client),
   );
 };
 
