@@ -1688,3 +1688,28 @@ old draft must not promote. Live Worker repair awaits separately approved deploy
 audience isolation is not newly enabled or claimed; Supabase project-owner authorization is preserved.
 Nine unrelated development advisory findings remain, with no MCP finding. Release/recovery and
 scope evidence: docs/MCP_SECURITY_HOTFIX.md and ignored outputs/mcp-security/.
+
+## 2026-10-27 — MCP order completion tools
+
+Merge gate: approved. Write-capable tool over a stock-moving RPC on two owner identities; held for
+human merge and a separate deploy approval.
+
+SELF_REVIEW: one new service reusing the existing RPC, `readAll`, `stableJson`/`sha256Hex`/
+`approvalCodeForHash`, order mappers and totals; no new table, RPC or parallel state. Not
+rubber-stamped -- two real findings fixed during review: (1) a `replayed` flag on Apply was false for
+both callers under true concurrency (the database correctly fulfilled once but its replay is
+indistinguishable from a first call), so the flag was removed and Verify stays the authority;
+(2) Node strip-only TypeScript rejected a constructor parameter property, crashing stdio, caught by the
+existing stdio suite. Accepted duplication: `ORDER_COLUMNS` mirrors orders-repository.ts (not exported;
+exporting it would collide with uncommitted finance work in the root checkout) and the 6-line UUID
+helper mirrors `operationIdForOccurrence` under its own namespace. Documented residual: RPC has no
+expected-state parameter, so a payment edit or lot loss inside the pre-lock window is not refused;
+verify reports negative lots. Would I ship this after deploy approval: yes.
+
+QA: Functional/Regression/Data Integrity/Documentation/Git Hygiene pass; no UI changed. Unit 4604
+(4603 pass, 0 fail, 1 existing platform skip); MCP-focused 126/126 incl. new 16-case order suite
+(both owners, unauthenticated/invalid/expired/non-owner, stale, duplicate, concurrent, in-flight,
+completed elsewhere, completed/cancelled/new, short lot, mismatched reservation, manual-only, payment
+independence); disposable PostgreSQL Wave 2 13/13 incl. new completed-order replay/refusal case; local
+workerd runtime smoke; TypeScript, touched-source/test ESLint, Worker dry-run pass. Production, live
+Worker, Supabase settings and ChatGPT unchanged.

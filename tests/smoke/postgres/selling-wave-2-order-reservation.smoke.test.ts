@@ -400,6 +400,38 @@ test("Wave 2 connects orders to finished stock: reserve at confirm, release at c
     assert.equal(available(f.product), "4");
   });
 
+  // Product Lab MCP order_complete_apply/verify (scripts/product-lab/order-completion-service.ts) call
+  // this RPC on an already-completed order: verify to read the receipt back, apply to replay a lost
+  // response. That is only safe if, on a completed order, the RPC can replay its own receipt or
+  // refuse -- never write -- for any operation id.
+  await t.test("on a completed order, the completion RPC only replays its own receipt or refuses, and never writes", () => {
+    const f = makeProduct(10);
+    const customer = makeCustomer();
+    const order = makeOrder(customer, f.product, 6, 1);
+    run(`${OWNER_SESSION} select public.confirm_order_with_reservation('${crypto.randomUUID()}', '${order}'); reset role;`);
+    const op = crypto.randomUUID();
+    run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${op}', '${order}'); reset role;`);
+    const movements = () => q1(`select count(*) from public.finished_stock_movements where order_id = '${order}'`);
+    const before = { movements: movements(), updated: q1(`select updated_at from public.orders where id = '${order}'`) };
+
+    const replay = run(`${OWNER_SESSION} select public.complete_order_with_fulfillment('${op}', '${order}')->>'status'; reset role;`);
+    assert.match(replay, /completed/);
+
+    const unused = crypto.randomUUID();
+    // Acceptance raises (failing run() via ON_ERROR_STOP); the expected refusal returns quietly.
+    const refused = run(`${OWNER_SESSION} do $$ begin
+      begin
+        perform public.complete_order_with_fulfillment('${unused}', '${order}');
+      exception when check_violation then return; end;
+      raise exception 'unused_op_unexpectedly_accepted';
+    end $$; select 'refused_ok'; reset role;`);
+    assert.match(refused, /refused_ok/);
+    assert.equal(q1(`select count(*) from inventory_private.mutation_receipts where operation_id = '${unused}'`), "0", "a refused call leaves no receipt");
+    assert.equal(movements(), before.movements, "no extra stock movement");
+    assert.equal(q1(`select updated_at from public.orders where id = '${order}'`), before.updated, "the order row is not rewritten");
+    assert.equal(q1(`select coalesce(sum(on_hand_delta),0) from public.finished_stock_movements where product_id = '${f.product}'`), "4");
+  });
+
   await t.test("public order submission never reserves stock: a freshly inserted 'new' order has zero allocations and zero effect on availability", () => {
     const f = makeProduct(10);
     const customer = makeCustomer();

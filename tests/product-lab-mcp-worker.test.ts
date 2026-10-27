@@ -18,12 +18,16 @@ const root = path.resolve(import.meta.dirname, "..");
 const WORKER_HOSTNAME = "alyandpon-product-lab-mcp.example.workers.dev";
 const OWNER_ID = "99999999-9999-4999-8999-999999999999";
 const SALT_ID = "11111111-1111-4111-8111-111111111111";
-const FIVE_TOOLS = [
+const APPROVED_TOOLS = [
   "ingredient_inspect",
   "inventory_count_apply",
   "inventory_count_preview",
   "inventory_count_verify",
   "inventory_list",
+  "order_complete_apply",
+  "order_complete_preview",
+  "order_complete_verify",
+  "order_inspect",
 ];
 
 function json(res: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}) {
@@ -283,10 +287,10 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     }
   });
 
-  await t.test("a verified owner lists exactly the five tools and reads through request-scoped auth", async (subtest) => {
+  await t.test("a verified owner lists exactly the approved tools and reads through request-scoped auth", async (subtest) => {
     const client = await connect("owner-token");
     subtest.after(() => client.close());
-    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), FIVE_TOOLS);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), APPROVED_TOOLS);
     const inventory = await client.callTool({ name: "inventory_list", arguments: {} });
     assert.equal(inventory.isError, undefined);
     assert.equal((inventory.structuredContent as { returned: number }).returned, 1);
@@ -321,7 +325,7 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     assert.equal(supabase.applyRpcCalls(), 0, "no apply RPC without a stored, approved preview");
   });
 
-  await t.test("the Next.js /api/mcp rollback route still serves the same five tools through the same shared handler", async (subtest) => {
+  await t.test("the Next.js /api/mcp rollback route still serves the same approved tools through the same shared handler", async (subtest) => {
     const previous = {
       url: process.env.PRODUCT_LAB_SUPABASE_URL,
       key: process.env.PRODUCT_LAB_SUPABASE_PUBLISHABLE_KEY,
@@ -348,7 +352,7 @@ test("Product Lab MCP Cloudflare Worker transport (TASK-073)", async (t) => {
     const client = new Client({ name: "rollback-test", version: "1.0.0" });
     await client.connect(transport);
     subtest.after(() => client.close());
-    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), FIVE_TOOLS);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), APPROVED_TOOLS);
     const before = supabase.previewWrites.length;
     await verifyMcpInputSecurity(subtest, "http://localhost/api/mcp", nextRoute.POST);
     assert.equal(supabase.previewWrites.length, before);
@@ -394,6 +398,7 @@ test("Product Lab MCP Worker structure (TASK-073)", async (t) => {
     // The one place the tool registry is built for a remote request:
     assert.match(handler, /createProductLabMcpServer/);
     assert.match(handler, /createInventoryCountServiceForClient/);
+    assert.match(handler, /createOrderCompletionServiceForClient/);
     assert.match(handler, /requireBearerAuth/);
     assert.match(discovery, /oauthMetadataResponse/);
     // Neither adapter, nor the Worker, may carry its own registry, auth gate or token logic.
@@ -401,7 +406,7 @@ test("Product Lab MCP Worker structure (TASK-073)", async (t) => {
       assert.doesNotMatch(adapter, /registerTool|createProductLabMcpServer|requireBearerAuth|verifyAccessToken|createMcpHandler|\.rpc\(/);
     }
     const registry = await read("scripts", "product-lab-mcp", "mcp-server.ts");
-    assert.equal((registry.match(/registerTool\(/g) ?? []).length, 5);
+    assert.equal((registry.match(/registerTool\(/g) ?? []).length, 9);
   });
 
   await t.test("the remote import graph contains no local-filesystem code, so remote previews can only be Supabase-backed", async () => {

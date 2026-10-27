@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { ProductLabError } from "../product-lab/auth.ts";
 import type { InventoryCountService } from "../product-lab/inventory-count-service.ts";
+import { ORDER_ID_PATTERN, ORDER_PREVIEW_ID_PATTERN, type OrderCompletionService } from "../product-lab/order-completion-service.ts";
 import type { ProductLabReadService } from "../product-lab/read-service.ts";
 import { MAX_MCP_PHYSICAL_COUNT_ROWS, MAX_MCP_TOOL_INPUT_ELEMENTS } from "./input-limits.ts";
 
@@ -199,6 +200,118 @@ export const inventoryCountVerifyOutputSchema = z.object({
   reconciliation_rows: z.array(countVerificationRowSchema),
 });
 
+const orderPaymentSchema = z.object({
+  payment_status: nullableText,
+  payment_method: nullableText,
+  paid_at: nullableText,
+  paid_amount: z.number().nullable(),
+  refunded_at: nullableText,
+});
+const orderSummarySchema = z.object({
+  order_id: z.string(),
+  status: z.string(),
+  customer_name: nullableText,
+  placed_at: nullableText,
+  fulfillment_method: nullableText,
+  fulfillment_at: nullableText,
+  total: z.number(),
+  payment: orderPaymentSchema,
+  completed_at: nullableText,
+  cancelled_at: nullableText,
+  updated_at: nullableText,
+});
+const orderLineSummarySchema = z.object({
+  line_id: z.string(),
+  item_name: z.string(),
+  product_id: nullableText,
+  quantity: z.number(),
+  unit_price: z.number(),
+  pieces_per_unit: z.number().nullable(),
+  stock_pieces: z.number().nullable(),
+});
+const orderReservationSchema = z.object({
+  allocation_id: z.string(),
+  product_id: z.string(),
+  production_execution_id: z.string(),
+  reserved_pieces: z.number(),
+  status: z.string(),
+  lot_on_hand: z.number(),
+  lot_reserved: z.number(),
+});
+
+export const orderInspectOutputSchema = z.object({
+  kind: z.enum(["open_orders", "order"]),
+  orders: z.array(orderSummarySchema).max(50).optional(),
+  returned: z.number().int().nonnegative().optional(),
+  truncated: z.boolean().optional(),
+  order: orderSummarySchema.optional(),
+  lines: z.array(orderLineSummarySchema).optional(),
+  reservation_status: z.enum(["none_required", "reserved", "fulfilled", "released", "not_reserved", "inconsistent"]).optional(),
+  reservations: z.array(orderReservationSchema).optional(),
+});
+
+export const orderCompletePreviewOutputSchema = z.object({
+  version: z.literal(1),
+  kind: z.literal("order_completion_preview"),
+  order_id: z.string(),
+  preview_id: z.string(),
+  approval_code: z.string(),
+  operation_id: z.string(),
+  snapshot_hash: z.string(),
+  order: orderSummarySchema,
+  lines: z.array(orderLineSummarySchema),
+  stock: z.array(z.object({
+    allocation_id: z.string(),
+    product_id: z.string(),
+    production_execution_id: z.string(),
+    pieces_to_fulfill: z.number(),
+    lot_on_hand_before: z.number(),
+    lot_on_hand_after: z.number(),
+    lot_reserved_before: z.number(),
+    lot_reserved_after: z.number(),
+  })),
+  effects: z.object({
+    status_from: z.string(),
+    status_to: z.literal("completed"),
+    finished_pieces_fulfilled: z.number(),
+    payment_change: z.literal("none"),
+  }),
+  can_apply: z.boolean(),
+  blockers: z.array(z.string()),
+  warnings: z.array(z.string()),
+  created_at: z.string(),
+});
+
+export const orderCompleteApplyOutputSchema = z.object({
+  status: z.literal("applied_unverified"),
+  order_id: z.string(),
+  preview_id: z.string(),
+  operation_id: z.string(),
+  order_status: z.string(),
+  completed_at: nullableText,
+  payment: orderPaymentSchema,
+});
+
+export const orderCompleteVerifyOutputSchema = z.object({
+  status: z.enum(["verified", "not_verified"]),
+  order_id: z.string(),
+  preview_id: z.string(),
+  operation_id: z.string(),
+  order_status: z.string(),
+  completed_at: nullableText,
+  allocations: z.number().int().nonnegative(),
+  allocations_fulfilled: z.number().int().nonnegative(),
+  fulfill_movements_for_operation: z.number().int().nonnegative(),
+  finished_pieces_fulfilled: z.number(),
+  mutation_receipt: z.enum(["matched", "missing", "mismatched", "not_checked"]),
+  payment_at_completion: orderPaymentSchema.nullable(),
+  payment_now: orderPaymentSchema,
+  failures: z.array(z.string()),
+});
+
+const orderIdSchema = z.string().regex(ORDER_ID_PATTERN);
+const orderPreviewIdSchema = z.string().regex(ORDER_PREVIEW_ID_PATTERN);
+
 function success(value: object) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
@@ -221,7 +334,17 @@ function failure(error: unknown) {
           ? { code: "inventory_apply_failed", message: "Inventory count was not applied" }
           : internalCode === "verification_failed"
             ? { code: "inventory_verification_failed", message: "Inventory count verification failed" }
-            : { code: "read_failed", message: "Product Lab read failed" };
+            : internalCode === "order_not_found"
+              ? { code: "order_not_found", message: "Order not found" }
+              : internalCode === "order_preview_invalid"
+                ? { code: "order_preview_stale_or_invalid", message: "The order changed since this preview, or the approval code does not match. Nothing was changed. Run order_complete_preview again." }
+                : internalCode === "order_not_completable"
+                  ? { code: "order_not_completable", message: "This order cannot be completed. Nothing was changed. Run order_complete_preview to see why." }
+                  : internalCode === "order_apply_in_progress"
+                    ? { code: "order_apply_in_progress", message: "This completion is still being processed. Retry order_complete_apply with the same preview_id and approval_code." }
+                    : internalCode === "order_apply_failed"
+                      ? { code: "order_apply_failed", message: "Order completion was not confirmed. Run order_complete_verify before retrying." }
+                      : { code: "read_failed", message: "Product Lab read failed" };
   return {
     isError: true,
     content: [{ type: "text" as const, text: JSON.stringify({ error: detail }) }],
@@ -231,12 +354,13 @@ function failure(error: unknown) {
 export function createProductLabMcpServer(
   readService: ProductLabReadService,
   inventoryCountService: InventoryCountService,
+  orderCompletionService: OrderCompletionService,
 ): McpServer {
   const server = new McpServer(
     { name: "product-lab", version: "2.0.0" },
     {
       maxToolInputElements: MAX_MCP_TOOL_INPUT_ELEMENTS,
-      instructions: "Product Lab facts plus owner-approved physical counts. Never infer a match from suggestions or ambiguities. After inventory_count_preview, show the exact preview and stop. Call inventory_count_apply only after a new owner message contains the matching approval code, then call inventory_count_verify before reporting verified success.",
+      instructions: "Product Lab facts plus owner-approved physical counts. Never infer a match from suggestions or ambiguities. After inventory_count_preview, show the exact preview and stop. Call inventory_count_apply only after a new owner message contains the matching approval code, then call inventory_count_verify before reporting verified success. Order completion follows the same rule: after order_complete_preview, show the exact preview, ask the owner to approve its approval code, and stop; call order_complete_apply only after a new owner message contains that code, then call order_complete_verify. Completing an order never records a payment.",
     },
   );
 
@@ -327,6 +451,82 @@ export function createProductLabMcpServer(
     async ({ preview_id }) => {
       try {
         return success(await inventoryCountService.verify(preview_id));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "order_inspect",
+    {
+      title: "Inspect Product Lab orders",
+      description: "Without order_id, lists up to 50 open orders (new, confirmed, ready). With order_id, returns that order, its lines, payment state and stock reservation status. This tool never writes.",
+      inputSchema: z.object({ order_id: orderIdSchema.optional() }).strict(),
+      outputSchema: orderInspectOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ order_id }) => {
+      try {
+        return success(await orderCompletionService.inspect(order_id));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "order_complete_preview",
+    {
+      title: "Preview completing a Product Lab order",
+      description: "Validates that a confirmed or ready order can be completed and shows exactly which reserved finished stock would be fulfilled. Never changes the order, stock or payment. Show the result and stop; apply only after a NEW owner message confirms the approval code.",
+      inputSchema: z.object({ order_id: orderIdSchema }).strict(),
+      outputSchema: orderCompletePreviewOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ order_id }) => {
+      try {
+        return success(await orderCompletionService.preview(order_id));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "order_complete_apply",
+    {
+      title: "Complete an approved Product Lab order",
+      description: "Completes an order through Product Lab's existing fulfillment function, only if the order is unchanged since the preview. Call only after a NEW owner message explicitly confirms that exact approval code. Does not record payment. Returns applied_unverified; verify separately.",
+      inputSchema: z.object({
+        order_id: orderIdSchema,
+        preview_id: orderPreviewIdSchema,
+        approval_code: z.string().trim().min(1).max(32),
+      }).strict(),
+      outputSchema: orderCompleteApplyOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ order_id, preview_id, approval_code }) => {
+      try {
+        return success(await orderCompletionService.apply(order_id, preview_id, approval_code));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "order_complete_verify",
+    {
+      title: "Verify a Product Lab order completion",
+      description: "Independently re-reads the order, its stock allocations, finished-stock movements and the completion's mutation receipt. Only this tool can report status verified. Never changes the order, stock or payment.",
+      inputSchema: z.object({ order_id: orderIdSchema, preview_id: orderPreviewIdSchema }).strict(),
+      outputSchema: orderCompleteVerifyOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ order_id, preview_id }) => {
+      try {
+        return success(await orderCompletionService.verify(order_id, preview_id));
       } catch (error) {
         return failure(error);
       }

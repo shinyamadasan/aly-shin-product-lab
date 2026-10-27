@@ -270,6 +270,10 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
       "inventory_count_preview",
       "inventory_count_verify",
       "inventory_list",
+      "order_complete_apply",
+      "order_complete_preview",
+      "order_complete_verify",
+      "order_inspect",
     ]);
     for (const tool of discovery.tools) {
       assert.equal(tool.inputSchema.type, "object");
@@ -567,7 +571,7 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
     assert.equal(mutationCount, 1);
   });
 
-  await t.test("MCP delegates the sole mutation, Codex config declares user review plus an apply prompt, and Claude config declares ask", async () => {
+  await t.test("MCP delegates each mutation to its one existing RPC, Codex config declares user review plus apply prompts, and Claude config declares ask", async () => {
     const [adapter, entry, readService, countService, cli, codexConfig, claudeConfig, mcpConfig] = await Promise.all([
       readFile(path.join(root, "scripts", "product-lab-mcp", "mcp-server.ts"), "utf8"),
       readFile(serverEntry, "utf8"),
@@ -578,6 +582,13 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
       readFile(path.join(root, ".claude", "settings.json"), "utf8"),
       readFile(path.join(root, ".mcp.json"), "utf8"),
     ]);
+    // Order completion reaches exactly one existing RPC and never writes a table directly.
+    const orderService = await readFile(path.join(root, "scripts", "product-lab", "order-completion-service.ts"), "utf8");
+    const orderRpcNames = [...orderService.matchAll(/\.rpc\(\s*"([^"]+)"/g)].map((match) => match[1]);
+    assert.ok(orderRpcNames.length > 0);
+    assert.deepEqual([...new Set(orderRpcNames)], ["complete_order_with_fulfillment"]);
+    assert.equal((orderService.match(/\.rpc\(/g) ?? []).length, orderRpcNames.length);
+    assert.doesNotMatch(orderService, /\.insert\(|\.update\(|\.delete\(|\.upsert\(|execute_sql/);
     assert.match(adapter, /product-lab\/inventory-count-service/);
     assert.match(cli, /product-lab\/inventory-count-service/);
     assert.doesNotMatch(cli, /\.rpc\(|reconciliationSnapshotMismatches/);
@@ -604,8 +615,9 @@ test("Product Lab stdio MCP protocol, auth, schemas, safety, and protocol-client
     assert.match(codexEnabledTools, /"inventory_count_apply"/);
     assert.match(codexConfig, /approvals_reviewer\s*=\s*"user"/);
     assert.match(codexConfig, /\[mcp_servers\.product_lab\.tools\.inventory_count_apply\][\s\S]*approval_mode\s*=\s*"prompt"/);
-    assert.deepEqual(JSON.parse(claudeConfig).permissions.ask, ["mcp__product_lab__inventory_count_apply"]);
-    assert.doesNotMatch(claudeConfig, /"allow"\s*:\s*\[[\s\S]*inventory_count_apply/);
+    assert.match(codexConfig, /\[mcp_servers\.product_lab\.tools\.order_complete_apply\][\s\S]*approval_mode\s*=\s*"prompt"/);
+    assert.deepEqual(JSON.parse(claudeConfig).permissions.ask, ["mcp__product_lab__inventory_count_apply", "mcp__product_lab__order_complete_apply"]);
+    assert.doesNotMatch(claudeConfig, /"allow"\s*:\s*\[[\s\S]*(inventory_count_apply|order_complete_apply)/);
     assert.doesNotMatch(mcpConfig, /allowedTools|inventory_count_apply/);
   });
 });

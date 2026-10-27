@@ -766,3 +766,13 @@ and narrow Finance changes; unknown valuation remains visible. Complete historic
 (29September/3October);31 other unresolved events preserved. Unit4576pass/1platform skip,
 PostgreSQL18/18, guarded built-browser183/183, build/typecheck/lint pass; independent review approved.
 No production application, merge or deployment. See docs/FINANCIAL_STOCK_COUNT_HOTFIX.md.
+
+## 2026-10-27 — MCP order completion tools (draft PR)
+
+Direct, user-instructed work (not a formal TASK.md milestone). Added `order_inspect`,
+`order_complete_preview`, `order_complete_apply`, `order_complete_verify` to the shared MCP registry
+(`scripts/product-lab/order-completion-service.ts`). Apply calls only the existing
+`complete_order_with_fulfillment` RPC; previews are stateless and bound to order/reservation/lot state
+(D-012). No migration, RLS, grant, deployment, Supabase setting or client connection change. Read-only
+live check: Worker discovery and 401 challenge correct; no DCR/CIMD; live Worker serves the pre-#113
+five-tool build. Evidence and ChatGPT prerequisites: docs/PRODUCT_LAB_MCP.md "Order completion tools".

@@ -1,5 +1,14 @@
 # STATUS
 
+## 2026-10-27 — MCP order completion tools (draft PR)
+
+Four order tools (inspect, preview, apply, verify) added to the shared MCP registry; Apply uses only
+the existing `complete_order_with_fulfillment` RPC. No migration, RLS or grant change. Unit 4604
+(4603 pass, 1 existing platform skip); MCP-focused 126/126; disposable PostgreSQL Wave 2 13/13 incl.
+new completed-order replay/refusal case; local workerd smoke; TypeScript, lint, Worker dry-run pass.
+Not deployed. Live Worker still runs the pre-#113 build. ChatGPT not connected: needs owner plan
+confirmation, a predefined Supabase OAuth client and per-owner redirect URIs. See PRODUCT_LAB_MCP.md.
+
 ## 2026-10-20 — MCP security repair approved; release candidate preparation
 
 Security-only SDK 2.3.0 pins and shared HTTP/tool/count limits independently APPROVED; no blockers.

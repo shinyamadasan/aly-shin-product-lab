@@ -1,5 +1,8 @@
 # Product Lab MCP Slices 1–2.1A
 
+> Since 2026-10-27 the shared registry also serves four order completion tools; see
+> "Order completion tools" below. Statements about "five tools" describe the earlier slices.
+
 Product Lab exposes the same MCP tool registry over two transports: a local stdio implementation
 (Codex/Claude Code, launched as a child process with a manually-supplied owner token) and, as of
 Slice 2.1A, a remote Streamable HTTP endpoint authenticated with Supabase OAuth-issued bearer
@@ -398,6 +401,92 @@ expect the client to run the OAuth flow again; that re-authorization is expected
 TASK-073 does **not** deploy the Worker, change DNS, change any Supabase OAuth setting or Site URL,
 enable DCR, change the consent page, change any client configuration, disable the web-app endpoint, or
 write production data.
+
+## Order completion tools
+
+Four tools let an owner complete a confirmed or ready order from an MCP client. They are registered in
+the same `createProductLabMcpServer(...)` registry, so stdio, the Next.js route and the Worker all
+serve them. Implementation: `scripts/product-lab/order-completion-service.ts`. No migration, new RPC,
+RLS or grant change.
+
+| Tool | Writes? | Input |
+| --- | --- | --- |
+| `order_inspect` | no | `{}` lists up to 50 open orders; `{ "order_id" }` returns one order, lines, payment and reservation status |
+| `order_complete_preview` | no | `{ "order_id" }` |
+| `order_complete_apply` | yes, via `public.complete_order_with_fulfillment` only | `{ "order_id", "preview_id", "approval_code" }` |
+| `order_complete_verify` | no | `{ "order_id", "preview_id" }` |
+
+**The database stays the authority.** Apply calls the existing Selling Wave 2 RPC with the
+request-scoped owner client. The RPC owns the owner check, order-row lock, confirmed/ready gate,
+fulfilling exactly the reservation made at confirm time, and the mutation receipt. MCP never writes
+`orders`, `order_lines`, `order_stock_allocations` or `finished_stock_movements`, and never touches a
+payment field. A test asserts the service source names only that one RPC and has no table writes.
+
+**State-bound previews, no stored artifact.** `preview_id` is `oc_` plus a hash of the authoritative
+state that matters to completion: order status, `updated_at`, payment fields, lines, allocations, and
+on-hand/reserved totals of each reserved lot. Apply re-reads that state; any difference refuses with
+`order_preview_stale_or_invalid` before the RPC is called. The operation id (UUID) and approval code
+are derived from `preview_id`. Consequences:
+
+- Both owners previewing the same state get the same operation id. Concurrent or duplicate approvals
+  fulfil once; the second gets the database's stored receipt (or `order_apply_in_progress`, retryable).
+- A lost Apply response is retried with the same arguments and replays the receipt.
+- If the order was completed some other way (web app, other preview), Apply refuses and changes nothing.
+- There is no time-based expiry; a preview is valid exactly as long as the order state is unchanged.
+
+**Preview blockers** (`can_apply: false`): already completed, cancelled, not confirmed (no
+reservation), part of the reservation already released/fulfilled, reserved pieces not equal to the
+lines' `quantity x pieces_per_unit_snapshot` per product (the database's own reservation rule), or a
+reserved lot holding fewer on-hand or reserved pieces than this order would fulfil. The RPC does not
+re-check lot balances, so this preview check is what catches a lot that lost stock after confirmation.
+
+**Payment is independent.** Preview always reports `payment_change: "none"` and warns when the order is
+not paid. Apply and Verify report payment as read; nothing marks an order paid.
+
+**Verify** returns `verified` only if the order is completed with `completed_at`, every allocation is
+fulfilled by exactly one `fulfill` movement equal to its reserved pieces under this preview's operation
+id, no release movement exists, no reserved lot is negative, and the mutation receipt matches.
+`inventory_private.mutation_receipts` is not owner-readable, so the receipt is read by replaying the
+same operation id through the same RPC, and only once the order is already completed. Completed is
+terminal, so the RPC can then only return this operation's stored result or refuse, and a refusal
+leaves no receipt (proven against real PostgreSQL in
+`tests/smoke/postgres/selling-wave-2-order-reservation.smoke.test.ts`).
+
+**Known residual window.** Between Apply's re-read and the RPC's row lock, a payment edit or a stock
+loss could land. The RPC re-checks status under its lock (so cancel/complete races are safe) but has
+no expected-`updated_at` parameter and does not re-check lot balances. Verify reports a negative lot.
+Closing the window fully needs an RPC change and is not in this slice.
+
+**Approval boundary** is the same as physical counts: show the preview, ask `Approve <code>?`, stop.
+Apply only after a new owner message contains that code. Claude project settings ask before
+`order_complete_apply`; Codex prompts for it. ChatGPT asks for manual confirmation before any
+write-capable tool runs; that confirmation is in addition to the approval code, not a replacement.
+
+**Audit attribution.** Both owner accounts hold the same `app_role = owner` claim; neither the RPC nor
+the receipt records which owner completed an order. This is unchanged from the web app.
+
+## ChatGPT connection (not connected yet)
+
+Verified read-only on 2026-10-27 against the live Worker
+(`alyandpon-product-lab-mcp.shinyamadasan.workers.dev`): protected-resource metadata and the mirrored
+Supabase authorization-server metadata are served, and an unauthenticated `POST /api/mcp` gets 401 with
+an RFC 9728 `resource_metadata` challenge. The live metadata has no `registration_endpoint` (DCR off),
+no `client_id_metadata_document_supported`, and no `authorization_response_iss_parameter_supported`.
+The live Worker still runs the pre-#113 build and serves only the five inventory tools.
+
+What ChatGPT needs, per OpenAI's Apps SDK auth documentation: authorization code + PKCE `S256` (served),
+and one of CIMD, DCR, or a predefined OAuth client. With DCR and CIMD both unavailable on Supabase as
+configured, the supported path is a **predefined (manually registered) Supabase OAuth client** whose
+credentials are entered in ChatGPT's connector OAuth settings. Because `iss` is not returned in
+authorization responses, ChatGPT uses a connection-specific callback
+(`https://chatgpt.com/connector/oauth/{callback_id}`), so each owner's connector shows its own redirect
+URI, and each must be added to that Supabase OAuth client's redirect URIs. ChatGPT also sends a
+`resource` parameter; whether Supabase's OAuth server accepts it without error is unverified.
+
+Plan availability is a hard prerequisite. OpenAI's help center documents developer mode / custom MCP
+apps with write actions for Business, Enterprise and Edu (admin-enabled). Plus/Pro availability is
+reported by third-party guides but not confirmed by an official source. Each owner's ChatGPT plan must
+be confirmed before connecting.
 
 ## Production configuration required before deployment
 

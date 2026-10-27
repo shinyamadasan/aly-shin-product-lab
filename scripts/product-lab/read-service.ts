@@ -166,7 +166,7 @@ export type ProductLabReadSource = {
   loadLinkedPurchaseRows: (ingredientId: string, supplyIds: string[]) => Promise<LinkedTransactionRow[]>;
 };
 
-async function readAll<T>(
+export async function readAll<T>(
   label: string,
   page: (from: number, to: number) => PromiseLike<PageResult<T>>,
 ): Promise<T[]> {
