@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-10-31 (Asia/Manila)
+Date: 2026-11-01 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -45,4 +45,9 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 ## Products needing no action
 None -- every product has at least one open finding.
 
-_Deterministic fallback: this briefing was generated entirely from the Rule Engine, with no AI enrichment this run._
+## AI note (optional, Claude-generated -- does not change the ranking above)
+Blondies tops the list because its latest version contains egg, which can support bacterial growth if baked goods sit too long at the wrong temperature. Without a stated storage and time-limit plan, a single batch could make someone sick. Safety issues come before cost or recipe tweaks.
+
+All three actions are the same check, so handle them together. Start with Blondies, then apply the same storage and time-limit approach to Brownies and Chocolate Chip Cookies, adjusting only where their handling actually differs.
+
+AI suggestion: Write the plan as a short shared template covering storage temperature, maximum hours out, and the discard rule. That way every egg-containing product can reuse it instead of starting from scratch.
