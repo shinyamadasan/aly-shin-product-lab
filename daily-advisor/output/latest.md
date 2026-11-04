@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-11-03 (Asia/Manila)
+Date: 2026-11-04 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -46,4 +46,8 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-Blondies' V4 contains egg, which spoils quickly if left warm; without a defined chilling or time-limit rule, a tasting guest could get sick, and that risk outweighs any cost or flavor issue. Today, write one shared cold-chain and time-limit plan, since all three actions name the same gap. Test it on Blondies first, then apply it to Brownies and Chocolate Chip Cookies, adjusting only where storage or bake differs. Log tasting feedback for each batch while handling it. AI suggestion: keep a simple printed temperature-and-time log sheet next to the fridge, so every batch records when it cooled, how it was stored, and when it should be discarded.
+Blondies V4 uses egg, which can grow harmful bacteria if baked goods sit too warm for too long. Without a stated storage or time limit, there's no way to know when a piece stops being safe to hand out, even to tasters.
+
+Since all three actions are the same fix for different products, do them together: write one cold-chain or time-limit plan, test it on Blondies first, then apply it to Brownies and Chocolate Chip Cookies.
+
+AI suggestion: Keep a simple shared log next to the fridge with columns for batch, time out of oven, storage method and discard time. That way the plan you test today gets recorded the same way for every product.
