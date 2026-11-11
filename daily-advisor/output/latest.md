@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-11-08 (Asia/Manila)
+Date: 2026-11-11 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -46,8 +46,8 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-Egg-containing bakes can grow harmful bacteria if held too warm for too long. Until Blondies has a written and tested holding plan, it isn't safe to hand to anyone outside the kitchen, which is why it outranks the cost warnings.
+Egg-based bakes are time and temperature sensitive, so without a written plan for how long Blondies can sit out or how they're kept cool, anyone tasting them could be exposed to a food-safety risk. Settling this before more tastings protects people and the business's reputation.
 
-All three actions are the same kind of task, so do them together. Write one cold-chain or time-limit plan for Blondies first. Then adapt it for Brownies and Chocolate Chip Cookies, and test all three in the same session.
+Since all three actions share the same gap, write one storage and time-limit plan, test it on Blondies first, then adapt it for Brownies and Chocolate Chip Cookies instead of drafting three from scratch.
 
-AI suggestion: When you test the holding plans, also record tasting feedback on those same batches. That closes the missing-observation gaps without needing an extra bake.
+AI suggestion: whenever you log tasting feedback, also note how long that batch sat out and how it was stored. That way shelf-life evidence builds up alongside the flavor notes.
