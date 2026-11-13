@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-11-12 (Asia/Manila)
+Date: 2026-11-13 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -45,4 +45,9 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 ## Products needing no action
 None -- every product has at least one open finding.
 
-_Deterministic fallback: this briefing was generated entirely from the Rule Engine, with no AI enrichment this run._
+## AI note (optional, Claude-generated -- does not change the ranking above)
+Today's top item matters because egg-based bakes can become a food-safety risk if they sit too long without temperature control. One customer getting sick could end the business before it launches, so this comes before any pricing or recipe work.
+
+Sequencing: all three actions are the same kind of gap. Write one cold-chain or time-limit plan for Blondies first, test it, then adapt it for Brownies and Chocolate Chip Cookies. That way you build it once and reuse it twice.
+
+AI suggestion: When you test the plan, record the storage conditions and holding time in the batch notes. Later tasting feedback can then show whether the plan affects texture or flavour.
