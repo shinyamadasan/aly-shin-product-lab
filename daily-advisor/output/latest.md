@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-11-17 (Asia/Manila)
+Date: 2026-11-18 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -46,8 +46,8 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-Blondies come first because the V4 recipe uses egg, which can spoil when held too long at room temperature. Until there is a clear plan for keeping it cold or a time limit for selling it, any tasting outside the kitchen puts people at real food-safety risk.
+Blondies V4 contains egg, which is time- and temperature-sensitive. Without a stated cold-chain or time-limit plan, nobody can say how long a batch stays safe at room temperature, in transit, or on a table. That is a food-safety gap, not a quality preference, so it outranks every cost or tasting item.
 
-All three actions are the same kind of gap. Write the plan for Blondies first, then adapt it for Brownies and then Chocolate Chip Cookies in that order. Most of the work will carry over between them.
+All three actions are the same kind of gap. Write the plan for Blondies first, test it, then adapt it for Brownies and Chocolate Chip Cookies rather than starting each from scratch.
 
-AI suggestion: Keep a simple one-page holding log next to the batch sheets, recording the bake time, the storage method, and the discard-by time. That record also makes the missing tasting feedback easier to fill in.
+AI suggestion: Keep one shared holding-time log sheet (time out of fridge or oven, time served or discarded) that every egg-containing product uses. Future plans can then cite real observations.
