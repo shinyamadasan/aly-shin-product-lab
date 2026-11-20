@@ -1,6 +1,6 @@
 # Aly & Shin Product Lab -- Daily Briefing
 
-Date: 2026-11-19 (Asia/Manila)
+Date: 2026-11-20 (Asia/Manila)
 Product catalog: Static application data
 Operational data: Supabase
 
@@ -46,8 +46,8 @@ Recommendation: State and test an explicit cold-chain or time-limit plan before 
 None -- every product has at least one open finding.
 
 ## AI note (optional, Claude-generated -- does not change the ranking above)
-Egg-containing baked goods can grow harmful bacteria if they sit at room temperature too long, and that risk is invisible: a bar can look and taste fine while being unsafe. Before Blondies reach anyone outside the kitchen, you need a written answer to "how long can it sit out, and how is it kept cold?"
+Egg-based bakes left at room temperature can grow harmful bacteria, so Blondies' V4 needs a clear rule on how long it can sit out or how it stays chilled. A food-safety gap like this outweighs any cost or taste issue, because it could make someone sick.
 
-All three actions share the same finding, so handle them together. Draft one cold-chain and time-limit template using Blondies, test it, then apply it to Brownies and Chocolate Chip Cookies in that order.
+All three actions are the same kind of fix, so do them together: write one shared time-limit or cold-storage plan, then test it on Blondies first and apply it to Brownies and Chocolate Chip Cookies.
 
-AI suggestion: Put a simple label on every batch container showing when it was baked and when to discard it. This makes the time-limit plan easy to follow every day.
+AI suggestion: Keep a simple label template (bake date, hold-by time, storage note) and use it on every batch, so this plan becomes routine rather than per-product paperwork.
